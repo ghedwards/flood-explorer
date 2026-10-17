@@ -483,3 +483,52 @@ mod tests {
         }
     }
 }
+
+/// Compute a simple D8 flow-direction pointer (0-7 for the 8 neighbours,
+/// 255 for no flow). This is a first-cut port; it does not yet reproduce
+/// Whitebox's flat-resolution or least-cost breach behaviour.
+pub fn d8_pointer_simple(dem: &[f32], w: usize, h: usize, nodata: f32) -> Vec<u8> {
+    let n = w * h;
+    let mut out = vec![255u8; n];
+    // neighbour offsets (E, SE, S, SW, W, NW, N, NE) -> codes 1,2,4,8,16,32,64,128
+    let nbrs: [(i64, i64, u8); 8] = [
+        (1, 0, 1), (1, 1, 2), (0, 1, 4), (-1, 1, 8),
+        (-1, 0, 16), (-1, -1, 32), (0, -1, 64), (1, -1, 128),
+    ];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if !dem[i].is_finite() || dem[i] == nodata { continue; }
+            let mut best_slope = 0.0f64;
+            let mut best_code = 255u8;
+            for &(dx, dy, code) in &nbrs {
+                let nx = x as i64 + dx;
+                let ny = y as i64 + dy;
+                if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
+                let j = ny as usize * w + nx as usize;
+                if !dem[j].is_finite() || dem[j] == nodata { continue; }
+                let dist = if dx.abs() == 1 && dy.abs() == 1 { 1.414 } else { 1.0 };
+                let slope = (dem[i] as f64 - dem[j] as f64) / (dist * 1.0); // cell size normalized
+                if slope > best_slope {
+                    best_slope = slope;
+                    best_code = code;
+                }
+            }
+            out[i] = best_code;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod d8_simple_tests {
+    use super::*;
+    #[test]
+    fn slopes_downhill() {
+        // 3x3: centre high, all neighbours lower to the east
+        let mut dem = vec![5.0f32; 9];
+        dem[5] = 2.0;
+        let d = d8_pointer_simple(&dem, 3, 3, -9999.0);
+        assert_eq!(d[4], 1); // east
+    }
+}
