@@ -329,6 +329,7 @@ fn scenario_of(b: &Bag) -> Scenario {
         gates: b.f64s("gates").unwrap_or_default().iter().map(|&c| c as i64).collect(),
         levee: b.u8s("levee"),
         wse: b.f64s("wse"),
+        backwater: b.num("backwater") > 0.5,
     }
 }
 

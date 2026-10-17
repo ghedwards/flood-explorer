@@ -544,8 +544,9 @@
       const cU = chain[p0], cD = end >= 0 ? chain[end] : 0, LD = end >= 0 ? ctrlLevel.get(end) : s.bayLevel;
       let c = p0;
       while (c >= 0 && c !== end) {
-        const t = cU > cD ? (chain[c] - cD) / (cU - cD) : 1;
-        const v = LD + (L0 - LD) * t;
+        const tRaw = cU > cD ? (chain[c] - cD) / (cU - cD) : 1;
+        const t = Math.max(0, Math.min(1, tRaw));
+        const v = s.backwater ? LD + (L0 - LD) * Math.pow(t, 1.3) : LD + (L0 - LD) * t;
         if (v > pathWse[c]) pathWse[c] = v;
         onPath[c] = 1;
         c = rec[c];

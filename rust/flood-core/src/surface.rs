@@ -18,6 +18,8 @@ pub struct Scenario {
     pub levee: Option<Vec<u8>>,
     /// a water surface supplied by the caller (overrides the gauge)
     pub wse: Option<Vec<f64>>,
+    /// use a backwater (gradually-varied) profile instead of a linear one
+    pub backwater: bool,
 }
 
 /// A model run's result.
@@ -73,7 +75,13 @@ pub fn stream_surface(a: &Analysis, s: &Scenario) -> (Vec<f64>, Vec<u8>) {
         while c >= 0 && c != end {
             let cc = c as usize;
             let t = if cu > cd { (a.chain[cc] - cd) / (cu - cd) } else { 1.0 };
-            let v = ld + (l0 - ld) * t;
+            let t = t.clamp(0.0, 1.0);
+            let v = if s.backwater {
+                // convex profile: more drop near the downstream end (friction)
+                ld + (l0 - ld) * t.powf(1.3)
+            } else {
+                ld + (l0 - ld) * t
+            };
             if v > path_wse[cc] {
                 path_wse[cc] = v;
             }
