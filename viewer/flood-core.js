@@ -1386,7 +1386,7 @@
    * n = 0.035, floodplain n = 0.06; speeds capped at 6 m/s in channels and
    * 4 m/s on floodplains. Returns { cls (0 dry, 1-6), vel, km2: [H1..H6] }.
    */
-  function hazard(a, run) {
+  function hazard(a, run, vx, vy) {
     const { N, rec, chain, stream, recvStream, dem, ocean, cell } = a;
     const cls = new Uint8Array(N), vel = new Float32Array(N);
     const level = run.level;
@@ -1413,7 +1413,12 @@
       else if (kind === 2 && rec[c] >= 0) S = Math.max(0, (dem[c] - dem[rec[c]]) / Math.max(cell, chain[c] - chain[rec[c]]));
       else if (stream[c]) { S = slope[c]; n = 0.035; cap = 6; }
       else if (recvStream[c] >= 0) S = slope[recvStream[c]];
-      const V = Math.min(cap, (Math.pow(D, 2 / 3) * Math.sqrt(Math.min(S, 0.2))) / n);
+      let V;
+      if (vx && vy && vx[c] !== undefined && vy[c] !== undefined) {
+        V = Math.sqrt(vx[c]*vx[c] + vy[c]*vy[c]);
+      } else {
+        V = Math.min(cap, (Math.pow(D, 2 / 3) * Math.sqrt(Math.min(S, 0.2))) / n);
+      }
       vel[c] = V;
       cls[c] = hazardClass(D, V);
       km2[cls[c] - 1] += cellKm2;

@@ -337,6 +337,10 @@ pub struct Hazard {
 }
 
 pub fn hazard(a: &Analysis, run: &Run) -> Hazard {
+    hazard_with_velocities(a, run, None, None)
+}
+
+pub fn hazard_with_velocities(a: &Analysis, run: &Run, vx: Option<&[f64]>, vy: Option<&[f64]>) -> Hazard {
     let n = a.n;
     let (mut cls, mut vel) = (vec![0u8; n], vec![0f32; n]);
     let level = &run.level;
@@ -366,21 +370,28 @@ pub fn hazard(a: &Analysis, run: &Run) -> Hazard {
         if d.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             continue;
         }
-        let kind = run.kind.as_ref().map_or(0, |k| k[c]);
-        let (mut s, mut nn, mut cap) = (0f64, 0.06, 4.0);
-        if kind == 3 {
-            s = 0.0;
-        } else if kind == 2 && a.rec[c] >= 0 {
-            let r = a.rec[c] as usize;
-            s = jmax(0.0, (a.dem[c] as f64 - a.dem[r] as f64) / jmax(a.cell, a.chain[c] - a.chain[r]));
-        } else if a.stream[c] != 0 {
-            s = slope[c] as f64;
-            nn = 0.035;
-            cap = 6.0;
-        } else if a.recv_stream[c] >= 0 {
-            s = slope[a.recv_stream[c] as usize] as f64;
-        }
-        let v = jmin(cap, (d.powf(2.0 / 3.0) * jmin(s, 0.2).sqrt()) / nn);
+        let v = match (vx, vy) {
+            (Some(vx), Some(vy)) if c < vx.len() && c < vy.len() => {
+                (vx[c]*vx[c] + vy[c]*vy[c]).sqrt()
+            }
+            _ => {
+                let kind = run.kind.as_ref().map_or(0, |k| k[c]);
+                let (mut s, mut nn, mut cap) = (0f64, 0.06, 4.0);
+                if kind == 3 {
+                    s = 0.0;
+                } else if kind == 2 && a.rec[c] >= 0 {
+                    let r = a.rec[c] as usize;
+                    s = jmax(0.0, (a.dem[c] as f64 - a.dem[r] as f64) / jmax(a.cell, a.chain[c] - a.chain[r]));
+                } else if a.stream[c] != 0 {
+                    s = slope[c] as f64;
+                    nn = 0.035;
+                    cap = 6.0;
+                } else if a.recv_stream[c] >= 0 {
+                    s = slope[a.recv_stream[c] as usize] as f64;
+                }
+                jmin(cap, (d.powf(2.0 / 3.0) * jmin(s, 0.2).sqrt()) / nn)
+            }
+        };
         vel[c] = v as f32;
         cls[c] = hazard_class(d, v);
         km2[cls[c] as usize - 1] += cell_km2;
