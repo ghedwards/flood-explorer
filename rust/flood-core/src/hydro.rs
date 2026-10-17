@@ -595,3 +595,79 @@ mod fill_tests {
         assert!(out[4] >= 5.0 - 1e-3, "pit should be filled to spill level");
     }
 }
+
+/// D8 flow accumulation: count of upstream cells (including self) per cell,
+/// given a D8 pointer array (codes 1,2,4,8,16,32,64,128).
+pub fn flow_accumulation(d8: &[u8], w: usize, h: usize) -> Vec<f64> {
+    let n = w * h;
+    // map code -> (dx, dy)
+    let nbr = |code: u8| -> Option<(i64, i64)> {
+        match code {
+            1 => Some((1, 0)), 2 => Some((1, 1)), 4 => Some((0, 1)), 8 => Some((-1, 1)),
+            16 => Some((-1, 0)), 32 => Some((-1, -1)), 64 => Some((0, -1)), 128 => Some((1, -1)),
+            _ => None,
+        }
+    };
+    // build reverse adjacency: for each cell, list of upstream cells
+    let mut upstream: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if let Some((dx, dy)) = nbr(d8[i]) {
+                let nx = x as i64 + dx;
+                let ny = y as i64 + dy;
+                if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64 {
+                    let j = ny as usize * w + nx as usize;
+                    upstream[j].push(i);
+                }
+            }
+        }
+    }
+    // topological order: process cells with no unprocessed upstream first.
+    // Simple: iterate until stable (fine for small grids).
+    let mut acc = vec![1.0f64; n];
+    let mut done = vec![false; n];
+    // cells with no upstream are ready
+    let mut changed = true;
+    // We'll do a recursive-ish pass using a stack of ready cells.
+    // First mark leaves.
+    let mut ready: Vec<usize> = (0..n).filter(|&i| upstream[i].is_empty()).collect();
+    for &i in &ready { done[i] = true; }
+    // Process in topological order via queue
+    let mut queue = ready.clone();
+    let mut idx = 0;
+    while idx < queue.len() {
+        let i = queue[idx];
+        idx += 1;
+        // find downstream
+        let x = i % w;
+        let y = i / w;
+        if let Some((dx, dy)) = nbr(d8[i]) {
+            let nx = x as i64 + dx;
+            let ny = y as i64 + dy;
+            if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64 {
+                let j = ny as usize * w + nx as usize;
+                acc[j] += acc[i];
+                // mark j ready when all its upstream done
+                if upstream[j].iter().all(|&u| done[u]) {
+                    if !done[j] { done[j] = true; queue.push(j); }
+                }
+            }
+        }
+    }
+    acc
+}
+
+#[cfg(test)]
+mod flow_acc_tests {
+    use super::*;
+    #[test]
+    fn accumulates() {
+        // 1x3: all flow east
+        let d8 = vec![1u8, 1, 255];
+        let acc = flow_accumulation(&d8, 3, 1);
+        assert_eq!(acc[0], 1.0);
+        assert_eq!(acc[1], 2.0);
+        assert_eq!(acc[2], 3.0);
+    }
+}
