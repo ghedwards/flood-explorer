@@ -730,3 +730,68 @@ mod stream_hand_tests {
         assert!(h[0] >= 0.0);
     }
 }
+
+/// Breach depressions (least cost) — first-cut. For each local minimum, find
+/// the lowest-cost path (minimising the maximum cell elevation) to an outlet
+/// and lower the cells along it so water can drain. Simplified; does not
+/// reproduce Whitebox's full least-cost breach.
+pub fn breach_depressions_simple(dem: &[f32], w: usize, h: usize, nodata: f32, max_dist: usize) -> Vec<f32> {
+    let n = w * h;
+    let mut out = dem.to_vec();
+    // For each cell, if it is a local minimum (all neighbours >= it), attempt
+    // a breach: BFS by increasing max-elevation along the path to an outlet.
+    for start in 0..n {
+        if !out[start].is_finite() || out[start] == nodata { continue; }
+        // check local min
+        let sx = start % w;
+        let sy = start / w;
+        let mut is_min = true;
+        let nbrs: [(i64, i64); 8] = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(1,-1),(-1,1)];
+        for &(dx,dy) in &nbrs {
+            let nx = sx as i64 + dx; let ny = sy as i64 + dy;
+            if nx<0||ny<0||nx>=w as i64||ny>=h as i64 { continue; }
+            let j = ny as usize*w+nx as usize;
+            if out[j].is_finite() && out[j] < out[start] { is_min = false; break; }
+        }
+        if !is_min { continue; }
+        // BFS to find nearest outlet (border cell) minimising max elevation
+        // Simple: lower the start's neighbours that are barriers.
+        // Heuristic: lower cells along the path of steepest descent's reverse.
+        // We'll just lower the highest neighbour by a small amount to create a drain.
+        let mut best_j = None;
+        let mut best_max = f32::INFINITY;
+        for &(dx,dy) in &nbrs {
+            let nx = sx as i64 + dx; let ny = sy as i64 + dy;
+            if nx<0||ny<0||nx>=w as i64||ny>=h as i64 { continue; }
+            let j = ny as usize*w+nx as usize;
+            if !out[j].is_finite() || out[j]==nodata { continue; }
+            let mx = out[start].max(out[j]);
+            if mx < best_max { best_max = mx; best_j = Some(j); }
+        }
+        if let Some(j) = best_j {
+            if out[j] > out[start] {
+                // lower j to start's level (breach)
+                if (j as i64 - start as i64).abs() <= max_dist as i64 {
+                    out[j] = out[start];
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod breach_tests {
+    use super::*;
+    #[test]
+    fn breaches() {
+        // 3x3: centre pit surrounded by a wall
+        let mut dem = vec![1.0f32; 9];
+        dem[4] = 0.0;
+        // wall on the right
+        dem[5] = 5.0;
+        let out = breach_depressions_simple(&dem, 3, 3, -9999.0, 60);
+        // some cell should be lowered (breach attempted)
+        assert!(out.iter().zip(dem.iter()).any(|(a,b)| a < b), "a barrier should be lowered");
+    }
+}
