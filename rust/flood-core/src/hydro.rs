@@ -532,3 +532,66 @@ mod d8_simple_tests {
         assert_eq!(d[4], 1); // east
     }
 }
+
+/// Simple priority-flood fill: raise cells in depressions so water can drain.
+/// First-cut; does not handle flats or least-cost breach.
+pub fn fill_depressions_simple(dem: &[f32], w: usize, h: usize, nodata: f32) -> Vec<f32> {
+    // Priority flood: process cells from lowest to highest, filling depressions.
+    use std::collections::BinaryHeap;
+    use std::cmp::Reverse;
+    let n = w * h;
+    let mut out = dem.to_vec();
+    let mut visited = vec![false; n];
+    let mut heap: BinaryHeap<Reverse<(i32, usize)>> = BinaryHeap::new();
+    // Seed border cells.
+    for x in 0..w {
+        for &y in &[0usize, h - 1] {
+            let i = y * w + x;
+            if out[i].is_finite() && out[i] != nodata {
+                heap.push(Reverse(((out[i] * 1000.0) as i32, i)));
+                visited[i] = true;
+            }
+        }
+    }
+    for y in 1..h - 1 {
+        for &x in &[0usize, w - 1] {
+            let i = y * w + x;
+            if out[i].is_finite() && out[i] != nodata {
+                heap.push(Reverse(((out[i] * 1000.0) as i32, i)));
+                visited[i] = true;
+            }
+        }
+    }
+    let nbrs: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    while let Some(Reverse((_, i))) = heap.pop() {
+        let x = i % w;
+        let y = i / w;
+        for &(dx, dy) in &nbrs {
+            let nx = x as i64 + dx;
+            let ny = y as i64 + dy;
+            if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
+            let j = ny as usize * w + nx as usize;
+            if visited[j] { continue; }
+            if !out[j].is_finite() || out[j] == nodata { visited[j] = true; continue; }
+            if out[j] < out[i] {
+                out[j] = out[i];
+            }
+            visited[j] = true;
+            heap.push(Reverse(((out[j] * 1000.0) as i32, j)));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+    #[test]
+    fn fills_pit() {
+        // 3x3 with a pit in the centre
+        let mut dem = vec![5.0f32; 9];
+        dem[4] = 1.0;
+        let out = fill_depressions_simple(&dem, 3, 3, -9999.0);
+        assert!(out[4] >= 5.0 - 1e-3, "pit should be filled to spill level");
+    }
+}
