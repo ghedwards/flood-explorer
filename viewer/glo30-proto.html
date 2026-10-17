@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GLO-30 prototype</title>
+<h1>GLO-30 tile download prototype</h1>
+<pre id="log"></pre>
+<script>
+const log = (m) => { document.getElementById('log').textContent += m + '\n'; };
+const url = 'https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N27_00_E152_00_DEM/Copernicus_DSM_COG_10_N27_00_E152_00_DEM.tif';
+log('fetching ' + url);
+fetch(url).then(r => { log('status ' + r.status + ' ' + r.headers.get('content-type')); return r.arrayBuffer(); })
+  .then(b => log('bytes: ' + b.byteLength))
+  .catch(e => log('ERROR: ' + e));
+</script>
