@@ -584,7 +584,7 @@ import './inertial-grid.js';
     const selected = $('solver').value === 'inertial';
     $('inertialControls').hidden = !selected;
     for (const id of fastSets) $(id).disabled = selected;
-    $('colorMode').querySelector('option[value="hazard"]').disabled = !!state.inertial;
+    $('colorMode').querySelector('option[value="hazard"]').disabled = false;
     $('dlReport').disabled = !!state.inertial;
   }
   function stopInertial() {
@@ -879,11 +879,11 @@ import './inertial-grid.js';
   const HAZARD_COLORS = [[253, 231, 37], [122, 209, 81], [34, 168, 132], [42, 120, 142], [65, 68, 135], [68, 1, 84]];
   const HAZARD_TEXT = ['generally safe', 'unsafe for small vehicles', 'unsafe for vehicles, children and the elderly', 'unsafe for vehicles and people', 'unsafe for people and vehicles; buildings need special design', 'unsafe for all; all buildings vulnerable'];
   const COMPARE_COLORS = { onlyNow: [230, 97, 1], onlyPinned: [94, 60, 153], both: [158, 202, 225] };
-  const colorMode = () => { const v = $('colorMode') ? $('colorMode').value : 'depth'; if (state.inertial && v === 'hazard') return 'depth'; return v === 'compare' && !(state.pinned && state.pinned.key === state.areaKey) ? 'depth' : v; };
+  const colorMode = () => { const v = $('colorMode') ? $('colorMode').value : 'depth'; return v === 'compare' && !(state.pinned && state.pinned.key === state.areaKey) ? 'depth' : v; };
   function hazardNow() {
-    if (state.inertial) return null;
     if (!state.a || !state.run) return null;
-    if (!state.hazard || state.hazard.run !== state.run) state.hazard = Object.assign(F.hazard(state.a, state.run), { run: state.run });
+    const vx = state.run.vx, vy = state.run.vy;
+    if (!state.hazard || state.hazard.run !== state.run) state.hazard = Object.assign(F.hazard(state.a, state.run, vx, vy), { run: state.run });
     return state.hazard;
   }
   function compareNow() {
