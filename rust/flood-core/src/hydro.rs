@@ -671,3 +671,62 @@ mod flow_acc_tests {
         assert_eq!(acc[2], 3.0);
     }
 }
+
+/// Extract streams: cells where accumulation >= threshold.
+pub fn extract_streams(acc: &[f64], threshold: f64) -> Vec<u8> {
+    acc.iter().map(|&a| if a >= threshold { 1u8 } else { 0u8 }).collect()
+}
+
+/// Elevation above nearest stream (HAND): for each cell, the elevation
+/// difference to the nearest stream cell. First-cut: nearest stream by
+/// Manhattan distance (not flow path).
+pub fn hand_simple(dem: &[f32], streams: &[u8], w: usize, h: usize) -> Vec<f64> {
+    let n = w * h;
+    let mut out = vec![f64::NAN; n];
+    for i in 0..n {
+        if !dem[i].is_finite() { continue; }
+        // find nearest stream cell
+        let (xi, yi) = (i % w, i / w);
+        let mut best = f64::INFINITY;
+        for j in 0..n {
+            if streams[j] == 0 || !dem[j].is_finite() { continue; }
+            let (xj, yj) = (j % w, j / w);
+            let d = ((xi as i64 - xj as i64).abs() + (yi as i64 - yj as i64).abs()) as f64;
+            if d < best { best = d; }
+        }
+        if best.is_finite() && best < 1e9 {
+            // approximate: use dem difference to nearest stream (by manhattan)
+            // find the actual nearest stream cell
+            let mut nearest = None;
+            let mut bestd = f64::INFINITY;
+            for j in 0..n {
+                if streams[j] == 0 || !dem[j].is_finite() { continue; }
+                let (xj, yj) = (j % w, j / w);
+                let d = ((xi as i64 - xj as i64).abs() + (yi as i64 - yj as i64).abs()) as f64;
+                if d < bestd { bestd = d; nearest = Some(j); }
+            }
+            if let Some(j) = nearest {
+                out[i] = (dem[i] - dem[j]) as f64;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod stream_hand_tests {
+    use super::*;
+    #[test]
+    fn extracts() {
+        let acc = vec![1.0, 5.0, 2.0];
+        let s = extract_streams(&acc, 3.0);
+        assert_eq!(s, vec![0, 1, 0]);
+    }
+    #[test]
+    fn hand_nonneg() {
+        let dem = vec![5.0f32, 3.0, 1.0];
+        let streams = vec![0u8, 0, 1];
+        let h = hand_simple(&dem, &streams, 3, 1);
+        assert!(h[0] >= 0.0);
+    }
+}
