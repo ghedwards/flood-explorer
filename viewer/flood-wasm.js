@@ -326,7 +326,8 @@
 
     const rust = {
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
-      inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth').map(([k, v]) => [k, num(v)])) }; },
+      inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
+      inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
       analyse, streamSurface, inundate, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
     };

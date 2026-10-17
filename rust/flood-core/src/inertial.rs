@@ -32,6 +32,8 @@ pub struct Solver {
     qy: Vec<f64>,
     outgoing: Vec<f64>,
     scale: Vec<f64>,
+    pub vx: Vec<f64>,
+    pub vy: Vec<f64>,
 }
 impl Solver {
     pub fn new(grid: Grid, opts: Options) -> Result<Self, String> {
@@ -60,7 +62,7 @@ impl Solver {
         } else {opts.initial_depth}).collect();
         let mut s = Self { grid, opts, depth, time: 0.0, steps: 0, initial_volume: 0.0,
             source_volume: 0.0, boundary_volume: 0.0, qx: vec![0.0;n], qy: vec![0.0;n],
-            outgoing: vec![0.0;n], scale: vec![1.0;n] };
+            outgoing: vec![0.0;n], scale: vec![1.0;n], vx: vec![0.0;n], vy: vec![0.0;n] };
         s.initial_volume = s.volume();
         Ok(s)
     }
@@ -125,6 +127,16 @@ impl Solver {
                     let h = (self.opts.stages[i]-self.grid.dem[i] as f64).max(0.0);
                     self.boundary_volume += (h-self.depth[i])*area; self.depth[i] = h;
                 }
+            }
+            // Update cell velocities from face fluxes (unit-width discharge / depth).
+            for i in 0..n {
+                let dl = if i%self.grid.w > 0 { self.qx[i-1] } else { 0.0 };
+                let dr = if i%self.grid.w+1 < self.grid.w { self.qx[i] } else { 0.0 };
+                let du = if i >= self.grid.w { self.qy[i-self.grid.w] } else { 0.0 };
+                let dd = if i+self.grid.w < n { self.qy[i] } else { 0.0 };
+                let h = self.depth[i].max(DRY);
+                self.vx[i] = (dr + dl) / (2.0*h);
+                self.vy[i] = (dd + du) / (2.0*h);
             }
             self.time += dt; self.steps += 1;
         }

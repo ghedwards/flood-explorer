@@ -512,8 +512,18 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     .num("boundaryVolume", s.boundary_volume).num("balanceError", s.balance_error());
                 if done {
                     o.f64s("depth", &s.depth);
+                    o.f64s("vx", &s.vx);
+                    o.f64s("vy", &s.vy);
                     *slot = None;
                 }
+                Ok(())
+            })?;
+        }
+        "inertialVelocities" => {
+            INERTIAL.with(|slot| -> Result<(), String> {
+                let slot = slot.borrow();
+                let s = slot.as_ref().ok_or("no active 2D simulation")?;
+                o.f64s("vx", &s.vx).f64s("vy", &s.vy);
                 Ok(())
             })?;
         }
