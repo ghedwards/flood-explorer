@@ -30,3 +30,19 @@ Total: ~5 weeks for a correct, tested port.
 
 ## Status
 Not started. Design pending.
+
+## Refinement toward Whitebox parity
+The six algorithms above are first-cut proofs of concept. To reach parity with
+the pipeline's `flood hydrology` (verified by `flood compare-hydrology`), each
+needs:
+1. Replace the simplified algorithm with the exact Whitebox semantics
+   (priority-flood with flat resolution, least-cost breach via Dijkstra,
+   flow-path-based HAND).
+2. Run `flood compare-hydrology <reference> <candidate>` against the pipeline's
+   six rasters to confirm pixel-exact match (including NaNs, sample types,
+   dimensions, geospatial metadata).
+3. Add regression tests using the pipeline's reference rasters as fixtures.
+
+This requires the pipeline's reference rasters (dem.tif, d8.tif, etc.) which
+are not available in this environment. The algorithms are ready for refinement
+once reference data is available.
