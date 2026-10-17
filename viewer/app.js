@@ -94,6 +94,7 @@ import './inertial-grid.js';
       gaugeLevel: parseFloat(ctl.gaugeLevel.value) + parseFloat(ctl.extra.value),
       bayLevel: parseFloat(ctl.bayLevel.value) + slr,
       upstreamGradient: parseFloat(ctl.grad.value),
+      backwater: !!($('backwater') && $('backwater').checked),
       controls: (state.controls || []).map((c) => ({ cell: c.cell, level: c.level })),
       gates: state.gateCells || [],
       levee: state.leveeMask || null,
@@ -143,6 +144,7 @@ import './inertial-grid.js';
     reanalyse(false);
   });
   ctl.streamArea.addEventListener('input', syncOutputs);
+  const bwEl = $('backwater'); if (bwEl) bwEl.addEventListener('change', () => schedule());
 
   /* ------------------------------------------------------------- loading */
 
