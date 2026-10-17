@@ -39,4 +39,4 @@ Boundary conditions:
 - Parity Rust/JS.
 
 ## Status
-Not started. Design pending review.
+Not started. A one-boundary (bay->gauge) standard-step attempt was made and reverted because it did not honour the gauge-level boundary condition; needs a proper two-boundary solver.
