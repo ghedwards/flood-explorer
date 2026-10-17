@@ -119,6 +119,14 @@ and when roads close and how long places stay cut off (flood over time).
 
 ## Data coverage
 
+### Additional open data sources to consider
+- **Council stormwater pipe networks** (Brisbane, Melbourne, SA, Victoria publish pipe data under the open council data standard): could replace the single typical pipe rate in storm mode, per-council like flood maps.
+- **Geoscience Australia Geofabric** (national surface hydrology / stream network): could improve routing beyond D8 derived from the DEM.
+- **Australian Flood Studies Database (AFRIP)**: catalogue of flood studies; could link recorded-flood outlines and help calibrate more models.
+- **ELVIS LiDAR**: already a user-supplied option; a build step could fetch LiDAR DEMs for target areas.
+- **NSW floor-level surveys**: patchy, council-specific, no bulk download; data-blocked for a national tool.
+- **Bureau IFD design rainfall**: blocked by automated access (needs a permitted route).
+
 - **More council flood maps.** Now Brisbane, Gold Coast, Moreton Bay,
   Sunshine Coast, Logan, Rockhampton and Livingstone. Redland's city plan
   service needs a login; Ipswich, Townsville and Cairns publish maps only
