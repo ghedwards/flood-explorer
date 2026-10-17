@@ -536,6 +536,30 @@
     ctrl.forEach((c) => ctrlLevel.set(c.cell, Math.max(ctrlLevel.get(c.cell) ?? -Infinity, c.level)));
     const onPath = new Uint8Array(N);
     const pathWse = new Float64Array(N).fill(-Infinity);
+    // Backwater pre-pass (two-boundary standard step)
+    const bwStage = new Map();
+    if (s.backwater && s.gauge >= 0) {
+      const path = [];
+      let c = s.gauge;
+      while (c >= 0) { path.push(c); c = rec[c]; }
+      if (path.length >= 2) {
+        const stages = new Array(path.length).fill(NaN);
+        stages[path.length-1] = s.bayLevel;
+        for (let i = path.length-2; i >= 0; i--) {
+          const c0 = path[i], c1 = path[i+1];
+          const dx = Math.max(a.cell, Math.abs(chain[c0]-chain[c1]));
+          const h0 = stages[i+1];
+          const depth0 = Math.max(0.1, h0 - a.dem[c1]);
+          const sf = (0.035*0.035) / Math.pow(depth0, 4/3);
+          stages[i] = h0 + sf * dx;
+        }
+        const err = s.gaugeLevel - stages[0];
+        for (let i = 0; i < path.length; i++) {
+          if (Number.isFinite(stages[i])) stages[i] += err * (1 - i/(path.length-1));
+        }
+        for (let i = 0; i < path.length; i++) if (Number.isFinite(stages[i])) bwStage.set(path[i], stages[i]);
+      }
+    }
     for (const { cell: p0 } of ctrl) {
       const L0 = ctrlLevel.get(p0);
       // find the next control downstream (or the outlet)
@@ -546,7 +570,10 @@
       while (c >= 0 && c !== end) {
         const tRaw = cU > cD ? (chain[c] - cD) / (cU - cD) : 1;
         const t = Math.max(0, Math.min(1, tRaw));
-        const v = s.backwater ? LD + (L0 - LD) * Math.pow(t, 1.3) : LD + (L0 - LD) * t;
+        let v;
+        if (s.backwater && bwStage.has(c)) v = bwStage.get(c);
+        else if (s.backwater) v = LD + (L0 - LD) * Math.pow(t, 1.3);
+        else v = LD + (L0 - LD) * t;
         if (v > pathWse[c]) pathWse[c] = v;
         onPath[c] = 1;
         c = rec[c];

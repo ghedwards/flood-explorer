@@ -55,6 +55,36 @@ pub fn stream_surface(a: &Analysis, s: &Scenario) -> (Vec<f64>, Vec<u8>) {
         let cur = ctrl_level.get(&c).copied().unwrap_or(f64::NEG_INFINITY);
         ctrl_level.insert(c, jmax(cur, l));
     }
+    // Backwater pre-pass: standard-step profile from bay to gauge, anchored
+    // at both ends.
+    let mut bw_stage: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
+    if s.backwater && s.gauge >= 0 {
+        let g = s.gauge as usize;
+        let mut path = Vec::new();
+        let mut c = g as i64;
+        while c >= 0 { path.push(c as usize); c = a.rec[c as usize] as i64; }
+        if path.len() >= 2 {
+            let n_m = 0.035f64;
+            let mut stages = vec![f64::NAN; path.len()];
+            stages[path.len()-1] = s.bay_level;
+            for i in (0..path.len()-1).rev() {
+                let (c0, c1) = (path[i], path[i+1]);
+                let dx = (a.chain[c0] - a.chain[c1]).abs().max(a.cell);
+                let h0 = stages[i+1];
+                let depth0 = (h0 - a.dem[c1] as f64).max(0.1);
+                let sf = (n_m*n_m) / depth0.powf(4.0/3.0);
+                stages[i] = h0 + sf * dx;
+            }
+            // anchor: shift so upstream end = gauge level
+            let err = s.gauge_level - stages[0];
+            for i in 0..path.len() {
+                if stages[i].is_finite() { stages[i] += err * (1.0 - i as f64 / (path.len()-1) as f64); }
+            }
+            for (i, &cell) in path.iter().enumerate() {
+                if stages[i].is_finite() { bw_stage.insert(cell, stages[i]); }
+            }
+        }
+    }
     let mut on_path = vec![0u8; n];
     let mut path_wse = vec![f64::NEG_INFINITY; n];
     for &(p0, _) in &ctrl {
@@ -77,8 +107,7 @@ pub fn stream_surface(a: &Analysis, s: &Scenario) -> (Vec<f64>, Vec<u8>) {
             let t = if cu > cd { (a.chain[cc] - cd) / (cu - cd) } else { 1.0 };
             let t = t.clamp(0.0, 1.0);
             let v = if s.backwater {
-                // convex profile: more drop near the downstream end (friction)
-                ld + (l0 - ld) * t.powf(1.3)
+                if let Some(&bs) = bw_stage.get(&cc) { bs } else { ld + (l0 - ld) * t.powf(1.3) }
             } else {
                 ld + (l0 - ld) * t
             };
