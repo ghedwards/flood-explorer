@@ -2134,7 +2134,7 @@ import './inertial-grid.js';
     const rows = propertyChecks.map((c) => `<li class="place">
       <button type="button" class="place-main" data-chk="open" data-id="${escapeHtml(String(c.id))}" title="Re-open the check for ${escapeHtml(c.name)}">
         <span class="pin-num" style="background:${PIN_COLOR}">&#8242;</span>
-        <span class="place-text"><span class="place-name">${escapeHtml(c.name)}</span><span class="place-tags">checked ${escapeHtml(c.when)} · ${escapeHtml(c.headline)}</span></span>
+        <span class="place-text"><span class="place-name">${escapeHtml(c.name)}</span><span class="place-tags">checked ${escapeHtml(c.when)} · ${escapeHtml(c.headline)}${c.snapshot && c.snapshot.arrival && !c.headline.includes(c.snapshot.arrival) ? ` · ${escapeHtml(c.snapshot.arrival)}` : ''}</span></span>
       </button>
       <button type="button" class="icon-btn" data-chk="place" data-id="${escapeHtml(String(c.id))}" aria-label="Add ${escapeHtml(c.name)} as a numbered place" title="Add as a place">${ICON_REPORT}</button>
       <button type="button" class="icon-btn" data-chk="rename" data-id="${escapeHtml(String(c.id))}" aria-label="Rename ${escapeHtml(c.name)}" title="Rename">${ICON_RENAME}</button>
@@ -3149,14 +3149,15 @@ import './inertial-grid.js';
       : [depth > 0 ? `${depth} m under water` : (s.inModel ? 'dry this scenario' : null),
          s.floodsAt != null ? `floods at gauge ${s.floodsAt} m` : null,
          s.recorded ? `${s.recorded} recorded flood outline${s.recorded === 1 ? '' : 's'}` : null,
-         s.council ? `${s.council} council map${s.council === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+         s.council ? `${s.council} council map${s.council === 1 ? '' : 's'}` : null,
+         s.arrival || null, s.offline || null].filter(Boolean).join(' · ');
     let rec = propertyChecks.find((c) => c.key === key);
     if (!rec) {
       rec = { key, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), created: new Date().toISOString(), when: new Date().toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) };
       propertyChecks.push(rec);
     }
     rec.lat = lat; rec.lon = lon; rec.name = name; rec.headline = headline;
-    rec.snapshot = { inModel: s.inModel === true, depth, hazard: s.hazard != null ? s.hazard : null, floodsAt: s.floodsAt != null ? s.floodsAt : null, route: s.route || null, recorded: s.recorded || 0, council: s.council || 0 };
+    rec.snapshot = { inModel: s.inModel === true, depth, hazard: s.hazard != null ? s.hazard : null, floodsAt: s.floodsAt != null ? s.floodsAt : null, route: s.route || null, arrival: s.arrival || null, offline: s.offline || null, recorded: s.recorded || 0, council: s.council || 0 };
     renderPlaces();
     saveSessionSoon();
     return rec;
@@ -6176,12 +6177,15 @@ import './inertial-grid.js';
     }
     // flood over time, if run: when it gets wet, and when it is cut off
     const tl = area.timeline;
+    let arrivalText = null, offlineText = null;
     if (tl && tl.wetBits) {
       let k0 = -1;
       for (let k = 0; k < tl.steps; k++) if (tl.wetBits[k * tl.wordsPerStep + (c >>> 5)] & (1 << (c & 31))) { k0 = k; break; }
       const toH = (k) => Math.round(tl.t0 + k * tl.step), when = (h) => (tl.event ? fmtWhen(tl.event, h) : hoursLabel(h));
       const iso = bi >= 0 && tl.access && tl.access.firstIso ? tl.access.firstIso[bi] : -1;
-      lines.push(`<strong>Over time:</strong> ${k0 >= 0 ? `water arrives ${when(toH(k0))}` : 'stays dry'}${iso >= 0 ? `; cut off from ${when(toH(iso))} for about ${Math.round(tl.access.isoSteps[bi] * tl.step)} h` : ''}.`);
+      arrivalText = k0 >= 0 ? `water arrives ${when(toH(k0))}` : 'stays dry';
+      offlineText = iso >= 0 ? `cut off from ${when(toH(iso))} for about ${Math.round(tl.access.isoSteps[bi] * tl.step)} h` : null;
+      lines.push(`<strong>Over time:</strong> ${arrivalText}${offlineText ? `; ${offlineText}` : ''}.`);
     }
     // roads out
     const route = d ? routeOut(lat, lon) : null;
@@ -6196,7 +6200,8 @@ import './inertial-grid.js';
     }
     box.innerHTML = `<p><strong>${escapeHtml(name)}</strong> · in ${hit.n}. ${escapeHtml(hit.name)}</p>${lines.map((x) => `<p>${x}</p>`).join('')}<p class="hint" id="propSlow">Checking recorded floods and council maps…</p>`;
     status.property = { inModel: true, depth: +depth.toFixed(2), hazard: cls, floodsAt: lvl && lvl.level ? +lvl.level.toFixed(2) : null,
-      route: route && !route.none ? { exitKm: route.toExit ? +route.toExit.km.toFixed(2) : null, centre: route.toCentre ? route.toCentre.name : null, centres: route.centres } : null };
+      route: route && !route.none ? { exitKm: route.toExit ? +route.toExit.km.toFixed(2) : null, centre: route.toCentre ? route.toCentre.name : null, centres: route.centres } : null,
+      arrival: arrivalText, offline: offlineText };
     // slower: recorded flood outlines and council layers
     const extra = [];
     try {
