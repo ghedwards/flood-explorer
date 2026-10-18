@@ -89,7 +89,7 @@ valid cells on the Brisbane 891x805 grid):
 | Extract streams | 100% | Threshold 625 on accumulation matches cell-for-cell. |
 | HAND (flow-path) | 98.86% (709,082/717,255) | Rewrite: for each cell walk its D8 flow path to the first stream cell, HAND = z(cell) - z(stream cell). O(n) memoised path walk; replaced the O(n^2) Manhattan-nearest first cut. All non-NaN candidates are bit-exact; the residual 1.1% are cells our walk cannot resolve (drain off-grid/loop-guard) but the reference has values. |
 | Fill depressions | 100% (717,255/717,255, maxerr 0.0) | Faithful port of `fill_depressions_core` with Garbrecht–Martz flat resolution and `auto_small_increment_legacy` epsilon (no manifest defaults are applied by the registry, so the epsilon comes from cell size + max elevation, not the 0.0001 manifest default). |
-| Breach depressions | not yet validated | vs dem_breached.tif |
+| Breach depressions | 100% (717,255/717,255, maxerr 0.0) | Port of `breach_depressions_least_cost_core` (strict-pit raise, Dijkstra carve with backlinks, max_dist=60) followed by the ported Garbrecht–Martz fill because fill_deps=true. |
 
 Key lessons:
 - Whitebox pointer codes differ from the ESRI codes the viewer historically
