@@ -997,6 +997,7 @@ mod stream_hand_tests {
 /// `flood hydrology` (max_dist=60 cells, fill_deps=true). Breach carving is
 /// followed by the same Garbrecht-Martz fill (`fill_depressions_wbt`) when
 /// fill_deps=true. Operates in f64 like the reference.
+#[allow(clippy::too_many_arguments)] // mirrors whitebox breach_depressions_least_cost signature
 pub fn breach_depressions_wbt(
     dem: &[f64], w: usize, h: usize, nodata: f64, cell_m: f64,
     max_cost: f64, max_dist: usize, minimize_dist: bool, fill_deps: bool,
@@ -1063,6 +1064,7 @@ pub fn breach_depressions_wbt(
         }
     }
     impl Eq for CostNode {}
+    #[allow(clippy::non_canonical_partial_ord_impl)] // bit-exact heap ordering mirrored from whitebox
     impl PartialOrd for CostNode {
         fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(o.cost.total_cmp(&self.cost)) }
     }
