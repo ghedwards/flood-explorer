@@ -490,28 +490,37 @@ mod tests {
 pub fn d8_pointer_simple(dem: &[f32], w: usize, h: usize, nodata: f32) -> Vec<u8> {
     let n = w * h;
     let mut out = vec![255u8; n];
-    // neighbour offsets (E, SE, S, SW, W, NW, N, NE) -> codes 1,2,4,8,16,32,64,128
-    let nbrs: [(i64, i64, u8); 8] = [
-        (1, 0, 1), (1, 1, 2), (0, 1, 4), (-1, 1, 8),
-        (-1, 0, 16), (-1, -1, 32), (0, -1, 64), (1, -1, 128),
+    // Whitebox D8 codes: code -> (dx,dy): 1=(1,-1) NE, 2=(1,0) E, 4=(1,1) SE,
+    // 8=(0,1) S, 16=(-1,1) SW, 32=(-1,0) W, 64=(-1,-1) NW, 128=(0,-1) N.
+    // We'll compute best slope among 8 neighbours and map (dx,dy) to Whitebox code.
+    let nbrs: [(i64, i64); 8] = [
+        (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1),
     ];
+    let wbt_code = |dx: i64, dy: i64| -> u8 {
+        // map (dx,dy) to Whitebox code
+        match (dx, dy) {
+            (1, -1) => 1, (1, 0) => 2, (1, 1) => 4, (0, 1) => 8,
+            (-1, 1) => 16, (-1, 0) => 32, (-1, -1) => 64, (0, -1) => 128,
+            _ => 255,
+        }
+    };
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
             if !dem[i].is_finite() || dem[i] == nodata { continue; }
             let mut best_slope = 0.0f64;
             let mut best_code = 255u8;
-            for &(dx, dy, code) in &nbrs {
+            for &(dx, dy) in &nbrs {
                 let nx = x as i64 + dx;
                 let ny = y as i64 + dy;
                 if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
                 let j = ny as usize * w + nx as usize;
                 if !dem[j].is_finite() || dem[j] == nodata { continue; }
                 let dist = if dx.abs() == 1 && dy.abs() == 1 { 1.414 } else { 1.0 };
-                let slope = (dem[i] as f64 - dem[j] as f64) / (dist * 1.0); // cell size normalized
+                let slope = (dem[i] as f64 - dem[j] as f64) / (dist * 1.0);
                 if slope > best_slope {
                     best_slope = slope;
-                    best_code = code;
+                    best_code = wbt_code(dx, dy);
                 }
             }
             out[i] = best_code;
@@ -529,7 +538,7 @@ mod d8_simple_tests {
         let mut dem = vec![5.0f32; 9];
         dem[5] = 2.0;
         let d = d8_pointer_simple(&dem, 3, 3, -9999.0);
-        assert_eq!(d[4], 1); // east
+        assert_eq!(d[4], 2); // east (Whitebox code)
     }
 }
 
