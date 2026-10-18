@@ -1464,6 +1464,11 @@ import './inertial-grid.js';
       const alerting = fh && fh.configured && (((fh.flashFloodEvents || []).length > 0)
         || (fh.gauges || []).some((g) => g.status && sev(g.status.severity).rank >= 2));
       if (alerting) Object.values(fhLayers).forEach((l) => l.addTo(m));
+      // Road impact lines are a view toggle, not a scenario input: whatever
+      // scenario is active redraws them (renderImpact), and the layer stays
+      // on across scenario changes like any other overlay.
+      roadsLayer = L.layerGroup().addTo(m);
+      overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
       m.on('zoomend', syncLayerLists);
@@ -4385,13 +4390,14 @@ import './inertial-grid.js';
     return 1;
   }
   let impactLayer = null;
+  let roadsLayer = null; // persistent overlay: toggled from the layers panel, not per-scenario
   function renderImpact() {
-    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); return; }
+    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); return; }
     const box = $('impactBox');
     const area = state.areaKey && areaReg.get(state.areaKey);
     if (!box || !area) return;
     const d = area.impact;
-    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); return; }
+    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); return; }
     if (d.error) { box.innerHTML = `<p class="hint">Couldn't fetch what's here: ${escapeHtml(d.error)}.</p>`; return; }
     const r = computeImpact(d);
     if (!r) return;
@@ -4422,11 +4428,13 @@ import './inertial-grid.js';
     if (state.lmap) {
       if (!impactLayer) impactLayer = window.L.layerGroup().addTo(state.lmap);
       impactLayer.clearLayers();
+      if (!roadsLayer) roadsLayer = window.L.layerGroup(); // registered at map init
+      roadsLayer.clearLayers();
       const net = d.net, seg = (list, style) => {
         if (!net || !list.length) return;
-        window.L.polyline(list.map(([u, v]) => [[net.lat[u], net.lon[u]], [net.lat[v], net.lon[v]]]), Object.assign({ interactive: false }, style)).addTo(impactLayer);
+        window.L.polyline(list.map(([u, v]) => [[net.lat[u], net.lon[u]], [net.lat[v], net.lon[v]]]), Object.assign({ interactive: false }, style)).addTo(roadsLayer);
       };
-      if ($('showRoadImpact').checked) {
+      if (state.lmap.hasLayer(roadsLayer)) {
         seg(r.cutEdges, { color: '#c62828', weight: 4, opacity: 0.85 });
         seg(r.islandEdges, { color: '#ef6c00', weight: 4, opacity: 0.9, dashArray: '6 4' });
       }
@@ -4452,7 +4460,6 @@ import './inertial-grid.js';
   }
   $('impactBtn').addEventListener('click', () => countImpact());
   $('floorHeight').addEventListener('input', () => { $('floorHeightOut').textContent = `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
-  $('showRoadImpact').addEventListener('change', () => renderImpact());
   $('bldValue').addEventListener('change', () => renderImpact());
   window.__floodCountImpact = countImpact;
 
