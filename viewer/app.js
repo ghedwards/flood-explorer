@@ -649,7 +649,7 @@ import './inertial-grid.js';
         $('inertialStatus').textContent = `Local-inertial 2D: final depth at ${fmt(r.time / 60, 1)} min, ${Math.round(g.cell)} m cells. Stored ${fmt(r.volume, 1)} m³; added ${fmt(r.sourceVolume, 1)} m³; boundary exchange ${fmt(r.boundaryVolume, 1)} m³; balance error ${r.balanceError.toExponential(2)} m³. Partial edge blocks and blocks with missing terrain are excluded.`;
         state.edges = floodEdges(a, state.run);
         drawMap(); drawStats(scenario()); renderEdgeNote(); drawProfile(scenario());
-        renderImpact(); renderRecorded();
+        maybeRenderImpact(); renderRecorded();
         $('timeSet').hidden = true;
       };
       w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });
@@ -706,7 +706,7 @@ import './inertial-grid.js';
     renderNotice();
     saveSessionSoon();
     clearTimeout(impactT);
-    impactT = setTimeout(() => { renderImpact(); renderRecorded(); }, 250);
+    impactT = setTimeout(() => { maybeRenderImpact(); renderRecorded(); }, 250);
   }
 
   // Which sides of the model window the flood runs into (ignoring the sea
@@ -1471,6 +1471,7 @@ import './inertial-grid.js';
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
+      m.on('overlayadd', (e) => { if (e.layer === roadsLayer) renderImpact(); });
       m.on('zoomend', syncLayerLists);
       m.on('layeradd layerremove', syncLayerLists);
       window.__floodTestZoom = (lat, lng, z) => m.setView([lat, lng], z, { animate: false });
@@ -3537,7 +3538,7 @@ import './inertial-grid.js';
     if (!$('timeSet').hidden) { renderShapeChoices(); renderTideRow(); }
     $('recordedSet').hidden = !local || scenarioEmpty;
     clearTimeout(impactT);
-    impactT = setTimeout(() => { renderImpact(); renderRecorded(); renderDefences(); if (!state.timeView) renderTimeline(); }, 250);
+    impactT = setTimeout(() => { maybeRenderImpact(); renderRecorded(); renderDefences(); if (!state.timeView) renderTimeline(); }, 250);
     $('downloadSet').hidden = !local || scenarioEmpty;
     if (set.hidden) return;
     const sc = $('satCheck');
@@ -4290,28 +4291,50 @@ import './inertial-grid.js';
     const x = Math.floor(((lon - g.west) / (g.east - g.west)) * a.W), y = Math.floor(((g.north - lat) / (g.north - g.south)) * a.H);
     return x < 0 || y < 0 || x >= a.W || y >= a.H ? -1 : y * a.W + x;
   }
-  function computeImpact(d) {
+  function computeImpact(d, useCache) {
     const a = state.a, run = state.run;
     if (!a || !run || !d) return null;
+    // Everything but the floor-height numbers depends only on the impact
+    // data and the model run, so memoise the heavy sweep on d. Runs and
+    // area objects are replaced per scenario, invalidating naturally (like
+    // state.hazard); draw and per-call work beyond one floor loop goes away.
+    if (!useCache || !d.cache || d.cache.a !== a || d.cache.run !== run) {
+      d.cache = { a, run, base: computeScenarioImpact(d, a, run) };
+    }
+    const base = d.cache.base;
+    const noFloor = $('floorUnknown') && $('floorUnknown').checked;
+    const floorH = noFloor ? null : parseFloat($('floorHeight').value);
+    const nB = d.bx.length;
+    let overFloor = null, damage = null;
+    if (floorH != null) {
+      overFloor = 0; damage = 0;
+      for (let i = 0; i < nB; i++) {
+        const z = base.bDepth[i];
+        if (z > floorH && z > 0) { overFloor++; damage += damageShare(z - floorH); }
+      }
+      damage *= Math.max(0, parseFloat($('bldValue').value) || 0);
+    }
+    return Object.assign({}, base, { overFloor, floorH, damage });
+    // The heavy sweep: buildings, roads and isolation (BFS over dry roads),
+    // people (SA1), workers (SA2), road lengths and key sites. Rebuilt only
+    // when the impact data or the run changes.
+    function computeScenarioImpact(d, a, run) {
     const depthAt = (c) => (c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) ? run.depth[c] : 0);
     // buildings
     const nB = d.bx.length;
-    const floorH = parseFloat($('floorHeight').value);
-    let bWet = 0, bDeep = 0, hWet = 0, overFloor = 0, workWet = 0, damage = 0;
-    const bCell = new Int32Array(nB), bFlood = new Uint8Array(nB);
+    let bWet = 0, bDeep = 0, hWet = 0, workWet = 0;
+    const bCell = new Int32Array(nB), bFlood = new Uint8Array(nB), bDepth = new Float32Array(nB);
     for (let i = 0; i < nB; i++) {
       const c = cellOf(d.by[i], d.bx[i]);
       bCell[i] = c;
-      const z = depthAt(c);
+      const z = bDepth[i] = depthAt(c);
       if (z >= 0.15) {
         bWet++; bFlood[i] = 1;
         if (d.isHome[i]) hWet++;
         if (d.isWork[i]) workWet++;
         if (z >= 0.5) bDeep++;
       }
-      if (z > floorH && z > 0) { overFloor++; damage += damageShare(z - floorH); }
     }
-    damage *= Math.max(0, parseFloat($('bldValue').value) || 0);
     // evacuation: dry roads still joined to the edge of the model area by
     // dry roads; dry buildings whose nearest road is cut off are isolated
     const net = d.net;
@@ -4443,8 +4466,9 @@ import './inertial-grid.js';
     const sitesHit = d.sites.map((s) => ({ ...s, depth: depthAt(cellOf(s.lat, s.lon)) })).filter((s) => s.depth >= 0.15).sort((x, y) => y.depth - x.depth);
     return {
       buildings: nB, bWet, bDeep, hWet, workers, workersAll, homesTagged: d.isHome.reduce((x, y) => x + y, 0), workWet, workTagged: d.isWork.reduce((x, y) => x + y, 0),
-      overFloor, floorH, damage, isolatedB, peopleIsolated, cutEdges, islandEdges, people, cutKm, roadKm, worstRoads, sites: d.sites.length, sitesHit,
+      bDepth, isolatedB, peopleIsolated, cutEdges, islandEdges, people, cutKm, roadKm, worstRoads, sites: d.sites.length, sitesHit,
     };
+    }
   }
   // Indicative damage: the EU Joint Research Centre's global depth–damage
   // function for residential buildings in Oceania (Huizinga et al. 2017),
@@ -4460,19 +4484,40 @@ import './inertial-grid.js';
     return 1;
   }
   let impactLayer = null;
+  // What the map marks were last built from, and which run the shown counts
+  // describe — used to skip rebuilds and to flag stale counts when the
+  // automatic updates are switched off.
+  let impactDrawn = null;
+  let impactShown = { areaKey: null, run: null };
+  function maybeRenderImpact() {
+    const auto = $('impactAuto');
+    if (!(auto && auto.checked)) {
+      // Automatic updates off: keep the last counts, flag them stale when
+      // the scenario changed, and drop map marks that belong to the old run.
+      if (impactShown.areaKey === state.areaKey && impactShown.run !== state.run) {
+        if (impactLayer) impactLayer.clearLayers();
+        if (roadsLayer) roadsLayer.clearLayers();
+        impactDrawn = null;
+        $('impactStale').hidden = false;
+      }
+      return;
+    }
+    if ($('impactStale')) $('impactStale').hidden = true;
+    renderImpact();
+  }
   let roadsLayer = null; // persistent overlay: toggled from the layers panel, not per-scenario
   function renderImpact() {
-    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); return; }
+    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); impactDrawn = null; return; }
     const box = $('impactBox');
     const area = state.areaKey && areaReg.get(state.areaKey);
     if (!box || !area) return;
     const d = area.impact;
-    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); return; }
+    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); impactDrawn = null; return; }
     if (d.error) { box.innerHTML = `<p class="hint">Couldn't fetch what's here: ${escapeHtml(d.error)}.</p>`; return; }
-    const r = computeImpact(d);
+    const r = computeImpact(d, true);
     if (!r) return;
     status.impact = {
-      buildings: r.buildings, bWet: r.bWet, overFloor: r.overFloor, workWet: r.workWet, workers: r.workers == null ? null : Math.round(r.workers), isolated: r.isolatedB, damage: Math.round(r.damage),
+      buildings: r.buildings, bWet: r.bWet, overFloor: r.overFloor, workWet: r.workWet, workers: r.workers == null ? null : Math.round(r.workers), isolated: r.isolatedB, damage: r.damage == null ? null : Math.round(r.damage),
       people: r.people == null ? null : Math.round(r.people), peopleIsolated: r.peopleIsolated == null ? null : Math.round(r.peopleIsolated),
       cutKm: Math.round(r.cutKm * 10) / 10, sites: r.sites, sitesHit: r.sitesHit.length,
       source: d.copy ? `copy:${d.copy.id}` : 'live',
@@ -4484,10 +4529,10 @@ import './inertial-grid.js';
         <div class="stat"><div class="label">People affected</div><div class="v">${r.people == null ? '–' : `≈${n(r.people)}`}</div></div>
         <div class="stat"><div class="label">Roads cut</div><div class="v">${r.cutKm.toFixed(1)}<small>km</small></div></div>
         <div class="stat"><div class="label">Key sites flooded</div><div class="v">${r.sitesHit.length}<small> of ${r.sites}</small></div></div>
-        <div class="stat"><div class="label">Water above floor</div><div class="v">${n(r.overFloor)}<small> buildings</small></div></div>
-        <div class="stat"><div class="label">Indicative damage</div><div class="v">${r.damage >= 1e6 ? `$${(r.damage / 1e6).toFixed(1)}<small>m</small>` : `$${n(r.damage / 1000)}<small>k</small>`}</div></div>
+        <div class="stat"><div class="label">Water above floor</div><div class="v">${r.overFloor == null ? '–' : `${n(r.overFloor)}<small> buildings</small>`}</div></div>
+        <div class="stat"><div class="label">Indicative damage</div><div class="v">${r.damage == null ? '–' : r.damage >= 1e6 ? `$${(r.damage / 1e6).toFixed(1)}<small>m</small>` : `$${n(r.damage / 1000)}<small>k</small>`}</div></div>
         <div class="stat"><div class="label">Cut off, still dry</div><div class="v">${n(r.isolatedB)}<small> buildings${r.peopleIsolated != null ? ` · ≈${n(r.peopleIsolated)} people` : ''}</small></div></div></div>
-      <p class="hint"><strong>Damage</strong> applies the EU Joint Research Centre's global depth–damage curve for homes in Oceania to the water above each building's floor, times the value per building you set: an order-of-magnitude guide, not an insurance or recovery estimate.</p>
+      ${r.damage == null ? '<p class="hint"><strong>Floor height not known</strong>, so water-above-floor and damage are skipped. Find or survey floor levels, or untick &ldquo;no floor height known&rdquo; to estimate them.</p>' : '<p class="hint"><strong>Damage</strong> applies the EU Joint Research Centre\'s global depth–damage curve for homes in Oceania to the water above each building\'s floor, times the value per building you set: an order-of-magnitude guide, not an insurance or recovery estimate.</p>'}
       <p class="hint"><strong>Daytime:</strong> ${n(r.workWet)} flooded buildings are mapped as workplaces, shops, schools or public buildings${r.workTagged ? '' : ' (few buildings here are mapped by type)'}${r.workers != null ? `; about <strong>${n(r.workers)}</strong> of the ${n(r.workersAll)} people who work in the model area work in flooded buildings (ABS 2021 Census place of work by SA2, spread over each area's mapped workplaces)` : ''}. The people figure above counts residents. <strong>Cut off</strong> means the building's nearest road is dry but no dry road leads out of the model area (orange on the map); flooded roads are red.</p>
       <p class="hint">Flooded means at least 15 cm of water at the building or site; ${n(r.bDeep)} buildings have more than 50 cm${r.homesTagged ? `; ${n(r.hWet)} of the flooded buildings are mapped as homes` : ''}. Roads are cut where water is over 30 cm deep.</p>
       ${r.worstRoads.length ? `<p><strong>Roads cut:</strong> ${r.worstRoads.map(([nm, km]) => `${escapeHtml(nm)} (${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`})`).join(', ')}</p>` : ''}
@@ -4497,25 +4542,33 @@ import './inertial-grid.js';
     // mark flooded key sites, cut roads and cut-off roads on the map
     if (state.lmap) {
       if (!impactLayer) impactLayer = window.L.layerGroup().addTo(state.lmap);
-      impactLayer.clearLayers();
       if (!roadsLayer) roadsLayer = window.L.layerGroup(); // registered at map init
-      roadsLayer.clearLayers();
       const net = d.net, seg = (list, style) => {
         if (!net || !list.length) return;
         window.L.polyline(list.map(([u, v]) => [[net.lat[u], net.lon[u]], [net.lat[v], net.lon[v]]]), Object.assign({ interactive: false }, style)).addTo(roadsLayer);
       };
-      if (state.lmap.hasLayer(roadsLayer)) {
-        seg(r.cutEdges, { color: '#c62828', weight: 4, opacity: 0.85 });
-        seg(r.islandEdges, { color: '#ef6c00', weight: 4, opacity: 0.9, dashArray: '6 4' });
+      // rebuild the map marks only when the data, run or road toggle changed
+      const roadOn = state.lmap.hasLayer(roadsLayer);
+      const changed = !impactDrawn || impactDrawn.d !== d || impactDrawn.run !== state.run || impactDrawn.a !== state.a || impactDrawn.roadOn !== roadOn;
+      if (changed) {
+        impactLayer.clearLayers();
+        roadsLayer.clearLayers();
+        if (roadOn) {
+          seg(r.cutEdges, { color: '#c62828', weight: 4, opacity: 0.85 });
+          seg(r.islandEdges, { color: '#ef6c00', weight: 4, opacity: 0.9, dashArray: '6 4' });
+        }
+        // evacuation centres: green when dry, red ring when flooded
+        d.sites.filter((x) => x.kind === EVAC).forEach((x) => {
+          const hitE = r.sitesHit.some((h) => h.lat === x.lat && h.lon === x.lon);
+          window.L.circleMarker([x.lat, x.lon], { radius: 8, color: hitE ? '#c62828' : '#ffffff', weight: 2.5, fillColor: '#1b7837', fillOpacity: 0.95 })
+            .bindTooltip(`${escapeHtml(x.name)} (evacuation centre${hitE ? ', flooded' : ''})`).addTo(impactLayer);
+        });
+        r.sitesHit.forEach((s) => window.L.circleMarker([s.lat, s.lon], { radius: 7, color: '#c62828', weight: 2.5, fillColor: '#fff', fillOpacity: 0.9 })
+          .bindTooltip(`${s.name}: ${s.kind}, ${s.depth.toFixed(1)} m of water`).addTo(impactLayer));
+        impactDrawn = { d, run: state.run, a: state.a, roadOn };
       }
-      // evacuation centres: green when dry, red ring when flooded
-      d.sites.filter((x) => x.kind === EVAC).forEach((x) => {
-        const hitE = r.sitesHit.some((h) => h.lat === x.lat && h.lon === x.lon);
-        window.L.circleMarker([x.lat, x.lon], { radius: 8, color: hitE ? '#c62828' : '#ffffff', weight: 2.5, fillColor: '#1b7837', fillOpacity: 0.95 })
-          .bindTooltip(`${escapeHtml(x.name)} (evacuation centre${hitE ? ', flooded' : ''})`).addTo(impactLayer);
-      });
-      r.sitesHit.forEach((s) => window.L.circleMarker([s.lat, s.lon], { radius: 7, color: '#c62828', weight: 2.5, fillColor: '#fff', fillOpacity: 0.9 })
-        .bindTooltip(`${s.name}: ${s.kind}, ${s.depth.toFixed(1)} m of water`).addTo(impactLayer));
+      impactShown = { areaKey: state.areaKey, run: state.run };
+      if ($('impactStale')) $('impactStale').hidden = true;
     }
   }
   async function countImpact() {
@@ -4529,7 +4582,8 @@ import './inertial-grid.js';
     return status.impact;
   }
   $('impactBtn').addEventListener('click', () => countImpact());
-  $('floorHeight').addEventListener('input', () => { $('floorHeightOut').textContent = `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
+  $('floorHeight').addEventListener('input', () => { const c = $('floorUnknown'); if (c && c.checked) c.checked = false; $('floorHeight').disabled = false; $('floorHeightOut').textContent = `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
+  $('floorUnknown').addEventListener('change', () => { const c = $('floorUnknown'); $('floorHeight').disabled = !!c.checked; $('floorHeightOut').textContent = c.checked ? 'not known' : `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
   $('bldValue').addEventListener('change', () => renderImpact());
   window.__floodCountImpact = countImpact;
 
@@ -5270,7 +5324,7 @@ import './inertial-grid.js';
     drawStats(tl.s);
     updateTimeLabel(k);
     clearTimeout(impactT);
-    impactT = setTimeout(() => renderImpact(), 150);
+    impactT = setTimeout(() => maybeRenderImpact(), 150);
   }
   $('runTimeline').addEventListener('click', () => runTimeline());
   window.__floodRunTimeline = runTimeline;
@@ -5871,10 +5925,11 @@ import './inertial-grid.js';
     // the nearest mapped building, for water over the floor
     let bi = -1;
     if (d) { let bd = Infinity; for (let i = 0; i < d.bx.length; i++) { const dd = (d.by[i] - lat) ** 2 + ((d.bx[i] - lon) * Math.cos((lat * Math.PI) / 180)) ** 2; if (dd < bd) { bd = dd; bi = i; } } if (Math.sqrt(bd) * 111000 > 30) bi = -1; }
-    const floorH = parseFloat($('floorHeight').value);
+    const noFloorHere = $('floorUnknown') && $('floorUnknown').checked;
+    const floorH = noFloorHere ? null : parseFloat($('floorHeight').value);
     const lines = [];
     lines.push(wet
-      ? `<strong>In this scenario:</strong> ${fmt(depth, 2)} m of water${bi >= 0 ? (depth > floorH ? `, about <strong>${fmt(depth - floorH, 2)} m over the floor</strong> of the building here (floor ${fmt(floorH, 1)} m up)` : ', below the floor of the building here') : ''}; hazard <strong>H${cls}</strong> (${HAZARD_TEXT[cls - 1]}).`
+      ? `<strong>In this scenario:</strong> ${fmt(depth, 2)} m of water${bi >= 0 && floorH != null ? (depth > floorH ? `, about <strong>${fmt(depth - floorH, 2)} m over the floor</strong> of the building here (floor ${fmt(floorH, 1)} m up)` : ', below the floor of the building here') : (bi >= 0 ? ', floor height not surveyed (set it under What\u2019s affected to see water over the floor)' : '')}; hazard <strong>H${cls}</strong> (${HAZARD_TEXT[cls - 1]}).`
       : `<strong>In this scenario:</strong> dry${bi >= 0 ? ' (a mapped building is here)' : ''}.`);
     const lvl = floodsAtLevel(c);
     if (lvl) {

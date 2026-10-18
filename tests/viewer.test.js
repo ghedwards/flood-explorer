@@ -245,3 +245,30 @@ test('population estimates use only the covered share of a census area', () => {
   data.bx = []; data.by = []; data.isHome = []; data.isWork = []; data.sa1.km2[0] = 40;
   assert.equal(ctx.computeImpact(data).people, 100, 'the land-area fallback is also coverage adjusted');
 });
+
+test('impact counts: floor height optional and heavy sweep cached per run', () => {
+  const ctx = viewer(['cellOf', 'ringsKm2', 'computeImpact'], {
+    state: { areaKey: 'a', a: { W: 2, H: 2, N: 4, cell: 1000, ocean: new Uint8Array(4) }, geo,
+      run: { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) } },
+    $: (id) => (id === 'floorUnknown' ? { checked: true } : { value: id === 'floorHeight' ? '.3' : '0' }),
+    damageShare: () => 0.4,
+  });
+  const data = { bx: [.25], by: [.75], isHome: [1], isWork: [0], roads: [], sites: [], net: { lat: [] },
+    sa1: { pop: [1000], km2: [4], feats: [{}] }, sa1Grid: new Int32Array(4).fill(0), sa1Key: 'a2' };
+  // no floor height known: water-above-floor and damage are skipped
+  const unk = ctx.computeImpact(data, true);
+  assert.equal(unk.overFloor, null, 'no floor height means no over-floor number');
+  assert.equal(unk.damage, null);
+  assert.equal(unk.floorH, null);
+  assert.equal(unk.people, 1000);
+  // a known floor re-enables them, reading the cached building depths
+  ctx.$ = (id) => (id === 'floorUnknown' ? { checked: false } : { value: id === 'floorHeight' ? '.3' : '0' });
+  const known = ctx.computeImpact(data, true);
+  assert.equal(known.overFloor, 1, '1 m of water clears the 0.3 m floor');
+  assert.equal(known.damage, 0, 'damageShare runs but the 0 value per building zeroes it');
+  assert.equal(ctx.computeImpact(data, true).people, 1000, 'cache hit retains the sweep result');
+  data.sa1.km2 = [40]; // at 4 of 40 km² coverage the fresh count would be 100
+  assert.equal(ctx.computeImpact(data, true).people, 1000, 'the heavy sweep is reused until the run changes');
+  ctx.state.run = { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) };
+  assert.equal(ctx.computeImpact(data, true).people, 100, 'a new run invalidates the cache');
+});
