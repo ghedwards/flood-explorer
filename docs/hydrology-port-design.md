@@ -43,6 +43,7 @@ needs:
    dimensions, geospatial metadata).
 3. Add regression tests using the pipeline's reference rasters as fixtures.
 
-This requires the pipeline's reference rasters (dem.tif, d8.tif, etc.) which
-are not available in this environment. The algorithms are ready for refinement
+Reference rasters are now available in work/brisbane/ (dem.tif, d8.tif, acc.tif,
+streams.tif, hand.tif, dem_breached.tif, dem_cond.tif). Validation can use
+`flood compare-hydrology <reference-dir> <candidate-dir>`. The algorithms are ready for refinement
 once reference data is available.
