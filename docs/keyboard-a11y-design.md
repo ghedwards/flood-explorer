@@ -8,9 +8,11 @@ inconsistent.
 
 ## Research (current state)
 
-- Timeline: a range input (`timeSet`) — range inputs have baseline
-  keyboard support (arrows, home/end), but it's hidden during 2D and
-  most users never find it; no space-to-play.
+- Timeline: the scrubber is a real range input, `#tlSlider`
+  (aria-label="Time", `viewer/app.js` ~5469) inside the `#timeSet`
+  fieldset — range inputs have baseline keyboard support (arrows,
+  home/end), but it's hidden during 2D, drags re-inundate per step
+  (rAF-coalesced), and there's no space-to-play.
 - `say()` writes a transient message div without `aria-live`, so screen
   readers miss the app's main feedback channel.
 - Panels are collapsible sections toggled by clicks (chevrons); no

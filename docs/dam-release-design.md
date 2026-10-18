@@ -12,10 +12,11 @@ when the dam lets go of X?".
 - Dam **locations** ship with the app (`data/national/storages.geojson`
   in the SW shell); the water-history annotation shows the build tracks
   263/303 dam storage records.
-- WDO storage sensors give **storage volume time series**; the release
-  rate isn't published directly there, but a sudden storage drop gives
-  a net release estimate (dV/dt), good enough for scenario starting
-  points.
+- All BoM data reaches the page as **build-time snapshots** from the
+  pipeline binary (`flood national` → `readings.json`, storages; see
+  `.github/workflows/build.yml` ~115) — there is no live WDO client.
+  Storage-volume time series should extend that same snapshot so the
+  release estimate works offline too.
 - Solver input today: `inflow_cell: Option<usize>` + scalar
   `inflow_m3_s` (`rust/flood-core/src/inertial.rs` ~16), validated
   against the terrain's active non-boundary cells. One inflow per run.
@@ -32,10 +33,11 @@ when the dam lets go of X?".
    target) gains "Add release inflow" for the 2D controls: stores
    {name, cell, m³/s} in an inflow list rendered as editable rows
    (0–100 000 m³/s). Multiple dams accumulate.
-3. **Starting-point estimate.** When the dam's storage history shows a
-   steep volume drop in a past window, pre-fill the field with the
-   equivalent dV/dt and label it "≈ net release from the storage
-   record (date range)". Manual edit always wins.
+3. **Starting-point estimate.** From the storage-volume history in the
+   build snapshot: where a steep volume drop appears in a past window,
+   pre-fill the field with the equivalent dV/dt and label it "≈ net
+   release from the storage record (date range)". Manual edit always
+   wins.
 4. **Volume audit.** The status line's stored/added/balance reporting
    gains a per-inflow breakdown so a multi-inflow run is still
    auditable.

@@ -10,13 +10,18 @@ service the app already uses for river and tide readings.
 
 ## Research
 
+- The page has **no live WDO client**: all BoM data is fetched at build
+  time by the pipeline binary and shipped as static JSON —
+  `flood national` writes `site/data/national/{gauges-*, storages.geojson,
+  readings.json}` and `flood events` writes hour-by-hour recorded
+  flood/sea readings (`.github/workflows/build.yml` ~115–150). Rainfall
+  should ride the same path.
 - WDO publishes **pluviograph (recording rain gauge) data**: the
   "Rainfall" sensor as hourly period sums for thousands of stations,
-  via the same JSON station/telemetry endpoints the app's reading
-  fetcher uses (same organisation/DSN structure as river levels).
-- The app's gauge client (`viewer/app.js` ~3236 area, plus the build's
-  `gaugeFile`/`readings.json` snapshot) already speaks that API for
-  levels; adding a sensor type is a query change, not a new client.
+  via the same station/telemetry JSON endpoints the pipeline already
+  uses for levels (same organisation/datasource structure). *Verify the
+  exact sensor/duration codes against a live WDO query as the first
+  implementation step.*
 - Consumers of rain today:
   - the **2D solver** takes scalar `rain_mm_h` for the whole run
     (`rust/flood-core/src/inertial.rs` `opts.rain_mm_h`, validated
@@ -32,22 +37,30 @@ service the app already uses for river and tide readings.
    `rain_series: Option<Vec<f64>>`); the loop indexes
    `series[elapsed_hours.min(len-1)]`. Validation: each entry 0..=1000,
    length ≥ 1. Rust reference + wasm bridge + parity battery updated.
-2. **Storm picker.** In the 2D controls: "Use a recorded storm" — list
-   pluviograph stations within the model area's bounding box (from the
-   same national gauge index the app already loads), fetch the event
-   window's hourly series, preview the hyetograph (tiny inline bar
-   chart), then run.
-3. **Event alignment.** The timeline's `t0/step` convention already
+2. **Build-time storm snapshot.** Extend the pipeline (`flood storms`,
+   sibling of `flood events`): for each configured storm event, download
+   the hourly series of the pluviographs inside/near the catchment and
+   ship `site/data/national/rain-storms.json` (event → station →
+   mm/h). Static, cacheable, offline-friendly — consistent with how
+   every other BoM input reaches the page. Storms to configure: the
+   events already listed in `config/events.json` (2022 Feb, 2011 Jan…).
+3. **Storm picker.** In the 2D controls: "Use a recorded storm" — list
+   the snapshot's storms and their stations near the model area,
+   preview the hyetograph (tiny inline bar chart), then run.
+4. **Event alignment.** The timeline's `t0/step` convention already
    anchors hours to a recorded gauge peak; rain-driven runs anchor
    hours to the storm window start so timeline labels read naturally.
-4. **Fast model** stays gauge-driven (it has no rain hydrology); the
+5. **Fast model** stays gauge-driven (it has no rain hydrology); the
    recorded-storm path is 2D-only. Flash scenarios keep their existing
    constant-rain entry point.
 
 ## Failure behaviour
 
-- Station without rainfall data: filtered out of the picker with the
-  reason; fetch errors surface in the picker, not as a map error.
+- Station without rainfall data: filtered out at pipeline fetch time
+  (logged in the build step like `flood national`'s warnings); the page
+  only ever sees a clean snapshot.
+- Snapshot missing/stale: the picker hides and the controls keep the
+  constant-rain path — a data outage never blocks manual use.
 
 ## Test plan
 

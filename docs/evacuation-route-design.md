@@ -10,9 +10,13 @@ answer the actual question: *how do I get there from here, staying dry?*
 
 - Impact data (`computeScenarioImpact`) already builds a road graph
   `net.edges` with nodes keyed by lat/lon, computes per-scenario
-  `dryNode[]` (nodes whose road segment is under < 0.3 m… depth check)
+  `dryNode[]` (nodes whose road segment is under the depth threshold)
   and `net.dryReach` (nodes that reach the model-area edge over dry
   roads) — `viewer/app.js` ~4690–4720.
+- **A second, per-step graph exists** in `timelineAccess` (~5334):
+  `exit[]`/`adj`/`edgeClosed` with `isoSteps` per building. The route
+  in this note uses the final-scenario graph; a "route at the peak"
+  variant is a natural follow-on reusing that machinery.
 - Evacuation centres are OSM sites with `kind === EVAC` ('Evacuation
   centre', ~6009), each with lat/lon and a flooded flag in
   `r.sitesHit`.

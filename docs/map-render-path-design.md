@@ -8,29 +8,30 @@ actually redraws when the scenario or step changes.
 
 ## Research (what redraws today)
 
-- `drawMap()` (~1036) — the flood layer: the water overlay ImageData is
-  rebuilt per step (fast by design after the playback split); the relief
-  base is encoded once per analysis (`area.relief`). Remaining per-draw
-  costs: `floodEdges(a, run)` — the outline tracing for the crisp flood
-  edge — runs on run change (every step during playback, since
-  `state.run` is replaced per step).
-- `drawStats(tl.s)` per step; legend re-render on overlay/zoom events;
-  `syncLayerLists` on zoom; SVG marks (gauges, impact marks, road
-  segments) rebuilt on the `impactDrawn`/draw-key change detection (already
-  keyed — good).
-- Council Esri feature polygons already render via canvas (quick-wins
-  commit).
+- `drawMap()` (~1036) is called per step during playback. The flood
+  layer itself is cheap by design after the playback split: the water
+  overlay ImageData is rebuilt per step, the relief base is encoded
+  once per analysis (`area.relief`).
+- Every `drawMap()` **unconditionally** calls `renderModeLegend()` and
+  `renderCompare()` — the latter rebuilds comparison HTML even when
+  compare mode is off ("the street map is still opening" comment).
+  That DOM work repeats ~every frame during playback for output nobody
+  is looking at.
+- `floodEdges` (~729) is not an outline tracer — it counts wet land
+  cells on the four grid borders to warn that the flood reaches the
+  model's edge. It runs only on scenario/area change, so it is *not* a
+  per-step cost (an earlier draft of this note misread it as one).
+- `drawStats(tl.s)` per step is real but small; SVG marks are keyed by
+  `impactDrawn`/draw-key change detection (already good).
 
 ## Design (in expected value order)
 
-1. **Flood edges per frame, not per step.** During timeline playback,
-   decouple the outline from the per-step run: compute edges on
-   `requestIdleCallback` (or every 3rd step) rather than synchronously
-   per step; the edge layer fades to the new outline when ready. The
-   edge is cosmetic; depth colouring is the signal.
-2. **Legend/sync throttle.** `syncLayerLists` and legend rebuilds on
-   `zoomend` are cheap once but add up during pinch sequences; coalesce
-   to one rAF (same treatment the hover text got).
+1. **Guard the per-frame extras in `drawMap`**: `renderCompare()` only
+   when compare mode is active (or its inputs changed);
+   `renderModeLegend()` only when the mode/overlays changed. Both are
+   pure DOM writes keyed on cheap state comparisons.
+2. **`syncLayerLists` throttle.** Layer-list rebuilds on `zoomend`
+   coalesce to one rAF (same treatment the hover text got).
 3. **SVG → canvas for repeated marks.** Impact marks and gauges are
    small counts (fine as SVG); road segments during playback are the
    one growing set — if road cut sets exceed a few hundred segments,
