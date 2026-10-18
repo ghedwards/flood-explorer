@@ -1517,6 +1517,7 @@ import './inertial-grid.js';
       // the wheel is handled by smoothWheelZoom below (continuous zoom)
       const m = L.map('lmap', { minZoom: 4, zoomSnap: 0, zoomDelta: 0.5, scrollWheelZoom: false, zoomControl: false, preferCanvas: false });
       enableSmoothWheelZoom(L, m);
+      window.__floodMap = m;   // test hook (same family as __floodRunTimeline)
       if (!finePointer()) { /* pinch to zoom on touch screens */ } else L.control.zoom({ position: 'bottomright' }).addTo(m);
       const layers = {};
       status.basemaps = {};
@@ -1525,8 +1526,14 @@ import './inertial-grid.js';
         // and scale them down to fit (minNativeZoom)
         const own = bm.wms ? deaWms(L, bm.wms, Object.assign({}, bm.opts, { minZoom: 5, minNativeZoom: 6 })) : L.tileLayer(bm.url(), bm.opts);
         const st = (status.basemaps[bm.name] = { loaded: 0, errors: 0 });
-        own.on('tileload', () => { st.loaded++; status.tilesLoaded++; });
-        own.on('tileerror', () => { st.errors++; status.tileErrors++; });
+        own.on('tileload', () => { st.loaded++; st.streak = 0; status.tilesLoaded++; });
+        own.on('tileerror', () => {
+          st.errors++; status.tileErrors++;
+          // imagery services throttle under load; say something instead of
+          // leaving a silently dark map ("satellite island")
+          st.streak = (st.streak || 0) + 1;
+          if (st.streak === 8 && status.basemap === bm.name) say('Basemap tiles are failing to load (the imagery service may be busy). Pan slightly, reload, or pick another basemap in Layers.');
+        });
         // below zoom 5 (whole-country view), Esri imagery underneath shows
         const layer = bm.wms
           ? L.featureGroup([L.tileLayer(BASEMAPS[0].url(), Object.assign({}, BASEMAPS[0].opts, { zIndex: 0 })), own])
@@ -1627,8 +1634,25 @@ import './inertial-grid.js';
   // point under the cursor still (the approach of Leaflet.SmoothWheelZoom).
   function enableSmoothWheelZoom(L, map) {
     const el = map.getContainer();
-    let goal = null, raf = 0, endT = 0, mouse = null, anchor = null, moved = false;
+    let goal = null, raf = 0, endT = 0, mouse = null, anchor = null, moved = false, subpixel = false;
     const PX_PER_LEVEL = 260;   // wheel pixels for one zoom level
+    // Leaflet rounds the pixel origin to whole pixels (_getNewPixelOrigin
+    // ends in _round), which quantises the camera while we drive _move every
+    // frame at fractional zooms — the whole map jitters by a pixel. Lift the
+    // rounding for the gesture (sub-pixel transforms render fine) and restore
+    // Leaflet's default when it ends so resting maps stay pixel-crisp.
+    function subpixelOrigin(on) {
+      if (on === subpixel) return;
+      subpixel = on;
+      if (on) {
+        map._getNewPixelOrigin = function (center, zoom) {
+          const viewHalf = this.getSize()._divideBy(2);
+          return this.project(center, zoom)._subtract(viewHalf)._add(this._getMapPanePos());
+        };
+      } else if (map._getNewPixelOrigin) {
+        delete map._getNewPixelOrigin;   // back to the prototype method
+      }
+    }
     function frame() {
       const z = map.getZoom();
       let next = z + (goal - z) * 0.28;
@@ -1644,6 +1668,7 @@ import './inertial-grid.js';
       if (raf) { endT = setTimeout(finish, 60); return; }
       goal = null;
       if (moved) map._moveEnd(true);
+      subpixelOrigin(false);
       moved = false;
     }
     L.DomEvent.on(el, 'wheel', (e) => {
@@ -1654,6 +1679,7 @@ import './inertial-grid.js';
       const pinch = e.ctrlKey;           // trackpad pinch arrives as ctrl+wheel
       if (goal == null) {
         map.stop();
+        subpixelOrigin(true);
         goal = map.getZoom();
       }
       mouse = map.mouseEventToContainerPoint(e);
