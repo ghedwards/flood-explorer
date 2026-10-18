@@ -38,9 +38,6 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci
 
-      - name: Test the flood model
-        run: node --test tests/*.test.js
-
       - name: Cache Rust builds
         uses: actions/cache@v6
         with:
@@ -70,7 +67,7 @@ jobs:
           FLOOD_IMPL: wasm
           FLOOD_WASM: work-flood.wasm
         run: |
-          node --test tests/core.test.js
+          node --test tests/*.test.js
           node tests/parity.js > work-parity-wasm.txt
           (cd rust && cargo run -q --release -p flood-core --example parity) > work-parity-rust.txt
           FLOOD_IMPL=wasm node tests/parity.js work-parity-rust.txt

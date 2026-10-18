@@ -20,13 +20,28 @@ jobs:
   javascript:
     name: JavaScript lint and tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
+      # the node tests run the wasm engine (there is no JavaScript model);
+      # the Rust references come from the parity leg of build.yml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: wasmquality-${{ hashFiles('rust-toolchain.toml', 'rust/**/*.rs', 'rust/**/Cargo.toml', 'rust/Cargo.lock') }}
+          restore-keys: wasmquality-
+      - run: cargo build --locked --release --manifest-path rust/Cargo.toml -p flood-wasm --target wasm32-unknown-unknown
+      - run: cp rust/target/wasm32-unknown-unknown/release/flood_wasm.wasm viewer/flood.wasm
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm test
