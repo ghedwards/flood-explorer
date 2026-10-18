@@ -48,6 +48,34 @@ streams.tif, hand.tif, dem_breached.tif, dem_cond.tif). Validation can use
 `flood compare-hydrology <reference-dir> <candidate-dir>`. The algorithms are ready for refinement
 once reference data is available.
 
+## Parity port: fill_depressions (2026-10-18)
+
+The pipeline's `fill_depressions` resolves to `fill_depressions_core` in
+wbtools_oss (pinned f0076c2), with `fix_flats=true`, Garbrecht–Martz flat
+resolution (the default), `max_depth=inf`, and NO manifest defaults merging —
+`ToolRegistry::run` calls `tool.run(args)` with exactly the args the pipeline
+passes, so `flat_increment` is unset and the epsilon is computed by
+`auto_small_increment_legacy`: diag=ceil(sqrt(2)·cell) (57 for 40 m cells),
+max-elevation digit count scaling (`small = diag·10^-(15-digits)` ≈ 5.7e-11 on
+Brisbane).
+
+The faithful port (`fill_depressions_wbt` in flood-core) therefore reproduces:
+1. interior-only pit detection (cells at image borders can never be pits,
+   nodata neighbours suppress pitness), pits processed highest-first;
+2. per-pit minimal heap expansion using std `BinaryHeap` with the same
+   comparator (`other.elev.total_cmp(self.elev)`) and push order, so pop order
+   is bit-identical to the reference implementation;
+3. outlet recognition strictly via a *lower unvisited neighbour* (the spill
+   plane is discovered by expansion, not from the border), then BFS raising
+   everything below the spill level and tagging flats;
+4. Garbrecht–Martz flat resolution: per flat component, BFS distances to lower
+   edges and higher edges, `rank = dist_low·(max_high+1) + (max_high−dist_high)`,
+   elevation = spill + small·rank.
+
+First-cut `fill_depressions_simple` (4-neighbour border-seeded priority-flood,
+no flats) measured 86.01% exact on dem_breached→dem_cond. The port should be
+judged by the same harness (`validate_fill`).
+
 ## Parity validation results (2026-10-18)
 
 Validated against the whitebox_next_gen reference rasters using the
@@ -60,7 +88,7 @@ valid cells on the Brisbane 891x805 grid):
 | Flow accumulation | 100% | Bit-exact (maxerr 0.00) given the reference D8 pointers. |
 | Extract streams | 100% | Threshold 625 on accumulation matches cell-for-cell. |
 | HAND (flow-path) | 98.86% (709,082/717,255) | Rewrite: for each cell walk its D8 flow path to the first stream cell, HAND = z(cell) - z(stream cell). O(n) memoised path walk; replaced the O(n^2) Manhattan-nearest first cut. All non-NaN candidates are bit-exact; the residual 1.1% are cells our walk cannot resolve (drain off-grid/loop-guard) but the reference has values. |
-| Fill depressions | not yet validated | vs dem_cond.tif |
+| Fill depressions | 100% (717,255/717,255, maxerr 0.0) | Faithful port of `fill_depressions_core` with Garbrecht–Martz flat resolution and `auto_small_increment_legacy` epsilon (no manifest defaults are applied by the registry, so the epsilon comes from cell size + max elevation, not the 0.0001 manifest default). |
 | Breach depressions | not yet validated | vs dem_breached.tif |
 
 Key lessons:

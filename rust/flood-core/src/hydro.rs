@@ -539,53 +539,262 @@ mod d8_simple_tests {
     }
 }
 
-/// Simple priority-flood fill: raise cells in depressions so water can drain.
-/// First-cut; does not handle flats or least-cost breach.
-pub fn fill_depressions_simple(dem: &[f32], w: usize, h: usize, nodata: f32) -> Vec<f32> {
-    // Priority flood: process cells from lowest to highest, filling depressions.
-    use std::collections::BinaryHeap;
-    use std::cmp::Reverse;
-    let n = w * h;
+/// Whitebox-parity fill depressions: a faithful port of wbtools_oss
+/// `fill_depressions_core` (pinned f0076c2) with Garbrecht-Martz flat
+/// resolution, as used by `flood hydrology`. Operates in f64 exactly like the
+/// reference (which reads rasters as f64); caller passes the nodata sentinel
+/// and a single cell size (reference uses diag of cell_x x cell_y = sqrt(2)
+/// x cell for square grids). With `fix_flats=false` the epsilon is 0.
+pub fn fill_depressions_wbt(dem: &[f64], w: usize, h: usize, nodata: f64, cell_m: f64, fix_flats: bool) -> Vec<f64> {
+    use std::cmp::Ordering;
+    use std::collections::{BinaryHeap, VecDeque};
+
+    // Reference uses 8 neighbours in this scan order (E, SE, S, SW, W, NW, N, NE).
+    const DX: [isize; 8] = [1, 1, 1, 0, -1, -1, -1, 0];
+    const DY: [isize; 8] = [-1, 0, 1, 1, 1, 0, -1, -1];
+
+    // -- epsilon (auto_small_increment_legacy with no flat_increment arg) --
+    let small = if !fix_flats {
+        0.0
+    } else {
+        let diag = (2.0f64 * cell_m * cell_m).sqrt().ceil().max(1.0);
+        let mut max_elev = f64::NEG_INFINITY;
+        for &z in dem {
+            if z != nodata && z.is_finite() && z > max_elev { max_elev = z; }
+        }
+        if max_elev.is_finite() {
+            let digits = max_elev.abs().floor() as i64;
+            let elev_digits = if digits <= 0 { 1 } else { digits.to_string().len() } as i32;
+            let exp = (15 - elev_digits).max(1);
+            let v = (1.0f64 / 10f64.powi(exp)) * diag;
+            if v.is_finite() && v > 0.0 { v } else { (2.0 * cell_m).max(1.0) * 1.0e-9 }
+        } else {
+            ((2.0 * cell_m).max(1.0) * 1.0e-9).max(1.0e-8)
+        }
+    };
+
+    // MinNode: min-heap ordered by elevation; equal elevations compare Equal,
+    // matching the reference so BinaryHeap pop order is bit-identical.
+    #[derive(Clone, Copy)]
+    struct MinNode { elev: f64, i: usize }
+    impl PartialEq for MinNode {
+        fn eq(&self, o: &Self) -> bool { self.i == o.i && self.elev.to_bits() == o.elev.to_bits() }
+    }
+    impl Eq for MinNode {}
+    impl PartialOrd for MinNode {
+        fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
+    }
+    impl Ord for MinNode {
+        fn cmp(&self, o: &Self) -> Ordering { o.elev.total_cmp(&self.elev) }
+    }
+
     let mut out = dem.to_vec();
-    let mut visited = vec![false; n];
-    let mut heap: BinaryHeap<Reverse<(i32, usize)>> = BinaryHeap::new();
-    // Seed border cells.
-    for x in 0..w {
-        for &y in &[0usize, h - 1] {
-            let i = y * w + x;
-            if out[i].is_finite() && out[i] != nodata {
-                heap.push(Reverse(((out[i] * 1000.0) as i32, i)));
-                visited[i] = true;
+    if w < 3 || h < 3 { return out; }
+    let cols = w;
+    let rows = h;
+    // All 8-neighbour iterations scan k in the reference order (E, SE, S, SW,
+    // W, NW, N, NE); the reference's interior fast path uses the same order.
+    let nbrs = |i: usize| -> Vec<usize> {
+        let (r, c) = (i / cols, i % cols);
+        (0..8).filter_map(|k| {
+            let nr = r as isize + DY[k];
+            let nc = c as isize + DX[k];
+            if nr < 0 || nc < 0 || nr >= rows as isize || nc >= cols as isize { None } else { Some(nr as usize * cols + nc as usize) }
+        }).collect()
+    };
+
+    // -- pit detection: interior cells, no nodata neighbour, no lower neighbour --
+    let mut pits: Vec<(usize, f64)> = Vec::new();
+    for r in 1..rows.saturating_sub(1) {
+        for c in 1..cols.saturating_sub(1) {
+            let i = r * cols + c;
+            let z = out[i];
+            if z == nodata { continue; }
+            let mut is_pit = true;
+            for k in 0..8 {
+                let rn = r as isize + DY[k];
+                let cn = c as isize + DX[k];
+                let zn = out[rn as usize * cols + cn as usize];
+                if zn == nodata || zn < z { is_pit = false; break; }
+            }
+            if is_pit { pits.push((i, z)); }
+        }
+    }
+    if pits.is_empty() { return out; }
+
+    // pits processed from highest elevation first (ascending sort, pop from back)
+    pits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+    let mut visit_tag = vec![0u32; rows * cols];
+    let mut cur_tag: u32 = 1;
+    let mut flats = vec![0u8; rows * cols];
+
+    while let Some((pit_i, _)) = pits.pop() {
+        if flats[pit_i] == 1 { continue; }
+        if cur_tag >= u32::MAX - 2 {
+            visit_tag.fill(0);
+            cur_tag = 1;
+        }
+        let active_tag = cur_tag;
+        let done_tag = cur_tag + 1;
+        cur_tag += 2;
+
+        let mut heap = BinaryHeap::<MinNode>::new();
+        heap.push(MinNode { elev: out[pit_i], i: pit_i });
+        visit_tag[pit_i] = active_tag;
+        let mut outlet_found = false;
+        let mut outlet_z = f64::INFINITY;
+        let mut queue = VecDeque::<usize>::new();
+
+        while let Some(cell) = heap.pop() {
+            let z = cell.elev;
+            if outlet_found && z > outlet_z { break; }
+            // (max_depth is infinity in the pipeline's call, so no depth break)
+            if !outlet_found {
+                for ni in nbrs(cell.i) {
+                    if visit_tag[ni] == active_tag || visit_tag[ni] == done_tag { continue; }
+                    let zn = out[ni];
+                    if zn >= z && zn != nodata {
+                        heap.push(MinNode { elev: zn, i: ni });
+                        visit_tag[ni] = active_tag;
+                    } else if zn != nodata {
+                        outlet_found = true;
+                        outlet_z = z;
+                        queue.push_back(cell.i);
+                    }
+                }
+            } else if z == outlet_z {
+                let mut is_outlet = false;
+                for ni in nbrs(cell.i) {
+                    if visit_tag[ni] == active_tag || visit_tag[ni] == done_tag { continue; }
+                    let zn = out[ni];
+                    if zn < z {
+                        is_outlet = true;
+                    } else if zn == outlet_z {
+                        heap.push(MinNode { elev: zn, i: ni });
+                        visit_tag[ni] = active_tag;
+                    }
+                }
+                if is_outlet { queue.push_back(cell.i); }
+            }
+        }
+
+        if outlet_found {
+            while let Some(ci) = queue.pop_front() {
+                for ni in nbrs(ci) {
+                    if visit_tag[ni] == active_tag {
+                        visit_tag[ni] = done_tag;
+                        queue.push_back(ni);
+                        if out[ni] < outlet_z {
+                            out[ni] = outlet_z;
+                            flats[ni] = 1;
+                        } else if out[ni] == outlet_z {
+                            flats[ni] = 1;
+                        }
+                    }
+                }
             }
         }
     }
-    for y in 1..h - 1 {
-        for &x in &[0usize, w - 1] {
-            let i = y * w + x;
-            if out[i].is_finite() && out[i] != nodata {
-                heap.push(Reverse(((out[i] * 1000.0) as i32, i)));
-                visited[i] = true;
+
+    // -- Garbrecht-Martz flat resolution --
+    if fix_flats && small > 0.0 {
+        let mut g_visit = vec![0u32; rows * cols];
+        let mut component: Vec<usize> = Vec::with_capacity(256);
+        let mut queue: VecDeque<usize> = VecDeque::with_capacity(256);
+        for start in 0..rows * cols {
+            if flats[start] != 1 { continue; }
+            let base_z = out[start];
+            component.clear();
+            queue.clear();
+            g_visit[start] = 1;
+            queue.push_back(start);
+            while let Some(ci) = queue.pop_front() {
+                component.push(ci);
+                for ni in nbrs(ci) {
+                    if flats[ni] == 1 && g_visit[ni] == 0 && out[ni] == base_z {
+                        g_visit[ni] = 1;
+                        queue.push_back(ni);
+                    }
+                }
+            }
+
+            let len = component.len();
+            let mut dist_low = vec![u32::MAX; len];
+            let mut dist_high = vec![u32::MAX; len];
+            for (local_idx, &ci) in component.iter().enumerate() {
+                g_visit[ci] = local_idx as u32 + 1;
+            }
+
+            queue.clear();
+            for &ci in &component {
+                let pos = (g_visit[ci] - 1) as usize;
+                let mut is_low_edge = false;
+                for ni in nbrs(ci) {
+                    if flats[ni] == 1 && g_visit[ni] != 0 && out[ni] == base_z { continue; }
+                    let zn = out[ni];
+                    if zn != nodata && zn < base_z { is_low_edge = true; break; }
+                }
+                if is_low_edge { dist_low[pos] = 0; queue.push_back(ci); }
+            }
+            while let Some(ci) = queue.pop_front() {
+                let cur_dist = dist_low[(g_visit[ci] - 1) as usize];
+                for ni in nbrs(ci) {
+                    if !(flats[ni] == 1 && g_visit[ni] != 0 && out[ni] == base_z) { continue; }
+                    let pos = (g_visit[ni] - 1) as usize;
+                    if dist_low[pos] == u32::MAX {
+                        dist_low[pos] = cur_dist + 1;
+                        queue.push_back(ni);
+                    }
+                }
+            }
+
+            queue.clear();
+            let mut max_high = 0u32;
+            let mut has_high_edge = false;
+            for &ci in &component {
+                let pos = (g_visit[ci] - 1) as usize;
+                let mut is_high_edge = false;
+                for ni in nbrs(ci) {
+                    if flats[ni] == 1 && g_visit[ni] != 0 && out[ni] == base_z { continue; }
+                    let zn = out[ni];
+                    if zn != nodata && zn > base_z { is_high_edge = true; break; }
+                }
+                if is_high_edge {
+                    has_high_edge = true;
+                    dist_high[pos] = 0;
+                    queue.push_back(ci);
+                }
+            }
+            while let Some(ci) = queue.pop_front() {
+                let cur_dist = dist_high[(g_visit[ci] - 1) as usize];
+                for ni in nbrs(ci) {
+                    if !(flats[ni] == 1 && g_visit[ni] != 0 && out[ni] == base_z) { continue; }
+                    let pos = (g_visit[ni] - 1) as usize;
+                    if dist_high[pos] == u32::MAX {
+                        let next_dist = cur_dist + 1;
+                        dist_high[pos] = next_dist;
+                        if next_dist > max_high { max_high = next_dist; }
+                        queue.push_back(ni);
+                    }
+                }
+            }
+
+            let shell_weight = max_high + 1;
+            for &ci in &component {
+                let pos = (g_visit[ci] - 1) as usize;
+                let low_dist = dist_low[pos];
+                if low_dist != u32::MAX && low_dist > 0 {
+                    let high_term = if has_high_edge { max_high.saturating_sub(dist_high[pos].min(max_high)) } else { 0 };
+                    let rank = low_dist.saturating_mul(shell_weight).saturating_add(high_term);
+                    out[ci] = base_z + small * rank as f64;
+                }
+                g_visit[ci] = 0;
+                flats[ci] = 3;
             }
         }
     }
-    let nbrs: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-    while let Some(Reverse((_, i))) = heap.pop() {
-        let x = i % w;
-        let y = i / w;
-        for &(dx, dy) in &nbrs {
-            let nx = x as i64 + dx;
-            let ny = y as i64 + dy;
-            if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
-            let j = ny as usize * w + nx as usize;
-            if visited[j] { continue; }
-            if !out[j].is_finite() || out[j] == nodata { visited[j] = true; continue; }
-            if out[j] < out[i] {
-                out[j] = out[i];
-            }
-            visited[j] = true;
-            heap.push(Reverse(((out[j] * 1000.0) as i32, j)));
-        }
-    }
+
     out
 }
 
@@ -593,12 +802,24 @@ pub fn fill_depressions_simple(dem: &[f32], w: usize, h: usize, nodata: f32) -> 
 mod fill_tests {
     use super::*;
     #[test]
-    fn fills_pit() {
-        // 3x3 with a pit in the centre
-        let mut dem = vec![5.0f32; 9];
-        dem[4] = 1.0;
-        let out = fill_depressions_simple(&dem, 3, 3, -9999.0);
-        assert!(out[4] >= 5.0 - 1e-3, "pit should be filled to spill level");
+    fn fills_basin_to_spill() {
+        // 4x4: pit at (1,1) with a spill channel over the east border at (2,3).
+        // The pit floods to the wall level (10) adjacent to the lower border.
+        let mut dem = vec![10.0f64; 16];
+        dem[5] = 8.0; // r=1,c=1 interior pit
+        dem[11] = 2.0; // r=2,c=3 border outlet cell
+        let out = fill_depressions_wbt(&dem, 4, 4, -9999.0, 40.0, false);
+        assert!(out[5] >= 9.99, "pit should flood to spill level 10, got {}", out[5]);
+        assert_eq!(out[11], 2.0, "outlet cell must be untouched");
+    }
+    #[test]
+    fn edge_cells_never_pits() {
+        // 5x5 flat with a dip on the border: a border cell is never a pit.
+        let mut dem = vec![5.0f64; 25];
+        for c in 0..5 { dem[4 * 5 + c] = 4.0; } // bottom row lower
+        let out = fill_depressions_wbt(&dem, 5, 5, -9999.0, 40.0, false);
+        assert!(out.iter().all(|&z| (z - 5.0).abs() < 1e-9 || z == 4.0),
+                "flat with border drainage stays unchanged, got {:?}", out);
     }
 }
 
