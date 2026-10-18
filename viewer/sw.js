@@ -78,23 +78,32 @@ async function cacheFirst(req, name) {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  const url = new URL(req.url);
+  let url;
+  try { url = new URL(req.url); } catch (err) { return; }
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
     e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));
     return;
   }
-  if (TILE_HOSTS.test(url.hostname) || /\/tile\/\d+\/\d+\/\d+/.test(url.pathname)) { e.respondWith(cacheFirst(req, TILES)); return; }
+  if (TILE_HOSTS.test(url.hostname) || /\/tile\/\d+\/\d+\/\d+/.test(url.pathname)) {
+    e.respondWith(cacheFirst(req, TILES));
+    return;
+  }
   // terrain for models: the same window always returns the same heights
-  if (url.hostname === 'services.ga.gov.au' && /GetCoverage/i.test(url.search)) { e.respondWith(cacheFirst(req, TERRAIN)); return; }
+  if (url.hostname === 'services.ga.gov.au' && /GetCoverage/i.test(url.search)) {
+    e.respondWith(cacheFirst(req, TERRAIN));
+    return;
+  }
   // map-service answers (feature queries, exported images, census areas)
   if (/\/(MapServer|FeatureServer|ImageServer|wms|wfs|ows|WCSServer)\b/i.test(url.pathname) || url.hostname === 'ows.dea.ga.gov.au') {
     e.respondWith(networkFirst(req, API, 8000));
+    return;
   }
   // impact data comes from Overpass (OpenStreetMap): it must ride the same
   // API cache or "is this property cut off?" breaks offline (the whole
   // reason offline mode exists).
   if (/overpass-api\.de$|overpass\.kumi\.systems$|maps\.mail\.ru$/.test(url.hostname)) {
     e.respondWith(networkFirst(req, API, 8000));
+    return;
   }
 });
