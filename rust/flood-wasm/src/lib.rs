@@ -601,7 +601,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         }
         "hazard" => {
             let run = run_of(b, "")?;
-            let hz = with_analysis(b.num("a"), |a| hazard(a, &run))?;
+            let vx = b.f64s("vx");
+            let vy = b.f64s("vy");
+            let hz = with_analysis(b.num("a"), |a| hazard_with_velocities(a, &run, vx.as_deref(), vy.as_deref()))?;
             o.u8s("cls", &hz.cls).f32s("vel", &hz.vel).f64s("km2", &hz.km2);
         }
         "compareRuns" => {
