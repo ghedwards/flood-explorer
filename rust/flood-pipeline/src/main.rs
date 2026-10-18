@@ -25,27 +25,27 @@
 //!   flood config <config.json> <key>
 //!   flood status <site_dir> <log>...
 
-mod council;
-mod dea;
-mod dem;
-mod events;
-mod export;
-mod floodhub;
-mod floodinfo;
-mod geo;
-mod hydrology;
-mod compare;
-mod levees;
-mod national;
-mod net;
-mod osm;
-mod ratings;
-mod sealevels;
-mod status;
-mod tides;
-mod util;
+// mod council; (via lib)
+// mod dea;
+// mod dem;
+// mod events;
+// mod export;
+// mod floodhub;
+// mod floodinfo;
+pub // mod geo;
+// mod hydrology;
+// mod compare;
+// mod levees;
+// mod national;
+// mod net;
+// mod osm;
+// mod ratings;
+// mod sealevels;
+// mod status;
+// mod tides;
+// mod util;
 mod waterhistory;
-mod workers;
+// mod workers;
 
 use util::R;
 
@@ -97,6 +97,7 @@ fn run(args: &[String]) -> R<String> {
     }
 }
 
+use flood_pipeline::*;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
