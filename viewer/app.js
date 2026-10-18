@@ -1033,10 +1033,20 @@ import './inertial-grid.js';
   window.__floodWarming = (deg) => { ctl.warming.value = String(deg); runScenario(); return status.flash; };
   window.__floodColorMode = (m) => { $('colorMode').value = m; drawMap(); return { mode: colorMode(), hazard: status.hazard, compare: status.compare }; };
 
+  let lastChromeKey = null;
+  function scheduleMapChrome() {
+    const key = `${colorMode()}|${state.pinned && state.pinned.key === state.areaKey ? state.pinned.run : 'none'}|${state.timeView ? state.timeStep : 'n/a'}|${state.areaKey || ''}`;
+    if (key === lastChromeKey) return;
+    lastChromeKey = key;
+    renderModeLegend();
+    renderCompare();
+  }
   function drawMap() {
     if (state.pendingGeo) return;
-    renderModeLegend();
-    renderCompare();            // the street map is still opening
+    // coalesce legend/compare DOM work: drawMap is called per timeline
+    // step and these writes were running unconditionally even when their
+    // inputs hadn't changed
+    scheduleMapChrome();
     if (state.geo && state.lmap && state.overlay) drawGeoMap();
     else if (!state.geo) drawStaticMap();
   }
