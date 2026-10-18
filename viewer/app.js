@@ -1464,6 +1464,11 @@ import './inertial-grid.js';
       const alerting = fh && fh.configured && (((fh.flashFloodEvents || []).length > 0)
         || (fh.gauges || []).some((g) => g.status && sev(g.status.severity).rank >= 2));
       if (alerting) Object.values(fhLayers).forEach((l) => l.addTo(m));
+      // Road impact lines are a view toggle, not a scenario input: whatever
+      // scenario is active redraws them (renderImpact), and the layer stays
+      // on across scenario changes like any other overlay.
+      roadsLayer = L.layerGroup().addTo(m);
+      overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
       m.on('zoomend', syncLayerLists);
@@ -1917,7 +1922,8 @@ import './inertial-grid.js';
     renderScenarioTitle();
     if (!nums.length) {
       box.innerHTML = `<div class="places-empty"><p><strong>No places yet.</strong></p>
-        <p class="hint">Tap a flood gauge, tide gauge or dam on the map for a report, or tap anywhere to add a place or model flooding there. Each place gets a number that matches its pin on the map.</p></div>${studiesHtml()}`;
+        <p class="hint">Tap a flood gauge, tide gauge or dam on the map for a report, or tap anywhere to add a place or model flooding there. Each place gets a number that matches its pin on the map.</p></div>${propertyChecksHtml()}${studiesHtml()}`;
+      wireCheckControls(box);
       wireStudyRows(box);
       return;
     }
@@ -1941,7 +1947,8 @@ import './inertial-grid.js';
       </li>`;
     }).join('');
     box.innerHTML = `<ul class="places">${rows}</ul>
-      <p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time. <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${studiesHtml()}`;
+      <p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time. <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${propertyChecksHtml()}${studiesHtml()}`;
+    wireCheckControls(box);
     wireStudyRows(box);
     $('clearPlaces').addEventListener('click', () => { if (window.confirm('Remove all places, reports and flood models from the map?')) clearAllPlaces(); });
     saveSessionSoon();
@@ -1961,6 +1968,42 @@ import './inertial-grid.js';
     }));
   }
 
+  const ICON_RENAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13 7l4 4"/></svg>';
+  function propertyChecksHtml() {
+    if (!propertyChecks.length) return '';
+    const rows = propertyChecks.map((c) => `<li class="place">
+      <button type="button" class="place-main" data-chk="open" data-id="${escapeHtml(String(c.id))}" title="Re-open the check for ${escapeHtml(c.name)}">
+        <span class="pin-num" style="background:${PIN_COLOR}">&#8242;</span>
+        <span class="place-text"><span class="place-name">${escapeHtml(c.name)}</span><span class="place-tags">checked ${escapeHtml(c.when)} · ${escapeHtml(c.headline)}</span></span>
+      </button>
+      <button type="button" class="icon-btn" data-chk="place" data-id="${escapeHtml(String(c.id))}" aria-label="Add ${escapeHtml(c.name)} as a numbered place" title="Add as a place">${ICON_REPORT}</button>
+      <button type="button" class="icon-btn" data-chk="rename" data-id="${escapeHtml(String(c.id))}" aria-label="Rename ${escapeHtml(c.name)}" title="Rename">${ICON_RENAME}</button>
+      <button type="button" class="icon-btn" data-chk="drop" data-id="${escapeHtml(String(c.id))}" aria-label="Forget ${escapeHtml(c.name)}" title="Forget">×</button>
+    </li>`).join('');
+    return `<h3 class="label">Reported properties</h3><ul class="places">${rows}</ul>
+      <p class="hint">Properties you have run "Check this property" on, with the last result for the visible scenario. Re-opening re-runs the check.</p>`;
+  }
+  function wireCheckControls(box) {
+    if (!propertyChecks.length) return;
+    box.querySelectorAll('[data-chk]').forEach((b) => b.addEventListener('click', () => {
+      const c = propertyChecks.find((x) => String(x.id) === b.dataset.id);
+      if (!c) return;
+      if (b.dataset.chk === 'open') {
+        if (state.lmap) state.lmap.setView([c.lat, c.lon], Math.max(state.lmap.getZoom(), 15));
+        checkProperty(c.lat, c.lon, c.name);
+      } else if (b.dataset.chk === 'place') {
+        addPin(c.lat, c.lon, { name: c.name });
+      } else if (b.dataset.chk === 'rename') {
+        const name = window.prompt('Name this property:', c.name);
+        if (name && name.trim()) { c.name = name.trim(); renderPlaces(); saveSessionSoon(); }
+      } else if (b.dataset.chk === 'drop') {
+        const i = propertyChecks.indexOf(c);
+        if (i >= 0) propertyChecks.splice(i, 1);
+        renderPlaces();
+        saveSessionSoon();
+      }
+    }));
+  }
   function setPlacesCollapsed(collapsed) {
     $('placesCard').classList.toggle('collapsed', collapsed);
     $('placesToggle').setAttribute('aria-expanded', String(!collapsed));
@@ -2896,6 +2939,31 @@ import './inertial-grid.js';
   const pins = [];
   const PIN_COLOR = '#455a64';
 
+  // Property checks ("Check this property"): remembered so a property that
+  // has been reported on stays visible and manageable beyond the transient
+  // map layers the check draws. One record per spot; re-checking updates it.
+  const propertyChecks = [];
+  function rememberPropertyCheck(lat, lon, name) {
+    const key = `${Math.round(lat * 1e5)},${Math.round(lon * 1e5)}`;
+    const s = status.property || {};
+    const depth = s.depth != null ? Math.round(s.depth * 100) / 100 : null;
+    const headline = s.inModel === false ? 'No flood model covers this spot yet'
+      : [depth > 0 ? `${depth} m under water` : (s.inModel ? 'dry this scenario' : null),
+         s.floodsAt != null ? `floods at gauge ${s.floodsAt} m` : null,
+         s.recorded ? `${s.recorded} recorded flood outline${s.recorded === 1 ? '' : 's'}` : null,
+         s.council ? `${s.council} council map${s.council === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+    let rec = propertyChecks.find((c) => c.key === key);
+    if (!rec) {
+      rec = { key, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), created: new Date().toISOString(), when: new Date().toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) };
+      propertyChecks.push(rec);
+    }
+    rec.lat = lat; rec.lon = lon; rec.name = name; rec.headline = headline;
+    rec.snapshot = { inModel: s.inModel === true, depth, hazard: s.hazard != null ? s.hazard : null, floodsAt: s.floodsAt != null ? s.floodsAt : null, route: s.route || null, recorded: s.recorded || 0, council: s.council || 0 };
+    renderPlaces();
+    saveSessionSoon();
+    return rec;
+  }
+
   function nearestNamed(lat, lon, km) {
     let best = null, bd = km;
     const all = nat.data ? [...nat.data.gauges, ...nat.data.storages] : [];
@@ -3683,6 +3751,7 @@ import './inertial-grid.js';
     if (m && !$('lmap').hidden) { const c = m.getCenter(); out.view = [r5(c.lat), r5(c.lng), Math.round(m.getZoom() * 100) / 100]; }
     out.reports = reports.map((r) => ({ n: r.n, id: r.id }));
     out.pins = pins.map((p) => ({ n: p.n, lat: r5(p.lat), lon: r5(p.lon), name: p.name }));
+    out.checks = propertyChecks.map((c) => ({ id: c.id, lat: r5(c.lat), lon: r5(c.lon), name: c.name, created: c.created, headline: c.headline, snap: c.snapshot }));
     out.areas = [];
     for (const a of areaReg.values()) {
       const meta = a.areaMeta || {};
@@ -3741,6 +3810,11 @@ import './inertial-grid.js';
         if (f) openReport(f, { n: r.n, select: false });
       }
       for (const p of st.pins || []) if (!pins.some((q) => q.n === p.n)) addPin(p.lat, p.lon, { n: p.n, name: p.name, select: false });
+      for (const c of st.checks || []) {
+        if (propertyChecks.some((x) => x.id === c.id)) continue;
+        const rec = { id: c.id, key: `${Math.round(c.lat * 1e5)},${Math.round(c.lon * 1e5)}`, created: c.created, when: c.created ? new Date(c.created).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '', lat: c.lat, lon: c.lon, name: c.name, headline: c.headline || '', snapshot: c.snap || {} };
+        propertyChecks.push(rec);
+      }
       const areas = (st.areas || []).slice().sort((x, y) => x.n - y.n);
       for (const [k, a] of areas.entries()) {
         if (numberUsed(a.n) && areaByNumber(a.n)) continue;
@@ -3809,6 +3883,7 @@ import './inertial-grid.js';
     reports.slice().forEach(closeReport);
     Array.from(areaReg.keys()).forEach((k) => removeArea(k, { quiet: true }));
     pins.splice(0).forEach((p) => p.marker && state.lmap && state.lmap.removeLayer(p.marker));
+    propertyChecks.length = 0;
     hiddenNums.clear();
     selectedNum = null;
     try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* nothing saved */ }
@@ -4385,13 +4460,14 @@ import './inertial-grid.js';
     return 1;
   }
   let impactLayer = null;
+  let roadsLayer = null; // persistent overlay: toggled from the layers panel, not per-scenario
   function renderImpact() {
-    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); return; }
+    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); return; }
     const box = $('impactBox');
     const area = state.areaKey && areaReg.get(state.areaKey);
     if (!box || !area) return;
     const d = area.impact;
-    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); return; }
+    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); return; }
     if (d.error) { box.innerHTML = `<p class="hint">Couldn't fetch what's here: ${escapeHtml(d.error)}.</p>`; return; }
     const r = computeImpact(d);
     if (!r) return;
@@ -4422,11 +4498,13 @@ import './inertial-grid.js';
     if (state.lmap) {
       if (!impactLayer) impactLayer = window.L.layerGroup().addTo(state.lmap);
       impactLayer.clearLayers();
+      if (!roadsLayer) roadsLayer = window.L.layerGroup(); // registered at map init
+      roadsLayer.clearLayers();
       const net = d.net, seg = (list, style) => {
         if (!net || !list.length) return;
-        window.L.polyline(list.map(([u, v]) => [[net.lat[u], net.lon[u]], [net.lat[v], net.lon[v]]]), Object.assign({ interactive: false }, style)).addTo(impactLayer);
+        window.L.polyline(list.map(([u, v]) => [[net.lat[u], net.lon[u]], [net.lat[v], net.lon[v]]]), Object.assign({ interactive: false }, style)).addTo(roadsLayer);
       };
-      if ($('showRoadImpact').checked) {
+      if (state.lmap.hasLayer(roadsLayer)) {
         seg(r.cutEdges, { color: '#c62828', weight: 4, opacity: 0.85 });
         seg(r.islandEdges, { color: '#ef6c00', weight: 4, opacity: 0.9, dashArray: '6 4' });
       }
@@ -4452,7 +4530,6 @@ import './inertial-grid.js';
   }
   $('impactBtn').addEventListener('click', () => countImpact());
   $('floorHeight').addEventListener('input', () => { $('floorHeightOut').textContent = `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
-  $('showRoadImpact').addEventListener('change', () => renderImpact());
   $('bldValue').addEventListener('change', () => renderImpact());
   window.__floodCountImpact = countImpact;
 
@@ -5772,6 +5849,7 @@ import './inertial-grid.js';
       box.innerHTML = `<p><strong>${escapeHtml(name)}</strong></p><p>No flood model covers this spot yet.</p><div class="link-row"><button type="button" class="btn small" id="propModel">Model flooding here</button></div>`;
       $('propModel').addEventListener('click', () => modelHere(lat, lon, { name: label || 'This area' }));
       status.property = { inModel: false };
+      rememberPropertyCheck(lat, lon, name);
       return status.property;
     }
     if (hit.key !== state.areaKey) activateArea(hit.key);
@@ -5782,6 +5860,7 @@ import './inertial-grid.js';
     if (state.inertial) {
       box.textContent = `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid. Property hazard and gauge thresholds are unavailable for this model.`;
       status.property = { inModel: true, depth: run.depth[c], model: 'local-inertial' };
+      rememberPropertyCheck(lat, lon, name);
       return status.property;
     }
     box.innerHTML = `<p><strong>${escapeHtml(name)}</strong> · in ${hit.n}. ${escapeHtml(hit.name)}</p><p class="hint">Working it out…</p>`;
@@ -5842,6 +5921,7 @@ import './inertial-grid.js';
     if (slow) slow.outerHTML = extra.length ? extra.map((x) => `<p>${x}</p>`).join('') : '<p class="hint">No recorded flood outlines or council flood maps cover this spot in the sources the app knows.</p>';
     status.property.recorded = extra.filter((x) => x.startsWith('Inside')).length;
     status.property.council = council.length;
+    rememberPropertyCheck(lat, lon, name);
     return status.property;
   }
   window.__floodCheckProperty = checkProperty;

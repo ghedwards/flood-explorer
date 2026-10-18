@@ -132,7 +132,13 @@ impl MsqSource {
     pub fn new() -> Self {
         MsqSource { catalogue: RefCell::new(None), years: RefCell::new(HashMap::new()), until: RefCell::new(None) }
     }
+}
 
+impl Default for MsqSource {
+    fn default() -> Self { Self::new() }
+}
+
+impl MsqSource {
     fn catalogue(&self) -> R<HashMap<String, Vec<Value>>> {
         if let Some(c) = self.catalogue.borrow().as_ref() {
             return Ok(c.clone());

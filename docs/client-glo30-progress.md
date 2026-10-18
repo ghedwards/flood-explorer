@@ -4,7 +4,22 @@
 - Created `viewer/glo30-proto.html` to fetch a Copernicus GLO-30 tile from S3.
 - Validates CORS and tile availability.
 
-## Phase B: D8 in browser (next)
+## Phase B: D8 in browser — BLOCKED
+
+**Finding:** The `whitebox-wasm` crate (v0.6.1) exposes geotiff reading, lidar,
+vector, and Moran's I — but NOT the hydrology tools (breach, fill, D8, flow
+accumulation, streams, HAND). Those live in `wbtools_oss` / `whitebox-cli`,
+which are not wasm-compatible.
+
+**Options to unblock:**
+1. Port the needed Whitebox hydrology algorithms (breach, fill, D8, flow acc)
+   to Rust in `flood-core` (which has no deps) — significant effort.
+2. Compile `wbtools_oss` to wasm (may fail due to filesystem/CLI deps).
+3. Reimplement hydrology in JS (slow, but feasible for 20 km squares).
+
+Recommendation: option 1 (extend flood-core with hydrology) keeps a single
+Rust codebase and matches the existing pipeline.
+
 - Requires compiling `whitebox-wasm` (git dep at f0076c2) to `wasm32-unknown-unknown`.
 - Add a build step: `cargo build --target wasm32-unknown-unknown -p whitebox-wasm` (or a thin wrapper crate).
 - Load the WASM module in a worker; expose `d8_pointer`, `fill_depressions`, etc.
