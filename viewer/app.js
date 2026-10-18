@@ -4678,7 +4678,7 @@ import './inertial-grid.js';
   }
   let roadsLayer = null; // persistent overlay: toggled from the layers panel, not per-scenario
   function renderImpact() {
-    if (state.inertial) { $('impactBox').textContent = 'Impact estimates are unavailable for the experimental coarse-grid 2D model.'; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); impactDrawn = null; return; }
+    if (state.inertial && !state.run) { $('impactBox').textContent = 'Load a terrain model first.'; status.impact = null; return; }
     const box = $('impactBox');
     const area = state.areaKey && areaReg.get(state.areaKey);
     if (!box || !area) return;
@@ -4709,6 +4709,7 @@ import './inertial-grid.js';
       ${r.worstRoads.length ? `<p><strong>Roads cut:</strong> ${r.worstRoads.map(([nm, km]) => `${escapeHtml(nm)} (${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`})`).join(', ')}</p>` : ''}
       ${(() => { const ev = d.sites.filter((x) => x.kind === EVAC), evh = r.sitesHit.filter((x) => x.kind === EVAC); return ev.length ? `<p><strong>Evacuation centres:</strong> ${ev.length} mapped here (green on the map)${evh.length ? `, <strong>${evh.length} flooded</strong>: ${evh.map((x) => escapeHtml(x.name)).join(', ')}` : ', none flooded'}. Use <em>Check this property</em> for the dry route to one.</p>` : ''; })()}
       ${r.sitesHit.length ? `<p><strong>Key sites:</strong> ${r.sitesHit.slice(0, 12).map((s) => `${escapeHtml(s.name)} <small>(${s.kind.toLowerCase()}, ${s.depth.toFixed(1)} m)</small>`).join('; ')}${r.sitesHit.length > 12 ? ` and ${r.sitesHit.length - 12} more` : ''}</p>` : ''}
+      ${state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's final water depth on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only, and water keeps moving after this snapshot.</p>` : ''}
       <p class="hint">Buildings, roads and sites: © OpenStreetMap contributors (ODbL), complete only where mapped${d.copy ? ` (the site's copy from ${escapeHtml(new Date(d.copy.fetched).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }))})` : ''}. People: ABS 2021 Census by SA1, spread across each area's buildings${r.people == null ? ' (not available here right now)' : ''}. Estimates for screening only.</p>`;
     // mark flooded key sites, cut roads and cut-off roads on the map
     if (state.lmap) {
@@ -4824,12 +4825,11 @@ import './inertial-grid.js';
     return status.recorded;
   }
   function renderRecorded() {
-    if (state.inertial) { $('recordedBox').textContent = 'Historical-event validation of the 2D solver is pending.'; return; }
     const box = $('recordedBox'), area = state.areaKey && areaReg.get(state.areaKey);
     if (!box || !area || !area.recorded) { if (box) box.innerHTML = ''; return; }
     if (!area.recorded.length) { box.innerHTML = '<p class="hint">No recorded flood outlines are published for this area in the sources the app knows (Queensland flood lines, Brisbane City Council and Victoria\'s flood history). New South Wales doesn\'t publish its recorded flood outlines as an open map service.</p>'; return; }
     box.innerHTML = area.recorded.map((r) => `<div class="rec-row"><span>${escapeHtml(r.name)}</span>
-      <span class="downloads"><button type="button" class="btn small" data-rec-score="${r.id}">Score this scenario</button><button type="button" class="btn small" data-rec-fit="${r.id}">Find the matching level</button></span>
+      <span class="downloads"><button type="button" class="btn small" data-rec-score="${r.id}">Score this scenario</button>${state.inertial ? '' : '<button type="button" class="btn small" data-rec-fit="${r.id}">Find the matching level</button>'}</span>
       <div class="rec-out" id="recOut-${r.id}">${area.recScores && area.recScores[r.id] ? area.recScores[r.id] : ''}</div></div>`).join('')
       + '<p class="hint">Scored only around the recorded outline (within about 500 m of it), on land, so areas the survey didn\'t cover don\'t count against the model.</p>';
     box.querySelectorAll('[data-rec-score]').forEach((b) => b.addEventListener('click', () => scoreRecorded(b.dataset.recScore)));
@@ -4863,7 +4863,7 @@ import './inertial-grid.js';
     try {
       const m = await recordedMask(rec);
       const s = F.scoreRun(state.a, state.run, m);
-      const html = `<p>${scoreText(s, (state.a.cell * state.a.cell) / 1e6)}</p>`;
+      const html = `<p>${scoreText(s, (state.a.cell * state.a.cell) / 1e6)}</p>${state.inertial ? '<p class="hint">Experimental 2D model: compares the solver\'s final wet extent on its coarse grid.</p>' : ''}`;
       area.recScores = area.recScores || {};
       area.recScores[id] = html;
       if (out) out.innerHTML = html;
@@ -6112,9 +6112,11 @@ import './inertial-grid.js';
     const a = state.a, cc = latLngCell(ll), area = areaReg.get(state.areaKey);
     if (!a || !cc) return null;
     const c = cc.i, run = state.run;
-    if (state.inertial) {
-      box.textContent = `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid. Property hazard and gauge thresholds are unavailable for this model.`;
-      status.property = { inModel: true, depth: run.depth[c], model: 'local-inertial' };
+    if (state.inertial && run) {
+      const wet = run.wet[c] && !(a.ocean && a.ocean[c]);
+      const hz = wet ? hazardNow() : null, cls = hz ? hz.cls[c] : 0;
+      box.textContent = `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, hazard class H${cls || 6} from that cell's depth and water speed` : ''}. Gauge-level thresholds don't apply to this model.`;
+      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, model: 'local-inertial' };
       rememberPropertyCheck(lat, lon, name);
       return status.property;
     }
