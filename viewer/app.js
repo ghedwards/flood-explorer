@@ -1579,8 +1579,10 @@ import './inertial-grid.js';
       if (alerting) Object.values(fhLayers).forEach((l) => l.addTo(m));
       // Road impact lines are a view toggle, not a scenario input: whatever
       // scenario is active redraws them (renderImpact), and the layer stays
-      // on across scenario changes like any other overlay.
-      roadsLayer = L.layerGroup().addTo(m);
+      // on across scenario changes like any other overlay. Off by default so
+      // a freshly loaded map isn't covered in red/orange lines before the
+      // user asks for them.
+      roadsLayer = L.layerGroup();
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
