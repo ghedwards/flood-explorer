@@ -2,15 +2,16 @@
  * WebAssembly, behind the same API as flood-core.js (FloodCore).
  *
  * In the page and the worker this file loads flood.wasm and swaps the Rust
- * versions of the heavy functions into window.FloodCore once it is ready;
- * until then, if it fails, or with ?engine=js in the address, the
- * JavaScript model runs. Both give the same numbers (tests/parity.js).
+ * versions of the heavy functions into window.FloodCore once it is ready.
+ * flood-core.js keeps only the model-adjacent helpers that have no wasm
+ * bridge; there is no JavaScript flood model — when the wasm module can't
+ * load, the app refuses to run (app.js shows the unsupported card).
  *
  * The module has four exports: flood_alloc, flood_free, flood_run and
  * flood_out_len. flood_run(op, input) takes a "bag" of named arrays and
  * returns one (see rust/flood-wasm/src/lib.rs). Analyses and flood waves
- * stay in the module by handle; an analysis made elsewhere (the worker, or
- * the JavaScript model) is uploaded the first time it is used.
+ * stay in the module by handle; an analysis made elsewhere (the worker)
+ * is uploaded the first time it is used.
  */
 (function (root, factory) {
   const api = factory();
@@ -240,8 +241,10 @@
       };
     }
 
-    function hazard(a, run) {
-      const out = call('hazard', Object.assign({ a: handleOf(a) }, runBag(run, '', true)));
+    function hazard(a, run, vx, vy) {
+      const bag = Object.assign({ a: handleOf(a) }, runBag(run, '', true));
+      if (vx && vy) { bag.vx = vx; bag.vy = vy; }   // 2D solver velocities; absent → Manning estimate
+      const out = call('hazard', bag);
       return { cls: out.cls, vel: out.vel, km2: Array.from(out.km2) };
     }
 
@@ -297,7 +300,7 @@
 
     function waveSurface(a, w, t, out) {
       const h = waveHandles.get(w);
-      if (h == null) return J.waveSurface(a, w, t, out);
+      if (h == null) throw new Error('wave surface: the wave did not come from this engine');
       const v = call('waveSurface', { w: h, t }).v;
       const wse = out || new Float64Array(a.N).fill(NaN);
       const cells = w.cells;
@@ -359,22 +362,24 @@
   }
 
   // Swap the Rust functions into an existing FloodCore object once the
-  // module loads; any call that throws falls back to the JavaScript model.
+  // module loads. There is no JavaScript model to fall back to: when the
+  // wasm module can't load the app refuses to run (app.js shows the
+  // unsupported card on FloodCoreReady/engine 'error').
   function install(target, url) {
     const J = Object.assign({}, target);
-    target.engine = 'js';
-    const off = typeof location !== 'undefined' && /[?&]engine=js\b/.test(location.search || '');
-    if (off || typeof WebAssembly !== 'object') return Promise.resolve(target);
+    target.engine = 'loading';
+    if (typeof WebAssembly !== 'object') {
+      target.engine = 'error';
+      if (typeof console !== 'undefined') console.error('WebAssembly flood model: WebAssembly is not available in this browser');
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        try { window.dispatchEvent(new CustomEvent('flood:wasm-error', { detail: { error: 'WebAssembly is not available' } })); } catch (err) { if (console) console.warn(err); }
+      }
+      return Promise.resolve(target);
+    }
     return instantiate(url || 'flood.wasm').then((inst) => {
       const core = create(wasmRunner(inst), J);
       for (const k of core.rustFunctions) {
-        target[k] = function () {
-          try { return core[k].apply(null, arguments); } catch (e) {
-            if (!J[k]) throw e; // Rust-only solvers must never silently change physics.
-            if (typeof console !== 'undefined') console.warn(`Rust ${k} failed, using JavaScript:`, e);
-            return J[k].apply(null, arguments);
-          }
-        };
+        target[k] = function () { return core[k].apply(null, arguments); };
       }
       target.engine = 'rust';
       return target;

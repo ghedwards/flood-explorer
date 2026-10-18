@@ -52,8 +52,8 @@ jobs:
           restore-keys: rust-
 
       # The flood model in Rust: its own tests, then compiled to WebAssembly
-      # for the browser and checked against the JavaScript model's tests and
-      # numbers (tests/parity.js).
+      # for the browser and checked against the Rust reference numbers
+      # (tests/parity.js) — the wasm bridge can't change the numbers.
       - name: Build and test the Rust flood model
         working-directory: rust
         run: |
@@ -72,9 +72,8 @@ jobs:
         run: |
           node --test tests/core.test.js
           node tests/parity.js > work-parity-wasm.txt
-          FLOOD_IMPL=js node tests/parity.js work-parity-wasm.txt
           (cd rust && cargo run -q --release -p flood-core --example parity) > work-parity-rust.txt
-          FLOOD_IMPL=js node tests/parity.js work-parity-rust.txt
+          FLOOD_IMPL=wasm node tests/parity.js work-parity-rust.txt
 
       # Terrain only needs rebuilding when the area or the pipeline changes.
       - name: Restore built terrain

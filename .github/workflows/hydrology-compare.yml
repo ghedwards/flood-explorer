@@ -30,8 +30,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - name: Test the viewer and JavaScript model
-        run: node --test tests/*.test.js
+      - name: Build the WebAssembly model
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --locked --release --manifest-path rust/Cargo.toml -p flood-wasm --target wasm32-unknown-unknown
+      - name: Test the viewer against the wasm model
+        run: |
+          export FLOOD_WASM="$PWD/rust/target/wasm32-unknown-unknown/release/flood_wasm.wasm"
+          node --test tests/*.test.js
       - name: Build and test flood
         working-directory: rust
         run: |
@@ -40,14 +46,11 @@ jobs:
           echo "$PWD/target/release" >> "$GITHUB_PATH"
       - name: Build and test WebAssembly parity
         run: |
-          rustup target add wasm32-unknown-unknown
-          cargo build --locked --release --manifest-path rust/Cargo.toml -p flood-wasm --target wasm32-unknown-unknown
           export FLOOD_WASM="$PWD/rust/target/wasm32-unknown-unknown/release/flood_wasm.wasm"
           FLOOD_IMPL=wasm node --test tests/core.test.js
-          FLOOD_IMPL=wasm node tests/parity.js > work-parity-wasm.txt
-          node tests/parity.js work-parity-wasm.txt
+          node tests/parity.js > work-parity-wasm.txt
           cargo run --locked -q --release --manifest-path rust/Cargo.toml -p flood-core --example parity > work-parity-rust.txt
-          node tests/parity.js work-parity-rust.txt
+          FLOOD_IMPL=wasm node tests/parity.js work-parity-rust.txt
       - name: GeoLibre runner
         env:
           GH_TOKEN: ${{ github.token }}

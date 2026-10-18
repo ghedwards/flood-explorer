@@ -22,6 +22,11 @@ self.onmessage = async (e) => {
     }
     self.postMessage({ id, a }, Array.from(transfer));
   } catch (err) {
-    self.postMessage({ id, error: String((err && err.message) || err) });
+    // tag wasm-engine problems so the app can show the unsupported card
+    // instead of a per-area failure
+    const engine = (self.FloodCore && self.FloodCore.engine) || 'error';
+    let msg = String((err && err.message) || err);
+    if (engine !== 'rust') msg = 'The flood model (WebAssembly) is not available: ' + msg;
+    self.postMessage({ id, error: msg, engine });
   }
 };

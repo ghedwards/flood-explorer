@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const F = require('../viewer/flood-core.js');
+const F = require('./model.js');   // wasm engine, like the viewer
 
 // Exercise the shipped viewer routines with small DOM/map/service fixtures.
 // Keep their dependencies explicit without loading Leaflet or remote data.

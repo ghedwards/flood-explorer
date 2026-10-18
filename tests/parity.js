@@ -1,5 +1,5 @@
 // Prints the same checksums as rust/flood-core/examples/parity.rs from the
-// JavaScript model; with a file argument, compares against the Rust output.
+// wasm engine; with a file argument, compares against a reference run.
 //   cargo run --release -p flood-core --example parity > rust.txt
 //   node tests/parity.js rust.txt
 const F = require('./model.js');

@@ -425,6 +425,26 @@ test('hazard for a river flood: deeper and faster water ranks higher, areas add 
   assert.ok(ch / chN > fp / fpN, 'channel cells are more hazardous on average than shallow edges');
 });
 
+test('hazard uses the 2D solver velocities when the run has them', () => {
+  const g = a.defaultGauge;
+  const run = F.inundate(a, scenario(a.dem[g] + 4));
+  // 1 m/s straight down the grid at every cell; only wet cells are graded
+  const vx = new Float64Array(a.N).fill(1), vy = new Float64Array(a.N);
+  const h = F.hazard(a, run, vx, vy);
+  let checked = 0;
+  for (let c = 0; c < a.N; c++) {
+    if (!run.wet[c] || a.ocean[c] || !(run.depth[c] > 0)) continue;
+    checked++;
+    assert.ok(Math.abs(h.vel[c] - 1) < 1e-6, 'velocity comes straight from the solver');
+    assert.ok(h.cls[c] === F.hazardClass(run.depth[c], 1), 'class matches the depth-velocity table');
+  }
+  assert.ok(checked > 0, 'the flood grades at least one cell');
+  // without velocities the same run falls back to the Manning estimate
+  const m = F.hazard(a, run);
+  assert.ok(Math.abs(m.vel[a.stream.findIndex((s, c) => s && run.wet[c] && run.depth[c] > 0)] - 1) > 1e-3,
+    'depth-only estimate differs from a provided 1 m/s velocity');
+});
+
 test('comparing scenarios finds the extra flooding', () => {
   const g = a.defaultGauge;
   const small = F.inundate(a, scenario(a.dem[g] + 2)), big = F.inundate(a, scenario(a.dem[g] + 4));
