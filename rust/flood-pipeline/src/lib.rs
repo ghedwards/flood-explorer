@@ -1,3 +1,6 @@
+//! The `flood_pipeline` library behind the `flood` CLI binary (src/main.rs).
+//! Each module is one data-source subcommand of the pipeline; `main.rs` is a
+//! thin wrapper that dispatches CLI args into these modules.
 pub mod council;
 pub mod dea;
 pub mod dem;
@@ -17,4 +20,5 @@ pub mod sealevels;
 pub mod status;
 pub mod tides;
 pub mod util;
+pub mod waterhistory;
 pub mod workers;

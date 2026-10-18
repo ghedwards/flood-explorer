@@ -23,5 +23,5 @@ regex = "1"
 wbcore = { git = "https://github.com/opengeos/whitebox-wasm", rev = "f0076c2383ebd9248454b32f13cd002fa27f21b0" }
 wbtools_oss = { git = "https://github.com/opengeos/whitebox-wasm", rev = "f0076c2383ebd9248454b32f13cd002fa27f21b0" }
 
-[dependencies.flood-core]
-path = "../flood-core"
+# Workspace sibling: flood-core's flood model is included in parity checks.
+flood-core = { path = "../flood-core" }

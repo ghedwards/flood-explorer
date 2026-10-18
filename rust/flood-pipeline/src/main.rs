@@ -24,28 +24,11 @@
 //!   flood export <config.json> <work_dir> <data_dir>
 //!   flood config <config.json> <key>
 //!   flood status <site_dir> <log>...
+//!
+//! Module implementations live in the `flood_pipeline` library (src/lib.rs);
+//! this binary is a thin command-line wrapper over it.
 
-// mod council; (via lib)
-// mod dea;
-// mod dem;
-// mod events;
-// mod export;
-// mod floodhub;
-// mod floodinfo;
-pub // mod geo;
-// mod hydrology;
-// mod compare;
-// mod levees;
-// mod national;
-// mod net;
-// mod osm;
-// mod ratings;
-// mod sealevels;
-// mod status;
-// mod tides;
-// mod util;
-mod waterhistory;
-// mod workers;
+use flood_pipeline::*;
 
 use util::R;
 
@@ -97,7 +80,6 @@ fn run(args: &[String]) -> R<String> {
     }
 }
 
-use flood_pipeline::*;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
