@@ -1532,7 +1532,10 @@ import './inertial-grid.js';
           // imagery services throttle under load; say something instead of
           // leaving a silently dark map ("satellite island")
           st.streak = (st.streak || 0) + 1;
-          if (st.streak === 8 && status.basemap === bm.name) say('Basemap tiles are failing to load (the imagery service may be busy). Pan slightly, reload, or pick another basemap in Layers.');
+          if (st.streak === 8 && status.basemap === bm.name) {
+            say('Basemap tiles are failing to load (the imagery service may be busy). Pan slightly, reload, or pick another basemap in Layers.');
+            probeBasemapFailover(bm.name);
+          }
         });
         // below zoom 5 (whole-country view), Esri imagery underneath shows
         const layer = bm.wms
@@ -1708,6 +1711,36 @@ import './inertial-grid.js';
     syncLayerLists();
   }
 
+  function probeBasemapFailover(fromName) {
+    const reg = layerRegistry;
+    if (!reg) return;
+    const notice = document.getElementById('basemapNotice');
+    if (!notice) return;
+    notice.hidden = true;
+    const candidates = Object.keys(reg.layers).filter((n) => n !== fromName);
+    // try to fetch a cheap low-zoom tile from each alternative
+    (async () => {
+      let best = null;
+      for (const name of candidates) {
+        const bm = BASEMAPS.find((b) => b.name === name);
+        if (!bm || bm.wms) { best = name; break; } // wms/DEA usually reachable
+        try {
+          const url = bm.url().replace('{z}', '3').replace('{y}', '4').replace('{x}', '5');
+          const r = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(4000) });
+          if (r.ok) { best = name; break; }
+        } catch (e) { /* try next */ }
+      }
+      if (!best) return;
+      notice.innerHTML = `Tiles are failing on <strong>${escapeHtml(fromName)}</strong>. <button type="button" class="btn small" id="bmFailoverBtn">Switch to ${escapeHtml(best)}</button>`;
+      notice.hidden = false;
+      const btn = document.getElementById('bmFailoverBtn');
+      if (btn) btn.addEventListener('click', () => {
+        setBasemap(reg.m, reg.layers, best);
+        notice.hidden = true;
+        say(`Switched to ${best}.`);
+      }, { once: true });
+    })();
+  }
   function buildLayerLists(m, layers, overlays, first) {
     layerRegistry = { m, layers, overlays };
     const bl = $('basemapList');
