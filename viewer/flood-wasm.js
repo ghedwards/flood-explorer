@@ -388,6 +388,10 @@
       for (const k of core.rustFunctions) {
         target[k] = function () { return core[k].apply(null, arguments); };
       }
+      // resident-analysis helpers: same closure (and handle table) as the
+      // rust functions above, so handles stay interchangeable
+      target.handleOf = core.handleOf;
+      target.byHandle = core.byHandle;
       target.engine = 'rust';
       return target;
     }).catch((e) => {

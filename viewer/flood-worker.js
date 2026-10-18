@@ -49,7 +49,8 @@ self.onmessage = async (e) => {
     }
     const a = self.FloodCore.analyse(grid, opts);
     let key = null;
-    if (self.FloodCore.engine === 'rust' && a && a.N && a.ocean && a.stream) {
+    if (self.FloodCore.engine === 'rust' && a && a.N && a.ocean && a.stream
+      && typeof self.FloodCore.handleOf === 'function' && typeof self.FloodCore.byHandle === 'function') {
       key = ++keySeq;
       resident.set(key, {
         h: self.FloodCore.handleOf(a), W: a.W, H: a.H, cell: a.cell, N: a.N,
