@@ -11,10 +11,17 @@ const DRY: f64 = 1e-6;
 pub struct Options {
     pub seconds: f64,
     pub rain_mm_h: f64,
+    /// Optional per-hour rainfall (mm/h); when present and non-empty it
+    /// overrides rain_mm_h, indexed by the elapsed hour (clamped).
+    pub rain_series: Option<Vec<f64>>,
     pub roughness: f64,
     pub initial_depth: f64,
     pub inflow_cell: Option<usize>,
     pub inflow_m3_s: f64,
+    /// Optional per-hour release series (m³/s) at inflow_cell; when
+    /// present and non-empty it overrides inflow_m3_s, indexed by the
+    /// elapsed hour (clamped to the last entry).
+    pub inflow_series: Option<Vec<f64>>,
     /// Prescribed water elevation at reservoir cells; NaN elsewhere.
     pub stages: Vec<f64>,
 }
@@ -46,17 +53,21 @@ impl Solver {
         }
         if !(opts.seconds.is_finite() && opts.seconds > 0.0 && opts.seconds <= 86400.0
             && opts.rain_mm_h.is_finite() && (0.0..=1000.0).contains(&opts.rain_mm_h)
+            && opts.rain_series.as_ref().is_none_or(|s| s.iter().all(|v| v.is_finite() && (0.0..=1000.0).contains(v)))
             && opts.roughness.is_finite() && (0.01..=1.0).contains(&opts.roughness)
             && opts.initial_depth.is_finite() && (0.0..=100.0).contains(&opts.initial_depth)
-            && opts.inflow_m3_s.is_finite() && (0.0..=100000.0).contains(&opts.inflow_m3_s)) {
+            && opts.inflow_m3_s.is_finite() && (0.0..=100000.0).contains(&opts.inflow_m3_s)
+            && opts.inflow_series.as_ref().is_none_or(|s| s.iter().all(|v| v.is_finite() && (0.0..=100000.0).contains(v)))) {
             return Err("invalid duration, rainfall, roughness, initial depth or inflow".into());
         }
         let active = |i: usize| grid.valid.as_ref().is_none_or(|v| v[i] != 0) && grid.dem[i].is_finite();
         if ! (0..n).any(active) { return Err("terrain has no valid cells".into()); }
         if opts.stages.iter().any(|s| s.is_infinite()) { return Err("invalid boundary elevation".into()); }
-        if opts.inflow_m3_s > 0.0 && opts.inflow_cell.is_none_or(|i| i >= n || !active(i) || opts.stages[i].is_finite()) {
-            return Err("inflow needs a valid non-boundary cell".into());
-        }
+        let has_series = opts.inflow_series.as_ref().is_some_and(|s| !s.is_empty());
+        if (opts.inflow_m3_s > 0.0 || has_series)
+            && opts.inflow_cell.is_none_or(|i| i >= n || !active(i) || opts.stages[i].is_finite()) {
+                return Err("inflow needs a valid non-boundary cell".into());
+            }
         let depth = (0..n).map(|i| if !active(i) {0.0} else if opts.stages[i].is_finite() {
             (opts.stages[i] - grid.dem[i] as f64).max(0.0)
         } else {opts.initial_depth}).collect();
@@ -91,13 +102,30 @@ impl Solver {
             // Include positive sources before fluxes and in the available donor volume.
             for i in 0..n {
                 if self.active(i) && !self.opts.stages[i].is_finite() {
-                    let extra = self.opts.rain_mm_h/3_600_000.0*dt;
+                    let extra = {
+                        let r = self.opts.rain_series.as_ref()
+                            .and_then(|s| {
+                                let idx = (self.time / 3600.0) as usize;
+                                s.get(idx.min(s.len().saturating_sub(1))).copied()
+                            })
+                            .unwrap_or(self.opts.rain_mm_h);
+                        r / 3_600_000.0 * dt
+                    };
                     self.depth[i] += extra; self.source_volume += extra*area;
                 }
             }
-            if self.opts.inflow_m3_s > 0.0 {
-                let v = self.opts.inflow_m3_s*dt;
-                self.depth[self.opts.inflow_cell.unwrap()] += v/area; self.source_volume += v;
+            if self.opts.inflow_m3_s > 0.0 || self.opts.inflow_series.as_ref().is_some_and(|s| !s.is_empty()) {
+                let v = self.opts.inflow_series.as_ref()
+                    .and_then(|s| {
+                        let idx = (self.time / 3600.0) as usize;
+                        s.get(idx.min(s.len().saturating_sub(1))).copied()
+                    })
+                    .unwrap_or(self.opts.inflow_m3_s);
+                if v > 0.0 {
+                    let vv = v * dt;
+                    self.depth[self.opts.inflow_cell.unwrap()] += vv / area;
+                    self.source_volume += vv;
+                }
             }
             self.outgoing.fill(0.0);
             for i in 0..n {
@@ -149,7 +177,7 @@ mod tests {
     use super::*;
     fn solver(w:usize,h:usize) -> Solver {
         Solver::new(Grid {w,h,cell:10.0,dem:vec![0.0;w*h],valid:None,inflow:None,d8:None},Options {
-            seconds:100.0,rain_mm_h:0.0,roughness:0.03,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,stages:vec![f64::NAN;w*h]
+            seconds:100.0,rain_mm_h:0.0,roughness:0.03,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:None,stages:vec![f64::NAN;w*h]
         }).unwrap()
     }
     fn finish(s:&mut Solver) { while s.time<s.opts.seconds {s.advance(32).unwrap();} }

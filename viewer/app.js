@@ -628,7 +628,8 @@ import './inertial-grid.js';
       const opts = { seconds: number('inertialMinutes') * 60, rainMmH: number('inertialRain'),
         inflow: number('inertialInflow'), inflowCell: window.FloodInertialGrid.cell(g, a, state.gauge),
         initialDepth: number('inertialInitial'), roughness: number('inertialRoughness'), stages,
-        inflowSeries: buildInflowSeries(number('inertialMinutes') * 60) };
+        inflowSeries: buildInflowSeries(number('inertialMinutes') * 60),
+        rainSeries: buildRainSeries(number('inertialMinutes') * 60) };
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
       $('inertialRun').disabled = true; $('inertialCancel').disabled = false;
@@ -5245,6 +5246,16 @@ import './inertial-grid.js';
     let frac = v / 100;
     if ($('relUnit').value === 'm3s') { const q = peakFlowNow(); if (!q) return null; frac = v / q; }
     return { startHours: parseFloat($('relStart').value) || 0, hours: Math.max(1, parseFloat($('relHours').value) || 24), frac };
+  }
+  function buildRainSeries(seconds) {
+    const raw = ($('inertialRainSeries').value || '').trim();
+    if (!raw) return undefined;
+    const vals = raw.split(/[,\s]+/).map((x) => parseFloat(x)).filter((x) => Number.isFinite(x));
+    if (!vals.length) return undefined;
+    const nH = Math.max(1, Math.ceil(seconds / 3600));
+    const series = new Float64Array(nH);
+    for (let h = 0; h < nH; h++) series[h] = Math.max(0, Math.min(1000, vals[Math.min(h, vals.length - 1)]));
+    return series;
   }
   // Per-hour release series for the 2D solver (m³/s at the gauge cell).
   function buildInflowSeries(seconds) {

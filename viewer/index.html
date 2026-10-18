@@ -112,6 +112,7 @@
         <p class="hint">Simulates water moving over terrain. Constant inputs for this run; no automatic conversion from gauge height to flow. Switch back to the fast model to use gauge-level, storm and defence controls.</p>
         <label>Duration (minutes) <input id="inertialMinutes" type="number" min="1" max="1440" value="30" step="1"></label>
         <label>Effective rainfall (mm/hour) <input id="inertialRain" type="number" min="0" max="1000" value="20" step="1"></label>
+        <label>Or rain per hour, comma-separated (mm) <input id="inertialRainSeries" type="text" placeholder="e.g. 5,12,30,25,10" style="width:180px" aria-label="Hourly rainfall series in mm per hour"></label>
         <label>Inflow at selected gauge (m³/s) <input id="inertialInflow" type="number" min="0" max="100000" value="0" step="1"></label>
         <label>Initial land depth (m) <input id="inertialInitial" type="number" min="0" max="100" value="0" step="0.01"></label>
         <label>Roughness (Manning n) <input id="inertialRoughness" type="number" min="0.01" max="1" value="0.04" step="0.01"></label>

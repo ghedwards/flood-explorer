@@ -502,7 +502,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 seconds: b.num("seconds"), rain_mm_h: b.num("rainMmH"),
                 roughness: b.num("roughness"), initial_depth: b.num("initialDepth"),
                 inflow_cell: if inflow.is_finite() && inflow >= 0.0 {Some(inflow as usize)} else {None},
-                inflow_m3_s: b.num("inflow"), stages,
+                inflow_m3_s: b.num("inflow"), inflow_series: b.f64s("inflowSeries"),
+                rain_series: b.f64s("rainSeries"),
+                stages,
             })?;
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
         }
