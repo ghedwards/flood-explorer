@@ -69,7 +69,7 @@ function modelFixture() {
   const ctl = { streamArea: { value: '20' }, gaugeLevel: { value: '5' } };
   const areaReg = new Map([['old', area]]);
   const context = {
-    state, ctl, areaReg, CTL_KEYS: Object.keys(ctl), reports: [], pins: [], studies: [], selectedNum: 1,
+    state, ctl, areaReg, CTL_KEYS: Object.keys(ctl), reports: [], pins: [], propertyChecks: [], studies: [], selectedNum: 1,
     MODEL_SIZES: [[10, 30], [20, 40]], status: {}, nat: { data: { gauges: [], storages: [] } },
     r5: (x) => Math.round(x * 1e5) / 1e5,
     streamFromSlider: (v) => .02 * Math.pow(10, v * .03),
