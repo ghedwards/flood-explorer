@@ -682,17 +682,19 @@ import './inertial-grid.js';
     const s = scenario();
     if (state.base && (state.baseMode === 'flash') !== (ctl.floodType.value === 'flash')) state.base = null;
     state.baseMode = ctl.floodType.value;
-    if (!state.base && state.baseMode === 'flash') state.base = F.flashFlood(a, { rainMm: 0 });
-    if (!state.base) {
+    if (!state.base && state.baseMode === 'flash') state.base = F.flashFlood(a, { rainMm: 0, slim: 1 });
+    // the river profile needs the waterline (wse); other paths don't
+    const wantWse = !$('panel-profile').hidden;
+    if (!state.base || (wantWse && !state.base.wse)) {
       const base = state.eventsApply || state.gauge < 0
         ? BASELINE
         : { gaugeLevel: a.dem[state.gauge] + 0.3, bayLevel: 0 };
-      state.base = F.inundate(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }));
+      state.base = F.inundate(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }), { slim: !wantWse });
     }
     const mode = ctl.floodType.value;
-    state.riverRun = mode === 'flash' ? null : F.inundate(a, s);
+    state.riverRun = mode === 'flash' ? null : F.inundate(a, s, { slim: !wantWse });
     if (mode === 'river') { state.run = state.riverRun; state.flash = null; } else {
-      const fl = F.flashFlood(a, storm());
+      const fl = F.flashFlood(a, Object.assign(storm(), { slim: 1 }));
       state.flash = fl.summary;
       state.run = mode === 'both' ? F.mergeRuns(state.riverRun, fl) : fl;
     }
@@ -2365,6 +2367,7 @@ import './inertial-grid.js';
       $('profileNote').textContent = '';
       return;
     }
+    if (!run.wse || !base.wse) { schedule(); return; }   // rebuilt with the waterline
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
     canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
@@ -4825,7 +4828,7 @@ import './inertial-grid.js';
       const m = await recordedMask(rec);
       const s0 = scenario();
       const bed = a.dem[state.gauge];
-      const tryLevel = (lv) => scoreRun(a, F.inundate(a, Object.assign({}, s0, { gaugeLevel: lv })), m);
+      const tryLevel = (lv) => scoreRun(a, F.inundate(a, Object.assign({}, s0, { gaugeLevel: lv }), { slim: 1 }), m);
       let best = { lv: s0.gaugeLevel, s: tryLevel(s0.gaugeLevel) };
       for (let lv = bed + 0.5; lv <= bed + 20; lv += 0.5) {
         const s = tryLevel(lv);
@@ -5431,7 +5434,7 @@ import './inertial-grid.js';
     const wse = state.wseScratch && state.wseScratch.length === a.N ? state.wseScratch : (state.wseScratch = new Float64Array(a.N));
     wse.fill(NaN);
     F.waveSurface(a, tl.wave, t, wse);
-    state.run = F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }));
+    state.run = F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }), { slim: 1 });
     state.timeView = true;
     drawMap();
     drawStats(tl.s);
@@ -5985,7 +5988,7 @@ import './inertial-grid.js';
     const a = state.a;
     if (state.gauge < 0 || ctl.floodType.value === 'flash') return null;
     const base = scenario(), lo0 = a.dem[state.gauge] + 0.3, hi0 = parseFloat(ctl.gaugeLevel.max) || lo0 + 10;
-    const wetAt = (L) => { const r = F.inundate(a, Object.assign({}, base, { gaugeLevel: L })); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
+    const wetAt = (L) => { const r = F.inundate(a, Object.assign({}, base, { gaugeLevel: L }), { slim: 1 }); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
     if (wetAt(lo0)) return { level: lo0, always: true };
     if (!wetAt(hi0)) return { above: hi0 };
     let lo = lo0, hi = hi0;

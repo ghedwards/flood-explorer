@@ -383,8 +383,13 @@ fn run_of(b: &Bag, p: &str) -> Result<Run, String> {
     })
 }
 
-fn put_run(o: &mut Out, r: &Run) {
-    o.u8s("wet", &r.wet).f32s("depth", &r.depth).f32s("level", &r.level).f64s("wse", &r.wse).u8s("onPath", &r.on_path);
+fn put_run(o: &mut Out, r: &Run, slim: bool) {
+    // slim runs omit wse/onPath: the callers that look at them rebuild with
+    // the flag off (see docs/wasm-bag-trim-design.md)
+    o.u8s("wet", &r.wet).f32s("depth", &r.depth).f32s("level", &r.level);
+    if !slim {
+        o.f64s("wse", &r.wse).u8s("onPath", &r.on_path);
+    }
     if let Some(k) = &r.kind {
         o.u8s("kind", k);
     }
@@ -563,8 +568,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         }
         "inundate" => {
             let s = scenario_of(b);
+            let slim = b.has("slim");
             let r = with_analysis(b.num("a"), |a| inundate(a, &s))?;
-            put_run(&mut o, &r);
+            put_run(&mut o, &r, slim);
         }
         "flashFlood" => {
             let st = Storm {
@@ -580,7 +586,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 urban: b.u8s("urban"),
             };
             let r = with_analysis(b.num("a"), |a| flash_flood(a, &st))?;
-            put_run(&mut o, &r);
+            put_run(&mut o, &r, b.has("slim"));
         }
         "stats" => {
             let run = run_of(b, "")?;

@@ -54,18 +54,27 @@
     }
   }
 
-  // u8: a view of the output (it may sit in the module's memory; every
-  // array is copied out into a buffer of its own)
+  // u8: a view of the output (it may sit in the module's memory; big bags
+  // are copied out of it once, and every aligned field becomes a typed-array
+  // view into that buffer — copies only where the field offsets misalign)
   function readBag(u8) {
     const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
     const n = dv.getUint32(0, true), out = {};
+    const big = u8.byteLength >= 0x8000 ? u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) : null;
     let p = 4;
     for (let i = 0; i < n; i++) {
       const nl = u8[p], name = dec.decode(u8.subarray(p + 1, p + 1 + nl)); p += 1 + nl;
       const ty = u8[p], len = dv.getUint32(p + 1, true); p += 5;
       const T = TYPES[ty], bytes = len * T.BYTES_PER_ELEMENT;
-      const start = u8.byteOffset + p;
-      out[name] = new T(u8.buffer.slice(start, start + bytes));
+      if (big) {
+        if (p % T.BYTES_PER_ELEMENT === 0) {
+          out[name] = new T(big, p, len);
+        } else {
+          out[name] = new T(big.slice(p, p + bytes));
+        }
+      } else {
+        out[name] = new T(u8.buffer.slice(u8.byteOffset + p, u8.byteOffset + p + bytes));
+      }
       p += bytes;
     }
     return out;
@@ -166,9 +175,13 @@
       return b;
     }
 
-    const runBag = (r, p) => ({ [p + 'wet']: u8(r.wet), [p + 'depth']: f32(r.depth), [p + 'level']: r.level ? f32(r.level) : null });
+    // withLevel=false drops level for the ops whose math ignores it (stats,
+    // compareRuns); hazard needs it for the velocity slope
+    const runBag = (r, p, withLevel) => ({ [p + 'wet']: u8(r.wet), [p + 'depth']: f32(r.depth), [p + 'level']: (withLevel && r.level) ? f32(r.level) : null });
 
-    const toRun = (out) => ({ wet: out.wet, depth: out.depth, level: out.level, wse: out.wse, onPath: out.onPath });
+    // slim runs come back without wse/onPath; the profile rebuilds when it
+    // needs the waterline
+    const toRun = (out, slim) => (slim ? { wet: out.wet, depth: out.depth, level: out.level } : { wet: out.wet, depth: out.depth, level: out.level, wse: out.wse, onPath: out.onPath });
 
     function analyse(grid, opts) {
       const o = Object.assign({ streamAreaKm2: 4 }, opts || {});
@@ -196,8 +209,9 @@
       return { wse: out.wse, onPath: out.onPath };
     }
 
-    function inundate(a, s) {
-      const r = toRun(call('inundate', Object.assign({ a: handleOf(a) }, scenarioBag(s))));
+    function inundate(a, s, opts) {
+      const slim = opts && opts.slim ? 1 : null;
+      const r = toRun(call('inundate', Object.assign({ a: handleOf(a) }, scenarioBag(s), slim ? { slim } : null)), Boolean(slim));
       if (s.wse) r.wse = s.wse;
       return r;
     }
@@ -208,9 +222,9 @@
         a: handleOf(a), rainMm: o.rainMm, hours: o.hours, initialLoss: o.initialLoss, contLoss: o.contLoss,
         nChannel: o.nChannel, nOverland: o.nOverland, maxRise: o.maxRise, maxPondDepth: o.maxPondDepth,
         pipeMmH: o.pipeMmH, urban: u8(o.urban),
-      });
+      }, Object.assign({ a: handleOf(a) }, o.slim ? { slim: 1 } : null));
       return {
-        wet: out.wet, depth: out.depth, level: out.level, kind: out.kind, wse: Float32Array.from(out.wse), onPath: out.onPath,
+        wet: out.wet, depth: out.depth, level: out.level, kind: out.kind, wse: out.wse ? Float32Array.from(out.wse) : undefined,
         summary: {
           excessMm: num(out.excessMm), runoffCoeff: num(out.runoffCoeff), creekKm2: num(out.creekKm2),
           overlandKm2: num(out.overlandKm2), pondKm2: num(out.pondKm2), maxCreekRise: num(out.maxCreekRise),
@@ -220,15 +234,14 @@
     }
 
     function stats(a, run, base) {
-      const out = call('stats', Object.assign({ a: handleOf(a) }, runBag(run, ''), base ? runBag(base, 'base') : {}));
-      return {
+      const out = call('stats', Object.assign({ a: handleOf(a) }, runBag(run, ''), base ? runBag(base, 'base') : {}));      return {
         wetLandKm2: num(out.wetLandKm2), floodedKm2: num(out.floodedKm2), deepKm2: num(out.deepKm2),
         maxDepth: num(out.maxDepth), rawMaxDepth: num(out.rawMaxDepth), meanDepth: num(out.meanDepth),
       };
     }
 
     function hazard(a, run) {
-      const out = call('hazard', Object.assign({ a: handleOf(a) }, runBag(run, '')));
+      const out = call('hazard', Object.assign({ a: handleOf(a) }, runBag(run, '', true)));
       return { cls: out.cls, vel: out.vel, km2: Array.from(out.km2) };
     }
 
