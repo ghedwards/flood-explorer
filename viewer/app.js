@@ -6263,10 +6263,22 @@ import './inertial-grid.js';
     if (id === 'panel-profile' && state.run) drawProfile(scenario());
   }
 
-  function closePanel(id) {
-    if (id === 'panel-scenario' && !isPhone()) { setScenarioCollapsed(true); return; }
-    $(id).hidden = true;
-    syncPanels();
+  // keyboard: Escape closes the open (non-scenario) panel
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const open = Array.from(document.querySelectorAll('[data-panel]')).find((p) => !p.hidden && p.id !== 'panel-scenario');
+    if (open) { closePanel(open.id); e.preventDefault(); }
+  });
+  // timeline keyboard: space plays/pauses, arrows step
+  const tlSlider = $('tlSlider');
+  if (tlSlider) {
+    tlSlider.addEventListener('keydown', (e) => {
+      if (e.key === ' ') {
+        e.preventDefault();
+        const btn = $('playTimeline');
+        if (btn) btn.click();
+      }
+    });
   }
 
   function syncPanels() {
