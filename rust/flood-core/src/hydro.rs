@@ -539,6 +539,27 @@ mod d8_simple_tests {
     }
 }
 
+/// The reference's `auto_small_increment_legacy` with no explicit
+/// flat_increment: epsilon scaled by cell diagonal and the DEM's max-elevation
+/// digit count; 0 when fix_flats is false.
+fn wbt_small_increment(dem: &[f64], nodata: f64, cell_m: f64, fix_flats: bool) -> f64 {
+    if !fix_flats { return 0.0; }
+    let diag = (2.0f64 * cell_m * cell_m).sqrt().ceil().max(1.0);
+    let mut max_elev = f64::NEG_INFINITY;
+    for &z in dem {
+        if z != nodata && z.is_finite() && z > max_elev { max_elev = z; }
+    }
+    if max_elev.is_finite() {
+        let digits = max_elev.abs().floor() as i64;
+        let elev_digits = if digits <= 0 { 1 } else { digits.to_string().len() } as i32;
+        let exp = (15 - elev_digits).max(1);
+        let v = (1.0f64 / 10f64.powi(exp)) * diag;
+        if v.is_finite() && v > 0.0 { v } else { ((2.0 * cell_m).max(1.0)) * 1.0e-9 }
+    } else {
+        ((2.0 * cell_m).max(1.0) * 1.0e-9).max(1.0e-8)
+    }
+}
+
 /// Whitebox-parity fill depressions: a faithful port of wbtools_oss
 /// `fill_depressions_core` (pinned f0076c2) with Garbrecht-Martz flat
 /// resolution, as used by `flood hydrology`. Operates in f64 exactly like the
@@ -554,24 +575,7 @@ pub fn fill_depressions_wbt(dem: &[f64], w: usize, h: usize, nodata: f64, cell_m
     const DY: [isize; 8] = [-1, 0, 1, 1, 1, 0, -1, -1];
 
     // -- epsilon (auto_small_increment_legacy with no flat_increment arg) --
-    let small = if !fix_flats {
-        0.0
-    } else {
-        let diag = (2.0f64 * cell_m * cell_m).sqrt().ceil().max(1.0);
-        let mut max_elev = f64::NEG_INFINITY;
-        for &z in dem {
-            if z != nodata && z.is_finite() && z > max_elev { max_elev = z; }
-        }
-        if max_elev.is_finite() {
-            let digits = max_elev.abs().floor() as i64;
-            let elev_digits = if digits <= 0 { 1 } else { digits.to_string().len() } as i32;
-            let exp = (15 - elev_digits).max(1);
-            let v = (1.0f64 / 10f64.powi(exp)) * diag;
-            if v.is_finite() && v > 0.0 { v } else { (2.0 * cell_m).max(1.0) * 1.0e-9 }
-        } else {
-            ((2.0 * cell_m).max(1.0) * 1.0e-9).max(1.0e-8)
-        }
-    };
+    let small = wbt_small_increment(dem, nodata, cell_m, fix_flats);
 
     // MinNode: min-heap ordered by elevation; equal elevations compare Equal,
     // matching the reference so BinaryHeap pop order is bit-identical.
@@ -988,67 +992,205 @@ mod stream_hand_tests {
     }
 }
 
-/// Breach depressions (least cost) — first-cut. For each local minimum, find
-/// the lowest-cost path (minimising the maximum cell elevation) to an outlet
-/// and lower the cells along it so water can drain. Simplified; does not
-/// reproduce Whitebox's full least-cost breach.
-pub fn breach_depressions_simple(dem: &[f32], w: usize, h: usize, nodata: f32, max_dist: usize) -> Vec<f32> {
-    let n = w * h;
-    let mut out = dem.to_vec();
-    // For each cell, if it is a local minimum (all neighbours >= it), attempt
-    // a breach: BFS by increasing max-elevation along the path to an outlet.
-    for start in 0..n {
-        if !out[start].is_finite() || out[start] == nodata { continue; }
-        // check local min
-        let sx = start % w;
-        let sy = start / w;
-        let mut is_min = true;
-        let nbrs: [(i64, i64); 8] = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(1,-1),(-1,1)];
-        for &(dx,dy) in &nbrs {
-            let nx = sx as i64 + dx; let ny = sy as i64 + dy;
-            if nx<0||ny<0||nx>=w as i64||ny>=h as i64 { continue; }
-            let j = ny as usize*w+nx as usize;
-            if out[j].is_finite() && out[j] < out[start] { is_min = false; break; }
+/// Whitebox-parity breach depressions least-cost: a faithful port of
+/// wbtools_oss `breach_depressions_least_cost` (pinned f0076c2) as used by
+/// `flood hydrology` (max_dist=60 cells, fill_deps=true). Breach carving is
+/// followed by the same Garbrecht-Martz fill (`fill_depressions_wbt`) when
+/// fill_deps=true. Operates in f64 like the reference.
+pub fn breach_depressions_wbt(
+    dem: &[f64], w: usize, h: usize, nodata: f64, cell_m: f64,
+    max_cost: f64, max_dist: usize, minimize_dist: bool, fill_deps: bool,
+) -> Vec<f64> {
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
+    use std::f64::consts::SQRT_2;
+
+    const DX: [isize; 8] = [1, 1, 1, 0, -1, -1, -1, 0];
+    const DY: [isize; 8] = [-1, 0, 1, 1, 1, 0, -1, -1];
+
+    let small = wbt_small_increment(dem, nodata, cell_m, true);
+    let mut data = dem.to_vec();
+
+    // -- detect_strict_pits_with_raise: pits lowered a hair below their lowest
+    // neighbour so the plug level is strict; border cells cannot be pits
+    // because out-of-bounds neighbours count as nodata. --
+    let mut pits: Vec<(usize, f64)> = Vec::new();
+    for i in 0..w * h {
+        let z = data[i];
+        if z == nodata { continue; }
+        let (r, c) = (i / w, i % w);
+        let mut is_pit = true;
+        let mut min_zn = f64::INFINITY;
+        for k in 0..8 {
+            let rn = r as isize + DY[k];
+            let cn = c as isize + DX[k];
+            let zn = if rn < 0 || cn < 0 || rn >= h as isize || cn >= w as isize {
+                nodata
+            } else {
+                data[rn as usize * w + cn as usize]
+            };
+            if zn < min_zn { min_zn = zn; }
+            if zn == nodata || zn < z { is_pit = false; break; }
         }
-        if !is_min { continue; }
-        // BFS to find nearest outlet (border cell) minimising max elevation
-        // Simple: lower the start's neighbours that are barriers.
-        // Heuristic: lower cells along the path of steepest descent's reverse.
-        // We'll just lower the highest neighbour by a small amount to create a drain.
-        let mut best_j = None;
-        let mut best_max = f32::INFINITY;
-        for &(dx,dy) in &nbrs {
-            let nx = sx as i64 + dx; let ny = sy as i64 + dy;
-            if nx<0||ny<0||nx>=w as i64||ny>=h as i64 { continue; }
-            let j = ny as usize*w+nx as usize;
-            if !out[j].is_finite() || out[j]==nodata { continue; }
-            let mx = out[start].max(out[j]);
-            if mx < best_max { best_max = mx; best_j = Some(j); }
-        }
-        if let Some(j) = best_j {
-            if out[j] > out[start] {
-                // lower j to start's level (breach)
-                if (j as i64 - start as i64).abs() <= max_dist as i64 {
-                    out[j] = out[start];
-                }
-            }
+        if is_pit {
+            data[i] = min_zn - small;
+            pits.push((i, z)); // original elevation, like the reference
         }
     }
-    out
+    if pits.is_empty() {
+        return if fill_deps {
+            fill_depressions_wbt(&data, w, h, nodata, cell_m, true)
+        } else {
+            data
+        };
+    }
+    // sorted descending; pop() from the back processes the LOWEST pit first
+    pits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+
+    let step_dist = [SQRT_2, 1.0, SQRT_2, 1.0, SQRT_2, 1.0, SQRT_2, 1.0];
+    let backlink_dir = [4usize, 5, 6, 7, 0, 1, 2, 3];
+    let mut encountered = vec![0u8; w * h];
+    let mut backlink = vec![-1i8; w * h];
+    let mut path_length = vec![0i16; w * h];
+    let mut touched: Vec<usize> = Vec::new();
+
+    // Min-heap by cost, matching CostNode's ordering (partial_cmp reversed).
+    #[derive(Clone, Copy)]
+    struct CostNode { cost: f64, steps: usize, i: usize }
+    impl PartialEq for CostNode {
+        fn eq(&self, o: &Self) -> bool {
+            self.i == o.i && self.cost.to_bits() == o.cost.to_bits() && self.steps == o.steps
+        }
+    }
+    impl Eq for CostNode {}
+    impl PartialOrd for CostNode {
+        fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(o.cost.total_cmp(&self.cost)) }
+    }
+    impl Ord for CostNode {
+        fn cmp(&self, o: &Self) -> Ordering { o.cost.total_cmp(&self.cost) }
+    }
+
+    while let Some((pit, _orig)) = pits.pop() {
+        let pit_z = data[pit];
+        let r0 = pit / w;
+        let c0 = pit % w;
+        let mut still_pit = true;
+        for k in 0..8 {
+            let rn = r0 as isize + DY[k];
+            let cn = c0 as isize + DX[k];
+            if rn < 0 || cn < 0 || rn >= h as isize || cn >= w as isize { continue; }
+            let zn = data[rn as usize * w + cn as usize];
+            if zn != nodata && zn < pit_z { still_pit = false; break; }
+        }
+        if !still_pit { continue; }
+
+        encountered[pit] = 1;
+        touched.push(pit);
+
+        let mut heap = BinaryHeap::<CostNode>::new();
+        heap.push(CostNode { cost: 0.0, steps: 0, i: pit });
+
+        let mut solved = false;
+        while let Some(node) = heap.pop() {
+            if node.cost > max_cost { break; }
+            let length = path_length[node.i] as usize;
+            if length > max_dist { continue; }
+            let zn_node = data[node.i];
+            let cost1 = zn_node - pit_z + (length as f64 * small);
+
+            let r = node.i / w;
+            let c = node.i % w;
+            for k in 0..8 {
+                let rn = r as isize + DY[k];
+                let cn = c as isize + DX[k];
+                if rn < 0 || cn < 0 || rn >= h as isize || cn >= w as isize { continue; }
+                let ni = rn as usize * w + cn as usize;
+                if encountered[ni] == 1 { continue; }
+                touched.push(ni);
+                let next_steps = length + 1;
+                path_length[ni] = next_steps as i16;
+                backlink[ni] = backlink_dir[k] as i8;
+                let zn = data[ni];
+                let zout = pit_z - (next_steps as f64 * small);
+                if zn > zout && zn != nodata {
+                    let cost2 = zn - zout;
+                    let next_cost = if minimize_dist {
+                        node.cost + ((cost1 + cost2) / 2.0) * step_dist[k]
+                    } else {
+                        node.cost + cost2
+                    };
+                    encountered[ni] = 1;
+                    if next_steps <= max_dist {
+                        heap.push(CostNode { cost: next_cost, steps: next_steps, i: ni });
+                    }
+                } else {
+                    // outlet reached: carve the path back to the pit
+                    let mut ti = ni;
+                    while backlink[ti] > -1 {
+                        let b = backlink[ti] as usize;
+                        let tr = ti / w;
+                        let tc = ti % w;
+                        let pr = (tr as isize + DY[b]) as usize;
+                        let pc = (tc as isize + DX[b]) as usize;
+                        ti = pr * w + pc;
+                        let l = path_length[ti] as f64;
+                        let desired = pit_z - l * small;
+                        if data[ti] > desired { data[ti] = desired; }
+                    }
+                    solved = true;
+                    break;
+                }
+            }
+            if solved { break; }
+        }
+
+        for i in touched.drain(..) {
+            encountered[i] = 0;
+            backlink[i] = -1;
+            path_length[i] = 0;
+        }
+    }
+
+    if fill_deps {
+        fill_depressions_wbt(&data, w, h, nodata, cell_m, true)
+    } else {
+        data
+    }
 }
 
 #[cfg(test)]
 mod breach_tests {
     use super::*;
     #[test]
-    fn breaches() {
-        // 3x3: centre pit surrounded by a wall
-        let mut dem = vec![1.0f32; 9];
-        dem[4] = 0.0;
-        // wall on the right
-        dem[5] = 5.0;
-        let out = breach_depressions_simple(&dem, 3, 3, -9999.0, 60);
-        // some cell should be lowered (breach attempted)
-        assert!(out.iter().zip(dem.iter()).any(|(a,b)| a < b), "a barrier should be lowered");
+    fn breaches_wall_to_border() {
+        // 5x5: basin cells at 3.0 behind a 10.0 column, deep pit at (1,2)=1.0,
+        // and a lower border outlet at (2,4)=2.0. The reference first raises
+        // the pit to its plug level (3 - eps), then carves a path through the
+        // wall down an epsilon-gradient to the outlet.
+        let mut dem = vec![10.0f64; 25];
+        dem[6] = 3.0;  // r=1,c=1 basin
+        dem[7] = 1.0;  // r=1,c=2 pit
+        dem[11] = 3.0; // r=2,c=1 basin
+        dem[12] = 10.0; // r=2,c=2 wall
+        dem[13] = 10.0; // r=2,c=3 wall
+        dem[14] = 2.0; // r=2,c=4 border outlet
+        let out = breach_depressions_wbt(&dem, 5, 5, -9999.0, 40.0, f64::INFINITY, 60, false, false);
+        let small = wbt_small_increment(&dem, -9999.0, 40.0, true);
+        // pit cell was lowered/raised onto the plug level by detect_strict_pits
+        assert!((out[7] - (3.0 - small)).abs() < 1e-9, "pit plugging: {:.12}", out[7]);
+        // the wall cell on the breach path is carved down to the basin level
+        assert!(out[13] < 5.0, "wall on the breach path should be carved, got {}", out[13]);
+        assert_eq!(out[14], 2.0, "outlet cell must not be raised");
+        assert_eq!(out[0], 10.0, "unaffected terrain stays put");
+    }
+    #[test]
+    fn border_cells_not_pits() {
+        // A lower border row is never a pit (OOB neighbours act as nodata):
+        // nothing gets carved here at all.
+        let mut dem = vec![10.0f64; 25];
+        for c in 0..5 { dem[20 + c] = 4.0; }
+        let out = breach_depressions_wbt(&dem, 5, 5, -9999.0, 40.0, f64::INFINITY, 60, false, true);
+        assert!(out.iter().all(|&z| z.is_finite() && z >= 3.9),
+                "terrain stays sensible, got {:?}", out);
     }
 }
