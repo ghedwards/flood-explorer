@@ -9,29 +9,31 @@ tie-breaking. Both are edge cases, not systemic.
 
 ## Research
 
-- HAND (height above nearest drainage) needs, for every cell, the
-  downstream cell where the stream network begins; unresolved cells sit
-  in flats/depressions where the routing chain never reaches a stream
-  cell before exhausting the chain buffer.
-- D8 ties happen when two neighbours have equal drop; the reference
+- **HAND is not wired into the app.** `hand_simple` is defined and unit-tested
+  in `rust/flood-core/src/hydro.rs` but is called nowhere in the wasm
+  dispatch or the page — there is no HAND band in the UI (grep confirms
+  no consumer). So the "HAND 98.86% parity" residue affects no user today.
+- **D8 ties** happen when two neighbours have equal drop; the reference
   implementation picks by index order, our port matches 99.95% — the
   residue is where the reference's own tie order is data-dependent.
-- Both matter for presentation (stray NaN in the HAND band) more than
-  for the headline flood numbers.
+- Both matter for presentation (stray NaN in a HAND band) more than for
+  the headline flood numbers.
 
 ## Design
 
-1. **HAND fallback**: for unresolved cells, fall back to the nearest
-   resolved cell (chamfer distance pass, the util already in
-   flood-core) and flag them; the HAND band then renders complete with
-   a documented approximation for < 0.2% of cells.
-2. **D8 ties**: document the tie-break rule in the wasm bridge docs and
-   the parity note instead of chasing bit-exactness on the residue —
-   the reference's own behaviour there is arbitrary. If a future
-   reference pins a rule, adopt it.
-3. **Parity battery**: keep the current acceptance thresholds and add
-   the fallback flag as a reported count so the residue is visible in
-   CI output rather than silent.
+1. **HAND: no action now.** Keep `hand_simple` defined and tested (it is
+   ready for a future HAND band / floodplain-storage feature — see
+   `floodplain-storage-design.md`). The chamfer fallback only earns its
+   keep once a consumer exists; wiring it into `analyse` would change
+   the parity battery's HAND checksums without any user-visible effect.
+   Revisit when a HAND band ships.
+2. **D8 ties: document, don't chase.** Record the tie-break rule in the
+   wasm bridge docs and the parity note rather than bit-chasing the
+   residue — the reference's own behaviour there is arbitrary. If a
+   future reference pins a rule, adopt it.
+3. **Parity battery**: keep the current acceptance thresholds and keep
+   reporting the residue counts so the change is visible in CI output
+   rather than silent.
 
 ## Test plan
 

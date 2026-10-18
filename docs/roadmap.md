@@ -34,5 +34,6 @@ that breaks tests is reverted and redesigned.
 - Map render path — `map-render-path-design.md` (last of the perf
   audit's Top 5; measure-first, four small items).
 - HAND flat-cell fallback and D8 tie documentation —
-  `hand-d8-polish-design.md` (small accuracy items).
+  `hand-d8-polish-design.md` (D8 docs-only; HAND fallback deferred
+  until a HAND band ships — `hand_simple` is defined but unused).
 - Blocked: measured floor heights and IFD design rainfall (no open data).
