@@ -627,7 +627,8 @@ import './inertial-grid.js';
       }
       const opts = { seconds: number('inertialMinutes') * 60, rainMmH: number('inertialRain'),
         inflow: number('inertialInflow'), inflowCell: window.FloodInertialGrid.cell(g, a, state.gauge),
-        initialDepth: number('inertialInitial'), roughness: number('inertialRoughness'), stages };
+        initialDepth: number('inertialInitial'), roughness: number('inertialRoughness'), stages,
+        inflowSeries: buildInflowSeries(number('inertialMinutes') * 60) };
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
       $('inertialRun').disabled = true; $('inertialCancel').disabled = false;
@@ -656,7 +657,7 @@ import './inertial-grid.js';
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('inertialProgress').value = 1;
-        const rainOnly = !settings.inflow && settings.rainMmH > 0 && $('inertialBoundary').value !== 'sea';
+        const rainOnly = !settings.inflow && !settings.inflowSeries && settings.rainMmH > 0 && $('inertialBoundary').value !== 'sea';
         $('inertialStatus').textContent = `Local-inertial 2D: final depth at ${fmt(r.time / 60, 1)} min, ${Math.round(g.cell)} m cells. Stored ${fmt(r.volume, 1)} m³; added ${fmt(r.sourceVolume, 1)} m³; boundary exchange ${fmt(r.boundaryVolume, 1)} m³; balance error ${r.balanceError.toExponential(2)} m³. Partial edge blocks and blocks with missing terrain are excluded.` + (rainOnly
           ? ' Rain-only run with sealed edges: the rain (a few mm to cm) stays on every cell, so most of the map shows as under 0.5 m — set a gauge inflow or open the sea boundary for channel flooding.'
           : '');
@@ -5245,6 +5246,23 @@ import './inertial-grid.js';
     if ($('relUnit').value === 'm3s') { const q = peakFlowNow(); if (!q) return null; frac = v / q; }
     return { startHours: parseFloat($('relStart').value) || 0, hours: Math.max(1, parseFloat($('relHours').value) || 24), frac };
   }
+  // Per-hour release series for the 2D solver (m³/s at the gauge cell).
+  function buildInflowSeries(seconds) {
+    const v = parseFloat($('relFlow').value) || 0;
+    if (v <= 0) return undefined;
+    let m3s = v;
+    if ($('relUnit').value === 'pct') {
+      const q = peakFlowNow();
+      if (!q) return undefined;
+      m3s = (v / 100) * q;
+    }
+    const startH = Math.max(0, parseFloat($('relStart').value) || 0);
+    const durH = Math.max(1, parseFloat($('relHours').value) || 24);
+    const nH = Math.max(1, Math.ceil(seconds / 3600));
+    const series = new Float64Array(nH);
+    for (let h = 0; h < nH; h++) if (h >= startH && h < startH + durH) series[h] = m3s;
+    return series;
+  }
   function renderReleaseNote() {
     const note = $('relNote');
     if (!note || !state.a || state.gauge < 0) return;
@@ -6263,6 +6281,11 @@ import './inertial-grid.js';
     if (id === 'panel-profile' && state.run) drawProfile(scenario());
   }
 
+  function closePanel(id) {
+    if (id === 'panel-scenario' && !isPhone()) { setScenarioCollapsed(true); return; }
+    $(id).hidden = true;
+    syncPanels();
+  }
   // keyboard: Escape closes the open (non-scenario) panel
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
