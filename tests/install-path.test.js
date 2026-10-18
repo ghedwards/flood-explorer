@@ -6,7 +6,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 (async () => {
-  const bytes = fs.readFileSync(path.join(__dirname, '../viewer/flood.wasm'));
+  const wasmFile = process.env.FLOOD_WASM
+    ? path.resolve(__dirname, '..', process.env.FLOOD_WASM)
+    : path.join(__dirname, '../viewer/flood.wasm');
+  const bytes = fs.readFileSync(wasmFile);
   globalThis.self = globalThis;
   globalThis.fetch = async () => new Response(bytes, { headers: { 'content-type': 'application/wasm' } });
 
