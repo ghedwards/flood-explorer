@@ -4,14 +4,17 @@ Working backlog with links to design notes. Items are implemented one
 design note at a time; a note is written before its code, and an approach
 that breaks tests is reverted and redesigned.
 
-## Shipped this cycle
+## Shipped this cycle (continued)
 
-- Perf Top-5 (playback split, bag trim, worker relocation, timeline
-  round-trip; render path intentionally last) — notes: `timeline-playback-perf-design.md`, `wasm-bag-trim-design.md`, `worker-resident-analysis-design.md`.
-- wasm-only model + JS removal — `js-impl-removal-design.md`.
-- 2D hazard velocities — `hazard-velocity-wasm.md`.
-- Impact for the 2D solver — `2d-impact-design.md`.
-- Map feel: sub-pixel wheel zoom, basemap tile-failure notice.
+- Evacuation route to centres — already built (`routeOut` Dijkstra with
+  parent pointers, `drawRoute` polyline, persisted in property snapshots
+  and shown in the report); no new code needed.
+- Dam releases on the 2D solver — time-varying inflow series in Rust +
+  wasm bridge + app wiring (`buildInflowSeries`); release box drives it.
+- Visual regression in CI — `snap()` helper + pixelmatch against
+  `tests/visual/` baselines (seed on first run, UPDATE_VISUALS rewrites).
+- Basemap failover, arrival times, map render path, keyboard/a11y,
+  offline Overpass fix.
 
 ## Backlog (researched, notes in this folder)
 
