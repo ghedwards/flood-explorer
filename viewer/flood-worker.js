@@ -52,11 +52,15 @@ self.onmessage = async (e) => {
     if (self.FloodCore.engine === 'rust' && a && a.N && a.ocean && a.stream
       && typeof self.FloodCore.handleOf === 'function' && typeof self.FloodCore.byHandle === 'function') {
       key = ++keySeq;
+      // `a` below is the lifetime anchor: the wasm analysis is dropped when
+      // this worker-side object is collected (FinalizationRegistry), so the
+      // resident entry must hold it or later keyed runs hit a freed handle
       resident.set(key, {
-        h: self.FloodCore.handleOf(a), W: a.W, H: a.H, cell: a.cell, N: a.N,
+        h: self.FloodCore.handleOf(a), a, W: a.W, H: a.H, cell: a.cell, N: a.N,
         ocean: new Uint8Array(a.ocean),   // copied before the transfer detaches this side
         stream: new Uint8Array(a.stream),
       });
+      while (resident.size > 4) resident.delete(resident.keys().next().value);
     }
     const transfer = new Set();
     for (const v of Object.values(a)) {

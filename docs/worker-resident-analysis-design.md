@@ -61,6 +61,18 @@ playback — eliminating that duplication means precomputed per-step frames
 - Worker calibrate errors reject and render as the existing
   "Couldn't compare" hint.
 
+## Lifetime anchor (learned from the first live run)
+
+The wasm analysis is freed by a FinalizationRegistry when the worker-side
+analysis object is collected. Since the analyse reply *transfers* that
+object's buffers to the page, nothing else referenced it — the wasm
+analysis was dropped within a GC or two and keyed timeline runs then hit
+"no such analysis" (runTimeline caught it and returned null, which showed
+up in CI smoke as "flood over time failed: null"). The resident entry
+therefore stores the analysis object itself as a strong reference
+(lifetime anchor); the entry is capped FIFO at 4, and evicted keys fall
+back through the `__rekey__` path.
+
 ## Testing
 
 - Battery: node tests (wasm engine), eslint, clippy/cargo test, parity vs
