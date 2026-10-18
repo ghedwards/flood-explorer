@@ -363,17 +363,22 @@ import './inertial-grid.js';
 
   // The flow analysis is the slow step (seconds on big areas): run it in a
   // background worker, falling back to the page if workers are unavailable.
-  let worker = null, workerSeq = 0;
+  let worker = null, workerGen = 0, workerSeq = 0;
   const workerJobs = new Map();
   function getWorker() {
     if (worker === false) return null;
     if (!worker) {
       try {
+        workerGen++;           // resident-analysis keys belong to one worker instance
         worker = new Worker(new URL('./flood-worker.js', import.meta.url), { type: 'module' });
         worker.onmessage = (e) => {
           const job = workerJobs.get(e.data.id);
           if (!job) return;
           workerJobs.delete(e.data.id);
+          if (e.data.a && e.data.key != null) {   // worker-resident analysis: later timeline/calibrate runs reuse it
+            e.data.a.analysisKey = e.data.key;
+            e.data.a.keyGen = workerGen;
+          }
           if (e.data.error) job.reject(new Error(e.data.error)); else job.resolve(e.data.a);
         };
         worker.onerror = (e) => {
@@ -4819,16 +4824,6 @@ import './inertial-grid.js';
     area.recMasks[key] = { flood, near, features: feats.length };
     return area.recMasks[key];
   }
-  function scoreRun(a, run, m) {
-    let hit = 0, miss = 0, fa = 0;
-    for (let c = 0; c < a.N; c++) {
-      if (!m.near[c] || (a.ocean && a.ocean[c]) || a.stream[c]) continue;
-      const w = run.wet[c] === 1, f = m.flood[c] === 1;
-      if (w && f) hit++; else if (f) miss++; else if (w) fa++;
-    }
-    const csi = hit + miss + fa ? hit / (hit + miss + fa) : 0;
-    return { hit, miss, fa, csi, captured: hit + miss ? hit / (hit + miss) : 0, extra: hit + fa ? fa / (hit + fa) : 0 };
-  }
   const scoreText = (s, km2) => `<strong>Agreement ${Math.round(s.csi * 100)}/100.</strong> The scenario floods ${Math.round(s.captured * 100)}% of the recorded flood; ${Math.round(s.extra * 100)}% of what it floods nearby was dry in the record (${(s.fa * km2).toFixed(2)} km²).`;
   async function scoreRecorded(id) {
     const area = state.areaKey && areaReg.get(state.areaKey);
@@ -4838,7 +4833,7 @@ import './inertial-grid.js';
     if (out) out.innerHTML = '<p class="hint">Fetching the recorded outline…</p>';
     try {
       const m = await recordedMask(rec);
-      const s = scoreRun(state.a, state.run, m);
+      const s = F.scoreRun(state.a, state.run, m);
       const html = `<p>${scoreText(s, (state.a.cell * state.a.cell) / 1e6)}</p>`;
       area.recScores = area.recScores || {};
       area.recScores[id] = html;
@@ -4851,8 +4846,25 @@ import './inertial-grid.js';
       return status.recScore;
     }
   }
-  // Calibrate: try river levels at the gauge and keep the one whose flood
-  // best matches the recorded outline.
+  // Calibrate: try river levels at the gauge (in the flood worker when the
+  // analysis is resident there — see docs/worker-resident-analysis-design)
+  // and keep the one whose flood best matches the recorded outline.
+  async function calibrateAsync(a, s0, m, bed) {
+    const scan = (tick) => F.calibrateLevels(a, s0, m, bed, (s, lv) => F.inundate(a, Object.assign({}, s, { gaugeLevel: lv }), { slim: 1 }), tick);
+    const w = getWorker();
+    if (!modelUnavailable && w && a.analysisKey != null && a.keyGen === workerGen) {
+      try {
+        return await new Promise((resolve, reject) => {
+          const id = ++workerSeq;
+          workerJobs.set(id, { resolve, reject });
+          w.postMessage({ id, kind: 'calibrate', aKey: a.analysisKey, s0: Object.assign({}, s0), m: { near: m.near, flood: m.flood }, bed });
+        });
+      } catch (err) {
+        say(`Calibrating on the main thread instead: ${err.message || err}`);
+      }
+    }
+    return scan(nextFrame);
+  }
   async function fitRecorded(id) {
     const area = state.areaKey && areaReg.get(state.areaKey);
     const rec = RECORDED.find((r) => r.id === id) || (area && (area.recorded || []).find((r) => r.id === id));
@@ -4864,17 +4876,7 @@ import './inertial-grid.js';
       const m = await recordedMask(rec);
       const s0 = scenario();
       const bed = a.dem[state.gauge];
-      const tryLevel = (lv) => scoreRun(a, F.inundate(a, Object.assign({}, s0, { gaugeLevel: lv }), { slim: 1 }), m);
-      let best = { lv: s0.gaugeLevel, s: tryLevel(s0.gaugeLevel) };
-      for (let lv = bed + 0.5; lv <= bed + 20; lv += 0.5) {
-        const s = tryLevel(lv);
-        if (s.csi > best.s.csi) best = { lv, s };
-        if (lv % 2 < 0.5) await nextFrame();
-      }
-      for (let lv = best.lv - 0.45; lv <= best.lv + 0.45; lv += 0.05) {
-        const s = tryLevel(lv);
-        if (s.csi > best.s.csi) best = { lv, s };
-      }
+      const best = await calibrateAsync(a, s0, m, bed);
       const lvR = Math.round(best.lv * 100) / 100;
       const html = `<p>Best match: river at <strong>${lvR.toFixed(2)} m</strong> at the gauge (${(lvR - bed).toFixed(1)} m above the river surface in the elevation data). ${scoreText(best.s, (a.cell * a.cell) / 1e6)}</p>
         <button type="button" class="btn small" data-use-level="${lvR}">Use this level</button>`;
@@ -5070,13 +5072,27 @@ import './inertial-grid.js';
   window.__floodLeveesFail = (on) => { const d = defs(); if (!d) return null; d.allFail = on; return applyDefences().then(() => status.defences); };
 
   /* ---------- flood over time: when places flood, roads close, places are cut off */
-  function timelineAsync(a, s, opts) {
+  async function timelineAsync(a, s, opts) {
     const onMainThread = () => {
       if (F.engine !== 'rust') return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
       return nextFrame().then(() => F.floodTimeline(a, s, opts));
     };
     const w = getWorker();
     if (!w) return onMainThread();
+    // when the analysis is resident in the worker (key + same generation),
+    // send the key instead of cloning the whole grid into the message
+    if (a.analysisKey != null && a.keyGen === workerGen) {
+      try {
+        return await new Promise((resolve, reject) => {
+          const id = ++workerSeq;
+          workerJobs.set(id, { resolve, reject, fallback: onMainThread });
+          w.postMessage({ id, kind: 'timeline', aKey: a.analysisKey, s, opts });
+        });
+      } catch (err) {
+        // a worker that lost the resident analysis asks for the full object
+        if (!String(err && err.message).startsWith('__rekey__')) throw err;
+      }
+    }
     return new Promise((resolve, reject) => {
       const id = ++workerSeq;
       workerJobs.set(id, { resolve, reject, fallback: onMainThread });

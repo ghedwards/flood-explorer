@@ -407,10 +407,46 @@
    * or throws if the file uses a layout this reader doesn't handle.
    */
 
+  /* ------------------------------------------------------- recorded-flood calibration */
+
+  // Agreement of a run with a recorded flood outline, over cells within
+  // flood-reach distance of the outline: hits flood both, misses flood only
+  // in the record, false alarms flood only in the model.
+  function scoreRun(a, run, m) {
+    let hit = 0, miss = 0, fa = 0;
+    for (let c = 0; c < a.N; c++) {
+      if (!m.near[c] || (a.ocean && a.ocean[c]) || a.stream[c]) continue;
+      const w = run.wet[c] === 1, f = m.flood[c] === 1;
+      if (w && f) hit++; else if (f) miss++; else if (w) fa++;
+    }
+    const csi = hit + miss + fa ? hit / (hit + miss + fa) : 0;
+    return { hit, miss, fa, csi, captured: hit + miss ? hit / (hit + miss) : 0, extra: hit + fa ? fa / (hit + fa) : 0 };
+  }
+
+  // Which river level best reproduces the recorded flood: sweep the level
+  // in 0.5 m steps from half a metre above the river bed up to 20 metres,
+  // then refine in 5 cm steps around the best. `run(s0, lv)` builds the
+  // flood run; `tick` (if given) is awaited between sweep steps so a
+  // main-thread fallback can keep the page painting.
+  async function calibrateLevels(scoreA, s0, m, bed, run, tick) {
+    const tryLevel = (lv) => scoreRun(scoreA, run(s0, lv), m);
+    let best = { lv: s0.gaugeLevel, s: tryLevel(s0.gaugeLevel) };
+    for (let lv = bed + 0.5; lv <= bed + 20; lv += 0.5) {
+      if (tick) await tick();
+      const s = tryLevel(lv);
+      if (s.csi > best.s.csi) best = { lv, s };
+    }
+    for (let lv = best.lv - 0.45; lv <= best.lv + 0.45; lv += 0.05) {
+      const s = tryLevel(lv);
+      if (s.csi > best.s.csi) best = { lv, s };
+    }
+    return best;
+  }
+
   return {
     syntheticTerrain, mainStem, snapToStream, encodeWhiteboxD8,
     mergeRuns, lineCells, hazardClass, stormUplift,
-    parseAsciiGrid, downsample, cleanNodata,
+    parseAsciiGrid, downsample, cleanNodata, scoreRun, calibrateLevels,
     // exposed for callers that need the internals (app.js uses MinHeap
     // for road-network routing)
     _internal: { MinHeap, chamferDistance, mulberry32 },

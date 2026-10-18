@@ -347,7 +347,14 @@
       analyse, streamSurface, inundate, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
     };
-    return Object.assign({}, J, rust, { engine: 'rust', rustFunctions: Object.keys(rust) });
+    // resident analyses: the worker keeps wasm handles for analyses it
+    // computed, so later ops (timeline, calibration) don't re-upload them
+    function byHandle(h) {
+      const o = { engine: 'rust' };
+      handles.set(o, h);
+      return o;
+    }
+    return Object.assign({}, J, rust, { engine: 'rust', rustFunctions: Object.keys(rust), handleOf, byHandle });
   }
 
   /* ------------------------------------------------- loading it live */
