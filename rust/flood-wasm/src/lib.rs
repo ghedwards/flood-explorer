@@ -663,7 +663,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 .f32s("gauge", &tl.gauge)
                 .num("wordsPerStep", tl.words_per_step as f64)
                 .u32s("wetBits", &tl.wet_bits)
-                .u32s("deepBits", &tl.deep_bits);
+                .u32s("deepBits", &tl.deep_bits)
+                .u8s("depthFrames", &tl.depth_frames)
+                .f32s("depthFrameMax", &tl.depth_frame_max);
         }
         "burnDefences" => {
             let g = grid_of(b)?;

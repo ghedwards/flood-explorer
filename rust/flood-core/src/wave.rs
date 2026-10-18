@@ -920,6 +920,11 @@ pub struct Timeline {
     pub words_per_step: usize,
     pub wet_bits: Vec<u32>,
     pub deep_bits: Vec<u32>,
+    /// Per-step depth frames, u8 quantised to the frame's max depth (m);
+    /// concatenated, `steps * n` bytes. Empty when no steps.
+    pub depth_frames: Vec<u8>,
+    /// Per-step max depth (m) used to dequantise `depth_frames`.
+    pub depth_frame_max: Vec<f32>,
 }
 
 pub fn flood_timeline(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Timeline {
@@ -936,6 +941,9 @@ pub fn flood_timeline(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Timeline {
     let wps = n.div_ceil(32);
     let (mut wet_bits, mut deep_bits) = (vec![0u32; steps * wps], vec![0u32; steps * wps]);
     let mut wse = vec![f64::NAN; n];
+    let mut depth_frames: Vec<u8> = Vec::with_capacity(steps * n);
+    let mut depth_frame_max: Vec<f32> = Vec::with_capacity(steps);
+
     for k in 0..steps {
         let t = t0 + k as f64 * step;
         gauge[k] = w.gauge_at(t) as f32;
@@ -945,6 +953,7 @@ pub fn flood_timeline(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Timeline {
         sc.wse = None;
         let run = inundate_with(a, &sc, wse.clone(), vec![0u8; n]);
         let mut cnt = 0;
+        let mut mx = 0.0f32;
         for c in 0..n {
             if run.wet[c] == 0 || a.ocean[c] != 0 {
                 continue;
@@ -967,8 +976,19 @@ pub fn flood_timeline(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Timeline {
                 }
                 last_deep[c] = k as i16;
             }
+            if run.depth[c] > mx {
+                mx = run.depth[c];
+            }
+        }
+        // encode this step's depths as u8 (scaled to the frame max)
+        let scale = if mx > 0.0 { mx / 255.0 } else { 1.0 };
+        depth_frame_max.push(mx);
+        for c in 0..n {
+            let d = if run.wet[c] != 0 && a.ocean[c] == 0 { run.depth[c] } else { 0.0 };
+            let q = if d <= 0.0 { 0u8 } else { ((d / scale).round().min(255.0)) as u8 };
+            depth_frames.push(q);
         }
         wet_count[k] = cnt;
     }
-    Timeline { t0, step, steps, first_wet, last_wet, first_deep, last_deep, wet_count, gauge, words_per_step: wps, wet_bits, deep_bits }
+    Timeline { t0, step, steps, first_wet, last_wet, first_deep, last_deep, wet_count, gauge, words_per_step: wps, wet_bits, deep_bits, depth_frames, depth_frame_max }
 }

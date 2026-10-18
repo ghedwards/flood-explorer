@@ -5587,12 +5587,29 @@ import './inertial-grid.js';
     const area = state.areaKey && areaReg.get(state.areaKey), tl = area && area.timeline, a = state.a;
     if (!tl || !a) return;
     state.timeStep = k;
-    const t = tl.t0 + k * tl.step;
-    // one scratch buffer for the unset water surface, NaN-filled per step
-    const wse = state.wseScratch && state.wseScratch.length === a.N ? state.wseScratch : (state.wseScratch = new Float64Array(a.N));
+    const n = a.N;
+    const wse = state.wseScratch && state.wseScratch.length === n ? state.wseScratch : (state.wseScratch = new Float64Array(n));
     wse.fill(NaN);
-    F.waveSurface(a, tl.wave, t, wse);
-    state.run = F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }), { slim: 1 });
+    const hasFrame = tl.depthFrames && tl.depthFrames.length >= (k + 1) * n && tl.depthFrameMax && tl.depthFrameMax.length > k;
+    let run;
+    if (hasFrame) {
+      const maxD = tl.depthFrameMax[k] || 0;
+      const frame = tl.depthFrames.subarray(k * n, (k + 1) * n);
+      const depth = new Float32Array(n);
+      const wet = new Uint8Array(n);
+      const level = new Float32Array(n);
+      level.fill(NaN);
+      for (let c = 0; c < n; c++) {
+        const q = frame[c];
+        if (q > 0) { wet[c] = 1; depth[c] = (q / 255) * maxD; level[c] = a.dem[c] + depth[c]; wse[c] = level[c]; }
+      }
+      run = { depth, wet, level, wse, onPath: new Uint8Array(n), vx: new Float64Array(n), vy: new Float64Array(n) };
+    } else {
+      const t = tl.t0 + k * tl.step;
+      F.waveSurface(a, tl.wave, t, wse);
+      run = F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }), { slim: 1 });
+    }
+    state.run = run;
     state.timeView = true;
     drawMap();
     drawStats(tl.s);

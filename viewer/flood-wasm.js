@@ -315,6 +315,7 @@
         firstWet: out.firstWet, lastWet: out.lastWet, firstDeep: out.firstDeep, lastDeep: out.lastDeep,
         wetCount: out.wetCount, gauge: out.gauge, wordsPerStep: num(out.wordsPerStep),
         wetBits: out.wetBits, deepBits: out.deepBits,
+        depthFrames: out.depthFrames, depthFrameMax: out.depthFrameMax,
       };
     }
 
