@@ -656,7 +656,10 @@ import './inertial-grid.js';
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('inertialProgress').value = 1;
-        $('inertialStatus').textContent = `Local-inertial 2D: final depth at ${fmt(r.time / 60, 1)} min, ${Math.round(g.cell)} m cells. Stored ${fmt(r.volume, 1)} m³; added ${fmt(r.sourceVolume, 1)} m³; boundary exchange ${fmt(r.boundaryVolume, 1)} m³; balance error ${r.balanceError.toExponential(2)} m³. Partial edge blocks and blocks with missing terrain are excluded.`;
+        const rainOnly = !settings.inflow && settings.rainMmH > 0 && $('inertialBoundary').value !== 'sea';
+        $('inertialStatus').textContent = `Local-inertial 2D: final depth at ${fmt(r.time / 60, 1)} min, ${Math.round(g.cell)} m cells. Stored ${fmt(r.volume, 1)} m³; added ${fmt(r.sourceVolume, 1)} m³; boundary exchange ${fmt(r.boundaryVolume, 1)} m³; balance error ${r.balanceError.toExponential(2)} m³. Partial edge blocks and blocks with missing terrain are excluded.` + (rainOnly
+          ? ' Rain-only run with sealed edges: the rain (a few mm to cm) stays on every cell, so most of the map shows as under 0.5 m — set a gauge inflow or open the sea boundary for channel flooding.'
+          : '');
         state.edges = floodEdges(a, state.run);
         drawMap(); drawStats(scenario()); renderEdgeNote(); drawProfile(scenario());
         maybeRenderImpact(); renderRecorded();
