@@ -873,6 +873,48 @@ import './inertial-grid.js';
     return img;
   }
 
+  // Water raster for the map overlay (Leaflet imageOverlay): flooded cells
+  // in depth/hazard/compare colours, plus — with terrain shading on — the
+  // water that belongs to the picture (ocean, still base water, stream
+  // lines) as semi-transparent pixels over the opaque relief overlay.
+  // The relief overlay is pre-blended exactly as the previously fused
+  // raster was: (0.88·water) over opaque terrain.
+  let waterImg = null;
+  function composeWater() {
+    const a = state.a, run = state.run, base = state.base;
+    const relief = $('showRelief').checked;
+    if (!waterImg || waterImg.width !== a.W || waterImg.height !== a.H) waterImg = new ImageData(a.W, a.H);
+    const d = waterImg.data;
+    d.fill(0);
+    const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
+    const floodA = relief ? 224 : 255;   // 0.88 blends over the relief base; full elsewhere
+    const streamA = relief ? 230 : 0;    // stream lines only with terrain shading
+    let n = 0;
+    for (let i = 0; i < a.N; i++) {
+      if (!a.valid[i]) continue;
+      let col = null;
+      if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
+      if (cmp) {
+        const k = cmp.diff[i];
+        if (k === 2) col = COMPARE_COLORS.onlyNow;
+        else if (k === 3) col = COMPARE_COLORS.onlyPinned;
+        else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
+      } else if (run.wet[i] && isFlood(i)) {
+        if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
+        else {
+          const dep = run.depth[i];
+          for (const [lim, c] of DEPTH_STOPS) if (dep < lim) { col = c; break; }
+        }
+      }
+      const o = i * 4;
+      if (col) { d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = floodA; n++; continue; }
+      if (streamA && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) {
+        d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = streamA;
+      }
+    }
+    return { img: waterImg, count: n };
+  }
+
   // What the flood colours show: depth, hazard class, or the change from a
   // pinned scenario. Hazard colours run light to dark (viridis), the
   // comparison uses orange and purple, so both read without colour vision.
@@ -1185,8 +1227,11 @@ import './inertial-grid.js';
     const st = (status.overlays[o.name] = { features: 0, errors: 0 });
     let layer;
     if (o.type === 'feature') {
+      // canvas rendering: council flood polygons are thousands of SVG paths
+      // at z12+, which re-layouts on every pan; a canvas renderer keeps pan smooth
       layer = esri.featureLayer({
         url: o.url, minZoom: o.minZoom, simplifyFactor: 0.5, precision: 6, attribution: o.attribution,
+        renderer: window.L.canvas({ padding: 0.5 }),
         style: (f) => { const c = o.colorBy ? o.colorBy((f && f.properties) || {}) : o.swatch; return { color: c, weight: 1, fillColor: c, fillOpacity: 0.4 }; },
       });
       layer.on('load', () => { let n = 0; layer.eachFeature(() => { n++; }); st.features = Math.max(st.features, n); });
@@ -1714,6 +1759,13 @@ import './inertial-grid.js';
       area.overlay = L.imageOverlay(BLANK, bounds, {
         opacity: parseFloat($('floodOpacity').value) / 100, className: 'flood-layer', zIndex: 6,
       }).addTo(m);
+      // static terrain shading under the flood raster (never re-encoded per
+      // run or timeline step); blank until the first shaded render
+      area.relief = L.imageOverlay(BLANK, bounds, {
+        opacity: parseFloat($('floodOpacity').value) / 100, interactive: false, className: 'flood-layer', zIndex: 5,
+      }).addTo(m);
+      area.reliefShade = null;
+      area.reliefWas = false;
       area.outline = L.rectangle(bounds, { color: '#c66f1d', weight: 1.5, dashArray: '5 5', fill: false, interactive: false }).addTo(m);
       area.marker = L.marker(bounds.getCenter(), { icon: numIcon(area.n, AREA_COLOR, true), keyboard: true, title: `${area.n}. ${area.name}: flood model`, alt: `${area.n}. ${area.name}`, zIndexOffset: 900 }).addTo(m);
       area.marker.bindTooltip(`${area.n}. ${area.name}: flood model gauge`, { direction: 'top', offset: [0, -12] });
@@ -1723,6 +1775,7 @@ import './inertial-grid.js';
       if (hiddenNums.has(area.n)) setPlaceHidden(area.n, false);
     } else {
       area.overlay.setBounds(bounds);
+      area.relief.setBounds(bounds);
     }
     Object.assign(area, areaFields());
     return area;
@@ -1736,6 +1789,7 @@ import './inertial-grid.js';
       const on = a === area;
       a.outline.setStyle({ color: on ? AREA_COLOR : '#8a6a4a', weight: on ? 2.5 : 1.2, dashArray: on ? null : '5 5' });
       a.marker.setIcon(numIcon(a.n, on ? AREA_COLOR : '#8a6a4a', on));
+      if (!on) { a.reliefShade = null; }   // freed; re-encoded on activation
     }
     reports.forEach(refreshReportLink);
     renderPlaces();
@@ -2119,14 +2173,40 @@ import './inertial-grid.js';
     return { x, y, i: y * a.W + x };
   }
 
-  let overlayGen = 0;
+  let overlayGen = 0, reliefGen = 0;
   function drawGeoMap() {
     const a = state.a;
     const relief = $('showRelief').checked;
-    const img = composeImage(relief);
-    let n = 0;
-    for (let i = 3; i < img.data.length; i += 4) if (img.data[i]) n++;
-    status.floodPixels = relief ? -1 : n;
+    const area = state.areaKey && areaReg.get(state.areaKey);
+    // static relief base, encoded once per analysis and only while active
+    if (area && area.relief) {
+      const ro = area.relief;
+      if (relief && state.terrain) {
+        if (area.reliefShade !== state.terrain) {
+          area.reliefShade = state.terrain;
+          area.reliefWas = true;
+          const offR = state.offscreenRelief = state.offscreenRelief || document.createElement('canvas');
+          if (offR.width !== a.W || offR.height !== a.H) { offR.width = a.W; offR.height = a.H; }
+          offR.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(state.terrain), a.W, a.H), 0, 0);
+          const gen = ++reliefGen;
+          offR.toBlob((blob) => {
+            if (!blob || gen !== reliefGen) return;
+            const url = URL.createObjectURL(blob);
+            const old = ro._floodUrl;
+            ro._floodUrl = url;
+            ro.setUrl(url);
+            if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
+          }, 'image/png');
+        }
+      } else if (area.reliefWas) {
+        area.reliefWas = false;
+        ro.setUrl(BLANK);
+      }
+    }
+    // dynamic water raster (mostly transparent during timeline playback, so
+    // its PNG encodes in a few ms instead of a full opaque grid)
+    const { img, count } = composeWater();
+    status.floodPixels = relief ? -1 : count;
     const off = state.offscreen;
     off.width = a.W; off.height = a.H;
     off.getContext('2d').putImageData(img, 0, 0);
@@ -2182,7 +2262,7 @@ import './inertial-grid.js';
   function onGeoMove(e) {
     if (state.pendingGeo || !state.a || !state.geo || !state.areaKey) return;
     const c = latLngCell(e.latlng);
-    if (c) say(describe(c.i));
+    if (c) describeOncePerFrame(c.i);
   }
 
   function onLocated(e) {
@@ -2200,7 +2280,10 @@ import './inertial-grid.js';
   }
 
   $('floodOpacity').addEventListener('input', (e) => {
-    for (const a of areaReg.values()) a.overlay.setOpacity(parseFloat(e.target.value) / 100);
+    for (const a of areaReg.values()) {
+      a.overlay.setOpacity(parseFloat(e.target.value) / 100);
+      if (a.relief) a.relief.setOpacity(parseFloat(e.target.value) / 100);
+    }
     $('floodOpacityOut').textContent = e.target.value + '%';
   });
   $('showRelief').addEventListener('change', () => { if (state.geo) drawGeoMap(); });
@@ -2524,10 +2607,18 @@ import './inertial-grid.js';
     return parts.join(' · ');
   }
 
+  // mousemove fires per event, far faster than the text is readable: update
+  // the hover description at most once per frame
+  let sayCellPending = -1, sayRaf = 0;
+  function describeOncePerFrame(i) {
+    sayCellPending = i;
+    if (sayRaf) return;
+    sayRaf = requestAnimationFrame(() => { sayRaf = 0; if (sayCellPending >= 0) say(describe(sayCellPending)); });
+  }
   $('map').addEventListener('mousemove', (ev) => {
     if (!state.a) return;
     const c = cellAt(ev);
-    if (c) say(describe(c.i));
+    if (c) describeOncePerFrame(c.i);
   });
   $('map').addEventListener('click', (ev) => {
     if (!state.a) return;
@@ -3776,7 +3867,14 @@ import './inertial-grid.js';
     out.studies = studies.map((x) => ({ l: x.letter, b: x.bounds.map(r5), name: x.name }));
     return out;
   }
-  const b64 = (str) => btoa(String.fromCharCode(...new TextEncoder().encode(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const b64 = (str) => {
+    // chunked char codes: spreading every byte into fromCharCode throws
+    // RangeError past ~65 k bytes, which saved share links would hit
+    const bytes = new TextEncoder().encode(str);
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
   const unb64 = (txt) => new TextDecoder().decode(Uint8Array.from(atob(txt.replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0)));
   function shareUrl() { return `${location.origin}${location.pathname}#s=${b64(JSON.stringify(sessionState()))}`; }
   window.__floodShareUrl = shareUrl;
@@ -5287,7 +5385,8 @@ import './inertial-grid.js';
         <p><strong>Cut off:</strong> ${ac.maxIso ? `up to ${n(ac.maxIso)} dry buildings have no dry road out, ${tl.event ? '' : 'at '}${whenH(ac.maxIsoAt)}; the longest any is cut off is about ${ac.longest} hours.` : 'no dry building loses its last dry road out.'}</p>`
     : '<p class="hint">Count what\'s affected to see road closures and places cut off.</p>'}`;
     const slider = $('tlSlider');
-    slider.addEventListener('input', () => showTimeStep(+slider.value));
+    // rAF-coalesce slider drags: showTimeStep does a full re-inundation
+    slider.addEventListener('input', () => scheduleTimeStep(+slider.value));
     $('tlPlay').addEventListener('click', () => {
       if (state.timePlay) { clearInterval(state.timePlay); state.timePlay = 0; $('tlPlay').textContent = 'Play'; return; }
       $('tlPlay').textContent = 'Pause';
@@ -5312,12 +5411,26 @@ import './inertial-grid.js';
     if (cur) { const xx = (k / (tl.steps - 1)) * 300; cur.setAttribute('x1', xx); cur.setAttribute('x2', xx); }
   }
   // Show the flood at one moment on the map (and in the counts)
+  // one time step re-runs the model at full grid: coalesce slider events
+  let timeRaf = 0, timePending = null;
+  function scheduleTimeStep(k) {
+    timePending = k;
+    if (timeRaf) return;
+    timeRaf = requestAnimationFrame(() => {
+      timeRaf = 0;
+      if (timePending != null) showTimeStep(timePending);
+      timePending = null;
+    });
+  }
   function showTimeStep(k) {
     const area = state.areaKey && areaReg.get(state.areaKey), tl = area && area.timeline, a = state.a;
     if (!tl || !a) return;
     state.timeStep = k;
     const t = tl.t0 + k * tl.step;
-    const wse = F.waveSurface(a, tl.wave, t, new Float64Array(a.N).fill(NaN));
+    // one scratch buffer for the unset water surface, NaN-filled per step
+    const wse = state.wseScratch && state.wseScratch.length === a.N ? state.wseScratch : (state.wseScratch = new Float64Array(a.N));
+    wse.fill(NaN);
+    F.waveSurface(a, tl.wave, t, wse);
     state.run = F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }));
     state.timeView = true;
     drawMap();
