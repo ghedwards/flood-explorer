@@ -12,7 +12,7 @@
 const VERSION = '__BUILD__';
 const APP = `app-${VERSION}`;
 const TILES = 'tiles-v1', TERRAIN = 'terrain-v1', API = 'api-v1';
-const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [API]: 600 };
+const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [API]: 400 };
 
 // Vite replaces this list with every emitted chunk, worker, font and WASM asset.
 const BUILD_ASSETS = [];
@@ -89,6 +89,12 @@ self.addEventListener('fetch', (e) => {
   if (url.hostname === 'services.ga.gov.au' && /GetCoverage/i.test(url.search)) { e.respondWith(cacheFirst(req, TERRAIN)); return; }
   // map-service answers (feature queries, exported images, census areas)
   if (/\/(MapServer|FeatureServer|ImageServer|wms|wfs|ows|WCSServer)\b/i.test(url.pathname) || url.hostname === 'ows.dea.ga.gov.au') {
+    e.respondWith(networkFirst(req, API, 8000));
+  }
+  // impact data comes from Overpass (OpenStreetMap): it must ride the same
+  // API cache or "is this property cut off?" breaks offline (the whole
+  // reason offline mode exists).
+  if (/overpass-api\.de$|overpass\.kumi\.systems$|maps\.mail\.ru$/.test(url.hostname)) {
     e.respondWith(networkFirst(req, API, 8000));
   }
 });
