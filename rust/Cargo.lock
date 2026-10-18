@@ -535,6 +535,7 @@ dependencies = [
 name = "flood-pipeline"
 version = "0.1.0"
 dependencies = [
+ "flood-core",
  "miniz_oxide 0.9.1",
  "png 0.18.1",
  "regex",

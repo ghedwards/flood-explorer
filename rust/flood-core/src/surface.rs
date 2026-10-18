@@ -77,8 +77,8 @@ pub fn stream_surface(a: &Analysis, s: &Scenario) -> (Vec<f64>, Vec<u8>) {
             }
             // anchor: shift so upstream end = gauge level
             let err = s.gauge_level - stages[0];
-            for i in 0..path.len() {
-                if stages[i].is_finite() { stages[i] += err * (1.0 - i as f64 / (path.len()-1) as f64); }
+            for (i, s) in stages.iter_mut().enumerate() {
+                if s.is_finite() { *s += err * (1.0 - i as f64 / (path.len()-1) as f64); }
             }
             for (i, &cell) in path.iter().enumerate() {
                 if stages[i].is_finite() { bw_stage.insert(cell, stages[i]); }
@@ -215,7 +215,7 @@ pub(crate) fn inundate_with(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: 
     let mut carried = if lev.is_some() { vec![0u8; n] } else { Vec::new() };
     // Volume budget for water carried past levees: broad-crested weir
     // discharge over a 24 h duration, summed over overtopped levee cells.
-    let cell_area = (a.cell * a.cell) as f64;
+    let cell_area = a.cell * a.cell;
     let mut budget = f64::INFINITY;
     let mut spent = 0.0f64;
     if let Some(lev) = lev {
@@ -229,7 +229,7 @@ pub(crate) fn inundate_with(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: 
             let crest = a.dem[c] as f64;
             let do_ = stage - crest;
             if do_ > 0.0 {
-                let q = cd * (2.0/3.0) * (2.0*g).sqrt() * (a.cell as f64) * do_.powf(1.5);
+                let q = cd * (2.0/3.0) * (2.0*g).sqrt() * a.cell * do_.powf(1.5);
                 b += q * t;
             }
         }

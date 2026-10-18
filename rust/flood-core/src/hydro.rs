@@ -637,10 +637,9 @@ pub fn flow_accumulation(d8: &[u8], w: usize, h: usize) -> Vec<f64> {
     let mut acc = vec![1.0f64; n];
     let mut done = vec![false; n];
     // cells with no upstream are ready
-    let mut changed = true;
     // We'll do a recursive-ish pass using a stack of ready cells.
     // First mark leaves.
-    let mut ready: Vec<usize> = (0..n).filter(|&i| upstream[i].is_empty()).collect();
+    let ready: Vec<usize> = (0..n).filter(|&i| upstream[i].is_empty()).collect();
     for &i in &ready { done[i] = true; }
     // Process in topological order via queue
     let mut queue = ready.clone();
@@ -658,8 +657,9 @@ pub fn flow_accumulation(d8: &[u8], w: usize, h: usize) -> Vec<f64> {
                 let j = ny as usize * w + nx as usize;
                 acc[j] += acc[i];
                 // mark j ready when all its upstream done
-                if upstream[j].iter().all(|&u| done[u]) {
-                    if !done[j] { done[j] = true; queue.push(j); }
+                if upstream[j].iter().all(|&u| done[u]) && !done[j] {
+                    done[j] = true;
+                    queue.push(j);
                 }
             }
         }
@@ -686,41 +686,54 @@ pub fn extract_streams(acc: &[f64], threshold: f64) -> Vec<u8> {
     acc.iter().map(|&a| if a >= threshold { 1u8 } else { 0u8 }).collect()
 }
 
-/// Elevation above nearest stream (HAND): for each cell, the elevation
-/// difference to the nearest stream cell. First-cut: nearest stream by
-/// Manhattan distance (not flow path).
-pub fn hand_simple(dem: &[f32], streams: &[u8], w: usize, h: usize) -> Vec<f64> {
+/// Elevation above stream (HAND) along flow paths: each cell's HAND is its
+/// elevation minus the elevation of the stream cell its D8 flow path reaches
+/// first. O(n) via memoised path walking. d8 uses Whitebox pointer codes
+/// (1=NE, 2=E, 4=SE, 8=S, 16=SW, 32=W, 64=NW, 128=N; 0/255 = no pointer).
+pub fn hand_simple(dem: &[f32], d8: &[u8], streams: &[u8], w: usize, h: usize) -> Vec<f64> {
     let n = w * h;
-    let mut out = vec![f64::NAN; n];
-    for i in 0..n {
-        if !dem[i].is_finite() { continue; }
-        // find nearest stream cell
-        let (xi, yi) = (i % w, i / w);
-        let mut best = f64::INFINITY;
-        for j in 0..n {
-            if streams[j] == 0 || !dem[j].is_finite() { continue; }
-            let (xj, yj) = (j % w, j / w);
-            let d = ((xi as i64 - xj as i64).abs() + (yi as i64 - yj as i64).abs()) as f64;
-            if d < best { best = d; }
+    debug_assert_eq!(dem.len(), n);
+    debug_assert_eq!(d8.len(), n);
+    debug_assert_eq!(streams.len(), n);
+    let rec = |i: usize| -> usize {
+        let (x, y) = (i % w, i / w);
+        let (dx, dy) = match d8[i] {
+            1 => (1, -1), 2 => (1, 0), 4 => (1, 1), 8 => (0, 1),
+            16 => (-1, 1), 32 => (-1, 0), 64 => (-1, -1), 128 => (0, -1),
+            _ => (0, 0),
+        };
+        if dx == 0 && dy == 0 { return usize::MAX; }
+        let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+        if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { return usize::MAX; }
+        ny as usize * w + nx as usize
+    };
+    let mut dest = vec![usize::MAX; n]; // stream cell each flow path reaches
+    let mut stack: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if !dem[start].is_finite() || dest[start] != usize::MAX { continue; }
+        stack.clear();
+        let mut i = start;
+        loop {
+            if dem[i].is_finite() && (streams[i] != 0 || dest[i] != usize::MAX) { break; }
+            stack.push(i);
+            let r = rec(i);
+            if r == usize::MAX || stack.len() > n { break; } // off-grid, nodata or loop
+            i = r;
         }
-        if best.is_finite() && best < 1e9 {
-            // approximate: use dem difference to nearest stream (by manhattan)
-            // find the actual nearest stream cell
-            let mut nearest = None;
-            let mut bestd = f64::INFINITY;
-            for j in 0..n {
-                if streams[j] == 0 || !dem[j].is_finite() { continue; }
-                let (xj, yj) = (j % w, j / w);
-                let d = ((xi as i64 - xj as i64).abs() + (yi as i64 - yj as i64).abs()) as f64;
-                if d < bestd { bestd = d; nearest = Some(j); }
-            }
-            if let Some(j) = nearest {
-                out[i] = (dem[i] - dem[j]) as f64;
-            }
-        }
+        if streams[i] != 0 && dem[i].is_finite() { dest[i] = i; }
+        let d = dest[i];
+        for &c in &stack { dest[c] = d; }
     }
-    out
+    (0..n).map(|i| {
+        if dem[i].is_finite() && dest[i] != usize::MAX {
+            (dem[i] - dem[dest[i]]) as f64
+        } else {
+            f64::NAN
+        }
+    }).collect()
 }
+
+
 
 #[cfg(test)]
 mod stream_hand_tests {
@@ -733,10 +746,18 @@ mod stream_hand_tests {
     }
     #[test]
     fn hand_nonneg() {
+        // 1x3 draining east: cell 0 flows to cell 1 (E), cell 1 to stream cell 2
         let dem = vec![5.0f32, 3.0, 1.0];
+        let d8 = vec![2u8, 2, 0]; // Whitebox code 2 = east
         let streams = vec![0u8, 0, 1];
-        let h = hand_simple(&dem, &streams, 3, 1);
-        assert!(h[0] >= 0.0);
+        let h = hand_simple(&dem, &d8, &streams, 3, 1);
+        assert!(h[0] >= 0.0 && h[1] >= 0.0);
+        assert_eq!(h[0], 4.0); // 5 - 1 (stream cell elevation)
+        assert_eq!(h[1], 2.0); // 3 - 1
+        // a cell that drains off-grid with no stream gets NaN
+        let isolated = vec![0u8, 0, 0];
+        let h2 = hand_simple(&dem, &isolated, &streams, 3, 1);
+        assert!(h2[0].is_nan() && h2[1].is_nan());
     }
 }
 

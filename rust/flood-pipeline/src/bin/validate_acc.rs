@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)] // diagnostic binary: index loops are clearer here
 use flood_pipeline::geo::read_geotiff;
 use flood_core::hydro::flow_accumulation;
 use std::path::Path;
@@ -23,14 +24,14 @@ fn main() {
         }
     };
     let mut d8_browser = vec![255u8; w*h];
-    for i in 0..w*h {
+    for i in 0..w * h {
         if let Some(&(dx,dy)) = wb_to_browser.get(&(dr.data[i] as u8)) {
             d8_browser[i] = browser_code(dx,dy);
         }
     }
     let cand = flow_accumulation(&d8_browser, w, h);
     let mut matchn=0usize; let mut total=0usize; let mut maxerr=0f64;
-    for i in 0..w*h {
+    for i in 0..w * h {
         if !dr.data[i].is_finite() || ar.data[i].is_nan() { continue; }
         total+=1;
         let diff = (cand[i]-ar.data[i]).abs();

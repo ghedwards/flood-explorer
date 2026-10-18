@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)] // diagnostic binary: index loops are clearer here
 use flood_pipeline::geo::read_geotiff;
 use flood_core::hydro::extract_streams;
 use std::path::Path;
@@ -10,7 +11,7 @@ fn main() {
     let threshold = 625.0; // from hydrology log: extract_streams threshold=625
     let cand = extract_streams(&ar.data, threshold);
     let mut matchn=0usize; let mut total=0usize;
-    for i in 0..w*h {
+    for i in 0..w * h {
         if !ar.data[i].is_finite() { continue; }
         total+=1;
         let refv = if sr.data[i] == 0.0 { 0u8 } else { 1u8 };
