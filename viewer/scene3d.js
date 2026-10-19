@@ -26,6 +26,7 @@ const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
 const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
 const FAR = 800000;
 const IMG_CONCURRENCY = 8;
+const IMG_MATCH_Z = 10;           // imagery coarser than this is a different (darker) mosaic: match it to z10
 const SKY_TOP = '#2f6aa8', SKY_HORIZON = '#c9dbe8';   // zenith, and the haze distant terrain fades into
 const MAX_SEGS = 128;             // finer tile meshes where a model DEM replaces the terrain
 const MAX_ANISO = 8;
@@ -64,6 +65,27 @@ async function fetchTerrarium(z, x, y) {
   return { data: decodeTerrarium(ctx.getImageData(0, 0, n, n).data, n), n };
 }
 
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.crossOrigin = 'anonymous';
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error('image'));
+    im.src = url;
+  });
+}
+
+/* Average colour (0-255 per channel) of a region of an image, via an 8x8 downscale. */
+function meanRGB(im, sx, sy, sw, sh) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 8;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(im, sx, sy, sw, sh, 0, 0, 8, 8);
+  const d = ctx.getImageData(0, 0, 8, 8).data, m = [0, 0, 0];
+  for (let i = 0; i < d.length; i += 4) { m[0] += d[i]; m[1] += d[i + 1]; m[2] += d[i + 2]; }
+  return m.map((v) => v / 64);
+}
+
 class Scene3d {
   constructor(canvas, hooks) {
     this.hooks = hooks;
@@ -87,6 +109,9 @@ class Scene3d {
     this.areaSig = '';
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
+    this.gains = {};              // imagery zoom (< 10) -> [r, g, b] linear multipliers that match it to z10
+    this.calibrating = new Set();
+    this.gainVersion = 0;
     this.imgLoaded = 0;
     this.imgFailed = 0;
     this.basemap = hooks.getBasemap ? hooks.getBasemap() : null;
@@ -295,6 +320,7 @@ class Scene3d {
       exag: this.exag,
       fps: Math.round(this.fps),
       frames: this.frame,
+      gains: Object.fromEntries(Object.entries(this.gains).map(([l, g]) => [l, g.map((v) => +v.toFixed(2))])),
       ground: this.groundAt(this.controls.target.x, this.controls.target.z),
       dbg: this.dbg || null,
     };
@@ -556,6 +582,7 @@ class Scene3d {
       tex.anisotropy = Math.min(MAX_ANISO, this.renderer.capabilities.getMaxAnisotropy());
       st.tex = tex; st.imgState = 'ready';
       this.imgLoaded++;
+      if (st.z < IMG_MATCH_Z) this.calibrateImagery(st.z, st.x, st.y);
       this.needSelect = true;
     }, undefined, () => {
       this.imgLoading--;
@@ -573,6 +600,35 @@ class Scene3d {
     });
   }
 
+  /* Esri's imagery below z10 is a darker, differently-processed mosaic, which
+   * showed as a straight tonal band where coarse tiles meet z10+ ones. For
+   * the first tile at each coarse level, compare the average colour of its
+   * top-left quadrant with the whole of its top-left child, down the chain
+   * to z10, and keep the per-channel (linear) gain that brings each level
+   * to z10's tone; dress() applies it as the material colour. */
+  async calibrateImagery(z, x, y) {
+    const levels = [];
+    for (let l = z; l < IMG_MATCH_Z; l++) if (!this.calibrating.has(l)) levels.push(l);
+    if (!levels.length || !this.basemap) return;
+    for (const l of levels) this.calibrating.add(l);
+    const first = z, n = IMG_MATCH_Z - first;
+    try {
+      const imgs = await Promise.all(Array.from({ length: n + 1 }, (_, k) => loadImage(this.imageUrl(first + k, x << k, y << k))));
+      const lin = (v) => Math.pow(v / 255, 2.2);
+      let acc = [1, 1, 1];
+      for (let k = n - 1; k >= 0; k--) {
+        const w = imgs[k].naturalWidth, h = imgs[k].naturalHeight;
+        const parent = meanRGB(imgs[k], 0, 0, w / 2, h / 2), child = meanRGB(imgs[k + 1], 0, 0, imgs[k + 1].naturalWidth, imgs[k + 1].naturalHeight);
+        acc = acc.map((a, c) => a * Math.max(0.6, Math.min(2, lin(child[c]) / Math.max(lin(parent[c]), 1e-3))));
+        if (!this.gains[first + k]) this.gains[first + k] = acc.slice();
+      }
+      this.gainVersion++;
+      this.needSelect = true;
+    } catch (err) {
+      for (const l of levels) this.calibrating.delete(l);   // try again with another tile
+    }
+  }
+
   /* Put the best available texture on a tile: its own, else an ancestor's. */
   dress(st) {
     let src = st.tex ? st : null, d = 0;
@@ -583,9 +639,13 @@ class Scene3d {
       }
     }
     const from = src ? src.key : null;
+    const mat = st.mesh.material, uv = st.mesh.geometry.attributes.uv;
+    if (src) {   // tonal match of coarse imagery levels (see calibrateImagery)
+      const g = this.gains[src.z] || [1, 1, 1];
+      if (mat.color.r !== g[0] || mat.color.g !== g[1] || mat.color.b !== g[2]) { mat.color.setRGB(g[0], g[1], g[2], THREE.LinearSRGBColorSpace); this.dirty = true; }
+    } else if (mat.color.r !== 1 || mat.color.g !== 1 || mat.color.b !== 1) mat.color.setRGB(1, 1, 1, THREE.LinearSRGBColorSpace);
     if (from === st.imgFrom) return;
     st.imgFrom = from;
-    const mat = st.mesh.material, uv = st.mesh.geometry.attributes.uv;
     if (!src) { mat.map = null; mat.vertexColors = true; mat.needsUpdate = true; this.dirty = true; return; }
     // the tile's 0..1 UVs mapped into the source texture (the tile itself,
     // or its ancestor d levels up), pulled half a texel in from each edge so
