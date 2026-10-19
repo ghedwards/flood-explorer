@@ -613,27 +613,39 @@ class Scene3d {
     const t = this.controls.target;
     if (this.calibAt && Math.hypot(t.x - this.calibAt[0], t.z - this.calibAt[1]) < 60000) return;
     this.calibBusy = true;
-    const at = [t.x, t.z], lo = 6;
-    try {
-      const imgs = await Promise.all(Array.from({ length: IMG_MATCH_Z - lo + 1 }, (_, k) => {
-        const [x, y] = tileAt(this.proj, lo + k, at[0], at[1]);
-        return loadImage(this.imageUrl(lo + k, x, y));
-      }));
-      const lin = (v) => Math.pow(v / 255, 2.2);
-      const gains = {};
-      let acc = [1, 1, 1];
-      for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
-        const parent = imgs[l - lo], child = imgs[l + 1 - lo];
-        const [cx, cy] = tileAt(this.proj, l + 1, at[0], at[1]);
-        const w = parent.naturalWidth / 2, h = parent.naturalHeight / 2;
-        const pm = meanRGB(parent, (cx & 1) * w, (cy & 1) * h, w, h), cm = meanRGB(child, 0, 0, child.naturalWidth, child.naturalHeight);
-        acc = acc.map((a, c) => Math.max(0.5, Math.min(2, a * Math.max(0.6, Math.min(1.7, lin(cm[c]) / Math.max(lin(pm[c]), 1e-3))))));
-        gains[l] = acc.slice();
-      }
-      this.gains = gains;
-      this.calibAt = at;
-      this.needSelect = true;
-    } catch (err) { this.calibAt = at; /* unreachable imagery: leave tones alone until the target moves */ }
+    const at = [t.x, t.z], lo = 6, lin = (v) => Math.pow(v / 255, 2.2);
+    // five spots (the target and four around it): one patch of ground can
+    // be sea, cloud or a town and say little about the mosaic as a whole
+    const spots = [[0, 0], [25000, 0], [-25000, 0], [0, 25000], [0, -25000]];
+    const sums = {}, counts = {};
+    await Promise.all(spots.map(async ([ox, oz]) => {
+      try {
+        const px = at[0] + ox, pz = at[1] + oz;
+        const imgs = await Promise.all(Array.from({ length: IMG_MATCH_Z - lo + 1 }, (_, k) => {
+          const [x, y] = tileAt(this.proj, lo + k, px, pz);
+          return loadImage(this.imageUrl(lo + k, x, y));
+        }));
+        for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
+          const parent = imgs[l - lo], child = imgs[l + 1 - lo];
+          const [cx, cy] = tileAt(this.proj, l + 1, px, pz);
+          const w = parent.naturalWidth / 2, h = parent.naturalHeight / 2;
+          const pm = meanRGB(parent, (cx & 1) * w, (cy & 1) * h, w, h), cm = meanRGB(child, 0, 0, child.naturalWidth, child.naturalHeight);
+          const r = pm.map((v, c) => Math.log(Math.max(0.6, Math.min(1.7, lin(cm[c]) / Math.max(lin(v), 1e-3)))));
+          sums[l] = (sums[l] || [0, 0, 0]).map((v, c) => v + r[c]);
+          counts[l] = (counts[l] || 0) + 1;
+        }
+      } catch (err) { /* this spot's imagery is unreachable */ }
+    }));
+    // chain the per-level mean ratios (log space) down from z13
+    const gains = {};
+    let acc = [0, 0, 0];
+    for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
+      if (counts[l]) acc = acc.map((v, c) => v + sums[l][c] / counts[l]);
+      gains[l] = acc.map((v) => Math.max(0.5, Math.min(2, Math.exp(v))));
+    }
+    if (Object.keys(counts).length) this.gains = gains;
+    this.calibAt = at;
+    this.needSelect = true;
     this.calibBusy = false;
   }
 
