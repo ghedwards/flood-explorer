@@ -22,19 +22,39 @@ self.onmessage = async (e) => {
       self.postMessage({ id, error: '__rekey__ resident analysis not found', engine: 'rust' });
       return;
     }
+    async function postTimeline(id, tl) {
+      // compress the per-step depth frames for transfer (~10x smaller on
+      // mostly-empty water fields); deflate is available in every worker
+      if (typeof CompressionStream !== 'undefined' && tl.depthFrames && tl.depthFrames.length) {
+        const cs = new CompressionStream('deflate');
+        const w = cs.writable.getWriter();
+        w.write(tl.depthFrames); w.close();
+        const r = cs.readable.getReader();
+        const chunks = []; let total = 0;
+        while (true) { const { done, value } = await r.read(); if (done) break; chunks.push(value); total += value.length; }
+        const out = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { out.set(c, off); off += c.length; }
+        tl.depthFrames = out;
+        tl.depthFramesCompressed = true;
+      } else {
+        tl.depthFramesCompressed = false;
+      }
+      const bufs = [tl.firstWet, tl.lastWet, tl.firstDeep, tl.lastDeep, tl.wetCount, tl.gauge, tl.wetBits, tl.deepBits, tl.depthFrames, tl.depthFrameMax]
+        .filter((x) => x && x.buffer).map((x) => x.buffer);
+      self.postMessage({ id, a: tl }, bufs);
+    }
     if (kind === 'timeline' && e.data.aKey != null && resident.has(e.data.aKey)) {
       // no 30–45 MB analysis clone or re-upload: run against the handle
       const src = self.FloodCore.byHandle(resident.get(e.data.aKey).h);
       const tl = self.FloodCore.floodTimeline(src, e.data.s, opts);
-      const bufs = [tl.firstWet, tl.lastWet, tl.firstDeep, tl.lastDeep, tl.wetCount, tl.gauge, tl.wetBits, tl.deepBits].map((x) => x.buffer);
-      self.postMessage({ id, a: tl }, bufs);
+      await postTimeline(id, tl);
       return;
     }
     if (kind === 'timeline') {
       // no resident copy (older build): full analysis object posted
       const tl = self.FloodCore.floodTimeline(e.data.a, e.data.s, opts);
-      const bufs = [tl.firstWet, tl.lastWet, tl.firstDeep, tl.lastDeep, tl.wetCount, tl.gauge, tl.wetBits, tl.deepBits].map((x) => x.buffer);
-      self.postMessage({ id, a: tl }, bufs);
+      await postTimeline(id, tl);
       return;
     }
     if (kind === 'calibrate') {

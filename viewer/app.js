@@ -5386,6 +5386,22 @@ import './inertial-grid.js';
       return null;
     }
     if (!current()) return null;
+    // decompress per-step depth frames (transferred deflated) once, here
+    if (tl && tl.depthFramesCompressed && tl.depthFrames && typeof DecompressionStream !== 'undefined') {
+      try {
+        const ds = new DecompressionStream('deflate');
+        const w = ds.writable.getWriter();
+        w.write(tl.depthFrames); w.close();
+        const r = ds.readable.getReader();
+        const chunks = []; let total = 0;
+        while (true) { const { done, value } = await r.read(); if (done) break; chunks.push(value); total += value.length; }
+        const out = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { out.set(c, off); off += c.length; }
+        tl.depthFrames = out;
+        tl.depthFramesCompressed = false;
+      } catch (e) { /* keep compressed; showTimeStep falls back to the live path */ }
+    }
     tl.opts = opts; tl.s = s;
     tl.event = opts.eventId ? nat.events.find((e) => e.id === opts.eventId) : null;
     if (tl.event) tl.boardShift = s.gaugeLevel - tl.event.peak.level;
