@@ -35,7 +35,7 @@ jobs:
       - name: Install browser tooling
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox
       - name: Build and serve this branch
         if: github.event_name == 'push' || inputs.target == 'build'
         run: |
@@ -53,6 +53,12 @@ jobs:
           PLACE: ${{ inputs.place || 'rockhampton' }}
           OUT: ${{ runner.temp }}/shots
         run: node tests/shots2d.js
+      - name: Service worker tile cache (Chromium and Firefox)
+        if: github.event_name == 'push' || inputs.target == 'build'
+        env:
+          SITE_URL: http://127.0.0.1:8000/
+          OUT: ${{ runner.temp }}/shots
+        run: node tests/sw-tiles.js
       - name: Push to the shots-2d branch
         if: always()
         env:
