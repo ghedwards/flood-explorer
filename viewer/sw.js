@@ -48,6 +48,17 @@ async function trim(name) {
   for (let i = 0; i < keys.length - max; i++) await c.delete(keys[i]);
 }
 
+// a cached response may only be served to a request whose mode allows that
+// response type: an opaque body is unreadable, and a cors response is
+// rejected outright when the original request was an <img> (no-cors).
+// Firefox enforces both strictly; Chromium mostly does too.
+function usable(req, res) {
+  if (!res || !res.type) return false;
+  if (res.type === 'opaque') return req.mode !== 'navigate';
+  if (res.type === 'cors') return req.mode !== 'no-cors' && req.mode !== 'navigate';
+  return res.type === 'basic' || res.type === 'default';
+}
+
 // fresh when online (within a few seconds), the cached copy otherwise
 async function networkFirst(req, name, waitMs) {
   const c = await caches.open(name);
@@ -61,15 +72,15 @@ async function networkFirst(req, name, waitMs) {
     return res;
   } catch (err) {
     const hit = await c.match(req, { ignoreVary: true }) || (name === APP ? await c.match(req, { ignoreSearch: true }) : null);
-    // no copy: a slow network that eventually answers still wins over nothing
-    return hit || net;
+    // no compatible copy: a slow network that eventually answers still wins
+    return usable(req, hit) ? hit : net;
   }
 }
 
 async function cacheFirst(req, name) {
   const c = await caches.open(name);
   const hit = await c.match(req, { ignoreVary: true });
-  if (hit) return hit;
+  if (usable(req, hit)) return hit;
   const res = await fetch(req);
   if (res && (res.ok || res.type === 'opaque')) c.put(req, res.clone()).then(() => trim(name)).catch(() => {});
   return res;

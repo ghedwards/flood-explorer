@@ -12,6 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 ureq = "3.4"
+# ureq 3's HTTP/1.1 method allowlist rejects WebDAV extension methods
+# (PROPFIND fails with 'not valid for HTTP version HTTP/1.1' before the
+# request is sent), so the WebDAV listing in tides.rs goes through ureq 2,
+# which accepts any method string.
+ureq2 = { package = "ureq", version = "2", default-features = false, features = ["tls", "gzip"] }
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 tiff = "0.11"

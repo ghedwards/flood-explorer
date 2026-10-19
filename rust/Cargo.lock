@@ -542,6 +542,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiff",
+ "ureq 2.12.1",
  "ureq 3.4.2",
  "wbcore",
  "wbtools_oss",

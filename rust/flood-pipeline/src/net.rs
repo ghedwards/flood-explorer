@@ -82,6 +82,48 @@ pub fn get(url: &str, headers: &[(&str, &str)], timeout_s: u64) -> Result<Resp, 
     request("GET", url, headers, None, timeout_s)
 }
 
+/// One request with an extension method (WebDAV PROPFIND and friends).
+/// ureq 3 rejects methods outside its HTTP/1.1 allowlist before sending, so
+/// this goes through ureq 2, which accepts any method string.
+pub fn request_ext(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>, timeout_s: u64) -> Result<Resp, NetErr> {
+    let mut r = ureq2::request(method, url);
+    let mut has_ua = false;
+    for (k, v) in headers {
+        has_ua |= k.eq_ignore_ascii_case("user-agent");
+        r = r.set(k, v);
+    }
+    if !has_ua {
+        r = r.set("User-Agent", UA);
+    }
+    let r = r.timeout(Duration::from_secs(timeout_s));
+    let resp = match body {
+        Some(b) => r.send_bytes(b),
+        None => r.call(),
+    }
+    .map_err(|e| {
+        // ureq 2 turns HTTP statuses into errors; keep the body's start
+        match e {
+            ureq2::Error::Status(c, r) => {
+                let mut b = Vec::new();
+                let _ = r.into_reader().take(4000).read_to_end(&mut b);
+                NetErr::Status(c, String::from_utf8_lossy(&b).into_owned())
+            }
+            ureq2::Error::Transport(t) => NetErr::Transport(t.to_string()),
+        }
+    })?;
+    let code = resp.status();
+    if code >= 400 {
+        let mut b = Vec::new();
+        let _ = resp.into_reader().take(4000).read_to_end(&mut b);
+        return Err(NetErr::Status(code, String::from_utf8_lossy(&b).into_owned()));
+    }
+    let url = resp.get_url().to_string();
+    let content_type = resp.header("Content-Type").unwrap_or("").to_string();
+    let mut body = Vec::new();
+    resp.into_reader().read_to_end(&mut body).map_err(|e| NetErr::Transport(e.to_string()))?;
+    Ok(Resp { body, url, content_type })
+}
+
 /// GET and parse JSON.
 pub fn get_json(url: &str, headers: &[(&str, &str)], timeout_s: u64) -> R<serde_json::Value> {
     let r = get(url, headers, timeout_s).map_err(|e| format!("{}: {}", clip(url, 120), e))?;

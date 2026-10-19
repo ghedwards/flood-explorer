@@ -58,7 +58,7 @@ fn webdav_list(auth: &str) -> R<Vec<(String, u64)>> {
         if out.len() >= 2000 {
             break;
         }
-        let r = net::request("PROPFIND", &format!("{}{}", DAV, net::quote(&p, "/")), &[("Depth", "1"), ("Authorization", auth)], None, 60).map_err(|e| e.to_string())?;
+        let r = net::request_ext("PROPFIND", &format!("{}{}", DAV, net::quote(&p, "/")), &[("Depth", "1"), ("Authorization", auth)], None, 60).map_err(|e| e.to_string())?;
         let xml = r.text();
         for m in resp.captures_iter(&xml) {
             let block = &m[1];
