@@ -140,6 +140,11 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   await page.waitForTimeout(3000);
   await state3d("relief");
   await shot("8-3d-relief");
+  // the Scenario button brings its panel back over the 3D view
+  await step("scenario-panel", async () => { await page.click('.tool[data-open="panel-scenario"]'); });
+  await page.waitForTimeout(2000);
+  await shot("9-3d-scenario-panel");
+  await step("scenario-panel-hide", async () => { await page.click('.tool[data-open="panel-scenario"]'); });
 
   } catch (e) {
     report.fatal = String(e).slice(0, 400);
