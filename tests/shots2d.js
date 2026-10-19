@@ -46,6 +46,8 @@ const OUT = process.env.OUT || "shots";
     });
     await shot(page, "03-model");
     await run("channel-diag", async () => { report.channelDiag = await page.evaluate(() => window.__floodChannelDiag && window.__floodChannelDiag()); });
+    await run("places-help-fold", async () => { await page.click("#placesHelp"); await settle(page, 500); });
+    await shot(page, "03b-places-folded");
     await run("zoom-in", async () => {
       const g = await page.evaluate(() => window.__floodGaugeLatLng && window.__floodGaugeLatLng());
       if (g) await page.evaluate(([la, lo]) => window.__floodTestZoom(la, lo, 15), [g.lat ?? g[0], g.lng ?? g[1]]);
@@ -83,8 +85,12 @@ const OUT = process.env.OUT || "shots";
       await settle(phone, 5000);
     });
     await shot(phone, "09-phone-model");
-    await run("phone-scenario", async () => { await phone.click('.tool[data-open="panel-scenario"]'); await settle(phone, 2000); });
-    await shot(phone, "10-phone-scenario");
+    // on a phone the Scenario sheet opens by itself after the model loads (09);
+    // close it for the map view with key chip and buttons, then reopen it tall
+    await run("phone-map", async () => { await phone.click('.tool[data-open="panel-scenario"]'); await settle(phone, 1500); });
+    await shot(phone, "10-phone-map");
+    await run("phone-sheet", async () => { await phone.click('.tool[data-open="panel-scenario"]'); await settle(phone, 1500); await phone.click("#panel-scenario .sheet-grip"); await settle(phone, 1000); });
+    await shot(phone, "11-phone-sheet-tall");
     await phone.close();
   } finally {
     fs.writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 1));

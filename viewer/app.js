@@ -1811,6 +1811,12 @@ import './inertial-grid.js';
       // for the automated browser check
       window.__floodSetBasemap = (name) => setBasemap(m, layers, name);
       L.control.scale({ imperial: false }).addTo(m);
+      // phones: the credit line folds into an (i) button so it doesn't run under the key
+      if (window.matchMedia('(max-width: 760px)').matches && m.attributionControl) {
+        const ac = m.attributionControl.getContainer();
+        ac.classList.add('attr-fold');
+        ac.addEventListener('click', () => ac.classList.toggle('open'));
+      }
       m.on('click', onGeoClick);
       // keyboard: with the map focused, Enter does what a click at the
       // centre of the map would (look at that spot, or pick that place),
@@ -2403,8 +2409,13 @@ import './inertial-grid.js';
         <button type="button" class="icon-btn" data-drop="${n}" aria-label="Remove ${escapeHtml(name)}" title="Remove">×</button>
       </li>`;
     }).join('');
+    // the how-it-works text is shown the first time places appear, then
+    // folds behind a "?" (remembered in this browser)
+    if (!placesHelpSeen) { placesHelpOpen = true; placesHelpSeen = true; try { localStorage.setItem(HELP_KEY, '1'); } catch (e) { /* storage blocked */ } }
     box.innerHTML = `<ul class="places">${rows}</ul>
-      <p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time. <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${propertyChecksHtml()}${studiesHtml()}`;
+      ${placesHelpOpen ? '<p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time.</p>' : ''}
+      <p class="hint places-foot"><button type="button" class="link-btn" id="placesHelp" aria-expanded="${placesHelpOpen}" aria-label="How places work">? How places work</button> · <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${propertyChecksHtml()}${studiesHtml()}`;
+    $('placesHelp').addEventListener('click', () => { placesHelpOpen = !placesHelpOpen; renderPlaces(); });
     wireCheckControls(box);
     wireStudyRows(box);
     $('clearPlaces').addEventListener('click', () => { if (window.confirm('Remove all places, reports and flood models from the map?')) clearAllPlaces(); });
@@ -3467,6 +3478,9 @@ import './inertial-grid.js';
   // Places can also be plain pins dropped on the map ("Add as a place").
   const pins = [];
   const PIN_COLOR = '#455a64';
+  const HELP_KEY = 'floodExplorerPlacesHelpSeen';
+  let placesHelpSeen = false, placesHelpOpen = false;
+  try { placesHelpSeen = localStorage.getItem(HELP_KEY) === '1'; } catch (e) { /* storage blocked */ }
 
   // Property checks ("Check this property"): remembered so a property that
   // has been reported on stays visible and manageable beyond the transient
@@ -6756,6 +6770,25 @@ import './inertial-grid.js';
     renderModeLegend();
   });
 
+  // Phone sheets open at ~45 % of the screen so the map stays in view; the
+  // grip drags them taller or shorter, a tap toggles tall.
+  function addSheetGrips() {
+    document.querySelectorAll('.sheet').forEach((sheet) => {
+      const g = document.createElement('button');
+      g.type = 'button'; g.className = 'sheet-grip'; g.setAttribute('aria-label', 'Resize panel');
+      sheet.insertBefore(g, sheet.firstChild);
+      let y0 = 0, h0 = 0, moved = false;
+      g.addEventListener('pointerdown', (e) => { y0 = e.clientY; h0 = sheet.getBoundingClientRect().height; moved = false; g.setPointerCapture(e.pointerId); });
+      g.addEventListener('pointermove', (e) => {
+        if (!g.hasPointerCapture(e.pointerId)) return;
+        const dy = y0 - e.clientY;
+        if (Math.abs(dy) > 4) moved = true;
+        if (moved) { sheet.classList.remove('tall'); sheet.style.height = `${Math.max(window.innerHeight * 0.25, Math.min(window.innerHeight - 140, h0 + dy))}px`; }
+      });
+      g.addEventListener('pointerup', () => { if (!moved) { sheet.style.height = ''; sheet.classList.toggle('tall'); } });
+    });
+  }
+
   /* -------------------------------------------------------------- start */
 
   (async function start() {
@@ -6765,7 +6798,13 @@ import './inertial-grid.js';
     ctl.gaugeLevel.value = 4.46;
     syncOutputs();
     setPlacesCollapsed(isPhone());
-    if (isPhone()) $('panel-scenario').hidden = true;
+    if (isPhone()) {
+      $('panel-scenario').hidden = true;
+      const t = $('legendToggle');   // the key starts as a chip on phones
+      t.setAttribute('aria-expanded', 'false'); t.textContent = 'Show key';
+      renderModeLegend();
+    }
+    addSheetGrips();
     syncPanels();
     renderPlaces();
     const areas = await listAreas();

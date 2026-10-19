@@ -278,6 +278,7 @@ body.in3d.in3d-scenario #placesCard { display: none; }
 .classes { font-size: 13px; }
 .classes table { border-collapse: collapse; width: 100%; margin-top: 4px; }
 .classes td, .classes th { padding: 3px 6px; border-bottom: 1px solid var(--line); text-align: left; font-variant-numeric: tabular-nums; }
+.places-foot { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 8px 2px 2px; }
 .places-sub { margin: 14px 2px 6px; font: 700 11.5px var(--font-body); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .study-badge { background: transparent; color: var(--accent); border: 2px dashed var(--accent); border-radius: 6px; }
 .study-label span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: #0d5f8c; color: #fff; font: 700 13px Archivo, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.4); border: 2px solid #fff; }
@@ -367,6 +368,11 @@ body.in3d.in3d-scenario #placesCard { display: none; }
 }
 .readout.error { pointer-events: auto; cursor: pointer; border-left: 4px solid #b3261e; }
 .leaflet-bottom.leaflet-left { display: none; }
+.sheet-grip { display: none; }
+/* phones: the credit line is an (i) button until tapped */
+.leaflet-control-attribution.attr-fold:not(.open) { width: 26px; height: 26px; padding: 0; overflow: hidden; border-radius: 13px; font-size: 0; cursor: pointer; position: relative; margin: 0 8px 8px 0; }
+.leaflet-control-attribution.attr-fold:not(.open)::before { content: "i"; position: absolute; inset: 0; display: grid; place-items: center; font: 700 13px var(--font-body); color: #333; }
+.leaflet-control-attribution.attr-fold.open { max-width: calc(100vw - 24px); margin: 0 8px 8px 0; }
 
 /* ---------- phones: bottom tool bar, bottom sheets */
 @media (max-width: 760px) {
@@ -392,11 +398,14 @@ body.in3d.in3d-scenario #placesCard { display: none; }
   .sheet.collapsed .sheet-body { display: grid; }
   .sheet, .sheet[data-side="left"], .sheet[data-side="right"] {
     left: 0; right: 0; width: auto; max-width: none; top: auto;
-    bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); max-height: min(68vh, calc(100vh - 140px));
+    bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); height: 45vh; max-height: min(80vh, calc(100vh - 140px));
     border-radius: 14px 14px 0 0;
   }
   .sheet-body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-  .legend-card { left: var(--left); bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); }
+  .legend-card { left: var(--left); bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); max-width: calc(100vw - var(--left) - var(--right) - 60px); }   /* clear of the map buttons */
+  .sheet.tall { height: min(80vh, calc(100vh - 140px)); }
+  .sheet-grip { display: block; width: 100%; flex: 0 0 auto; height: 22px; border: 0; background: none; cursor: grab; touch-action: none; position: relative; }
+  .sheet-grip::before { content: ""; position: absolute; left: 50%; top: 9px; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line); }
   .readout { top: calc(var(--top) + 96px); }
   body.sheet-open .legend-card { display: none; }
   .leaflet-bottom.leaflet-right { bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); }
