@@ -1,10 +1,11 @@
-/* Decimated mesh builders for the experimental 3D view (docs/3d-view-design.md).
+/* Mesh and projection helpers for the experimental 3D view
+ * (docs/3d-view-design.md, docs/3d-view-v4-plan.md).
  *
  * Pure data helpers, no three.js dependency, so node tests can exercise
- * them directly. Coordinates: x = east (metres), y = height (metres AHD,
- * scaled later by mesh.scale.y), z = north-negative so the up axis is +y.
- * Heights and water surfaces are NOT exaggerated here — the scene scales
- * the whole mesh on the y axis, which avoids rebuilding on every slider move.
+ * them directly. Scene coordinates: x = east, z = SOUTH (metres, local web
+ * mercator, see makeProjection), y = height in metres AHD. Heights and
+ * water surfaces are NOT exaggerated here — the scene scales its world
+ * group on y, which avoids rebuilding on every slider move.
  */
 
 const MAX_SIDE = 560;   // ≤ 560×560 samples ≈ ≤ ~314k vertices per mesh
@@ -14,20 +15,6 @@ const MAX_SIDE = 560;   // ≤ 560×560 samples ≈ ≤ ~314k vertices per mesh
 function decimateStep(W, H, maxSide = MAX_SIDE) {
   const s = Math.max(1, Math.ceil(Math.max(W, H) / maxSide));
   return s % 2 ? s + 1 : s;
-}
-
-/* Terrain vertices + indices from the analysis grid.
- * Colors come straight from the relief render (`rgba` = state.terrain) so
- * the 3D view matches the 2D relief exactly. Cells that are invalid drop
- * out; a quad is emitted only when all four sampled corners survive, so
- * the coast and NoData edges stay clean. */
-function terrainMesh(a, rgba, skip, skirtM) {
-  return buildGrid(a, skip, (i) => !!a.valid[i], (i) => a.dem[i], (i, out) => {
-    const o = i * 4;
-    out[0] = rgba ? rgba[o] : 255;
-    out[1] = rgba ? rgba[o + 1] : 255;
-    out[2] = rgba ? rgba[o + 2] : 255;
-  }, { skirt: skirtM > 0, skirtM });
 }
 
 /* Water surface vertices + depth colours for the wet cells of a run.
@@ -41,10 +28,8 @@ function waterMesh(a, surface, depth, wet, skip, opts = {}) {
   }, { alphaFor: (i) => Math.min(1, 0.3 + depth[i] / 0.45), colX: opts.colX, rowZ: opts.rowZ });
 }
 
-/* Shared grid builder: samples the analysis grid every `skip` cells, emits
- * quads where all four sampled corners pass `keep(i)`. Also emits UVs (0-1
- * across the model box, for imagery draping) and, for the terrain, a skirt
- * so boundary/NoData edges don't read as torn cliffs. Returns null when
+/* Water grid builder: samples the analysis grid every `skip` cells, emits
+ * quads where all four sampled corners pass `keep(i)`. Returns null when
  * nothing survives. */
 function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
   const { W, H, cell } = a;
@@ -82,36 +67,6 @@ function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
     }
   }
   if (!indices.length) return null;
-  // skirt: walls down from the outermost vertices so the model edge (and
-  // NoData gaps along it) doesn't show as torn geometry. The drop is in
-  // metres, scaled by the same vertical exaggeration as everything else.
-  if (opts.skirt) {
-    let minH = Infinity;
-    for (let k = 1; k < positions.length; k += 3) if (positions[k] < minH) minH = positions[k];
-    const base = minH - (opts.skirtM || Math.max(20, wM * 0.02));
-    const drop = (from, to) => {
-      const f = from * 3, t = to * 3;
-      const fi = positions.length / 3, ti = fi + 1;
-      positions.push(positions[f], base, positions[f + 2], positions[t], base, positions[t + 2]);
-      uvs.push(uvs[from * 2], uvs[from * 2 + 1], uvs[to * 2], uvs[to * 2 + 1]);
-      const fc = from * 4, tc = to * 4;
-      colors.push(colors[fc], colors[fc + 1], colors[fc + 2], 1, colors[tc], colors[tc + 1], colors[tc + 2], 1);
-      indices.push(fi, ti, from, from, ti, to);
-    };
-    const exists = (gy, gx) => slot[gy * cols + gx];
-    for (let gx = 0; gx + 1 < cols; gx++) {
-      let v = exists(0, gx), w = exists(0, gx + 1);
-      if (v >= 0 && w >= 0) drop(v, w);
-      v = exists(rows - 1, gx); w = exists(rows - 1, gx + 1);
-      if (v >= 0 && w >= 0) drop(w, v);   // flipped winding: outward face
-    }
-    for (let gy = 0; gy + 1 < rows; gy++) {
-      let v = exists(gy, 0), w = exists(gy + 1, 0);
-      if (v >= 0 && w >= 0) drop(w, v);
-      v = exists(gy, cols - 1); w = exists(gy + 1, cols - 1);
-      if (v >= 0 && w >= 0) drop(v, w);
-    }
-  }
   return {
     positions: new Float32Array(positions),
     colors: new Float32Array(colors),
@@ -154,40 +109,7 @@ function waterFromFrame(a, frame, maxD, skip, opts) {
   return { wse, depth, wet, mesh: waterMesh(a, wse, depth, wet, skip, opts) };
 }
 
-export { decimateStep, terrainMesh, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
-
-/* ---------- web-mercator tile helpers (v3 streaming terrain) ---------- */
-
-/* Inclusive tile range (x0,y0)-(x1,y1) at zoom z covering a [s, w, n, e] box. */
-export function mercatorTiles(s, w, n, e, z) {
-  const n2 = 1 << z;
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  const tx = (lon) => Math.floor(((lon + 180) / 360) * n2);
-  const ty = (lat) => {
-    const la = (clamp(lat, -85, 85) * Math.PI) / 180;
-    return Math.floor(((1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2) * n2);
-  };
-  return { x0: clamp(tx(w), 0, n2 - 1), x1: clamp(tx(e), 0, n2 - 1), y0: clamp(ty(n), 0, n2 - 1), y1: clamp(ty(s), 0, n2 - 1) };
-}
-
-/* A tile's geographic bounds [w, s, e, n]. */
-export function tileBounds(z, x, y) {
-  const n2 = 1 << z;
-  const lon = (tx) => (tx / n2) * 360 - 180;
-  const lat = (ty) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * ty) / n2))) * 180) / Math.PI;
-  return [lon(x), lat(y + 1), lon(x + 1), lat(y)];
-}
-
-/* Tile zoom band for a ground view width (metres) at a latitude: about two
- * tiles across the view, clamped so DEM fetches stay light. */
-export function streamZoom(viewWidthM, lat) {
-  const ground = 40075016.7 * Math.cos((lat * Math.PI) / 180);
-  const z = Math.ceil(1 + Math.log2(ground / Math.max(1, viewWidthM)));
-  return Math.max(11, Math.min(13, z));
-}
-
-/* DEM cell (metres) paired with the tile zoom band. */
-export function streamCell(z) { return z <= 11 ? 90 : z === 12 ? 45 : 30; }
+export { decimateStep, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
 
 /* ---------- v4: one projection, terrain tiles, quadtree LOD ---------- */
 

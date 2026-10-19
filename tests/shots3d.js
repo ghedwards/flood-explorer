@@ -65,28 +65,34 @@ const OUT = process.env.OUT || "shots";
   await shot("3b-3d-exaggeration-5");
   await step("exaggeration-default", async () => { await setExag(1.5); });
   await page.waitForTimeout(1500);
-  // tilt towards the horizon (left-drag down rotates in OrbitControls)
-  await step("tilt", async () => {
+  // MapControls: right-drag tilts (up) and turns (sideways); left-drag pans
+  const drag = async (button, dx, dy, n = 12) => {
     await page.mouse.move(box.x, box.y);
-    await page.mouse.down();
-    for (let i = 0; i < 12; i++) await page.mouse.move(box.x, box.y - 12 * i, { steps: 2 });
-    await page.mouse.up();
-  });
+    await page.mouse.down({ button });
+    for (let i = 1; i <= n; i++) await page.mouse.move(box.x + (dx * i) / n, box.y + (dy * i) / n, { steps: 2 });
+    await page.mouse.up({ button });
+  };
+  await step("tilt", async () => { await drag("right", 0, -150); });
   await page.waitForTimeout(15000);
+  await state3d("tilted");
   await shot("4-3d-low-angle");
-  // turn around
-  await step("turn", async () => {
-    await page.mouse.move(box.x, box.y);
-    await page.mouse.down();
-    for (let i = 0; i < 12; i++) await page.mouse.move(box.x + 25 * i, box.y, { steps: 2 });
-    await page.mouse.up();
-  });
+  await step("turn", async () => { await drag("right", 300, 0); });
   await page.waitForTimeout(15000);
   await shot("5-3d-turned");
+  // pan with the left button
+  await step("pan", async () => { await drag("left", -250, 120); });
+  await page.waitForTimeout(12000);
+  await state3d("panned");
+  await shot("5b-3d-panned");
+  // double-click flies to the point
+  await step("fly-to", async () => { await page.mouse.dblclick(box.x + 100, box.y + 60); });
+  await page.waitForTimeout(15000);
+  await state3d("flown");
+  await shot("5c-3d-fly-to");
   // zoom right out
   await step("zoom-out", async () => {
     await page.mouse.move(box.x, box.y);
-    for (let i = 0; i < 14; i++) { await page.mouse.wheel(0, 500); await page.waitForTimeout(250); }
+    for (let i = 0; i < 16; i++) { await page.mouse.wheel(0, 500); await page.waitForTimeout(250); }
   });
   await page.waitForTimeout(25000);
   await state3d("zoomed_out");
@@ -97,6 +103,11 @@ const OUT = process.env.OUT || "shots";
   });
   await page.waitForTimeout(3000);
   await shot("7-3d-exaggeration-2");
+  // relief colours instead of imagery
+  await step("relief", async () => { await page.click("#mode3d"); });
+  await page.waitForTimeout(3000);
+  await state3d("relief");
+  await shot("8-3d-relief");
 
   report.totalMs = Date.now() - t0;
   fs.writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 1));

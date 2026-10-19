@@ -10,10 +10,10 @@
  * never rebuilds anything.
  */
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MapControls } from 'three/addons/controls/MapControls.js';
 import {
   makeProjection, parseKey, parentKey, tileToScene, decodeTerrarium, sampleRaster, selectTiles, resolveDraw,
-  tileHeights, tileMesh, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
+  tileHeights, tileMesh, tileGroundAt, tileAt, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
 } from './terrain3d.js';
 
 const EXAG_DEFAULT = 1.5;
@@ -26,6 +26,7 @@ const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
 const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
 const FAR = 800000;
 const IMG_CONCURRENCY = 8;
+const SKY_TOP = '#2f6aa8', SKY_HORIZON = '#c9dbe8';   // zenith, and the haze distant terrain fades into
 const MAX_SEGS = 128;             // finer tile meshes where a model DEM replaces the terrain
 const MAX_ANISO = 8;
 
@@ -116,7 +117,7 @@ class Scene3d {
            behind the key/panel cards otherwise); the fab corner is free
            while the 3D view is open, so the controls park on the right */
         #view3dChrome{position:fixed;inset:0;z-index:1004;pointer-events:none}
-        #view3dChrome .bar3d{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);display:flex;flex-wrap:wrap;max-width:calc(100vw - 28px);gap:8px 14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4);pointer-events:auto}
+        #view3dChrome .bar3d{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);display:flex;flex-wrap:wrap;max-width:min(calc(100vw - 28px),780px);gap:8px 14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4);pointer-events:auto}
         #view3dChrome .bar3d label{display:flex;gap:6px;align-items:center}
         #view3dChrome button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
         #view3dChrome .compass{font-weight:600;min-width:2.5em;text-align:center}
@@ -171,12 +172,16 @@ class Scene3d {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#0b1622');
     this.camera = new THREE.PerspectiveCamera(55, 1, 5, FAR);
-    this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.enableDamping = true;   // smooth, Earth-like camera feel
+    // Google-Earth-like: left-drag pans along the ground, right-drag (or two
+    // fingers) turns and tilts, the wheel zooms toward the cursor
+    this.controls = new MapControls(this.camera, canvas);
+    this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.minDistance = 300;
+    this.controls.screenSpacePanning = false;
+    this.controls.zoomToCursor = true;
+    this.controls.minDistance = 150;
     this.controls.maxDistance = 400000;
-    this.controls.maxPolarAngle = Math.PI / 2 + 0.28;   // ~106°: horizon and a bit past
+    this.controls.maxPolarAngle = (85 * Math.PI) / 180;   // never look up from underground
     this.controls.addEventListener('change', () => { this.dirty = true; this.needSelect = true; this.updateCompass(); });
     // fixed afternoon sun from the north-west + enough ambient for the
     // south faces; lighting stays correct as the camera orbits
@@ -190,6 +195,15 @@ class Scene3d {
     this.world = new THREE.Group();
     this.world.scale.y = this.exag;
     this.scene.add(this.world);
+
+    // sky: a gradient dome that follows the camera, and fog in its horizon
+    // colour so coarse distant tiles fade into haze instead of ending
+    this.sky = this.buildSky();
+    this.scene.add(this.sky);
+    this.scene.fog = new THREE.Fog(SKY_HORIZON, 50000, 200000);
+    this.scene.background = new THREE.Color(SKY_HORIZON);
+    this.raycaster = new THREE.Raycaster();
+    canvas.addEventListener('dblclick', (e) => this.flyToPoint(e));
 
     this.buildWaterTiles();
     this.syncAreas();
@@ -235,15 +249,19 @@ class Scene3d {
       this.raf = requestAnimationFrame(tick);
       if (this.lastNow) this.fps = this.fps ? this.fps * 0.9 + (1000 / Math.max(1, now - this.lastNow)) * 0.1 : 1000 / Math.max(1, now - this.lastNow);
       this.lastNow = now;
-      // fly-in easing (~2s), damping then settles into user control
-      if (this.flyT != null && this.flyT < 1) {
-        this.flyT = Math.min(1, this.flyT + 1 / 120);
-        const t = this.flyT, e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;   // easeInOutQuad
-        this.camera.position.lerpVectors(this.flyFrom, this.flyTo, e);
+      // fly animations (the opening move, double-click to a point): ~2 s of easing,
+      // then damping settles into user control
+      if (this.anim) {
+        const an = this.anim;
+        an.t = Math.min(1, an.t + 1 / an.frames);
+        const t = an.t, e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;   // easeInOutQuad
+        this.camera.position.lerpVectors(an.camFrom, an.camTo, e);
+        this.controls.target.lerpVectors(an.tgtFrom, an.tgtTo, e);
         this.dirty = true; this.needSelect = true;
-        if (t >= 1) { this.flyT = null; this.flyFrom = this.flyTo = null; }
+        if (t >= 1) this.anim = null;
       }
       this.controls.update();
+      if (!this.anim) this.followGround();
       if (!this.camera.position.toArray().every(Number.isFinite) || !this.controls.target.toArray().every(Number.isFinite)) this.frameCamera(false);   // never render from NaN
       this.updateCameraPlanes();
       // terrain selection when the camera moved (or tiles arrived), at most
@@ -277,6 +295,7 @@ class Scene3d {
       exag: this.exag,
       fps: Math.round(this.fps),
       frames: this.frame,
+      ground: this.groundAt(this.controls.target.x, this.controls.target.z),
       dbg: this.dbg || null,
     };
   }
@@ -621,15 +640,82 @@ class Scene3d {
     el.innerHTML = terrain + (this.imageryOn && this.basemap ? ` · ${this.basemap.attr}` : '');
   }
 
-  /* Camera clip planes follow the distance, so the near plane stays close
-   * to the ground under the camera without wasting depth range. */
+  /* Ground height (scene metres, exaggerated) under a scene point, from the
+   * finest built tile covering it; null before any tile is built. */
+  groundAt(x, z) {
+    for (let zoom = this.maxZ(); zoom >= MIN_Z; zoom--) {
+      const [tx, ty] = tileAt(this.proj, zoom, x, z), st = this.cache.get(`${zoom}/${tx}/${ty}`);
+      if (!st || st.state !== 'ready') continue;
+      const h = tileGroundAt(this.proj, zoom, tx, ty, st.heights, x, z, st.segs);
+      if (h != null) return h * this.exag;
+    }
+    return null;
+  }
+
+  /* Keep the orbit target on the ground and the camera above it: the
+   * target follows the terrain (camera and target move together, so the
+   * view doesn't swing), and the camera keeps a clearance over the hills
+   * under it. */
+  followGround() {
+    const t = this.controls.target, c = this.camera.position;
+    const gt = this.groundAt(t.x, t.z);
+    if (gt != null && Math.abs(gt - t.y) > 0.05) {
+      const dy = (gt - t.y) * 0.25;
+      t.y += dy; c.y += dy;
+      this.dirty = true;
+    }
+    const gc = this.groundAt(c.x, c.z);
+    if (gc != null) {
+      const clear = Math.max(30, 0.02 * c.distanceTo(t)) * Math.max(1, this.exag * 0.5);
+      if (c.y < gc + clear) { c.y = gc + clear; this.dirty = true; }
+    }
+  }
+
+  /* Double-click: fly to the point under the cursor, closer. */
+  flyToPoint(ev) {
+    const canvas = this.renderer.domElement, r = canvas.getBoundingClientRect();
+    this.raycaster.setFromCamera(new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1), this.camera);
+    this.world.updateMatrixWorld(true);
+    const meshes = [...this.drawn].map((k) => this.cache.get(k)).filter((st) => st && st.mesh).map((st) => st.mesh);
+    const hit = this.raycaster.intersectObjects(meshes, false)[0];
+    if (!hit) return;
+    const t = this.controls.target, c = this.camera.position;
+    const off = c.clone().sub(t).multiplyScalar(0.45);   // half the distance, same look direction
+    if (off.length() < this.controls.minDistance * 1.2) off.setLength(this.controls.minDistance * 1.2);
+    this.anim = { t: 0, frames: 50, camFrom: c.clone(), camTo: hit.point.clone().add(off), tgtFrom: t.clone(), tgtTo: hit.point.clone() };
+  }
+
+  buildSky() {
+    // a dome whose vertex colours blend horizon haze into the zenith blue;
+    // below the horizon it stays haze (fog lands there too)
+    const geo = new THREE.SphereGeometry(FAR * 0.9, 24, 16);
+    const top = new THREE.Color(SKY_TOP), hor = new THREE.Color(SKY_HORIZON), col = new THREE.Color();
+    const pos = geo.attributes.position, colors = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const y = Math.max(0, pos.getY(i) / (FAR * 0.9));
+      col.copy(hor).lerp(top, Math.pow(y, 0.55));
+      colors.set([col.r, col.g, col.b], i * 3);
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const sky = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false }));
+    sky.renderOrder = -1000;
+    sky.frustumCulled = false;
+    return sky;
+  }
+
+  /* Camera clip planes, sky and fog follow the camera: near stays close to
+   * the ground under it, fog starts at ~60 % of the horizon distance. */
   updateCameraPlanes() {
     const d = this.camera.position.distanceTo(this.controls.target);
     const near = Math.max(2, Math.min(500, d * 0.01)), far = FAR;
-    if (Math.abs(near - this.camera.near) > near * 0.05 || Math.abs(far - this.camera.far) > far * 0.05) {
+    if (Math.abs(near - this.camera.near) > near * 0.05) {
       this.camera.near = near; this.camera.far = far;
       this.camera.updateProjectionMatrix();
     }
+    this.sky.position.copy(this.camera.position);
+    const horizon = Math.min(300000, Math.sqrt(2 * 6371000 * Math.max(200, this.camera.position.y / this.exag)) + 60000);
+    this.scene.fog.near = horizon * 0.6;
+    this.scene.fog.far = horizon * 1.05;
   }
 
   /* ---------- modelled areas: water surfaces ---------- */
@@ -769,15 +855,15 @@ class Scene3d {
     this.controls.target.set(cx, 0, cz);
     const dest = new THREE.Vector3(cx, d * 0.55, cz + d);
     // always start the camera at a real distance from the target:
-    // OrbitControls.update() on position == target is where NaN came from
+    // controls.update() on position == target is where NaN came from
     this.camera.position.copy(dest);
+    this.anim = null;
     if (fly) {
       // fly-in: start high above and settle into the framed view (the
       // Google Earth opening move), animated in the tick loop
-      this.flyFrom = new THREE.Vector3(cx, d * 2.4, cz + d * 1.6);
-      this.flyTo = dest;
-      this.flyT = 0;
-      this.camera.position.copy(this.flyFrom);
+      const from = new THREE.Vector3(cx, d * 2.4, cz + d * 1.6);
+      this.anim = { t: 0, frames: 120, camFrom: from, camTo: dest, tgtFrom: this.controls.target.clone(), tgtTo: this.controls.target.clone() };
+      this.camera.position.copy(from);
     }
     this.controls.update();
     this.needSelect = true;

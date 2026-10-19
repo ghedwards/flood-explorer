@@ -1071,12 +1071,7 @@ import './inertial-grid.js';
     // Terrain streams on demand as web-mercator tiles (v4); modelled places
     // contribute water surfaces.
     view3d = mod.openScene3d({
-      getAnalysis: () => state.a,
-      getTerrain: () => state.terrain,
-      getRun: () => state.run,
-      getTimeline: () => state.areaKey && areaReg.get(state.areaKey)?.timeline || null,
       getStep: () => state.timeStep || 0,
-      getBounds: () => (state.areaMeta && state.areaMeta.bounds_lonlat) || null,
       getViewBox: () => viewBounds3d(),
       getCentre: () => { const m = state.lmap; if (!m) return null; const c = m.getCenter(); return [c.lat, c.lng]; },
       getAreas: () => areasFor3d(),
