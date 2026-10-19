@@ -147,7 +147,9 @@ work like the 2D slippy map instead:
   centre): +x east, +z south, y up (metres, ×exaggeration). Mesh local
   z is south-positive too (`pz = y * cell`), matching the group offsets.
 
-Failure behaviour is unchanged: fetch errors surface via `say()` once
+Failure behaviour is unchanged except that sea-only windows are fine:
+the elevation fetch returns them as flat sea planes (no throw), fetch
+errors still surface via `say()` once
 and the tile is skipped (retry on the next camera change); no WebGL2
 still shows the inline hint; corrupt frame data hides just the water.
 
