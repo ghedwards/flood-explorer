@@ -5613,9 +5613,13 @@ import './inertial-grid.js';
     if (hasFrame) {
       const maxD = tl.depthFrameMax[k] || 0;
       const frame = tl.depthFrames.subarray(k * n, (k + 1) * n);
-      const depth = new Float32Array(n);
-      const wet = new Uint8Array(n);
-      const level = new Float32Array(n);
+      // scratch buffers reused across steps: three fresh ~N-cell arrays per
+      // step used to churn the GC on large grids
+      const depth = state.depthScratch && state.depthScratch.length === n ? state.depthScratch : (state.depthScratch = new Float32Array(n));
+      const wet = state.wetScratch && state.wetScratch.length === n ? state.wetScratch : (state.wetScratch = new Uint8Array(n));
+      const level = state.levelScratch && state.levelScratch.length === n ? state.levelScratch : (state.levelScratch = new Float32Array(n));
+      wet.fill(0);
+      depth.fill(0);
       level.fill(NaN);
       for (let c = 0; c < n; c++) {
         const q = frame[c];
@@ -5633,7 +5637,9 @@ import './inertial-grid.js';
     drawStats(tl.s);
     updateTimeLabel(k);
     clearTimeout(impactT);
-    impactT = setTimeout(() => maybeRenderImpact(), 150);
+    // impact recomputes are expensive (buildings + roads + census areas);
+    // during playback the numbers are transient anyway, so refresh slower
+    impactT = setTimeout(() => maybeRenderImpact(), state.timePlay ? 600 : 150);
   }
   $('runTimeline').addEventListener('click', () => runTimeline());
   window.__floodRunTimeline = runTimeline;
