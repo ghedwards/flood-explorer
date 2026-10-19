@@ -25,6 +25,8 @@ const RETRY_MS = 60000;           // don't refetch a failed tile for a minute
 const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
 const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
 const FAR = 800000;
+const IMG_CONCURRENCY = 8;
+const MAX_ANISO = 8;
 
 let controller = null;   // one open view at a time
 
@@ -79,6 +81,14 @@ class Scene3d {
     this.exag = EXAG_DEFAULT;
     this.needSelect = true;
     this.lastSelect = 0;
+    this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
+    this.imgLoading = 0;
+    this.imgLoaded = 0;
+    this.imgFailed = 0;
+    this.basemap = hooks.getBasemap ? hooks.getBasemap() : null;
+    this.imageryOn = !!this.basemap;   // else relief colours only
+    this.texLoader = new THREE.TextureLoader();
+    this.texLoader.setCrossOrigin('anonymous');
 
     // scene origin: the 2D map centre, falling back to the modelled areas.
     // The projection is fixed for the life of the view.
@@ -122,6 +132,7 @@ class Scene3d {
       <button type="button" id="close3d">Back to map (Esc)</button>
       <label>vertical ×<input id="exag3d" type="range" min="1" max="10" step="0.5" value="${EXAG_DEFAULT}" style="width:120px"><span id="exagVal">${EXAG_DEFAULT}</span></label>
       <span id="scrub3dWrap" hidden><label>step <input id="scrub3d" type="range" min="0" max="0" value="0" style="width:220px"><span id="scrubVal"></span></label></span>
+      <button type="button" id="mode3d" title="Satellite/map imagery or plain relief colours"></button>
       <span class="compass" id="compass3d">S</span>
       <span id="tiles3d" class="dim"></span>
       <span style="margin-left:auto;font-size:12px;opacity:.75">experimental</span>
@@ -186,6 +197,14 @@ class Scene3d {
     close.addEventListener('click', () => closeScene3d());
     this.onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeScene3d(); } };
     window.addEventListener('keydown', this.onKey, true);
+    const modeBtn = bar.querySelector('#mode3d');
+    modeBtn.hidden = !this.basemap;
+    modeBtn.textContent = this.imageryOn ? 'Imagery' : 'Relief';
+    modeBtn.addEventListener('click', () => {
+      this.imageryOn = !this.imageryOn;
+      modeBtn.textContent = this.imageryOn ? 'Imagery' : 'Relief';
+      this.applyImageryMode();
+    });
     const exag = bar.querySelector('#exag3d');
     exag.addEventListener('input', () => {
       bar.querySelector('#exagVal').textContent = exag.value;
@@ -246,7 +265,7 @@ class Scene3d {
       open: !!document.getElementById('view3d'),
       source: this.source,
       tiles: { drawn: this.drawn.size, byZoom, pending: this.fetching + this.queue.size, cached, failed },
-      imagery: { loaded: 0, failed: 0 },
+      imagery: { on: this.imageryOn, loaded: this.imgLoaded, failed: this.imgFailed, pending: this.imgLoading + this.imgQueue.size },
       water: [...this.areaTiles.entries()].map(([key, t]) => ({ key, verts: t.water ? t.water.geometry.attributes.position.count : 0 })),
       cam: this.camera.position.toArray().map((v) => Math.round(v)),
       target: this.controls.target.toArray().map((v) => Math.round(v)),
@@ -317,6 +336,7 @@ class Scene3d {
     }
     this.queue = want;
     this.applyDraw(draw);
+    this.updateImagery(draw, cam);
     this.kick();
     this.evict(draw);
     this.updateStatus();
@@ -397,6 +417,8 @@ class Scene3d {
     st.mesh.position.set(m.origin[0], 0, m.origin[1]);
     st.mesh.visible = false;
     st.hmin = m.hmin; st.hmax = m.hmax;
+    st.uv0 = m.uvs.slice();   // the tile's own 0..1 UVs; imagery from an ancestor re-maps them
+    st.tex = null; st.imgState = null; st.imgFrom = null;
     st.state = 'ready';
     this.world.add(st.mesh);
   }
@@ -404,7 +426,10 @@ class Scene3d {
   /* LRU: dispose built tiles beyond the cap, oldest first, never ones in use. */
   evict(draw) {
     if (this.cache.size <= CACHE_CAP) return;
-    const idle = [...this.cache.values()].filter((st) => st.state !== 'loading' && !draw.has(st.key)).sort((a, b) => a.last - b.last);
+    // a drawn tile may be wearing an ancestor's texture: keep those alive
+    const lent = new Set();
+    for (const k of draw) { const st = this.cache.get(k); if (st && st.imgFrom) lent.add(st.imgFrom); }
+    const idle = [...this.cache.values()].filter((st) => st.state !== 'loading' && !draw.has(st.key) && !lent.has(st.key)).sort((a, b) => a.last - b.last);
     for (const st of idle) {
       if (this.cache.size <= CACHE_CAP) break;
       this.disposeTile(st);
@@ -416,9 +441,112 @@ class Scene3d {
     if (!st.mesh) return;
     this.world.remove(st.mesh);
     st.mesh.geometry.dispose();
-    if (st.mesh.material.map) st.mesh.material.map.dispose();
     st.mesh.material.dispose();
+    if (st.tex) st.tex.dispose();
+    st.tex = null;
     st.mesh = null;
+  }
+
+  /* ---------- imagery: each tile loads its own picture from the active basemap ---------- */
+
+  imageUrl(z, x, y) {
+    const b = this.basemap, subs = b.subdomains || '';
+    return b.template.replace('{s}', subs ? subs[(x + y) % subs.length] : '').replace('{z}', z).replace('{x}', x).replace('{y}', y).replace('{r}', '');
+  }
+
+  /* Queue imagery for drawn tiles lacking it, then dress every drawn tile
+   * with its own texture, else the nearest ancestor's (a sub-rect of it),
+   * else relief colours. */
+  updateImagery(draw, cam) {
+    if (!this.imageryOn || !this.basemap) return;
+    for (const key of draw) {
+      const st = this.cache.get(key);
+      if (st.tex || st.imgState === 'loading' || (st.imgState === 'failed' && Date.now() - st.imgFailAt < RETRY_MS)) continue;
+      const [z, x, y] = parseKey(key), c = tileToScene(this.proj, z, x, y);
+      const dx = Math.max(c.x0 - cam[0], 0, cam[0] - c.x1), dz = Math.max(c.z0 - cam[2], 0, cam[2] - c.z1);
+      this.imgQueue.set(key, c.size / Math.max(1, Math.hypot(dx, cam[1], dz)));
+    }
+    for (const key of [...this.imgQueue.keys()]) if (!draw.has(key)) this.imgQueue.delete(key);
+    while (this.imgLoading < IMG_CONCURRENCY && this.imgQueue.size) {
+      let best = null, bp = -Infinity;
+      for (const [k, p] of this.imgQueue) if (p > bp) { best = k; bp = p; }
+      this.imgQueue.delete(best);
+      this.loadImagery(this.cache.get(best));
+    }
+    for (const key of draw) this.dress(this.cache.get(key));
+  }
+
+  loadImagery(st) {
+    st.imgState = 'loading';
+    this.imgLoading++;
+    this.texLoader.load(this.imageUrl(st.z, st.x, st.y), (tex) => {
+      this.imgLoading--;
+      if (!this.controls || !st.mesh || this.cache.get(st.key) !== st) { tex.dispose(); return; }
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = Math.min(MAX_ANISO, this.renderer.capabilities.getMaxAnisotropy());
+      st.tex = tex; st.imgState = 'ready';
+      this.imgLoaded++;
+      this.needSelect = true;
+    }, undefined, () => {
+      this.imgLoading--;
+      st.imgState = 'failed'; st.imgFailAt = Date.now();
+      this.imgFailed++;
+      if (this.controls && this.imgLoaded === 0 && this.imgFailed >= 8) {
+        // the basemap can't be used as texture (CORS, outage): plain relief
+        this.say('imagery', "3D: couldn't load imagery for the terrain, showing relief colours instead.");
+        this.imageryOn = false;
+        const btn = document.getElementById('mode3d');
+        if (btn) btn.textContent = 'Relief';
+        this.applyImageryMode();
+      }
+      this.needSelect = true;
+    });
+  }
+
+  /* Put the best available texture on a tile: its own, else an ancestor's. */
+  dress(st) {
+    let src = st.tex ? st : null, d = 0;
+    if (!src) {
+      for (let k = parentKey(st.key), n = 1; k && n <= 8; k = parentKey(k), n++) {
+        const a = this.cache.get(k);
+        if (a && a.tex && a.mesh) { src = a; d = n; break; }
+      }
+    }
+    const from = src ? src.key : null;
+    if (from === st.imgFrom) return;
+    st.imgFrom = from;
+    const mat = st.mesh.material, uv = st.mesh.geometry.attributes.uv;
+    if (!src) { mat.map = null; mat.vertexColors = true; mat.needsUpdate = true; this.dirty = true; return; }
+    // the tile's 0..1 UVs mapped into the source texture (the tile itself,
+    // or its ancestor d levels up), pulled half a texel in from each edge so
+    // neighbouring tiles sample pixel centres, not the clamped border
+    const f = 2 ** d, [, ax, ay] = parseKey(src.key), fx = (st.x - ax * f) / f, fy = (st.y - ay * f) / f;
+    const k = 1 - 1 / 256, o = 0.5 / 256;
+    for (let i = 0; i < uv.count; i++) {
+      const u = fx + st.uv0[i * 2] / f, v = 1 - (fy + (1 - st.uv0[i * 2 + 1]) / f);
+      uv.setXY(i, u * k + o, v * k + o);
+    }
+    uv.needsUpdate = true;
+    mat.map = src.tex; mat.vertexColors = false; mat.needsUpdate = true;
+    this.dirty = true;
+  }
+
+  /* Imagery/Relief toggle: relief drops every texture reference. */
+  applyImageryMode() {
+    if (!this.imageryOn) {
+      this.imgQueue.clear();
+      for (const st of this.cache.values()) {
+        if (!st.mesh) continue;
+        st.imgFrom = null;
+        st.mesh.material.map = null; st.mesh.material.vertexColors = true; st.mesh.material.needsUpdate = true;
+        st.mesh.geometry.attributes.uv.array.set(st.uv0); st.mesh.geometry.attributes.uv.needsUpdate = true;
+      }
+    } else {
+      for (const st of this.cache.values()) st.imgFrom = st.mesh ? null : st.imgFrom;
+    }
+    this.updateAttribution();
+    this.needSelect = true;
+    this.dirty = true;
   }
 
   say(kind, text) {
@@ -437,9 +565,9 @@ class Scene3d {
   updateAttribution() {
     const el = document.getElementById('attr3d');
     if (!el) return;
-    el.textContent = this.source === 'terrarium'
-      ? 'Terrain: AWS Terrain Tiles (Mapzen, SRTM and others)'
-      : 'Terrain: Geoscience Australia DEM-H';
+    const terrain = this.source === 'terrarium' ? 'Terrain: AWS Terrain Tiles (Mapzen, SRTM and others)' : 'Terrain: Geoscience Australia DEM-H';
+    // the attribution strings are our own constants (BASEMAPS in app.js)
+    el.innerHTML = terrain + (this.imageryOn && this.basemap ? ` · ${this.basemap.attr}` : '');
   }
 
   /* Camera clip planes follow the distance, so the near plane stays close
@@ -700,6 +828,7 @@ class Scene3d {
       if (t.water) { t.water.geometry.dispose(); t.water.material.dispose(); }
     }
     this.areaTiles.clear();
+    this.imgQueue.clear();
     this.controls.dispose();
     this.renderer.dispose();
     if (this.globeRenderer) this.globeRenderer.dispose();

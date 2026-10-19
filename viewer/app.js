@@ -1080,6 +1080,14 @@ import './inertial-grid.js';
       getViewBox: () => viewBounds3d(),
       getCentre: () => { const m = state.lmap; if (!m) return null; const c = m.getCenter(); return [c.lat, c.lng]; },
       getAreas: () => areasFor3d(),
+      // the 2D map's active XYZ basemap, for per-tile imagery in 3D. WebGL
+      // textures need CORS, so a basemap that isn't loaded crossOrigin
+      // (WMS, state aerial) falls back to the default satellite layer.
+      getBasemap: () => {
+        let bm = BASEMAPS.find((b) => b.name === status.basemap);
+        if (!bm || bm.wms || !bm.opts.crossOrigin) bm = BASEMAPS[0];
+        return { name: bm.name, template: bm.url(), subdomains: bm.opts.subdomains || '', maxZoom: bm.opts.maxZoom, attr: bm.opts.attribution };
+      },
       // DEM-H for an exact lon/lat box: the terrain fallback when the tile
       // service can't be reached. n x n samples, sea as SEA_LEVEL (-1.5 m).
       fetchDemBox: async (box, n) => {
