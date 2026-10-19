@@ -343,13 +343,22 @@ body.in3d.in3d-scenario #placesCard { display: none; }
 
 /* ---------- legend + readout */
 .legend-card {
-  position: fixed; z-index: 999; left: 50%; transform: translateX(-50%); bottom: calc(var(--bottom) + 18px);
+  /* docked at the bottom-left of the map, just right of the left panels, clear of the attribution */
+  position: fixed; z-index: 999; left: calc(var(--left) + 360px + var(--gap)); bottom: calc(var(--bottom) + 22px);
   max-width: min(360px, calc(100vw - 2 * var(--gap))); padding: 10px 12px; display: grid; gap: 6px;
 }
+/* collapsed: a one-line chip */
+.legend-card.collapsed { grid-auto-flow: column; align-items: center; gap: 12px; padding: 6px 12px; }
+.legend-card.collapsed .summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.legend-card.collapsed .legend, .legend-card.collapsed .show-mode { display: none; }
+.legend-card.collapsed .legend-toggle { white-space: nowrap; }
 .summary { font: 500 13px/1.35 var(--font-body); font-variant-numeric: tabular-nums; }
 .summary b { font-family: var(--font-body); font-weight: 700; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 12px; color: var(--muted); }
 .legend i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 5px; }
+.legend i.dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); vertical-align: -2px; }
+.legend i.dot.warn { background: transparent; border: 2px solid #c62828; box-shadow: none; }
+.legend i.dam { width: 22px; background: linear-gradient(90deg, #c62828, #f9a825, #43a047, #1565c0, #6a1b9a); }
 .legend-toggle { border: 0; background: none; color: var(--accent); font: 600 12px var(--font-body); cursor: pointer; padding: 0; justify-self: start; }
 .readout {
   position: fixed; z-index: 1002; left: 50%; transform: translateX(-50%); top: calc(var(--top) + 60px);
@@ -387,7 +396,7 @@ body.in3d.in3d-scenario #placesCard { display: none; }
     border-radius: 14px 14px 0 0;
   }
   .sheet-body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-  .legend-card { left: var(--left); transform: none; bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); }
+  .legend-card { left: var(--left); bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); }
   .readout { top: calc(var(--top) + 96px); }
   body.sheet-open .legend-card { display: none; }
   .leaflet-bottom.leaflet-right { bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); }

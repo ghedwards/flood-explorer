@@ -1028,13 +1028,23 @@ import './inertial-grid.js';
     if (!state.compare || state.compare.run !== state.run) state.compare = Object.assign(F.compareRuns(state.a, state.run, p.run), { run: state.run });
     return state.compare;
   }
+  // The key card follows what is on the map: the Australia-wide view (no
+  // flood model) explains the gauge and dam dots; a model shows the flood
+  // colours. It collapses to a one-line chip.
+  function syncKey() {
+    const open = $('legendToggle').getAttribute('aria-expanded') === 'true', card = $('legendCard');
+    card.classList.toggle('collapsed', !open);
+    card.querySelector('.show-mode').hidden = scenarioEmpty;
+    $('depthLegend').hidden = scenarioEmpty || !open || colorMode() !== 'depth';
+    $('dotLegend').hidden = !scenarioEmpty || !open;
+  }
   function renderModeLegend() {
     const box = $('modeLegend');
     if (!box) return;
     const mode = colorMode();
     const opt = $('colorMode') && $('colorMode').querySelector('option[value="compare"]');
     if (opt) opt.disabled = !(state.pinned && state.pinned.key === state.areaKey);
-    $('depthLegend').hidden = mode !== 'depth' || $('legendToggle').getAttribute('aria-expanded') !== 'true';
+    syncKey();
     const sw = (c) => `<i style="background:rgb(${c.join(',')})"></i>`;
     if (mode === 'hazard') {
       const h = hazardNow();
@@ -1045,7 +1055,7 @@ import './inertial-grid.js';
       const c = compareNow();
       box.innerHTML = `<span>${sw(COMPARE_COLORS.onlyNow)}only now${c ? ` ${fmt(c.km2.onlyNow, 1)} km²` : ''}</span><span>${sw(COMPARE_COLORS.onlyPinned)}only pinned${c ? ` ${fmt(c.km2.onlyPinned, 1)} km²` : ''}</span><span>${sw(COMPARE_COLORS.both)}both</span>`;
     } else box.innerHTML = '';
-    box.hidden = mode === 'depth';
+    box.hidden = mode === 'depth' || scenarioEmpty || $('legendToggle').getAttribute('aria-expanded') !== 'true';
   }
 
   // Pin the current scenario to compare later ones against it
@@ -3305,7 +3315,37 @@ import './inertial-grid.js';
       if (defaultsOn.includes(name)) { layer.userOn = true; layer.addTo(m); } else layer.userOn = false;
     }
     nat.defaultsApplied = true;
+    if (!nat.dotsWired) {
+      nat.dotsWired = true;
+      m.on('zoomend', scaleDots);
+      m.on('overlayadd', orderDots);
+    }
+    scaleDots(); orderDots();
     syncLayerLists();
+  }
+
+  // Country-wide, a solid band of dots hides the ones that matter: shrink
+  // them below z6 and draw the forecast gauges and warnings last (on top).
+  function scaleDots() {
+    const m = state.lmap;
+    if (!m) return;
+    const z = m.getZoom(), f = z < 5 ? 0.65 : z < 6 ? 0.8 : 1;
+    for (const l of Object.values(nat.layers)) {
+      if (!l.eachLayer) continue;
+      l.eachLayer((c) => {
+        if (!c.setRadius) return;
+        if (!c._r0) c._r0 = c.options.radius;
+        c.setRadius(c._r0 * f);
+      });
+    }
+  }
+  function orderDots() {
+    const m = state.lmap;
+    if (!m) return;
+    for (const n of ['Other river gauges (BoM)', 'Flood information gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Flood forecast gauges (BoM)', 'Gauges under a current flood warning (BoM)']) {
+      const l = nat.layers[n];
+      if (l && l.eachLayer && m.hasLayer(l)) l.eachLayer((c) => c.bringToFront && c.bringToFront());
+    }
   }
 
   async function enterNational(opts) {
@@ -3341,6 +3381,7 @@ import './inertial-grid.js';
     renderStorm();
     renderScenarioTitle();
     solverControls();
+    renderModeLegend();
   }
 
   /* ---------- reports */
@@ -6709,10 +6750,10 @@ import './inertial-grid.js';
 
   $('legendToggle').addEventListener('click', (e) => {
     const shown = e.target.getAttribute('aria-expanded') === 'true';
-    $('depthLegend').hidden = shown;
-    if (shown) $('overlayLegend').hidden = true; else renderOverlayLegend();
     e.target.setAttribute('aria-expanded', String(!shown));
     e.target.textContent = shown ? 'Show key' : 'Hide key';
+    if (shown) $('overlayLegend').hidden = true; else renderOverlayLegend();
+    renderModeLegend();
   });
 
   /* -------------------------------------------------------------- start */
