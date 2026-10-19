@@ -194,19 +194,6 @@ test('selectTiles refines near the camera, coarsens far, respects the cap and th
   assert.ok(small.length < keys.length);
 });
 
-test('selectTiles can force a minimum zoom near the camera', () => {
-  const p = proj();
-  const view = { cam: [0, 20000, 30000], proj: p, focalPx: 864, exag: 1.5, minZ: 6, maxZ: 14, maxDist: 300000, cap: 600, thresholdPx: 384 };
-  const plain = t3d.selectTiles(view), forced = t3d.selectTiles({ ...view, minNear: [10, 200000] });
-  const nearCoarse = (keys) => keys.filter((k) => {
-    const [z, x, y] = t3d.parseKey(k), t = t3d.tileToScene(p, z, x, y);
-    const dx = Math.max(t.x0 - 0, 0, 0 - t.x1), dz = Math.max(t.z0 - 30000, 0, 30000 - t.z1);
-    return z < 10 && Math.hypot(dx, 20000, dz) < 200000;
-  });
-  assert.ok(nearCoarse(plain).length > 0);
-  assert.equal(nearCoarse(forced).length, 0);
-});
-
 test('resolveDraw shows the nearest built ancestor until all children are built', () => {
   const built = new Set(['10/5/5', '11/10/10', '11/11/10']);
   const ready = (k) => built.has(k);

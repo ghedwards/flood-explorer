@@ -294,8 +294,7 @@ export function tileGroundAt(proj, z, x, y, heights, sx, sz, segs = TILE_SEGS) {
  * thresholdPx, nearest-point distance measured to the tile's box (so tall
  * terrain under the camera counts). view = { cam:[x,y,z], focalPx,
  * frustum: [[nx,ny,nz,d],...]|null (inside is n·p+d >= 0), proj, exag,
- * minZ, maxZ, maxDist, thresholdPx, cap, minNear: [z, dist]|null,
- * heightRange(key)->[lo, hi] }.
+ * minZ, maxZ, maxDist, thresholdPx, cap, heightRange(key)->[lo, hi] }.
  * Returns keys; if the result would exceed `cap`, the threshold is raised
  * until it fits. */
 export function selectTiles(view) {
@@ -329,10 +328,7 @@ export function selectTiles(view) {
       const b = boxOf(z, x, y), d = dist(b);
       if (d > maxDist || !visible(b)) continue;
       const px = (b[6] / Math.max(d, 1)) * view.focalPx;
-      // minNear = [zoom, distance]: never coarser than that zoom inside that distance
-      // (coarse imagery levels are different mosaics and show as tonal bands)
-      const forced = view.minNear && z < view.minNear[0] && d < view.minNear[1];
-      if (z < maxZ && (px > threshold || forced)) {
+      if (z < maxZ && px > threshold) {
         for (let c = 0; c < 4; c++) stack.push([z + 1, x * 2 + (c & 1), y * 2 + (c >> 1)]);
       } else out.push(tileKey(z, x, y));
     }

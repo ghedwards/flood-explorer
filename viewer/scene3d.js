@@ -26,7 +26,7 @@ const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
 const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
 const FAR = 800000;
 const IMG_CONCURRENCY = 8;
-const IMG_MATCH_Z = 10;           // imagery coarser than this is a different (darker) mosaic: match it to z10
+const IMG_MATCH_Z = 13;           // Esri's coarser levels are differently processed mosaics: match them to z13's tone
 const SKY_TOP = '#2f6aa8', SKY_HORIZON = '#c9dbe8';   // zenith, and the haze distant terrain fades into
 const MAX_SEGS = 128;             // finer tile meshes where a model DEM replaces the terrain
 const MAX_ANISO = 8;
@@ -110,8 +110,7 @@ class Scene3d {
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
     this.gains = {};              // imagery zoom (< 10) -> [r, g, b] linear multipliers that match it to z10
-    this.samples = {};            // imagery zoom -> tiles measured so far
-    this.gainVersion = 0;
+    this.calibAt = null;          // scene [x, z] where the tone match was last measured
     this.imgLoaded = 0;
     this.imgFailed = 0;
     this.basemap = hooks.getBasemap ? hooks.getBasemap() : null;
@@ -338,7 +337,7 @@ class Scene3d {
     const cam = this.camera.position.toArray();
     const alt = Math.max(200, cam[1] / this.exag);
     return {
-      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 360, thresholdPx: 384, minNear: [IMG_MATCH_Z, 160000],
+      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 360, thresholdPx: 384,
       focalPx: window.innerHeight / (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
       frustum: f.planes.map((p) => [p.normal.x, p.normal.y, p.normal.z, p.constant]),
       maxDist: Math.min(300000, Math.sqrt(2 * 6371000 * alt) + 60000),
@@ -582,7 +581,7 @@ class Scene3d {
       tex.anisotropy = Math.min(MAX_ANISO, this.renderer.capabilities.getMaxAnisotropy());
       st.tex = tex; st.imgState = 'ready';
       this.imgLoaded++;
-      if (st.z < IMG_MATCH_Z) this.calibrateImagery(st.z, st.x, st.y);
+      this.calibrateImagery();
       this.needSelect = true;
     }, undefined, () => {
       this.imgLoading--;
@@ -600,35 +599,41 @@ class Scene3d {
     });
   }
 
-  /* Esri's imagery below z10 is a darker, differently-processed mosaic, which
-   * showed as a straight tonal band where coarse tiles meet z10+ ones. For
-   * the first tile at each coarse level, compare the average colour of its
-   * top-left quadrant with the whole of its top-left child, down the chain
-   * to z10, and keep the per-channel (linear) gain that brings each level
-   * to z10's tone; dress() applies it as the material colour. */
-  async calibrateImagery(z, x, y) {
-    const levels = [];
-    for (let l = z; l < IMG_MATCH_Z; l++) if ((this.samples[l] || 0) < 3) levels.push(l);
-    if (!levels.length || !this.basemap || this.calibBusy) return;
+  /* Esri's imagery changes character with zoom (Landsat-like mosaics when
+   * coarse, Maxar when fine), which showed as straight tonal bands where
+   * tiles of different levels meet. Measure it where the user is looking:
+   * at the tile under the orbit target at each level z6..13, compare the
+   * average colour of the quadrant that holds the next level's tile with
+   * that tile as a whole (same ground), and chain the ratios into a
+   * per-channel (linear) gain bringing each level to z13's tone. dress()
+   * applies it as the material colour. Re-measured when the target has
+   * moved far (different ground, different mosaic). */
+  async calibrateImagery() {
+    if (this.calibBusy || !this.basemap) return;
+    const t = this.controls.target;
+    if (this.calibAt && Math.hypot(t.x - this.calibAt[0], t.z - this.calibAt[1]) < 60000) return;
     this.calibBusy = true;
-    const first = z, n = IMG_MATCH_Z - first;
+    const at = [t.x, t.z], lo = 6;
     try {
-      const imgs = await Promise.all(Array.from({ length: n + 1 }, (_, k) => loadImage(this.imageUrl(first + k, x << k, y << k))));
+      const imgs = await Promise.all(Array.from({ length: IMG_MATCH_Z - lo + 1 }, (_, k) => {
+        const [x, y] = tileAt(this.proj, lo + k, at[0], at[1]);
+        return loadImage(this.imageUrl(lo + k, x, y));
+      }));
       const lin = (v) => Math.pow(v / 255, 2.2);
+      const gains = {};
       let acc = [1, 1, 1];
-      for (let k = n - 1; k >= 0; k--) {
-        const w = imgs[k].naturalWidth, h = imgs[k].naturalHeight;
-        const parent = meanRGB(imgs[k], 0, 0, w / 2, h / 2), child = meanRGB(imgs[k + 1], 0, 0, imgs[k + 1].naturalWidth, imgs[k + 1].naturalHeight);
-        acc = acc.map((a, c) => a * Math.max(0.6, Math.min(2, lin(child[c]) / Math.max(lin(parent[c]), 1e-3))));
-        // several tiles per level, averaged (in log space): one tile can sit
-        // over sea or cloud and say nothing about the land
-        const l = first + k, n0 = this.samples[l] || 0, g = acc.map((v) => Math.max(0.6, Math.min(1.8, v)));
-        this.gains[l] = (this.gains[l] || [1, 1, 1]).map((old, c) => Math.exp((Math.log(old) * n0 + Math.log(g[c])) / (n0 + 1)));
-        this.samples[l] = n0 + 1;
+      for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
+        const parent = imgs[l - lo], child = imgs[l + 1 - lo];
+        const [cx, cy] = tileAt(this.proj, l + 1, at[0], at[1]);
+        const w = parent.naturalWidth / 2, h = parent.naturalHeight / 2;
+        const pm = meanRGB(parent, (cx & 1) * w, (cy & 1) * h, w, h), cm = meanRGB(child, 0, 0, child.naturalWidth, child.naturalHeight);
+        acc = acc.map((a, c) => Math.max(0.5, Math.min(2, a * Math.max(0.6, Math.min(1.7, lin(cm[c]) / Math.max(lin(pm[c]), 1e-3))))));
+        gains[l] = acc.slice();
       }
-      this.gainVersion++;
+      this.gains = gains;
+      this.calibAt = at;
       this.needSelect = true;
-    } catch (err) { /* another tile will try */ }
+    } catch (err) { this.calibAt = at; /* unreachable imagery: leave tones alone until the target moves */ }
     this.calibBusy = false;
   }
 
