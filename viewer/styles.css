@@ -403,6 +403,7 @@ body.in3d.in3d-scenario #placesCard { display: none; }
   }
   .sheet-body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
   .legend-card { left: var(--left); bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); max-width: calc(100vw - var(--left) - var(--right) - 60px); }   /* clear of the map buttons */
+  .leaflet-control-zoom { display: none; }   /* pinch to zoom; the buttons sat under the map buttons */
   .sheet.tall { height: min(80vh, calc(100vh - 140px)); }
   .sheet-grip { display: block; width: 100%; flex: 0 0 auto; height: 22px; border: 0; background: none; cursor: grab; touch-action: none; position: relative; }
   .sheet-grip::before { content: ""; position: absolute; left: 50%; top: 9px; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line); }
