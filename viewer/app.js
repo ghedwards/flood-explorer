@@ -766,6 +766,21 @@ import './inertial-grid.js';
     return sides;
   }
 
+  // On the map, mark the sides of the model box the flood runs into: a thick
+  // dashed orange line there (the rest of the box is drawn faint) and one
+  // label saying the picture stops at that line.
+  function updateEdgeCue(sides) {
+    const L = window.L, area = state.areaKey && areaReg.get(state.areaKey);
+    if (!L || !area || !area.edgeGroup) return;
+    area.edgeGroup.clearLayers();
+    if (!sides.length) return;
+    const b = area.overlay.getBounds(), N = b.getNorth(), S = b.getSouth(), E = b.getEast(), W = b.getWest();
+    const line = { north: [[N, W], [N, E]], south: [[S, W], [S, E]], west: [[N, W], [S, W]], east: [[N, E], [S, E]] };
+    for (const k of sides) L.polyline(line[k], { color: AREA_COLOR, weight: 3.5, dashArray: '9 6', interactive: false }).addTo(area.edgeGroup);
+    const k = sides[0], mid = [(line[k][0][0] + line[k][1][0]) / 2, (line[k][0][1] + line[k][1][1]) / 2];
+    L.marker(mid, { interactive: false, keyboard: false, icon: L.divIcon({ className: 'edge-cue', html: `<span>Model edge: flood may continue</span>`, iconSize: [0, 0] }) }).addTo(area.edgeGroup);
+  }
+
   const MODEL_SIZES = [[10, 30], [20, 30], [40, 60]];   // half-width km, cell m
   function renderEdgeNote() {
     const box = $('edgeNote');
@@ -774,6 +789,7 @@ import './inertial-grid.js';
     const level = MODEL_SIZES.findIndex(([h]) => h === (m.halfKm || 10));
     const canGrow = m.local && level >= 0 && level < MODEL_SIZES.length - 1;
     box.hidden = scenarioEmpty || !m.local || !sides.length;
+    updateEdgeCue(box.hidden ? [] : sides);
     if (box.hidden) return;
     const km = 2 * (m.halfKm || 10);
     const list = sides.length > 1 ? `${sides.slice(0, -1).join(', ')} and ${sides[sides.length - 1]}` : sides[0];
@@ -934,6 +950,20 @@ import './inertial-grid.js';
   // The relief overlay is pre-blended exactly as the previously fused
   // raster was: (0.88·water) over opaque terrain.
   let waterImg = null;
+  // a wet cell with no wet neighbour among the 8 around it (display only;
+  // the statistics still count it)
+  function loneCell(wet, i, W, H) {
+    const x = i % W, y = (i - x) / W;
+    for (let dy = -1; dy <= 1; dy++) {
+      const yy = y + dy;
+      if (yy < 0 || yy >= H) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx;
+        if ((dx || dy) && xx >= 0 && xx < W && wet[yy * W + xx]) return false;
+      }
+    }
+    return true;
+  }
   function composeWater() {
     const a = state.a, run = state.run, base = state.base;
     const relief = $('showRelief').checked;
@@ -956,7 +986,7 @@ import './inertial-grid.js';
         else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
       } else if (run.wet[i] && isFlood(i)) {
         if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
-        else {
+        else if (!loneCell(run.wet, i, a.W, a.H)) {   // lone wet cells are speckle, not flood
           band = depthBand(run.depth[i]);
           col = DEPTH_STOPS[band][1];
         }
@@ -1747,6 +1777,10 @@ import './inertial-grid.js';
       // animated zoom), crisp pixelated cells at rest — see styles.css
       m.on('zoomstart', () => m.getContainer().classList.add('flood-zooming'));
       m.on('zoomend', () => m.getContainer().classList.remove('flood-zooming'));
+      // from street level (z15+) a 30 m cell is a big square: scale the
+      // rasters smoothly there so the shoreline is soft; crisp cells below
+      const syncSmooth = () => m.getContainer().classList.toggle('flood-smooth', m.getZoom() >= 15);
+      m.on('zoomend', syncSmooth); syncSmooth();
       m.on('layeradd layerremove', syncLayerLists);
       window.__floodTestZoom = (lat, lng, z) => { m.setView([lat, lng], z, { animate: false }); };   // returns nothing: a Leaflet map can't be serialised by the test driver
       // simulate a tap on the map (not on a marker) at a place, for tests
@@ -2120,6 +2154,7 @@ import './inertial-grid.js';
       area.reliefShade = null;
       area.reliefWas = false;
       area.outline = L.rectangle(bounds, { color: '#c66f1d', weight: 1.5, dashArray: '5 5', fill: false, interactive: false }).addTo(m);
+      area.edgeGroup = L.layerGroup().addTo(m);   // the sides the flood runs into (updateEdgeCue)
       area.marker = L.marker(bounds.getCenter(), { icon: numIcon(area.n, AREA_COLOR, true), keyboard: true, title: `${area.n}. ${area.name}: flood model`, alt: `${area.n}. ${area.name}`, zIndexOffset: 900 }).addTo(m);
       area.marker.bindTooltip(`${area.n}. ${area.name}: flood model gauge`, { direction: 'top', offset: [0, -12] });
       area.marker.on('click', () => selectPlace(area.n));
@@ -2140,7 +2175,8 @@ import './inertial-grid.js';
     state.gaugeMarker = area ? area.marker : null;
     for (const a of areaReg.values()) {
       const on = a === area;
-      a.outline.setStyle({ color: on ? AREA_COLOR : '#8a6a4a', weight: on ? 2.5 : 1.2, dashArray: on ? null : '5 5' });
+      a.outline.setStyle({ color: on ? AREA_COLOR : '#8a6a4a', weight: 1, opacity: on ? 0.55 : 0.45, dashArray: '5 5' });
+      if (!on && a.edgeGroup) a.edgeGroup.clearLayers();
       a.marker.setIcon(numIcon(a.n, on ? AREA_COLOR : '#8a6a4a', on));
       if (!on) { a.reliefShade = null; }   // freed; re-encoded on activation
     }
@@ -2158,7 +2194,7 @@ import './inertial-grid.js';
     if (!m) return;
     if (hidden) hiddenNums.add(n); else hiddenNums.delete(n);
     const area = areaByNumber(n);
-    if (area) [area.overlay, area.outline, area.marker].forEach((l) => (hidden ? m.removeLayer(l) : l.addTo(m)));
+    if (area) [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && (hidden ? m.removeLayer(l) : l.addTo(m)));
     reports.filter((r) => r.n === n && r.pin).forEach((r) => (hidden ? m.removeLayer(r.pin) : r.pin.addTo(m)));
     pins.filter((p) => p.n === n && p.marker).forEach((p) => (hidden ? m.removeLayer(p.marker) : p.marker.addTo(m)));
     if (hidden && area && area.key === state.areaKey) say(`${n}. ${area.name} is hidden. Its scenario is kept; show it again from Places.`);
@@ -2251,7 +2287,7 @@ import './inertial-grid.js';
     const area = areaReg.get(key);
     if (!area) return;
     const m = state.lmap;
-    [area.overlay, area.outline, area.marker].forEach((l) => l && m && m.removeLayer(l));
+    [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && m.removeLayer(l));
     if (area.overlay && area.overlay._floodUrl) URL.revokeObjectURL(area.overlay._floodUrl);
     areaReg.delete(key);
     if (!reports.some((r) => r.n === area.n)) hiddenNums.delete(area.n);

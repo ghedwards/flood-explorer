@@ -63,7 +63,13 @@ body {
    edge step between N and N+1 device pixels per frame (the blue edges
    shimmer). Scale smoothly during the motion; crisp cells come back on
    zoomend. */
-.flood-zooming .flood-layer { image-rendering: auto; }
+.flood-zooming .flood-layer, .flood-smooth .flood-layer { image-rendering: auto; }
+/* label on the model box side the flood runs into */
+.edge-cue span {
+  position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
+  background: #c66f1d; color: #fff; font: 600 11px/1 var(--font-body); padding: 4px 8px; border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
 .busy {
   position: absolute; inset: 0; display: grid; place-items: center; z-index: 900;
   background: color-mix(in srgb, var(--map-ground) 70%, transparent); font: 500 14px var(--font-data);
