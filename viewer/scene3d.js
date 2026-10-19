@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
-  makeProjection, tileKey, parseKey, tileAt, tileToScene, decodeTerrarium, sampleRaster,
+  makeProjection, parseKey, parentKey, tileToScene, decodeTerrarium, sampleRaster, selectTiles, resolveDraw,
   tileHeights, tileMesh, TILE_SEGS, decimateStep, waterMesh, waterFromFrame,
 } from './terrain3d.js';
 
@@ -22,8 +22,9 @@ const FETCH_CONCURRENCY = { terrarium: 6, demh: 3 };
 const MAX_Z = { terrarium: 14, demh: 12 };
 const CACHE_CAP = 300;            // built terrain tiles kept
 const RETRY_MS = 60000;           // don't refetch a failed tile for a minute
-const FIXED_Z = 12;               // phase 1: one detail level around the target
-const FIXED_RADIUS = 3;
+const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
+const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
+const FAR = 800000;
 
 let controller = null;   // one open view at a time
 
@@ -141,8 +142,10 @@ class Scene3d {
     chrome.appendChild(globeWrap);
 
     overlay.appendChild(canvas);
-    overlay.appendChild(chrome);
     document.body.appendChild(overlay);
+    // the chrome sits on the body, not in #view3d (z-index 5 is its own
+    // stacking context, which would keep the bar under the panel cards)
+    document.body.appendChild(chrome);
     document.body.classList.add('in3d');   // hide the map fabs (they act on
     // the map we've covered); the bar's Back-to-map handles the way out
 
@@ -153,7 +156,7 @@ class Scene3d {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#0b1622');
-    this.camera = new THREE.PerspectiveCamera(55, 1, 5, 1e6);
+    this.camera = new THREE.PerspectiveCamera(55, 1, 5, FAR);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;   // smooth, Earth-like camera feel
     this.controls.dampingFactor = 0.08;
@@ -259,32 +262,60 @@ class Scene3d {
 
   maxZ() { return MAX_Z[this.source]; }
 
-  /* Phase 1: one detail level, a square of tiles around the orbit target. */
-  wantedTiles() {
-    const t = this.controls.target, z = Math.min(FIXED_Z, this.maxZ());
-    const [cx, cy] = tileAt(this.proj, z, t.x, t.z), n = 2 ** z, out = [];
-    for (let y = cy - FIXED_RADIUS; y <= cy + FIXED_RADIUS; y++) {
-      for (let x = cx - FIXED_RADIUS; x <= cx + FIXED_RADIUS; x++) if (y >= 0 && y < n && x >= 0 && x < n) out.push(tileKey(z, x, y));
+  /* The view as selectTiles() wants it: camera, projection, frustum planes
+   * and the horizon distance for this altitude. */
+  selectionView() {
+    this.camera.updateMatrixWorld();
+    const f = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse));
+    const cam = this.camera.position.toArray();
+    const alt = Math.max(200, cam[1] / this.exag);
+    return {
+      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 320, thresholdPx: 384,
+      focalPx: window.innerHeight / (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
+      frustum: f.planes.map((p) => [p.normal.x, p.normal.y, p.normal.z, p.constant]),
+      maxDist: Math.min(300000, Math.sqrt(2 * 6371000 * alt) + 60000),
+      heightRange: (key) => this.heightRange(key),
+    };
+  }
+
+  /* [lo, hi] metres for a tile: its own once built, else the nearest built ancestor's. */
+  heightRange(key) {
+    for (let k = key; k; k = parentKey(k)) {
+      const st = this.cache.get(k);
+      if (st && st.state === 'ready') return [st.hmin, st.hmax];
     }
-    return out;
+    return HEIGHT_GUESS;
   }
 
   isReady(key) { const st = this.cache.get(key); return !!(st && st.state === 'ready' && st.mesh); }
 
   updateTiles() {
-    const wanted = this.wantedTiles();
-    const draw = new Set(wanted.filter((k) => this.isReady(k)));
-    // request what's missing, nearest the target first
-    const t = this.controls.target;
-    const now = Date.now();
-    for (const key of wanted) {
+    const view = this.selectionView();
+    const wanted = selectTiles(view);
+    const draw = resolveDraw(wanted, (k) => this.isReady(k));
+    const cam = view.cam, now = Date.now();
+    const want = new Map();   // key -> fetch priority (bigger first)
+    const need = (key, pri) => {
       const st = this.cache.get(key);
-      if (st && (st.state === 'loading' || st.state === 'ready')) continue;
-      if (st && st.state === 'failed' && now - st.failAt < RETRY_MS) continue;
+      if (st && (st.state === 'loading' || st.state === 'ready')) return;
+      if (st && st.state === 'failed' && now - st.failAt < RETRY_MS) return;
+      if (!(want.get(key) >= pri)) want.set(key, pri);
+    };
+    for (const key of wanted) {
       const [z, x, y] = parseKey(key), c = tileToScene(this.proj, z, x, y);
-      this.queue.set(key, -Math.hypot((c.x0 + c.x1) / 2 - t.x, (c.z0 + c.z1) / 2 - t.z));
+      const dx = Math.max(c.x0 - cam[0], 0, cam[0] - c.x1), dz = Math.max(c.z0 - cam[2], 0, cam[2] - c.z1);
+      need(key, c.size / Math.max(1, Math.hypot(dx, cam[1], dz)));   // on-screen size
+      const st = this.cache.get(key);
+      if (st && st.state === 'ready') st.last = this.frame;
+      // with nothing built above it yet, fetch the ancestors too, coarsest
+      // first: they are what stands in while the detail loads
+      let covered = this.isReady(key);
+      for (let p = parentKey(key); p && !covered; p = parentKey(p)) {
+        if (this.isReady(p)) covered = true;
+        else need(p, 1e6 - parseKey(p)[0]);
+      }
     }
-    for (const key of [...this.queue.keys()]) if (!wanted.includes(key)) this.queue.delete(key);
+    this.queue = want;
     this.applyDraw(draw);
     this.kick();
     this.evict(draw);
@@ -415,7 +446,7 @@ class Scene3d {
    * to the ground under the camera without wasting depth range. */
   updateCameraPlanes() {
     const d = this.camera.position.distanceTo(this.controls.target);
-    const near = Math.max(2, Math.min(500, d * 0.01)), far = Math.max(60000, d * 12 + 120000);
+    const near = Math.max(2, Math.min(500, d * 0.01)), far = FAR;
     if (Math.abs(near - this.camera.near) > near * 0.05 || Math.abs(far - this.camera.far) > far * 0.05) {
       this.camera.near = near; this.camera.far = far;
       this.camera.updateProjectionMatrix();
@@ -675,6 +706,8 @@ class Scene3d {
     this.controls = null;
     const overlay = document.getElementById('view3d');
     if (overlay) overlay.remove();
+    const chrome = document.getElementById('view3dChrome');
+    if (chrome) chrome.remove();
     if (this.hooks.onClose) this.hooks.onClose();
     controller = null;
   }
