@@ -46,6 +46,25 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
     await page.waitForTimeout(4000);
   });
   await shot("0-map-2d");
+  // imagery tone by zoom over the preset (is z<=9 really darker than z>=10?)
+  await step("imagery-probe", async () => {
+    report.imageryProbe = await page.evaluate(async () => {
+      const lon = 150.51, lat = -23.38, out = {};
+      const load = (u) => new Promise((res) => { const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => res(im); im.onerror = () => res(null); im.src = u; });
+      for (const z of [7, 8, 9, 10, 11, 12]) {
+        const n = 2 ** z, la = (lat * Math.PI) / 180;
+        const x = Math.floor(((lon + 180) / 360) * n), y = Math.floor(((1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2) * n);
+        const im = await load(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
+        if (!im) { out[z] = null; continue; }
+        const c = document.createElement("canvas"); c.width = c.height = 8;
+        const ctx = c.getContext("2d"); ctx.drawImage(im, 0, 0, im.naturalWidth, im.naturalHeight, 0, 0, 8, 8);
+        const d = ctx.getImageData(0, 0, 8, 8).data, m = [0, 0, 0];
+        for (let i = 0; i < d.length; i += 4) { m[0] += d[i]; m[1] += d[i + 1]; m[2] += d[i + 2]; }
+        out[z] = m.map((v) => Math.round(v / 64));
+      }
+      return out;
+    });
+  });
   await step("open3d", async () => {
     await page.evaluate(() => window.__floodOpen3D());
     await page.waitForSelector("#view3d canvas", { timeout: 30000 });
