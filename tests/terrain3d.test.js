@@ -52,7 +52,7 @@ test('waterMesh emits vertices only for wet cells with the right band colour', (
   const k = m2.positions.findIndex((v, j) => j % 3 === 0 && v === 20 * a.cell && m2.positions[j + 2] === 15 * a.cell) / 3;
   assert.ok(k >= 0);
   // Float32 storage + RGBA vertex colours: compare within 1e-6
-  for (let c = 0; c < 3; c++) assert.ok(Math.abs(m2.colors[k * 4 + c] - [0x37, 0x86, 0xc9][c] / 255) < 1e-6);
+  for (let c = 0; c < 3; c++) assert.ok(Math.abs(m2.colors[k * 4 + c] - [0x1f, 0x67, 0xbb][c] / 255) < 1e-6);
 });
 
 test('waterFromFrame matches showTimeStep decode arithmetic', () => {
@@ -89,12 +89,13 @@ test('soft water adds a transparent ring at the neighbours\' level and 3D shades
   assert.ok(t3d.depthAlpha3d(0.2) < t3d.depthAlpha3d(0.8) && t3d.depthAlpha3d(10) <= 0.88);
 });
 
-test('depthColor follows the 2D legend band boundaries', () => {
-  assert.deepEqual(t3d.depthColor(0.0), [0xc9, 0xe7, 0xf7]);
-  assert.deepEqual(t3d.depthColor(0.49), [0xc9, 0xe7, 0xf7]);
-  assert.deepEqual(t3d.depthColor(0.5), [0x79, 0xbf, 0xe8]);
-  assert.deepEqual(t3d.depthColor(1.9), [0x37, 0x86, 0xc9]);
+test('depthColor follows the 2D legend band boundaries and the 3D colours', () => {
+  assert.deepEqual(t3d.depthColor(0.0), [0x3f, 0x9a, 0xe0]);
+  assert.deepEqual(t3d.depthColor(0.49), [0x3f, 0x9a, 0xe0]);
+  assert.deepEqual(t3d.depthColor(0.5), [0x2b, 0x7f, 0xd0]);
+  assert.deepEqual(t3d.depthColor(1.9), [0x1f, 0x67, 0xbb]);
   assert.deepEqual(t3d.depthColor(4.5), [0x0c, 0x34, 0x70]);
+  for (const [lo, c] of t3d.BANDS3D) assert.deepEqual(t3d.depthColor(lo), c);   // one palette for 2D and 3D
 });
 
 /* ---------- v4 ---------- */

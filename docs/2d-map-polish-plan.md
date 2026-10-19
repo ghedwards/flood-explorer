@@ -120,6 +120,30 @@ Chrome and layout:
 4. Key card (desktop docking, context-aware Australia legend) (7, 10).
 5. Phone layout (8) and panel help text (9).
 
+## Phase 1 outcomes
+
+**Finding 1, verified (run 39322369115, Rockhampton, 3.05 m at gauge,
+`__floodChannelDiag`).** The premise was only partly right. Of 6,492
+mapped channel cells (stream cells above the display threshold), 1,914
+(29 %) are wet in the baseline run and 3,359 (52 %) are wet in the flood
+run; 1,445 count as newly flooded, none deeper than 4 m (mean depth over
+wet channel cells 2.4 m). The gauge sits at 0.03 m in the model, so the
+baseline (0.3 m above that) does wet the main river through town. The
+"black void" in the town reach is therefore mostly the Esri imagery's own
+dark river with nothing drawn over it; the dark squares in the channel
+(04b) are real 2-4 m newly flooded cells at the bank edges. So channel
+cells are not mis-banded as the finding assumed.
+
+Display change made: flood depth bands are untouched for flooded cells
+(statistics and what counts as flood are unchanged); channel cells and
+baseline-wet water that are *not* drawn as flood now get a light neutral
+tint (~35 % alpha) over imagery, so the river reads as water rather than
+a hole, and the key says "River (normal)". Relief mode is unchanged.
+Palette: the 2D bands now use the 3D view's colours (BANDS3D, shallow
+`#3f9ae0` at ~70 % alpha, the rest ~90 %), replacing the near-white
+`#c9e7f7`; `BANDS` in terrain3d.js, the legend swatches and `DEPTH_STOPS`
+move together (tests/terrain3d.test.js checks 2D = 3D).
+
 ## Out of scope
 
 The flood engine and its statistics, new layers, basemap changes.

@@ -828,9 +828,13 @@ import './inertial-grid.js';
   /* ------------------------------------------------------------ drawing */
 
   const DEPTH_STOPS = [
-    [0.5, [201, 231, 247]], [1, [121, 191, 232]], [2, [55, 134, 201]], [4, [29, 94, 163]], [Infinity, [12, 52, 112]],
-  ];
+    [0.5, [63, 154, 224]], [1, [43, 127, 208]], [2, [31, 103, 187]], [4, [23, 80, 156]], [Infinity, [12, 52, 112]],
+  ];   // same colours as BANDS3D in terrain3d.js (the old palest band read as white paint over imagery)
+  // opacity per band over imagery: shallow water stays slightly see-through
+  const DEPTH_ALPHA = [178, 230, 230, 230, 230];
+  const depthBand = (dep) => { for (let k = 0; k < DEPTH_STOPS.length; k++) if (dep < DEPTH_STOPS[k][0]) return k; return DEPTH_STOPS.length - 1; };
   const WATER = [109, 147, 173];
+  const CHANNEL_ALPHA = 90;   // ~35 %: channel water tint over imagery
   const HYPSO = [
     [0, [226, 230, 214]], [0.12, [208, 218, 186]], [0.35, [186, 186, 146]], [0.65, [160, 142, 112]], [1, [128, 112, 100]],
   ];
@@ -907,8 +911,7 @@ import './inertial-grid.js';
       } else if (run.wet[i] && isFlood(i)) {
         if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
         else {
-          const dep = run.depth[i];
-          for (const [lim, c] of DEPTH_STOPS) if (dep < lim) { col = c; break; }
+          col = DEPTH_STOPS[depthBand(run.depth[i])][1];
         }
       }
       if (withTerrain && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) { col = WATER; alpha = 0.9; }
@@ -940,10 +943,11 @@ import './inertial-grid.js';
     const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
     const floodA = relief ? 224 : 255;   // 0.88 blends over the relief base; full elsewhere
     const streamA = relief ? 230 : 0;    // stream lines only with terrain shading
+    const cellKm2 = (a.cell * a.cell) / 1e6, streamThr = state.streamAreaKm2 * 3;
     let n = 0;
     for (let i = 0; i < a.N; i++) {
       if (!a.valid[i]) continue;
-      let col = null;
+      let col = null, band = -1;
       if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
       if (cmp) {
         const k = cmp.diff[i];
@@ -953,14 +957,23 @@ import './inertial-grid.js';
       } else if (run.wet[i] && isFlood(i)) {
         if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
         else {
-          const dep = run.depth[i];
-          for (const [lim, c] of DEPTH_STOPS) if (dep < lim) { col = c; break; }
+          band = depthBand(run.depth[i]);
+          col = DEPTH_STOPS[band][1];
         }
       }
       const o = i * 4;
-      if (col) { d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = floodA; n++; continue; }
-      if (streamA && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) {
+      if (col) {
+        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2];
+        d[o + 3] = band === 0 && !(hz && hz.cls[i]) && !cmp ? Math.min(floodA, DEPTH_ALPHA[0]) : floodA;
+        n++; continue;
+      }
+      const channel = a.stream[i] && a.acc[i] * cellKm2 > streamThr;
+      if (streamA && channel) {
         d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = streamA;
+      } else if (!relief && !a.ocean[i] && (channel || (base && base.wet[i]))) {
+        // river channel and normal-level water over imagery: a light neutral
+        // tint (the imagery shows the real water), not a flood colour
+        d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = CHANNEL_ALPHA;
       }
     }
     return { img: waterImg, count: n };
