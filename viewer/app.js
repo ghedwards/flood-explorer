@@ -865,6 +865,11 @@ import './inertial-grid.js';
       const i = y * W + x, o = i * 4;
       if (!valid[i]) { out[o + 3] = 0; continue; }
       const c = dem[i];
+      if (c < -1) {   // sea: flat water colour, no hillshade (also what the
+        out[o] = 0xc9; out[o + 1] = 0xe7; out[o + 2] = 0xf7;   // 2D relief
+        out[o + 3] = 255;                                     // paints over)
+        continue;
+      }
       const zz = (xx, yy) => { const v = z(xx, yy); return Number.isNaN(v) ? c : v; };
       const gx = (zz(x + 1, y) - zz(x - 1, y)) / (2 * cell);
       const gy = (zz(x, y + 1) - zz(x, y - 1)) / (2 * cell);
@@ -1077,7 +1082,7 @@ import './inertial-grid.js';
       getCentre: () => { const m = state.lmap; if (!m) return null; const c = m.getCenter(); return [c.lat, c.lng]; },
       getTiles: () => activeBasemapTiles(),
       getAreas: () => areasFor3d(),
-      fetchDem: (lat, lon, halfKm, cell) => fetchDemWindow(lat, lon, halfKm, cell),
+      fetchDem: (lat, lon, halfKm, cell) => fetchDemWindow(lat, lon, halfKm, cell, { allowSea: true }),
       terrainColors: (a) => terrainRGBA(a),
       syncMap: (box, z) => {
         const m = state.lmap;
@@ -5922,7 +5927,7 @@ import './inertial-grid.js';
     return { iw, ih, data, nd, tiffBounds };
   }
 
-  async function fetchDemWindow(lat, lon, halfKm, cellM) {
+  async function fetchDemWindow(lat, lon, halfKm, cellM, opts = {}) {
     const [w, s, e, n] = windowBox(lat, lon, halfKm);
     const W = Math.round((2 * halfKm * 1000) / cellM), H = W;
     const { iw, ih, data, nd, tiffBounds } = await fetchRaster(DEMH_WCS, [w, s, e, n], W, H);
@@ -5935,7 +5940,9 @@ import './inertial-grid.js';
       else land++;
       dem[i] = v; valid[i] = 1;
     }
-    if (land < iw * ih * 0.05) throw new Error('there is almost no land in the elevation data here');
+    // sea-only windows are fine for the 3D terrain stream (flat sea planes);
+    // a flood model needs land to be interesting
+    if (land < iw * ih * 0.05 && !(opts && opts.allowSea)) throw new Error('there is almost no land in the elevation data here');
     let bounds = [w, s, e, n];
     if (tiffBounds && tiffBounds.length === 4 && Math.abs(tiffBounds[0] - w) < 0.05 && Math.abs(tiffBounds[3] - n) < 0.05) bounds = tiffBounds;
     const cell = ((bounds[2] - bounds[0]) * 111320 * Math.cos((lat * Math.PI) / 180)) / iw;
