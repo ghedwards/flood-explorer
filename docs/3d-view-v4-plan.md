@@ -6,6 +6,20 @@ keeps its scene/bar/globe chrome, the timeline scrub and the water-from-
 model idea. Implementation goes on the branch `3d-v4`; every push there
 builds the site in CI and screenshots the 3D view (see *Verification*).
 
+## Baseline (live site, 2026-10-19, `shots3d` run on main 24bfd03)
+
+At Rockhampton with a model built, **the 3D view draws nothing**: every
+shot (opening, settled, zoomed, tilted, zoomed out) is the plain navy
+background. `__flood3DState().cam` and `.target` are `[null, null,
+null]`, i.e. the camera position is **NaN** from the start, so nothing
+can render. The bar is also clipped at the bottom of the window
+("experimental" cut off — `var(--bottom)` in its `calc()` is probably
+undefined in the 3D chrome's context). No console errors besides one
+404. Whatever v4 does, phase 0 is finding where the NaN comes from
+(candidates: `frameCamera`/fly-in with a degenerate view box, OrbitControls
+with target == position, the zoom-limit derivation in `updateStream`) and
+guarding camera updates with `Number.isFinite` checks.
+
 ## Why: what's wrong with v3 (review of viewer/scene3d.js, terrain3d.js)
 
 Geometry and data:
@@ -195,6 +209,10 @@ Code health:
 
 ## Phases (each a commit on `3d-v4`, each verified by screenshots)
 
+0. **Make v3 draw** (small, first): find and fix the NaN camera, fix the
+   bar's bottom offset, point `__flood3DState` at real fields. *Accept:*
+   the settled shot shows terrain. This gives a baseline to compare v4
+   against and a fix that could ship on its own.
 1. **Projection + tiles + terrain source**: shared projection, Terrarium
    decode + DEM-H fallback, 33×33 tile meshes with skirts, a fixed set of
    tiles (no LOD yet) around the target, relief colours. *Accept:* no
