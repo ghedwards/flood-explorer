@@ -110,7 +110,7 @@ class Scene3d {
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
     this.gains = {};              // imagery zoom (< 10) -> [r, g, b] linear multipliers that match it to z10
-    this.calibrating = new Set();
+    this.samples = {};            // imagery zoom -> tiles measured so far
     this.gainVersion = 0;
     this.imgLoaded = 0;
     this.imgFailed = 0;
@@ -338,7 +338,7 @@ class Scene3d {
     const cam = this.camera.position.toArray();
     const alt = Math.max(200, cam[1] / this.exag);
     return {
-      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 320, thresholdPx: 384,
+      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 360, thresholdPx: 384, minNear: [IMG_MATCH_Z, 160000],
       focalPx: window.innerHeight / (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
       frustum: f.planes.map((p) => [p.normal.x, p.normal.y, p.normal.z, p.constant]),
       maxDist: Math.min(300000, Math.sqrt(2 * 6371000 * alt) + 60000),
@@ -608,9 +608,9 @@ class Scene3d {
    * to z10's tone; dress() applies it as the material colour. */
   async calibrateImagery(z, x, y) {
     const levels = [];
-    for (let l = z; l < IMG_MATCH_Z; l++) if (!this.calibrating.has(l)) levels.push(l);
-    if (!levels.length || !this.basemap) return;
-    for (const l of levels) this.calibrating.add(l);
+    for (let l = z; l < IMG_MATCH_Z; l++) if ((this.samples[l] || 0) < 3) levels.push(l);
+    if (!levels.length || !this.basemap || this.calibBusy) return;
+    this.calibBusy = true;
     const first = z, n = IMG_MATCH_Z - first;
     try {
       const imgs = await Promise.all(Array.from({ length: n + 1 }, (_, k) => loadImage(this.imageUrl(first + k, x << k, y << k))));
@@ -620,13 +620,16 @@ class Scene3d {
         const w = imgs[k].naturalWidth, h = imgs[k].naturalHeight;
         const parent = meanRGB(imgs[k], 0, 0, w / 2, h / 2), child = meanRGB(imgs[k + 1], 0, 0, imgs[k + 1].naturalWidth, imgs[k + 1].naturalHeight);
         acc = acc.map((a, c) => a * Math.max(0.6, Math.min(2, lin(child[c]) / Math.max(lin(parent[c]), 1e-3))));
-        if (!this.gains[first + k]) this.gains[first + k] = acc.slice();
+        // several tiles per level, averaged (in log space): one tile can sit
+        // over sea or cloud and say nothing about the land
+        const l = first + k, n0 = this.samples[l] || 0, g = acc.map((v) => Math.max(0.6, Math.min(1.8, v)));
+        this.gains[l] = (this.gains[l] || [1, 1, 1]).map((old, c) => Math.exp((Math.log(old) * n0 + Math.log(g[c])) / (n0 + 1)));
+        this.samples[l] = n0 + 1;
       }
       this.gainVersion++;
       this.needSelect = true;
-    } catch (err) {
-      for (const l of levels) this.calibrating.delete(l);   // try again with another tile
-    }
+    } catch (err) { /* another tile will try */ }
+    this.calibBusy = false;
   }
 
   /* Put the best available texture on a tile: its own, else an ancestor's. */
@@ -774,7 +777,7 @@ class Scene3d {
     }
     this.sky.position.copy(this.camera.position);
     const horizon = Math.min(300000, Math.sqrt(2 * 6371000 * Math.max(200, this.camera.position.y / this.exag)) + 60000);
-    this.scene.fog.near = horizon * 0.6;
+    this.scene.fog.near = horizon * 0.4;
     this.scene.fog.far = horizon * 1.05;
   }
 

@@ -74,6 +74,12 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   await page.waitForTimeout(20000);
   await state3d("settled");
   await shot("2-3d-settled");
+  // the same view as plain relief colours (is any band the imagery or the geometry?)
+  await step("relief-settled", async () => { await page.click("#mode3d"); });
+  await page.waitForTimeout(3000);
+  await shot("2b-3d-settled-relief");
+  await step("imagery-back", async () => { await page.click("#mode3d"); });
+  await page.waitForTimeout(3000);
 
   const box = { x: 700, y: 450 };
   // zoom in towards the centre
