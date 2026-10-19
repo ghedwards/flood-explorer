@@ -766,6 +766,21 @@ import './inertial-grid.js';
     return sides;
   }
 
+  // On the map, mark the sides of the model box the flood runs into: a thick
+  // dashed orange line there (the rest of the box is drawn faint) and one
+  // label saying the picture stops at that line.
+  function updateEdgeCue(sides) {
+    const L = window.L, area = state.areaKey && areaReg.get(state.areaKey);
+    if (!L || !area || !area.edgeGroup) return;
+    area.edgeGroup.clearLayers();
+    if (!sides.length) return;
+    const b = area.overlay.getBounds(), N = b.getNorth(), S = b.getSouth(), E = b.getEast(), W = b.getWest();
+    const line = { north: [[N, W], [N, E]], south: [[S, W], [S, E]], west: [[N, W], [S, W]], east: [[N, E], [S, E]] };
+    for (const k of sides) L.polyline(line[k], { color: AREA_COLOR, weight: 3.5, dashArray: '9 6', interactive: false }).addTo(area.edgeGroup);
+    const k = sides[0], mid = [(line[k][0][0] + line[k][1][0]) / 2, (line[k][0][1] + line[k][1][1]) / 2];
+    L.marker(mid, { interactive: false, keyboard: false, icon: L.divIcon({ className: 'edge-cue', html: `<span>Model edge: flood may continue</span>`, iconSize: [0, 0] }) }).addTo(area.edgeGroup);
+  }
+
   const MODEL_SIZES = [[10, 30], [20, 30], [40, 60]];   // half-width km, cell m
   function renderEdgeNote() {
     const box = $('edgeNote');
@@ -774,6 +789,7 @@ import './inertial-grid.js';
     const level = MODEL_SIZES.findIndex(([h]) => h === (m.halfKm || 10));
     const canGrow = m.local && level >= 0 && level < MODEL_SIZES.length - 1;
     box.hidden = scenarioEmpty || !m.local || !sides.length;
+    updateEdgeCue(box.hidden ? [] : sides);
     if (box.hidden) return;
     const km = 2 * (m.halfKm || 10);
     const list = sides.length > 1 ? `${sides.slice(0, -1).join(', ')} and ${sides[sides.length - 1]}` : sides[0];
@@ -828,9 +844,13 @@ import './inertial-grid.js';
   /* ------------------------------------------------------------ drawing */
 
   const DEPTH_STOPS = [
-    [0.5, [201, 231, 247]], [1, [121, 191, 232]], [2, [55, 134, 201]], [4, [29, 94, 163]], [Infinity, [12, 52, 112]],
-  ];
+    [0.5, [63, 154, 224]], [1, [43, 127, 208]], [2, [31, 103, 187]], [4, [23, 80, 156]], [Infinity, [12, 52, 112]],
+  ];   // same colours as BANDS3D in terrain3d.js (the old palest band read as white paint over imagery)
+  // opacity per band over imagery: shallow water stays slightly see-through
+  const DEPTH_ALPHA = [178, 230, 230, 230, 230];
+  const depthBand = (dep) => { for (let k = 0; k < DEPTH_STOPS.length; k++) if (dep < DEPTH_STOPS[k][0]) return k; return DEPTH_STOPS.length - 1; };
   const WATER = [109, 147, 173];
+  const CHANNEL_ALPHA = 90;   // ~35 %: channel water tint over imagery
   const HYPSO = [
     [0, [226, 230, 214]], [0.12, [208, 218, 186]], [0.35, [186, 186, 146]], [0.65, [160, 142, 112]], [1, [128, 112, 100]],
   ];
@@ -907,8 +927,7 @@ import './inertial-grid.js';
       } else if (run.wet[i] && isFlood(i)) {
         if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
         else {
-          const dep = run.depth[i];
-          for (const [lim, c] of DEPTH_STOPS) if (dep < lim) { col = c; break; }
+          col = DEPTH_STOPS[depthBand(run.depth[i])][1];
         }
       }
       if (withTerrain && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) { col = WATER; alpha = 0.9; }
@@ -931,6 +950,20 @@ import './inertial-grid.js';
   // The relief overlay is pre-blended exactly as the previously fused
   // raster was: (0.88·water) over opaque terrain.
   let waterImg = null;
+  // a wet cell with no wet neighbour among the 8 around it (display only;
+  // the statistics still count it)
+  function loneCell(wet, i, W, H) {
+    const x = i % W, y = (i - x) / W;
+    for (let dy = -1; dy <= 1; dy++) {
+      const yy = y + dy;
+      if (yy < 0 || yy >= H) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx;
+        if ((dx || dy) && xx >= 0 && xx < W && wet[yy * W + xx]) return false;
+      }
+    }
+    return true;
+  }
   function composeWater() {
     const a = state.a, run = state.run, base = state.base;
     const relief = $('showRelief').checked;
@@ -940,10 +973,11 @@ import './inertial-grid.js';
     const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
     const floodA = relief ? 224 : 255;   // 0.88 blends over the relief base; full elsewhere
     const streamA = relief ? 230 : 0;    // stream lines only with terrain shading
+    const cellKm2 = (a.cell * a.cell) / 1e6, streamThr = state.streamAreaKm2 * 3;
     let n = 0;
     for (let i = 0; i < a.N; i++) {
       if (!a.valid[i]) continue;
-      let col = null;
+      let col = null, band = -1;
       if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
       if (cmp) {
         const k = cmp.diff[i];
@@ -952,15 +986,24 @@ import './inertial-grid.js';
         else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
       } else if (run.wet[i] && isFlood(i)) {
         if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
-        else {
-          const dep = run.depth[i];
-          for (const [lim, c] of DEPTH_STOPS) if (dep < lim) { col = c; break; }
+        else if (!loneCell(run.wet, i, a.W, a.H)) {   // lone wet cells are speckle, not flood
+          band = depthBand(run.depth[i]);
+          col = DEPTH_STOPS[band][1];
         }
       }
       const o = i * 4;
-      if (col) { d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = floodA; n++; continue; }
-      if (streamA && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) {
+      if (col) {
+        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2];
+        d[o + 3] = band === 0 && !(hz && hz.cls[i]) && !cmp ? Math.min(floodA, DEPTH_ALPHA[0]) : floodA;
+        n++; continue;
+      }
+      const channel = a.stream[i] && a.acc[i] * cellKm2 > streamThr;
+      if (streamA && channel) {
         d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = streamA;
+      } else if (!relief && !a.ocean[i] && (channel || (base && base.wet[i]))) {
+        // river channel and normal-level water over imagery: a light neutral
+        // tint (the imagery shows the real water), not a flood colour
+        d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = CHANNEL_ALPHA;
       }
     }
     return { img: waterImg, count: n };
@@ -985,13 +1028,23 @@ import './inertial-grid.js';
     if (!state.compare || state.compare.run !== state.run) state.compare = Object.assign(F.compareRuns(state.a, state.run, p.run), { run: state.run });
     return state.compare;
   }
+  // The key card follows what is on the map: the Australia-wide view (no
+  // flood model) explains the gauge and dam dots; a model shows the flood
+  // colours. It collapses to a one-line chip.
+  function syncKey() {
+    const open = $('legendToggle').getAttribute('aria-expanded') === 'true', card = $('legendCard');
+    card.classList.toggle('collapsed', !open);
+    card.querySelector('.show-mode').hidden = scenarioEmpty;
+    $('depthLegend').hidden = scenarioEmpty || !open || colorMode() !== 'depth';
+    $('dotLegend').hidden = !scenarioEmpty || !open;
+  }
   function renderModeLegend() {
     const box = $('modeLegend');
     if (!box) return;
     const mode = colorMode();
     const opt = $('colorMode') && $('colorMode').querySelector('option[value="compare"]');
     if (opt) opt.disabled = !(state.pinned && state.pinned.key === state.areaKey);
-    $('depthLegend').hidden = mode !== 'depth' || $('legendToggle').getAttribute('aria-expanded') !== 'true';
+    syncKey();
     const sw = (c) => `<i style="background:rgb(${c.join(',')})"></i>`;
     if (mode === 'hazard') {
       const h = hazardNow();
@@ -1002,7 +1055,7 @@ import './inertial-grid.js';
       const c = compareNow();
       box.innerHTML = `<span>${sw(COMPARE_COLORS.onlyNow)}only now${c ? ` ${fmt(c.km2.onlyNow, 1)} km²` : ''}</span><span>${sw(COMPARE_COLORS.onlyPinned)}only pinned${c ? ` ${fmt(c.km2.onlyPinned, 1)} km²` : ''}</span><span>${sw(COMPARE_COLORS.both)}both</span>`;
     } else box.innerHTML = '';
-    box.hidden = mode === 'depth';
+    box.hidden = mode === 'depth' || scenarioEmpty || $('legendToggle').getAttribute('aria-expanded') !== 'true';
   }
 
   // Pin the current scenario to compare later ones against it
@@ -1152,6 +1205,24 @@ import './inertial-grid.js';
   window.__floodOpen3D = () => open3d();
   window.__flood3DState = () => (view3d ? view3d.snapshot() : { open: false });
   window.__floodPin = () => pinScenario();
+  // numbers for the 2D polish check: how the mapped channel cells compare
+  // with the baseline ("normal level") run that decides what counts as flood
+  window.__floodChannelDiag = () => {
+    const a = state.a, run = state.run, base = state.base;
+    if (!a || !run) return null;
+    const thr = state.streamAreaKm2 * 3, cellKm2 = (a.cell * a.cell) / 1e6;
+    const o = { n: 0, baseWet: 0, runWet: 0, newly: 0, deep4: 0, demMean: 0, depthMean: 0, baseKnown: !!base, gaugeDem: state.gauge >= 0 ? a.dem[state.gauge] : null };
+    let dsum = 0, ksum = 0;
+    for (let i = 0; i < a.N; i++) {
+      if (!a.valid[i] || !a.stream[i] || a.acc[i] * cellKm2 <= thr || (a.ocean && a.ocean[i])) continue;
+      o.n++; dsum += a.dem[i];
+      if (base && base.wet[i]) o.baseWet++;
+      if (run.wet[i]) { o.runWet++; ksum += run.depth[i]; if (isFlood(i)) { o.newly++; if (run.depth[i] >= 4) o.deep4++; } }
+    }
+    if (o.n) o.demMean = dsum / o.n;
+    if (o.runWet) o.depthMean = ksum / o.runWet;
+    return o;
+  };
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
   window.__floodRelease = (pct, start, hours) => { $('relUnit').value = 'pct'; $('relFlow').value = pct; $('relStart').value = start; $('relHours').value = hours; return releaseOpts(); };
@@ -1716,8 +1787,13 @@ import './inertial-grid.js';
       // animated zoom), crisp pixelated cells at rest — see styles.css
       m.on('zoomstart', () => m.getContainer().classList.add('flood-zooming'));
       m.on('zoomend', () => m.getContainer().classList.remove('flood-zooming'));
+      // from street level (z15+) a 30 m cell is a big square: scale the
+      // rasters smoothly there so the shoreline is soft; crisp cells below
+      const syncSmooth = () => m.getContainer().classList.toggle('flood-smooth', m.getZoom() >= 15);
+      m.on('zoomend', syncSmooth); syncSmooth();
+      m.on('zoomend', declutterPins);
       m.on('layeradd layerremove', syncLayerLists);
-      window.__floodTestZoom = (lat, lng, z) => m.setView([lat, lng], z, { animate: false });
+      window.__floodTestZoom = (lat, lng, z) => { m.setView([lat, lng], z, { animate: false }); };   // returns nothing: a Leaflet map can't be serialised by the test driver
       // simulate a tap on the map (not on a marker) at a place, for tests
       window.__floodTapAt = (lat, lng) => m.fire('click', { latlng: L.latLng(lat, lng) });
       window.__floodZoom = () => m.getZoom();
@@ -1735,6 +1811,12 @@ import './inertial-grid.js';
       // for the automated browser check
       window.__floodSetBasemap = (name) => setBasemap(m, layers, name);
       L.control.scale({ imperial: false }).addTo(m);
+      // phones: the credit line folds into an (i) button so it doesn't run under the key
+      if (window.matchMedia('(max-width: 760px)').matches && m.attributionControl) {
+        const ac = m.attributionControl.getContainer();
+        ac.classList.add('attr-fold');
+        ac.addEventListener('click', () => ac.classList.toggle('open'));
+      }
       m.on('click', onGeoClick);
       // keyboard: with the map focused, Enter does what a click at the
       // centre of the map would (look at that spot, or pick that place),
@@ -2089,6 +2171,7 @@ import './inertial-grid.js';
       area.reliefShade = null;
       area.reliefWas = false;
       area.outline = L.rectangle(bounds, { color: '#c66f1d', weight: 1.5, dashArray: '5 5', fill: false, interactive: false }).addTo(m);
+      area.edgeGroup = L.layerGroup().addTo(m);   // the sides the flood runs into (updateEdgeCue)
       area.marker = L.marker(bounds.getCenter(), { icon: numIcon(area.n, AREA_COLOR, true), keyboard: true, title: `${area.n}. ${area.name}: flood model`, alt: `${area.n}. ${area.name}`, zIndexOffset: 900 }).addTo(m);
       area.marker.bindTooltip(`${area.n}. ${area.name}: flood model gauge`, { direction: 'top', offset: [0, -12] });
       area.marker.on('click', () => selectPlace(area.n));
@@ -2109,7 +2192,8 @@ import './inertial-grid.js';
     state.gaugeMarker = area ? area.marker : null;
     for (const a of areaReg.values()) {
       const on = a === area;
-      a.outline.setStyle({ color: on ? AREA_COLOR : '#8a6a4a', weight: on ? 2.5 : 1.2, dashArray: on ? null : '5 5' });
+      a.outline.setStyle({ color: on ? AREA_COLOR : '#8a6a4a', weight: 1, opacity: on ? 0.55 : 0.45, dashArray: '5 5' });
+      if (!on && a.edgeGroup) a.edgeGroup.clearLayers();
       a.marker.setIcon(numIcon(a.n, on ? AREA_COLOR : '#8a6a4a', on));
       if (!on) { a.reliefShade = null; }   // freed; re-encoded on activation
     }
@@ -2127,7 +2211,7 @@ import './inertial-grid.js';
     if (!m) return;
     if (hidden) hiddenNums.add(n); else hiddenNums.delete(n);
     const area = areaByNumber(n);
-    if (area) [area.overlay, area.outline, area.marker].forEach((l) => (hidden ? m.removeLayer(l) : l.addTo(m)));
+    if (area) [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && (hidden ? m.removeLayer(l) : l.addTo(m)));
     reports.filter((r) => r.n === n && r.pin).forEach((r) => (hidden ? m.removeLayer(r.pin) : r.pin.addTo(m)));
     pins.filter((p) => p.n === n && p.marker).forEach((p) => (hidden ? m.removeLayer(p.marker) : p.marker.addTo(m)));
     if (hidden && area && area.key === state.areaKey) say(`${n}. ${area.name} is hidden. Its scenario is kept; show it again from Places.`);
@@ -2220,7 +2304,7 @@ import './inertial-grid.js';
     const area = areaReg.get(key);
     if (!area) return;
     const m = state.lmap;
-    [area.overlay, area.outline, area.marker].forEach((l) => l && m && m.removeLayer(l));
+    [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && m.removeLayer(l));
     if (area.overlay && area.overlay._floodUrl) URL.revokeObjectURL(area.overlay._floodUrl);
     areaReg.delete(key);
     if (!reports.some((r) => r.n === area.n)) hiddenNums.delete(area.n);
@@ -2325,8 +2409,13 @@ import './inertial-grid.js';
         <button type="button" class="icon-btn" data-drop="${n}" aria-label="Remove ${escapeHtml(name)}" title="Remove">×</button>
       </li>`;
     }).join('');
+    // the how-it-works text is shown the first time places appear, then
+    // folds behind a "?" (remembered in this browser)
+    if (!placesHelpSeen) { placesHelpOpen = true; placesHelpSeen = true; try { localStorage.setItem(HELP_KEY, '1'); } catch (e) { /* storage blocked */ } }
     box.innerHTML = `<ul class="places">${rows}</ul>
-      <p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time. <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${propertyChecksHtml()}${studiesHtml()}`;
+      ${placesHelpOpen ? '<p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time.</p>' : ''}
+      <p class="hint places-foot"><button type="button" class="link-btn" id="placesHelp" aria-expanded="${placesHelpOpen}" aria-label="How places work">? How places work</button> · <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${propertyChecksHtml()}${studiesHtml()}`;
+    $('placesHelp').addEventListener('click', () => { placesHelpOpen = !placesHelpOpen; renderPlaces(); });
     wireCheckControls(box);
     wireStudyRows(box);
     $('clearPlaces').addEventListener('click', () => { if (window.confirm('Remove all places, reports and flood models from the map?')) clearAllPlaces(); });
@@ -2547,6 +2636,7 @@ import './inertial-grid.js';
     }, 'image/png');
     if (state.gauge >= 0) {
       state.gaugeMarker.setLatLng(cellLatLng(state.gauge));
+      declutterPins();
       state.gaugeMarker.setTooltipContent(state.eventsApply ? 'Brisbane City gauge' : `Gauge: ${(state.areaMeta && state.areaMeta.name) || 'modelled area'}`);
     }
   }
@@ -3236,7 +3326,37 @@ import './inertial-grid.js';
       if (defaultsOn.includes(name)) { layer.userOn = true; layer.addTo(m); } else layer.userOn = false;
     }
     nat.defaultsApplied = true;
+    if (!nat.dotsWired) {
+      nat.dotsWired = true;
+      m.on('zoomend', scaleDots);
+      m.on('overlayadd', orderDots);
+    }
+    scaleDots(); orderDots();
     syncLayerLists();
+  }
+
+  // Country-wide, a solid band of dots hides the ones that matter: shrink
+  // them below z6 and draw the forecast gauges and warnings last (on top).
+  function scaleDots() {
+    const m = state.lmap;
+    if (!m) return;
+    const z = m.getZoom(), f = z < 5 ? 0.65 : z < 6 ? 0.8 : 1;
+    for (const l of Object.values(nat.layers)) {
+      if (!l.eachLayer) continue;
+      l.eachLayer((c) => {
+        if (!c.setRadius) return;
+        if (!c._r0) c._r0 = c.options.radius;
+        c.setRadius(c._r0 * f);
+      });
+    }
+  }
+  function orderDots() {
+    const m = state.lmap;
+    if (!m) return;
+    for (const n of ['Other river gauges (BoM)', 'Flood information gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Flood forecast gauges (BoM)', 'Gauges under a current flood warning (BoM)']) {
+      const l = nat.layers[n];
+      if (l && l.eachLayer && m.hasLayer(l)) l.eachLayer((c) => c.bringToFront && c.bringToFront());
+    }
   }
 
   async function enterNational(opts) {
@@ -3272,6 +3392,7 @@ import './inertial-grid.js';
     renderStorm();
     renderScenarioTitle();
     solverControls();
+    renderModeLegend();
   }
 
   /* ---------- reports */
@@ -3357,6 +3478,9 @@ import './inertial-grid.js';
   // Places can also be plain pins dropped on the map ("Add as a place").
   const pins = [];
   const PIN_COLOR = '#455a64';
+  const HELP_KEY = 'floodExplorerPlacesHelpSeen';
+  let placesHelpSeen = false, placesHelpOpen = false;
+  try { placesHelpSeen = localStorage.getItem(HELP_KEY) === '1'; } catch (e) { /* storage blocked */ }
 
   // Property checks ("Check this property"): remembered so a property that
   // has been reported on stays visible and manageable beyond the transient
@@ -3422,11 +3546,30 @@ import './inertial-grid.js';
   }
   const hiddenNums = new Set();
 
-  function numIcon(n, color, active) {
+  // off: nudged up and to the right, so a report pin doesn't sit on top of
+  // the model's gauge marker with the same number (see declutterPins)
+  function numIcon(n, color, active, off) {
     return window.L.divIcon({
       className: `report-pin${active ? ' active' : ''}`,
-      html: `<span style="background:${color}">${n}</span>`, iconSize: [24, 24], iconAnchor: [12, 12],
+      html: `<span style="background:${color}">${n}</span>`, iconSize: [24, 24], iconAnchor: off ? [-6, 32] : [12, 12],
     });
+  }
+  // A report pin and its model's gauge marker are the same number at nearly
+  // the same spot once zoomed in: offset the report pin while they'd overlap
+  // (within ~26 px) so both stay visible and tappable.
+  function declutterPins() {
+    const m = state.lmap;
+    if (!m) return;
+    for (const r of reports) {
+      const area = r.pin && areaForReport(r);
+      if (!area || !area.marker) continue;
+      const d = m.latLngToContainerPoint(r.pin.getLatLng()).distanceTo(m.latLngToContainerPoint(area.marker.getLatLng()));
+      const off = d < 26;
+      if (off !== !!r.pinOff) {
+        r.pinOff = off;
+        r.pin.setIcon(numIcon(r.n, (GAUGE_STYLE[r.kind] || GAUGE_STYLE.river).color, r === activeReport, off));
+      }
+    }
   }
 
   function closeReport(r) {
@@ -3455,7 +3598,7 @@ import './inertial-grid.js';
     $('reportPrev').hidden = $('reportNext').hidden = n < 2;
     reports.forEach((x) => {
       if (!x.pin) return;
-      x.pin.setIcon(numIcon(x.n, (GAUGE_STYLE[x.kind] || GAUGE_STYLE.river).color, x === r));
+      x.pin.setIcon(numIcon(x.n, (GAUGE_STYLE[x.kind] || GAUGE_STYLE.river).color, x === r, x.pinOff));
     });
     reports.forEach(refreshReportLink);
     renderPlaces();
@@ -6607,21 +6750,44 @@ import './inertial-grid.js';
   window.__floodCouncilLayers = () => COUNCIL_OVERLAYS.map((o) => ({ name: o.name, test: o.test, minZoom: o.minZoom }));
 
   let sayT = 0;
+  // The toast: gone after ~6 s; a failure stays until the next message or a tap
   function say(text) {
     const r = $('readout');
     r.textContent = text;
     r.hidden = !text;
+    const bad = /\b(fail(ed)?|couldn.t|could not|can.t|cannot|error|unable)\b/i.test(text || '');
+    r.classList.toggle('error', bad);
     clearTimeout(sayT);
-    sayT = setTimeout(() => { r.hidden = true; }, 5000);
+    if (!bad) sayT = setTimeout(() => { r.hidden = true; }, 6000);
   }
+  $('readout').addEventListener('click', () => { $('readout').hidden = true; });
 
   $('legendToggle').addEventListener('click', (e) => {
     const shown = e.target.getAttribute('aria-expanded') === 'true';
-    $('depthLegend').hidden = shown;
-    if (shown) $('overlayLegend').hidden = true; else renderOverlayLegend();
     e.target.setAttribute('aria-expanded', String(!shown));
     e.target.textContent = shown ? 'Show key' : 'Hide key';
+    if (shown) $('overlayLegend').hidden = true; else renderOverlayLegend();
+    renderModeLegend();
   });
+
+  // Phone sheets open at ~45 % of the screen so the map stays in view; the
+  // grip drags them taller or shorter, a tap toggles tall.
+  function addSheetGrips() {
+    document.querySelectorAll('.sheet').forEach((sheet) => {
+      const g = document.createElement('button');
+      g.type = 'button'; g.className = 'sheet-grip'; g.setAttribute('aria-label', 'Resize panel');
+      sheet.insertBefore(g, sheet.firstChild);
+      let y0 = 0, h0 = 0, moved = false;
+      g.addEventListener('pointerdown', (e) => { y0 = e.clientY; h0 = sheet.getBoundingClientRect().height; moved = false; g.setPointerCapture(e.pointerId); });
+      g.addEventListener('pointermove', (e) => {
+        if (!g.hasPointerCapture(e.pointerId)) return;
+        const dy = y0 - e.clientY;
+        if (Math.abs(dy) > 4) moved = true;
+        if (moved) { sheet.classList.remove('tall'); sheet.style.height = `${Math.max(window.innerHeight * 0.25, Math.min(window.innerHeight - 140, h0 + dy))}px`; }
+      });
+      g.addEventListener('pointerup', () => { if (!moved) { sheet.style.height = ''; sheet.classList.toggle('tall'); } });
+    });
+  }
 
   /* -------------------------------------------------------------- start */
 
@@ -6632,7 +6798,13 @@ import './inertial-grid.js';
     ctl.gaugeLevel.value = 4.46;
     syncOutputs();
     setPlacesCollapsed(isPhone());
-    if (isPhone()) $('panel-scenario').hidden = true;
+    if (isPhone()) {
+      $('panel-scenario').hidden = true;
+      const t = $('legendToggle');   // the key starts as a chip on phones
+      t.setAttribute('aria-expanded', 'false'); t.textContent = 'Show key';
+      renderModeLegend();
+    }
+    addSheetGrips();
     syncPanels();
     renderPlaces();
     const areas = await listAreas();

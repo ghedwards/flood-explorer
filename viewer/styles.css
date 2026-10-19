@@ -63,7 +63,13 @@ body {
    edge step between N and N+1 device pixels per frame (the blue edges
    shimmer). Scale smoothly during the motion; crisp cells come back on
    zoomend. */
-.flood-zooming .flood-layer { image-rendering: auto; }
+.flood-zooming .flood-layer, .flood-smooth .flood-layer { image-rendering: auto; }
+/* label on the model box side the flood runs into */
+.edge-cue span {
+  position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
+  background: #c66f1d; color: #fff; font: 600 11px/1 var(--font-body); padding: 4px 8px; border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
 .busy {
   position: absolute; inset: 0; display: grid; place-items: center; z-index: 900;
   background: color-mix(in srgb, var(--map-ground) 70%, transparent); font: 500 14px var(--font-data);
@@ -272,6 +278,7 @@ body.in3d.in3d-scenario #placesCard { display: none; }
 .classes { font-size: 13px; }
 .classes table { border-collapse: collapse; width: 100%; margin-top: 4px; }
 .classes td, .classes th { padding: 3px 6px; border-bottom: 1px solid var(--line); text-align: left; font-variant-numeric: tabular-nums; }
+.places-foot { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 8px 2px 2px; }
 .places-sub { margin: 14px 2px 6px; font: 700 11.5px var(--font-body); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .study-badge { background: transparent; color: var(--accent); border: 2px dashed var(--accent); border-radius: 6px; }
 .study-label span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: #0d5f8c; color: #fff; font: 700 13px Archivo, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.4); border: 2px solid #fff; }
@@ -337,20 +344,35 @@ body.in3d.in3d-scenario #placesCard { display: none; }
 
 /* ---------- legend + readout */
 .legend-card {
-  position: fixed; z-index: 999; left: 50%; transform: translateX(-50%); bottom: calc(var(--bottom) + 18px);
+  /* docked at the bottom-left of the map, just right of the left panels, clear of the attribution */
+  position: fixed; z-index: 999; left: calc(var(--left) + 360px + var(--gap)); bottom: calc(var(--bottom) + 22px);
   max-width: min(360px, calc(100vw - 2 * var(--gap))); padding: 10px 12px; display: grid; gap: 6px;
 }
-.summary { font: 500 12.5px/1.35 var(--font-data); font-variant-numeric: tabular-nums; }
+/* collapsed: a one-line chip */
+.legend-card.collapsed { grid-auto-flow: column; align-items: center; gap: 12px; padding: 6px 12px; }
+.legend-card.collapsed .summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.legend-card.collapsed .legend, .legend-card.collapsed .show-mode { display: none; }
+.legend-card.collapsed .legend-toggle { white-space: nowrap; }
+.summary { font: 500 13px/1.35 var(--font-body); font-variant-numeric: tabular-nums; }
 .summary b { font-family: var(--font-body); font-weight: 700; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 12px; color: var(--muted); }
 .legend i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 5px; }
+.legend i.dot { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); vertical-align: -2px; }
+.legend i.dot.warn { background: transparent; border: 2px solid #c62828; box-shadow: none; }
+.legend i.dam { width: 22px; background: linear-gradient(90deg, #c62828, #f9a825, #43a047, #1565c0, #6a1b9a); }
 .legend-toggle { border: 0; background: none; color: var(--accent); font: 600 12px var(--font-body); cursor: pointer; padding: 0; justify-self: start; }
 .readout {
   position: fixed; z-index: 1002; left: 50%; transform: translateX(-50%); top: calc(var(--top) + 60px);
-  max-width: min(520px, calc(100vw - 2 * var(--gap))); padding: 8px 12px; font: 400 12.5px/1.4 var(--font-data);
+  max-width: min(520px, calc(100vw - 2 * var(--gap))); padding: 8px 14px; font: 500 13px/1.4 var(--font-body);
   font-variant-numeric: tabular-nums; pointer-events: none; text-align: center;
 }
+.readout.error { pointer-events: auto; cursor: pointer; border-left: 4px solid #b3261e; }
 .leaflet-bottom.leaflet-left { display: none; }
+.sheet-grip { display: none; }
+/* phones: the credit line is an (i) button until tapped */
+.leaflet-control-attribution.attr-fold:not(.open) { width: 26px; height: 26px; padding: 0; overflow: hidden; border-radius: 13px; font-size: 0; cursor: pointer; position: relative; margin: 0 8px 8px 0; }
+.leaflet-control-attribution.attr-fold:not(.open)::before { content: "i"; position: absolute; inset: 0; display: grid; place-items: center; font: 700 13px var(--font-body); color: #333; }
+.leaflet-control-attribution.attr-fold.open { max-width: calc(100vw - 24px); margin: 0 8px 8px 0; }
 
 /* ---------- phones: bottom tool bar, bottom sheets */
 @media (max-width: 760px) {
@@ -376,11 +398,15 @@ body.in3d.in3d-scenario #placesCard { display: none; }
   .sheet.collapsed .sheet-body { display: grid; }
   .sheet, .sheet[data-side="left"], .sheet[data-side="right"] {
     left: 0; right: 0; width: auto; max-width: none; top: auto;
-    bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); max-height: min(68vh, calc(100vh - 140px));
+    bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); height: 45vh; max-height: min(80vh, calc(100vh - 140px));
     border-radius: 14px 14px 0 0;
   }
   .sheet-body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-  .legend-card { left: var(--left); transform: none; bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); }
+  .legend-card { left: var(--left); bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 10px); max-width: calc(100vw - var(--left) - var(--right) - 60px); }   /* clear of the map buttons */
+  .leaflet-control-zoom { display: none; }   /* pinch to zoom; the buttons sat under the map buttons */
+  .sheet.tall { height: min(80vh, calc(100vh - 140px)); }
+  .sheet-grip { display: block; width: 100%; flex: 0 0 auto; height: 22px; border: 0; background: none; cursor: grab; touch-action: none; position: relative; }
+  .sheet-grip::before { content: ""; position: absolute; left: 50%; top: 9px; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--line); }
   .readout { top: calc(var(--top) + 96px); }
   body.sheet-open .legend-card { display: none; }
   .leaflet-bottom.leaflet-right { bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px)); }

@@ -40,15 +40,29 @@ const OUT = process.env.OUT || "shots";
     await run("model", async () => {
       await page.selectOption("#area", `preset:${PLACE}`);
       await page.waitForFunction("window.__floodStatus.local && window.__floodStatus.local.ok === true", null, { timeout: 120000 });
+      await page.waitForTimeout(600);
+      await shot(page, "03a-toast");
       await settle(page, 5000);
     });
     await shot(page, "03-model");
+    await run("channel-diag", async () => { report.channelDiag = await page.evaluate(() => window.__floodChannelDiag && window.__floodChannelDiag()); });
+    await run("places-help-fold", async () => { await page.click("#placesHelp"); await settle(page, 500); });
+    await shot(page, "03b-places-folded");
     await run("zoom-in", async () => {
       const g = await page.evaluate(() => window.__floodGaugeLatLng && window.__floodGaugeLatLng());
       if (g) await page.evaluate(([la, lo]) => window.__floodTestZoom(la, lo, 15), [g.lat ?? g[0], g.lng ?? g[1]]);
       await settle(page, 5000);
     });
     await shot(page, "04-street-zoom");
+    await run("zoom-16", async () => {
+      const g = await page.evaluate(() => window.__floodGaugeLatLng && window.__floodGaugeLatLng());
+      if (g) await page.evaluate(([la, lo]) => window.__floodTestZoom(la, lo, 16), [g.lat ?? g[0], g.lng ?? g[1]]);
+      await settle(page, 4000);
+    });
+    await shot(page, "04b-street-z16");
+    await run("key-collapsed", async () => { await page.click("#legendToggle"); await settle(page, 1000); });
+    await shot(page, "04c-key-collapsed");
+    await run("key-expanded", async () => { if ((await page.getAttribute("#legendToggle", "aria-expanded")) !== "true") await page.click("#legendToggle"); });
     await run("hazard", async () => { await page.evaluate(() => window.__floodColorMode && window.__floodColorMode("hazard")); await settle(page, 2500); });
     await shot(page, "05-hazard");
     await run("depth-back", async () => { await page.evaluate(() => window.__floodColorMode && window.__floodColorMode("depth")); });
@@ -58,7 +72,7 @@ const OUT = process.env.OUT || "shots";
       await settle(page, 5000);
     });
     await shot(page, "06-big-flood");
-    await run("basemap-street", async () => { await page.evaluate(() => window.__floodSetBasemap && window.__floodSetBasemap("Streets (CARTO)")); await settle(page, 4000); });
+    await run("basemap-street", async () => { await page.evaluate(() => window.__floodSetBasemap && window.__floodSetBasemap("Streets")); await settle(page, 4000); });
     await shot(page, "07-street-basemap");
     await page.close();
     // phone
@@ -71,6 +85,12 @@ const OUT = process.env.OUT || "shots";
       await settle(phone, 5000);
     });
     await shot(phone, "09-phone-model");
+    // on a phone the Scenario sheet opens by itself after the model loads (09);
+    // close it for the map view with key chip and buttons, then reopen it tall
+    await run("phone-map", async () => { await phone.click('.tool[data-open="panel-scenario"]'); await settle(phone, 1500); });
+    await shot(phone, "10-phone-map");
+    await run("phone-sheet", async () => { await phone.click('.tool[data-open="panel-scenario"]'); await settle(phone, 1500); await phone.click("#panel-scenario .sheet-grip"); await settle(phone, 1000); });
+    await shot(phone, "11-phone-sheet-tall");
     await phone.close();
   } finally {
     fs.writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 1));

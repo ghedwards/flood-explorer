@@ -109,13 +109,15 @@ function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
   };
 }
 
-/* The 2D depth legend's band colours (viewer/index.html #depthLegend),
- * keyed by the band's lower bound so colours match the map exactly. */
+/* The 2D depth legend's band colours (viewer/index.html #depthLegend and
+ * DEPTH_STOPS in app.js), keyed by the band's lower bound so colours match
+ * the map exactly. Since the 2D polish these are the 3D view's colours too:
+ * the old palest band read as white paint over imagery. */
 const BANDS = [
-  [0.0, [0xc9, 0xe7, 0xf7]],   // <0.5 m
-  [0.5, [0x79, 0xbf, 0xe8]],   // 0.5–1 m
-  [1.0, [0x37, 0x86, 0xc9]],   // 1–2 m
-  [2.0, [0x1d, 0x5e, 0xa3]],   // 2–4 m
+  [0.0, [0x3f, 0x9a, 0xe0]],   // <0.5 m
+  [0.5, [0x2b, 0x7f, 0xd0]],   // 0.5–1 m
+  [1.0, [0x1f, 0x67, 0xbb]],   // 1–2 m
+  [2.0, [0x17, 0x50, 0x9c]],   // 2–4 m
   [4.0, [0x0c, 0x34, 0x70]],   // >4 m
 ];
 function depthColor(d) {
@@ -124,10 +126,9 @@ function depthColor(d) {
   return col;
 }
 
-/* The 3D view's own shades: the 2D legend's palest band reads as white
- * blotches over satellite imagery, so shallow water is a translucent mid
- * blue and depth builds opacity as well as darkness (bands still step at the
- * 2D legend's boundaries: 0.5, 1, 2, 4 m). */
+/* The 3D view's shades (the same colours as the 2D bands above): shallow
+ * water is a translucent mid blue and depth builds opacity as well as
+ * darkness (bands step at 0.5, 1, 2, 4 m). */
 const BANDS3D = [
   [0.0, [0x3f, 0x9a, 0xe0]],
   [0.5, [0x2b, 0x7f, 0xd0]],

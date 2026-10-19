@@ -430,12 +430,21 @@
   </select></label>
   <div class="legend" id="modeLegend" hidden aria-live="polite"></div>
   <div class="legend" id="depthLegend" aria-label="Water depth legend">
-    <span><i style="background:#c9e7f7"></i>&lt;0.5 m</span>
-    <span><i style="background:#79bfe8"></i>0.5–1</span>
-    <span><i style="background:#3786c9"></i>1–2</span>
-    <span><i style="background:#1d5ea3"></i>2–4</span>
+    <span><i style="background:#3f9ae0"></i>&lt;0.5 m</span>
+    <span><i style="background:#2b7fd0"></i>0.5–1</span>
+    <span><i style="background:#1f67bb"></i>1–2</span>
+    <span><i style="background:#17509c"></i>2–4</span>
     <span><i style="background:#0c3470"></i>&gt;4 m</span>
+    <span><i style="background:rgb(109,147,173);opacity:.6"></i>River (normal)</span>
     <span><i style="background:#c66f1d;border-radius:50%"></i>Gauge</span>
+  </div>
+  <div class="legend" id="dotLegend" aria-label="Gauge and dam dot colours" hidden>
+    <span><i class="dot" style="background:#1565c0"></i>Forecast gauge</span>
+    <span><i class="dot" style="background:#5c6bc0"></i>Flood information</span>
+    <span><i class="dot" style="background:#00897b"></i>Tide gauge</span>
+    <span><i class="dot" style="background:#78909c"></i>River gauge</span>
+    <span><i class="dam"></i>Dam (empty to full)</span>
+    <span><i class="dot warn"></i>Flood warning</span>
   </div>
   <div class="legend" id="overlayLegend" hidden aria-label="Extra layers legend"></div>
   <button type="button" class="legend-toggle" id="legendToggle" aria-expanded="true">Hide key</button>

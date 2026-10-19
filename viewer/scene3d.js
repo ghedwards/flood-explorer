@@ -75,15 +75,15 @@ function loadImage(url) {
   });
 }
 
-/* Average colour (0-255 per channel) of a region of an image, via an 8x8 downscale. */
-function meanRGB(im, sx, sy, sw, sh) {
+// mean and standard deviation per channel (linear light) of a region, on a 16x16 grid
+function statsRGB(im, sx, sy, sw, sh) {
   const c = document.createElement('canvas');
-  c.width = c.height = 8;
+  c.width = c.height = 16;
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(im, sx, sy, sw, sh, 0, 0, 8, 8);
-  const d = ctx.getImageData(0, 0, 8, 8).data, m = [0, 0, 0];
-  for (let i = 0; i < d.length; i += 4) { m[0] += d[i]; m[1] += d[i + 1]; m[2] += d[i + 2]; }
-  return m.map((v) => v / 64);
+  ctx.drawImage(im, sx, sy, sw, sh, 0, 0, 16, 16);
+  const d = ctx.getImageData(0, 0, 16, 16).data, m = [0, 0, 0], q = [0, 0, 0], n = 256;
+  for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) { const v = Math.pow(d[i + k] / 255, 2.2); m[k] += v; q[k] += v * v; }
+  return { m: m.map((v) => v / n), s: q.map((v, k) => Math.sqrt(Math.max(0, v / n - (m[k] / n) ** 2))) };
 }
 
 class Scene3d {
@@ -110,7 +110,8 @@ class Scene3d {
     this.areaSig = '';
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
-    this.gains = {};              // imagery zoom (< 10) -> [r, g, b] linear multipliers that match it to z10
+    this.gains = {};              // imagery zoom (< 13) -> [r, g, b] linear multipliers that match its tone to z13's
+    this.offs = {};               // ...and the matching [r, g, b] linear offsets (contrast and haze differ between mosaics, not just brightness)
     this.calibAt = null;          // scene [x, z] where the tone match was last measured
     this.imgLoaded = 0;
     this.imgFailed = 0;
@@ -324,6 +325,7 @@ class Scene3d {
       fps: Math.round(this.fps),
       frames: this.frame,
       gains: Object.fromEntries(Object.entries(this.gains).map(([l, g]) => [l, g.map((v) => +v.toFixed(2))])),
+      offs: Object.fromEntries(Object.entries(this.offs).map(([l, g]) => [l, g.map((v) => +v.toFixed(3))])),
       ground: this.groundAt(this.controls.target.x, this.controls.target.z),
       dbg: this.dbg || null,
     };
@@ -491,7 +493,16 @@ class Scene3d {
     geo.setAttribute('uv', new THREE.BufferAttribute(m.uvs, 2));
     geo.setAttribute('color', new THREE.BufferAttribute(m.colors, 3));
     geo.setIndex(new THREE.BufferAttribute(m.indices, 1));
-    st.mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    // imagery tone match = material colour (gain) + this offset, added to the
+    // sampled picture (linear light) — see calibrateImagery
+    mat.userData.uOff = { value: new THREE.Vector3() };
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uOff = mat.userData.uOff;
+      sh.fragmentShader = `uniform vec3 uOff;\n${sh.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n#ifdef USE_MAP\ndiffuseColor.rgb = clamp(diffuseColor.rgb + uOff, 0.0, 1.0);\n#endif')}`;
+    };
+    mat.customProgramCacheKey = () => 'toneOffset';
+    st.mesh = new THREE.Mesh(geo, mat);
     st.mesh.position.set(m.origin[0], 0, m.origin[1]);
     st.mesh.visible = false;
     st.hmin = m.hmin; st.hmax = m.hmax;
@@ -617,7 +628,7 @@ class Scene3d {
     const t = this.controls.target;
     if (this.calibAt && Math.hypot(t.x - this.calibAt[0], t.z - this.calibAt[1]) < 60000) return;
     this.calibBusy = true;
-    const at = [t.x, t.z], lo = 6, lin = (v) => Math.pow(v / 255, 2.2);
+    const at = [t.x, t.z], lo = 6;
     // five spots (the target and four around it): one patch of ground can
     // be sea, cloud or a town and say little about the mosaic as a whole
     const spots = [[0, 0], [25000, 0], [-25000, 0], [0, 25000], [0, -25000]];
@@ -633,21 +644,30 @@ class Scene3d {
           const parent = imgs[l - lo], child = imgs[l + 1 - lo];
           const [cx, cy] = tileAt(this.proj, l + 1, px, pz);
           const w = parent.naturalWidth / 2, h = parent.naturalHeight / 2;
-          const pm = meanRGB(parent, (cx & 1) * w, (cy & 1) * h, w, h), cm = meanRGB(child, 0, 0, child.naturalWidth, child.naturalHeight);
-          const r = pm.map((v, c) => Math.log(Math.max(0.6, Math.min(1.7, lin(cm[c]) / Math.max(lin(v), 1e-3)))));
-          sums[l] = (sums[l] || [0, 0, 0]).map((v, c) => v + r[c]);
+          const p = statsRGB(parent, (cx & 1) * w, (cy & 1) * h, w, h), c = statsRGB(child, 0, 0, child.naturalWidth, child.naturalHeight);
+          // the affine map taking this level's tone to the next level's: scale
+          // from the spread, offset so the means agree
+          const sc = p.s.map((ps, k) => Math.max(0.6, Math.min(1.7, c.s[k] / Math.max(ps, 0.01))));
+          const of = p.m.map((pm, k) => c.m[k] - sc[k] * pm);
+          const t = sums[l] || (sums[l] = { s: [0, 0, 0], o: [0, 0, 0] });
+          for (let k = 0; k < 3; k++) { t.s[k] += sc[k]; t.o[k] += of[k]; }
           counts[l] = (counts[l] || 0) + 1;
         }
       } catch (err) { /* this spot's imagery is unreachable */ }
     }));
-    // chain the per-level mean ratios (log space) down from z13
-    const gains = {};
-    let acc = [0, 0, 0];
+    // chain the per-level mean maps down from z13: x -> S*x + O brings level l to z13's tone
+    const gains = {}, offs = {};
+    let S = [1, 1, 1], O = [0, 0, 0];
     for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
-      if (counts[l]) acc = acc.map((v, c) => v + sums[l][c] / counts[l]);
-      gains[l] = acc.map((v) => Math.max(0.5, Math.min(2, Math.exp(v))));
+      if (counts[l]) {
+        const sl = sums[l].s.map((v) => v / counts[l]), ol = sums[l].o.map((v) => v / counts[l]);
+        O = O.map((o, k) => S[k] * ol[k] + o);
+        S = S.map((v, k) => v * sl[k]);
+      }
+      gains[l] = S.map((v) => Math.max(0.4, Math.min(2.5, v)));
+      offs[l] = O.map((v) => Math.max(-0.3, Math.min(0.3, v)));
     }
-    if (Object.keys(counts).length) this.gains = gains;
+    if (Object.keys(counts).length) { this.gains = gains; this.offs = offs; }
     this.calibAt = at;
     this.needSelect = true;
     this.calibBusy = false;
@@ -665,9 +685,13 @@ class Scene3d {
     const from = src ? src.key : null;
     const mat = st.mesh.material, uv = st.mesh.geometry.attributes.uv;
     if (src) {   // tonal match of coarse imagery levels (see calibrateImagery)
-      const g = this.gains[src.z] || [1, 1, 1];
+      const g = this.gains[src.z] || [1, 1, 1], o = this.offs[src.z] || [0, 0, 0], u = mat.userData.uOff.value;
       if (mat.color.r !== g[0] || mat.color.g !== g[1] || mat.color.b !== g[2]) { mat.color.setRGB(g[0], g[1], g[2], THREE.LinearSRGBColorSpace); this.dirty = true; }
-    } else if (mat.color.r !== 1 || mat.color.g !== 1 || mat.color.b !== 1) mat.color.setRGB(1, 1, 1, THREE.LinearSRGBColorSpace);
+      if (u.x !== o[0] || u.y !== o[1] || u.z !== o[2]) { u.set(o[0], o[1], o[2]); this.dirty = true; }
+    } else {
+      if (mat.color.r !== 1 || mat.color.g !== 1 || mat.color.b !== 1) mat.color.setRGB(1, 1, 1, THREE.LinearSRGBColorSpace);
+      mat.userData.uOff.value.set(0, 0, 0);
+    }
     if (from === st.imgFrom) return;
     st.imgFrom = from;
     if (!src) { mat.map = null; mat.vertexColors = true; mat.needsUpdate = true; this.dirty = true; return; }
