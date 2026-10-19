@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import {
   makeProjection, parseKey, parentKey, tileToScene, decodeTerrarium, sampleRaster, selectTiles, resolveDraw,
-  tileHeights, tileMesh, tileGroundAt, tileAt, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
+  tileHeights, tileMesh, tileGroundAt, BANDS3D, tileAt, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
 } from './terrain3d.js';
 
 const EXAG_DEFAULT = 1.5;
@@ -26,6 +26,7 @@ const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
 const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
 const FAR = 800000;
 const IMG_CONCURRENCY = 8;
+const IMG_MATCH_Z = 13;           // Esri's coarser levels are differently processed mosaics: match them to z13's tone
 const SKY_TOP = '#2f6aa8', SKY_HORIZON = '#c9dbe8';   // zenith, and the haze distant terrain fades into
 const MAX_SEGS = 128;             // finer tile meshes where a model DEM replaces the terrain
 const MAX_ANISO = 8;
@@ -64,6 +65,27 @@ async function fetchTerrarium(z, x, y) {
   return { data: decodeTerrarium(ctx.getImageData(0, 0, n, n).data, n), n };
 }
 
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.crossOrigin = 'anonymous';
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error('image'));
+    im.src = url;
+  });
+}
+
+/* Average colour (0-255 per channel) of a region of an image, via an 8x8 downscale. */
+function meanRGB(im, sx, sy, sw, sh) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 8;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(im, sx, sy, sw, sh, 0, 0, 8, 8);
+  const d = ctx.getImageData(0, 0, 8, 8).data, m = [0, 0, 0];
+  for (let i = 0; i < d.length; i += 4) { m[0] += d[i]; m[1] += d[i + 1]; m[2] += d[i + 2]; }
+  return m.map((v) => v / 64);
+}
+
 class Scene3d {
   constructor(canvas, hooks) {
     this.hooks = hooks;
@@ -73,7 +95,8 @@ class Scene3d {
     this.cache = new Map();       // 'z/x/y' -> terrain tile { key, z, x, y, state, heights, mesh, last }
     this.queue = new Map();       // key -> priority (bigger first)
     this.fetching = 0;
-    this.source = 'terrarium';    // or 'demh' after repeated failures
+    this.source = 'terrarium';    // or 'demh' after repeated failures, or when forced (?terrain3d=demh, for testing the fallback)
+    try { if (hooks.fetchDemBox && new URLSearchParams(location.search).get('terrain3d') === 'demh') this.source = 'demh'; } catch (err) { /* no location */ }
     this.failStreak = 0;
     this.said = new Set();
     this.drawn = new Set();
@@ -87,6 +110,8 @@ class Scene3d {
     this.areaSig = '';
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
+    this.gains = {};              // imagery zoom (< 10) -> [r, g, b] linear multipliers that match it to z10
+    this.calibAt = null;          // scene [x, z] where the tone match was last measured
     this.imgLoaded = 0;
     this.imgFailed = 0;
     this.basemap = hooks.getBasemap ? hooks.getBasemap() : null;
@@ -121,6 +146,8 @@ class Scene3d {
         #view3dChrome .bar3d label{display:flex;gap:6px;align-items:center}
         #view3dChrome button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
         #view3dChrome .compass{font-weight:600;min-width:2.5em;text-align:center}
+        #view3dChrome .key3d{display:flex;gap:4px;align-items:center;font-size:11px;opacity:.9}
+        #view3dChrome .key3d i{display:inline-block;width:14px;height:10px;border-radius:2px;margin-left:5px}
         #view3dChrome .dim{font-size:12px;opacity:.75}
         #view3dChrome .attr3d{flex-basis:100%;font-size:11px;opacity:.7;line-height:1.3}
         #globe3dWrap{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 76px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
@@ -138,6 +165,7 @@ class Scene3d {
       <span id="scrub3dWrap" hidden><label>step <input id="scrub3d" type="range" min="0" max="0" value="0" style="width:220px"><span id="scrubVal"></span></label></span>
       <button type="button" id="mode3d" title="Satellite/map imagery or plain relief colours"></button>
       <span class="compass" id="compass3d">S</span>
+      <span class="key3d" title="Flood depth (the 3D view's own shades)">${['<0.5', '0.5\u20131', '1\u20132', '2\u20134', '>4'].map((t, i) => `<i style="background:rgb(${BANDS3D[i][1].join(',')})"></i>${t}`).join('')} m</span>
       <span id="tiles3d" class="dim"></span>
       <span style="margin-left:auto;font-size:12px;opacity:.75">experimental</span>
       <div class="attr3d" id="attr3d"></div>`;
@@ -295,6 +323,7 @@ class Scene3d {
       exag: this.exag,
       fps: Math.round(this.fps),
       frames: this.frame,
+      gains: Object.fromEntries(Object.entries(this.gains).map(([l, g]) => [l, g.map((v) => +v.toFixed(2))])),
       ground: this.groundAt(this.controls.target.x, this.controls.target.z),
       dbg: this.dbg || null,
     };
@@ -312,7 +341,7 @@ class Scene3d {
     const cam = this.camera.position.toArray();
     const alt = Math.max(200, cam[1] / this.exag);
     return {
-      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 320, thresholdPx: 384,
+      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 360, thresholdPx: 384,
       focalPx: window.innerHeight / (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
       frustum: f.planes.map((p) => [p.normal.x, p.normal.y, p.normal.z, p.constant]),
       maxDist: Math.min(300000, Math.sqrt(2 * 6371000 * alt) + 60000),
@@ -556,6 +585,7 @@ class Scene3d {
       tex.anisotropy = Math.min(MAX_ANISO, this.renderer.capabilities.getMaxAnisotropy());
       st.tex = tex; st.imgState = 'ready';
       this.imgLoaded++;
+      this.calibrateImagery();
       this.needSelect = true;
     }, undefined, () => {
       this.imgLoading--;
@@ -573,6 +603,56 @@ class Scene3d {
     });
   }
 
+  /* Esri's imagery changes character with zoom (Landsat-like mosaics when
+   * coarse, Maxar when fine), which showed as straight tonal bands where
+   * tiles of different levels meet. Measure it where the user is looking:
+   * at the tile under the orbit target at each level z6..13, compare the
+   * average colour of the quadrant that holds the next level's tile with
+   * that tile as a whole (same ground), and chain the ratios into a
+   * per-channel (linear) gain bringing each level to z13's tone. dress()
+   * applies it as the material colour. Re-measured when the target has
+   * moved far (different ground, different mosaic). */
+  async calibrateImagery() {
+    if (this.calibBusy || !this.basemap) return;
+    const t = this.controls.target;
+    if (this.calibAt && Math.hypot(t.x - this.calibAt[0], t.z - this.calibAt[1]) < 60000) return;
+    this.calibBusy = true;
+    const at = [t.x, t.z], lo = 6, lin = (v) => Math.pow(v / 255, 2.2);
+    // five spots (the target and four around it): one patch of ground can
+    // be sea, cloud or a town and say little about the mosaic as a whole
+    const spots = [[0, 0], [25000, 0], [-25000, 0], [0, 25000], [0, -25000]];
+    const sums = {}, counts = {};
+    await Promise.all(spots.map(async ([ox, oz]) => {
+      try {
+        const px = at[0] + ox, pz = at[1] + oz;
+        const imgs = await Promise.all(Array.from({ length: IMG_MATCH_Z - lo + 1 }, (_, k) => {
+          const [x, y] = tileAt(this.proj, lo + k, px, pz);
+          return loadImage(this.imageUrl(lo + k, x, y));
+        }));
+        for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
+          const parent = imgs[l - lo], child = imgs[l + 1 - lo];
+          const [cx, cy] = tileAt(this.proj, l + 1, px, pz);
+          const w = parent.naturalWidth / 2, h = parent.naturalHeight / 2;
+          const pm = meanRGB(parent, (cx & 1) * w, (cy & 1) * h, w, h), cm = meanRGB(child, 0, 0, child.naturalWidth, child.naturalHeight);
+          const r = pm.map((v, c) => Math.log(Math.max(0.6, Math.min(1.7, lin(cm[c]) / Math.max(lin(v), 1e-3)))));
+          sums[l] = (sums[l] || [0, 0, 0]).map((v, c) => v + r[c]);
+          counts[l] = (counts[l] || 0) + 1;
+        }
+      } catch (err) { /* this spot's imagery is unreachable */ }
+    }));
+    // chain the per-level mean ratios (log space) down from z13
+    const gains = {};
+    let acc = [0, 0, 0];
+    for (let l = IMG_MATCH_Z - 1; l >= lo; l--) {
+      if (counts[l]) acc = acc.map((v, c) => v + sums[l][c] / counts[l]);
+      gains[l] = acc.map((v) => Math.max(0.5, Math.min(2, Math.exp(v))));
+    }
+    if (Object.keys(counts).length) this.gains = gains;
+    this.calibAt = at;
+    this.needSelect = true;
+    this.calibBusy = false;
+  }
+
   /* Put the best available texture on a tile: its own, else an ancestor's. */
   dress(st) {
     let src = st.tex ? st : null, d = 0;
@@ -583,9 +663,13 @@ class Scene3d {
       }
     }
     const from = src ? src.key : null;
+    const mat = st.mesh.material, uv = st.mesh.geometry.attributes.uv;
+    if (src) {   // tonal match of coarse imagery levels (see calibrateImagery)
+      const g = this.gains[src.z] || [1, 1, 1];
+      if (mat.color.r !== g[0] || mat.color.g !== g[1] || mat.color.b !== g[2]) { mat.color.setRGB(g[0], g[1], g[2], THREE.LinearSRGBColorSpace); this.dirty = true; }
+    } else if (mat.color.r !== 1 || mat.color.g !== 1 || mat.color.b !== 1) mat.color.setRGB(1, 1, 1, THREE.LinearSRGBColorSpace);
     if (from === st.imgFrom) return;
     st.imgFrom = from;
-    const mat = st.mesh.material, uv = st.mesh.geometry.attributes.uv;
     if (!src) { mat.map = null; mat.vertexColors = true; mat.needsUpdate = true; this.dirty = true; return; }
     // the tile's 0..1 UVs mapped into the source texture (the tile itself,
     // or its ancestor d levels up), pulled half a texel in from each edge so
@@ -714,7 +798,7 @@ class Scene3d {
     }
     this.sky.position.copy(this.camera.position);
     const horizon = Math.min(300000, Math.sqrt(2 * 6371000 * Math.max(200, this.camera.position.y / this.exag)) + 60000);
-    this.scene.fog.near = horizon * 0.6;
+    this.scene.fog.near = horizon * 0.4;
     this.scene.fog.far = horizon * 1.05;
   }
 
@@ -754,7 +838,7 @@ class Scene3d {
     if (t.water) { this.world.remove(t.water); t.water.geometry.dispose(); t.water.material.dispose(); t.water = null; }
     const a = t.area.a;
     const skip = decimateStep(a.W, a.H);
-    const opts = { colX: t.colX, rowZ: t.rowZ, lift: 0.05 };
+    const opts = { colX: t.colX, rowZ: t.rowZ, lift: 0.05, soft: true };
     let m = null;
     const tl = t.area.timeline;
     if (tl && tl.depthFrames && tl.depthFrames.length >= (k + 1) * a.N && tl.depthFrameMax && tl.depthFrameMax.length > k) {

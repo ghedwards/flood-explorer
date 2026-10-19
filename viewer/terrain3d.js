@@ -22,10 +22,43 @@ function decimateStep(W, H, maxSide = MAX_SIDE) {
  * more transparent so the shoreline feathers out; deep water reads solid. */
 function waterMesh(a, surface, depth, wet, skip, opts = {}) {
   const lift = opts.lift || 0;
-  return buildGrid(a, skip, (i) => wet[i] === 1 && surface[i] === surface[i], (i) => surface[i] + lift, (i, out) => {
-    const col = depthColor(depth[i]);
+  const isWet = (i) => wet[i] === 1 && surface[i] === surface[i];
+  if (!opts.soft) {
+    return buildGrid(a, skip, isWet, (i) => surface[i] + lift, (i, out) => {
+      const col = depthColor(depth[i]);
+      out[0] = col[0]; out[1] = col[1]; out[2] = col[2];
+    }, { alphaFor: (i) => Math.min(1, 0.3 + depth[i] / 0.45), colX: opts.colX, rowZ: opts.rowZ });
+  }
+  // Soft shoreline (3D): the surface also gets a ring of vertices around the
+  // wet cells, at the neighbours' water level and fully transparent. The
+  // terrain hides the part of that plane that is below ground, so the
+  // visible edge is where the water level meets the real ground (smooth),
+  // and the per-vertex alpha feathers it, instead of a staircase of cells.
+  const { W, H } = a, info = new Map();
+  const probe = (i) => {
+    let v = info.get(i);
+    if (v !== undefined) return v;
+    v = null;
+    if (isWet(i)) {
+      v = { h: surface[i], col: depthColor3d(depth[i]), alpha: depthAlpha3d(depth[i]) };
+    } else {
+      const x = i % W, y = (i / W) | 0;
+      let n = 0, h = 0, col = null;
+      for (let dy = -skip; dy <= skip; dy += skip) for (let dx = -skip; dx <= skip; dx += skip) {
+        const nx = x + dx, ny = y + dy;
+        if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const j = ny * W + nx;
+        if (isWet(j)) { n++; h += surface[j]; if (!col) col = depthColor3d(depth[j]); }
+      }
+      if (n) v = { h: h / n, col, alpha: 0 };
+    }
+    info.set(i, v);
+    return v;
+  };
+  return buildGrid(a, skip, (i) => probe(i) !== null, (i) => probe(i).h + lift, (i, out) => {
+    const col = probe(i).col;
     out[0] = col[0]; out[1] = col[1]; out[2] = col[2];
-  }, { alphaFor: (i) => Math.min(1, 0.3 + depth[i] / 0.45), colX: opts.colX, rowZ: opts.rowZ });
+  }, { alphaFor: (i) => probe(i).alpha, colX: opts.colX, rowZ: opts.rowZ });
 }
 
 /* Water grid builder: samples the analysis grid every `skip` cells, emits
@@ -91,6 +124,24 @@ function depthColor(d) {
   return col;
 }
 
+/* The 3D view's own shades: the 2D legend's palest band reads as white
+ * blotches over satellite imagery, so shallow water is a translucent mid
+ * blue and depth builds opacity as well as darkness (bands still step at the
+ * 2D legend's boundaries: 0.5, 1, 2, 4 m). */
+const BANDS3D = [
+  [0.0, [0x3f, 0x9a, 0xe0]],
+  [0.5, [0x2b, 0x7f, 0xd0]],
+  [1.0, [0x1f, 0x67, 0xbb]],
+  [2.0, [0x17, 0x50, 0x9c]],
+  [4.0, [0x0c, 0x34, 0x70]],
+];
+function depthColor3d(d) {
+  let col = BANDS3D[0][1];
+  for (const [lo, c] of BANDS3D) if (d >= lo) col = c;
+  return col;
+}
+const depthAlpha3d = (d) => Math.min(0.88, 0.3 + 0.32 * d);
+
 /* Per-step water surface from a u8 timeline frame: identical arithmetic to
  * showTimeStep's frame decode (depth = q/255*maxD, wse = dem + depth). */
 function waterFromFrame(a, frame, maxD, skip, opts) {
@@ -109,7 +160,7 @@ function waterFromFrame(a, frame, maxD, skip, opts) {
   return { wse, depth, wet, mesh: waterMesh(a, wse, depth, wet, skip, opts) };
 }
 
-export { decimateStep, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
+export { BANDS3D, depthColor3d, depthAlpha3d, decimateStep, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
 
 /* ---------- v4: one projection, terrain tiles, quadtree LOD ---------- */
 

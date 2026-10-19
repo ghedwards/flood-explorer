@@ -251,6 +251,13 @@ details > div { display: grid; gap: 14px; }
 /* while the 3D view covers the map, the map fabs would act on what you
    can't see — hide them; the 3D bar's Back-to-map handles the way out */
 body.in3d .map-fab { display: none; }
+/* ...and the left-hand cards cover a third of the 3D view: they're hidden
+   (not collapsed, so nothing is lost or reset), with the Scenario button
+   bringing just the scenario panel back over the 3D view. The 3D bar has
+   its own depth key. */
+body.in3d #legendCard { display: none; }
+body.in3d:not(.in3d-scenario) #leftCol { display: none; }
+body.in3d.in3d-scenario #placesCard { display: none; }
 @media (max-width: 760px) { #studyArea { bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 118px); } .map-fab { bottom: calc(var(--bar) + env(safe-area-inset-bottom, 0px) + 70px); } body.sheet-open .map-fab { display: none; } }
 #reportPrev, #reportNext { font-size: 22px; }
 .tool .count { position: absolute; top: 2px; right: 6px; min-width: 16px; height: 16px; border-radius: 8px; padding: 0 4px; background: var(--gauge); color: #fff; font: 700 10px/16px var(--font-body); }
