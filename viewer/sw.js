@@ -11,7 +11,9 @@
  */
 const VERSION = '__BUILD__';
 const APP = `app-${VERSION}`;
-const TILES = 'tiles-v1', TERRAIN = 'terrain-v1', ELEV = 'elev-v1', API = 'api-v1';
+// tiles-v2: drops v1, which held opaque copies of tiles the map now loads
+// crossOrigin (served to it, they failed and were never refetched)
+const TILES = 'tiles-v2', TERRAIN = 'terrain-v1', ELEV = 'elev-v1', API = 'api-v1';
 const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [ELEV]: 800, [API]: 400 };
 
 // Vite replaces this list with every emitted chunk, worker, font and WASM asset.
@@ -51,12 +53,14 @@ async function trim(name) {
 }
 
 // a cached response may only be served to a request whose mode allows that
-// response type: an opaque body is unreadable, and a cors response is
-// rejected outright when the original request was an <img> (no-cors).
-// Firefox enforces both strictly; Chromium mostly does too.
+// response type: an opaque response only answers a no-cors request (a
+// crossOrigin <img>, fetch() or WebGL texture rejects it, so the tile stays
+// dark for good), and a cors response is rejected when the request was a
+// plain <img> (no-cors). Firefox enforces both strictly; Chromium mostly
+// does too. An unusable copy is refetched and replaced.
 function usable(req, res) {
   if (!res || !res.type) return false;
-  if (res.type === 'opaque') return req.mode !== 'navigate';
+  if (res.type === 'opaque') return req.mode === 'no-cors';
   if (res.type === 'cors') return req.mode !== 'no-cors' && req.mode !== 'navigate';
   return res.type === 'basic' || res.type === 'default';
 }
