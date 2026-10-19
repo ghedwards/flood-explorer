@@ -6,7 +6,7 @@ const { chromium } = require("playwright");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const URL = process.env.SITE_URL || "https://ghedwards.github.io/brisbane-flood-explorer/";
+const URL = process.env.SITE_URL || "https://ghedwards.github.io/flood-explorer/";
 const PLACE = process.env.PLACE || "rockhampton";
 const OUT = process.env.OUT || "shots";
 
