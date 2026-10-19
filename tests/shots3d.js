@@ -146,6 +146,30 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   await shot("9-3d-scenario-panel");
   await step("scenario-panel-hide", async () => { await page.click('.tool[data-open="panel-scenario"]'); });
 
+
+  // the DEM-H fallback: forced with ?terrain3d=demh (a fresh page, same preset)
+  const page2 = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  page2.on("pageerror", (e) => report.errors.push(`demh page: ${String(e).slice(0, 300)}`));
+  page2.on("console", (m) => { if (m.type() === "error") report.errors.push(`demh page: ${m.text().slice(0, 250)}`); });
+  await step("demh-load", async () => {
+    await page2.goto(`${URL}${URL.includes("?") ? "&" : "?"}terrain3d=demh`, { waitUntil: "networkidle", timeout: 90000 });
+    await page2.waitForFunction("window.__floodStatus && window.__floodStatus.mode === 'map'", null, { timeout: 60000 });
+    await page2.selectOption("#area", `preset:${PLACE}`);
+    await page2.waitForFunction("window.__floodStatus.local && window.__floodStatus.local.ok === true", null, { timeout: 120000 });
+    await page2.waitForTimeout(3000);
+    await page2.evaluate(() => window.__floodOpen3D());
+    await page2.waitForSelector("#view3d canvas", { timeout: 30000 });
+  });
+  await page2.waitForTimeout(45000);
+  report.state_demh = await page2.evaluate(() => (window.__flood3DState ? window.__flood3DState() : null)).catch((e) => String(e));
+  try { await page2.screenshot({ path: path.join(OUT, "10-3d-demh-settled.png"), timeout: 60000 }); } catch (e) { report.steps.push({ name: "shot demh", ok: false, error: String(e).slice(0, 200) }); }
+  await step("demh-zoom", async () => {
+    await page2.mouse.move(700, 450);
+    for (let i = 0; i < 6; i++) { await page2.mouse.wheel(0, -400); await page2.waitForTimeout(250); }
+  });
+  await page2.waitForTimeout(30000);
+  report.state_demh_zoomed = await page2.evaluate(() => (window.__flood3DState ? window.__flood3DState() : null)).catch((e) => String(e));
+  try { await page2.screenshot({ path: path.join(OUT, "11-3d-demh-zoomed.png"), timeout: 60000 }); } catch (e) { report.steps.push({ name: "shot demh zoomed", ok: false, error: String(e).slice(0, 200) }); }
   } catch (e) {
     report.fatal = String(e).slice(0, 400);
     console.log(`::error::shots3d stopped: ${report.fatal}`);

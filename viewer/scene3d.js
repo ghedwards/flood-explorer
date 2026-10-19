@@ -95,7 +95,8 @@ class Scene3d {
     this.cache = new Map();       // 'z/x/y' -> terrain tile { key, z, x, y, state, heights, mesh, last }
     this.queue = new Map();       // key -> priority (bigger first)
     this.fetching = 0;
-    this.source = 'terrarium';    // or 'demh' after repeated failures
+    this.source = 'terrarium';    // or 'demh' after repeated failures, or when forced (?terrain3d=demh, for testing the fallback)
+    try { if (hooks.fetchDemBox && new URLSearchParams(location.search).get('terrain3d') === 'demh') this.source = 'demh'; } catch (err) { /* no location */ }
     this.failStreak = 0;
     this.said = new Set();
     this.drawn = new Set();
