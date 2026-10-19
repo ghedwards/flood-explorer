@@ -58,6 +58,7 @@ class Scene3d {
     this.queue = [];              // stream keys waiting to fetch
     this.failed = new Map();      // stream key -> failure time
     this.fetching = 0;
+    this.exag = EXAG_DEFAULT;
     this.streamZ = null;
     // scene origin: [lon, lat] fixed at open (the 2D map centre); group
     // offsets are metres from it, +x east, +z south
@@ -76,17 +77,19 @@ class Scene3d {
            behind the key/panel cards otherwise); the fab corner is free
            while the 3D view is open, so the controls park on the right */
         #view3dChrome{position:fixed;inset:0;z-index:1002;pointer-events:none}
-        #view3dChrome .bar{position:absolute;right:14px;bottom:calc(var(--bottom) + env(safe-area-inset-bottom,0px) + 14px);display:flex;gap:14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4);pointer-events:auto}
-        #view3dChrome .bar label{display:flex;gap:6px;align-items:center}
+        #view3dChrome .bar3d{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);display:flex;flex-wrap:wrap;max-width:calc(100vw - 28px);gap:8px 14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4);pointer-events:auto}
+        #view3dChrome .bar3d label{display:flex;gap:6px;align-items:center}
         #view3dChrome button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
         #view3dChrome .compass{font-weight:600;min-width:2.5em;text-align:center}
-        #globe3dWrap{position:absolute;right:14px;bottom:calc(var(--bottom) + env(safe-area-inset-bottom,0px) + 76px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
+        #globe3dWrap{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 76px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
         #globe3dWrap:active{cursor:grabbing}
         #globe3d{width:100%;height:100%;display:block}
       </style>`;
 
     const bar = document.createElement('div');
-    bar.className = 'bar';
+    // not `.bar`: styles.css has a global .bar (a 10px progress track) that
+    // clipped this to a sliver
+    bar.className = 'bar3d';
     bar.innerHTML = `
       <button type="button" id="close3d">Back to map (Esc)</button>
       <label>vertical ×<input id="exag3d" type="range" min="1" max="30" step="1" value="${EXAG_DEFAULT}" style="width:120px"><span id="exagVal">12</span></label>
@@ -179,6 +182,7 @@ class Scene3d {
         if (t >= 1) { this.flyT = null; this.flyFrom = this.flyTo = null; }
       }
       this.controls.update();
+      if (!this.camera.position.toArray().every(Number.isFinite) || !this.controls.target.toArray().every(Number.isFinite)) this.frameCamera(false);   // never render from NaN
       // streaming terrain + late water tiles + drape retries, on a ~0.75s
       // cadence (cheap; keeps up with orbiting and dollying)
       if (++this.pollCount >= 45) { this.pollCount = 0; this.pollReady(); }
@@ -186,6 +190,22 @@ class Scene3d {
       if (this.dirty) { this.renderer.render(this.scene, this.camera); this.dirty = false; }
     };
     tick();
+  }
+
+  /* What the 3D view is doing, for window.__flood3DState (tests, CI). */
+  snapshot() {
+    const byZoom = {};
+    for (const key of this.stream.keys()) { const z = key.split('/')[0]; byZoom[z] = (byZoom[z] || 0) + 1; }
+    return {
+      open: !!document.getElementById('view3d'),
+      stream: { tiles: this.stream.size, byZoom, pending: this.pending.size, failed: this.failed.size, z: this.streamZ },
+      water: [...this.tiles.values()].map((t) => ({ key: t.area.key, mesh: !!t.water })),
+      step: this.step || 0,
+      cam: this.camera.position.toArray().map((v) => Math.round(v)),
+      target: this.controls.target.toArray().map((v) => Math.round(v)),
+      exag: this.exag,
+      dbg: this.dbg || null,
+    };
   }
 
   /* Ground footprint of the camera as [s, w, n, e] — the target plus a
@@ -463,6 +483,7 @@ class Scene3d {
   }
 
   setExaggeration(x) {
+    this.exag = x;
     for (const st of this.stream.values()) if (st.terrain) st.terrain.scale.y = x;
     for (const t of this.tiles.values()) if (t.water) t.water.scale.y = x;
     this.dirty = true;
@@ -506,27 +527,47 @@ class Scene3d {
     return tex;
   }
 
+  /* [s, w, n, e] of the modelled areas, the fallback framing when the 2D
+   * map can't tell us what it was showing (hidden or not yet sized). */
+  areaBox() {
+    const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
+    let box = null;
+    for (const ar of areas) {
+      const b = ar.bounds;   // [w, s, e, n]
+      if (!b || !b.every(Number.isFinite)) continue;
+      box = box ? [Math.min(box[0], b[1]), Math.min(box[1], b[0]), Math.max(box[2], b[3]), Math.max(box[3], b[2])] : [b[1], b[0], b[3], b[2]];
+    }
+    return box;
+  }
+
   frameCamera(fly = false) {
-    // frame the ground the 2D map was showing when the view opened
-    const box = this.hooks.getViewBox ? this.hooks.getViewBox() : null;
-    if (!box || !this.origin) { this.controls.update(); return; }
+    // frame the ground the 2D map was showing when the view opened. The
+    // box must be real: a hidden or unsized Leaflet map reports a
+    // degenerate one, which put the camera on its own target (NaN orbit).
+    const okBox = (b) => b && b.length === 4 && b.every(Number.isFinite) && b[2] > b[0] && b[3] > b[1] && (b[3] - b[1]) * 111320 * Math.cos(((b[0] + b[2]) / 2) * Math.PI / 180) > 300;
+    let box = this.hooks.getViewBox ? this.hooks.getViewBox() : null;
+    if (!okBox(box)) box = this.areaBox();
+    if (!okBox(box)) box = [-0.05, -0.05, 0.05, 0.05].map((v, i) => v + (this.origin ? this.origin[(i + 1) % 2] : 0));
+    if (!this.origin || !this.origin.every(Number.isFinite)) this.origin = [(box[1] + box[3]) / 2, (box[0] + box[2]) / 2];
     const [s, w, n, e] = box;
-    const westM = (w - this.origin[0]) * 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
-    const eastM = (e - this.origin[0]) * 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
-    const northM = -(n - this.origin[1]) * 110574;
-    const southM = -(s - this.origin[1]) * 110574;
+    const kx = 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
+    const westM = (w - this.origin[0]) * kx, eastM = (e - this.origin[0]) * kx;
+    const northM = -(n - this.origin[1]) * 110574, southM = -(s - this.origin[1]) * 110574;
     const cx = (westM + eastM) / 2, cz = (northM + southM) / 2;
-    const d = Math.max(Math.abs(eastM - westM), Math.abs(southM - northM)) * 0.9;
+    const d = Math.max(Math.abs(eastM - westM), Math.abs(southM - northM), 2000) * 0.9;
+    this.dbg = { box, origin: this.origin.slice(), d: Math.round(d) };
     this.controls.target.set(cx, 0, cz);
     const dest = new THREE.Vector3(cx, d * 0.55, cz + d);
-    if (!fly) {
-      this.camera.position.copy(dest);
-    } else {
+    // always start the camera at a real distance from the target:
+    // OrbitControls.update() on position == target is where NaN came from
+    this.camera.position.copy(dest);
+    if (fly) {
       // fly-in: start high above and settle into the framed view (the
       // Google Earth opening move), animated in the tick loop
       this.flyFrom = new THREE.Vector3(cx, d * 2.4, cz + d * 1.6);
       this.flyTo = dest;
       this.flyT = 0;
+      this.camera.position.copy(this.flyFrom);
     }
     this.controls.update();
     this.dirty = true;

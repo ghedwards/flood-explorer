@@ -1165,21 +1165,7 @@ import './inertial-grid.js';
     return out;
   }
   window.__floodOpen3D = () => open3d();
-  window.__flood3DState = () => {
-    if (!view3d) return { open: false };
-    const tiles = view3d.tiles ? Array.from(view3d.tiles.values()).map((t) => ({
-      key: t.area.key, terrain: !!t.terrain, water: !!t.water,
-    })) : [];
-    return {
-      open: !!document.getElementById('view3d'),
-      tiles,
-      step: view3d.step || 0,
-      builds: view3d.debugCounts || [],
-      cam: view3d.camera.position.toArray().map((v) => Math.round(v)),
-      target: view3d.controls.target.toArray().map((v) => Math.round(v)),
-      exag: view3d.tiles && view3d.tiles.size ? (Array.from(view3d.tiles.values())[0].terrain ? Array.from(view3d.tiles.values())[0].terrain.scale.y : null) : null,
-    };
-  };
+  window.__flood3DState = () => (view3d ? view3d.snapshot() : { open: false });
   window.__floodPin = () => pinScenario();
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
