@@ -11,10 +11,28 @@ import './flood-wasm.js';
 let keySeq = 0;
 const resident = new Map();   // key -> { h, W, H, cell, N, ocean, stream }
 
+// Tell the page whether the model actually loaded in here. In dev the
+// bundled `?url` import can fail; without this the app used to wait for a
+// reply that never came (a silent hang). Any job posted before this
+// settles still waits for FloodCoreReady below — that await must never
+// throw past the try block, or the page would hang too.
+self.FloodCoreReady.then(() => {
+  if (self.FloodCore.engine !== 'rust') throw new Error(self.FloodCore.engine === 'error' ? 'the model failed to load in the worker' : `engine ${self.FloodCore.engine}`);
+  self.postMessage({ workerStatus: 'ready', engine: 'rust' });
+}).catch((e) => {
+  self.postMessage({ workerStatus: 'error', error: String((e && e.message) || e) });
+});
+
 self.onmessage = async (e) => {
   const { id, grid, opts, kind } = e.data;
-  // the Rust model once it has loaded; without it the app refuses to run
-  if (self.FloodCoreReady) await self.FloodCoreReady;
+  // the Rust model once it has loaded; without it the app refuses to run.
+  // Wrapped so a failed load rejects THIS job instead of wedging silently.
+  try {
+    if (self.FloodCoreReady) await self.FloodCoreReady;
+  } catch (err) {
+    self.postMessage({ id, error: `The model worker could not load WebAssembly: ${err && err.message ? err.message : err}` });
+    return;
+  }
   try {
     if (kind === 'timeline' && e.data.aKey != null && !resident.has(e.data.aKey)) {
       // the app still knows the key, but this worker doesn't (recreated); ask

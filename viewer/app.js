@@ -372,6 +372,14 @@ import './inertial-grid.js';
         workerGen++;           // resident-analysis keys belong to one worker instance
         worker = new Worker(new URL('./flood-worker.js', import.meta.url), { type: 'module' });
         worker.onmessage = (e) => {
+          if (e.data && e.data.workerStatus) {
+            // the worker reports whether its own wasm copy loaded; if not,
+            // stop using it (the main thread runs the same model) rather
+            // than leaving jobs waiting for replies that never come
+            status.worker = e.data.workerStatus;
+            if (e.data.workerStatus === 'error') { worker = false; say(`Model worker unavailable (${e.data.error || 'unknown error'}) — using the main thread.`); }
+            return;
+          }
           const job = workerJobs.get(e.data.id);
           if (!job) return;
           workerJobs.delete(e.data.id);
@@ -400,7 +408,19 @@ import './inertial-grid.js';
     if (!w) return onMainThread();
     return new Promise((resolve, reject) => {
       const id = ++workerSeq;
-      workerJobs.set(id, { resolve, reject, fallback: onMainThread });
+      let settled = false;
+      const done = (fn, arg) => { if (!settled) { settled = true; clearTimeout(watchdog); workerJobs.delete(id); fn(arg); } };
+      // a worker whose wasm never loads (or a lost reply) must not hang the
+      // app: fall back to the main thread, surfacing the wait only after a
+      // generous time (analyses of the biggest grids take tens of seconds)
+      const watchdog = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        workerJobs.delete(id);
+        say('The model worker is slow to answer — running the model on the main thread instead.');
+        onMainThread().then(resolve, reject);
+      }, 120000);
+      workerJobs.set(id, { resolve: (a) => done((x) => resolve(x), a), reject: (e) => done((x) => reject(x), e), fallback: onMainThread });
       w.postMessage({ id, grid, opts });
     });
   }
@@ -1028,6 +1048,135 @@ import './inertial-grid.js';
   $('pinScenario').addEventListener('click', () => pinScenario());
   $('clearPinned').addEventListener('click', () => clearPinned());
   $('colorMode').addEventListener('change', () => { drawMap(); status.colorMode = colorMode(); });
+
+  /* ---------- experimental 3D view (docs/3d-view-design.md) ---------- */
+  let view3d = null;
+  async function open3d() {
+    const mod = await import('./scene3d.js');
+    if (view3d) return;
+    // With a model built the scene is stitched from the modelled tiles
+    // (water included). With none, fetch elevation for the area in view
+    // (clamped to a 30 km box around the map centre) and show terrain only
+    // — the flood water still appears wherever modelled tiles exist.
+    let extra = null;
+    if (!state.a) {
+      const box = viewBounds3d();
+      if (!box) { say('Open the Australia map first.'); return; }
+      const [s, w, n, e] = box;
+      const halfKm = Math.min(30, (e - w) * 111.32 * Math.cos(((s + n) / 2) * Math.PI / 180) / 2);
+      say('Fetching elevation for the 3D view…');
+      try {
+        const { grid, bounds } = await fetchDemWindow((s + n) / 2, (w + e) / 2, halfKm, 45);
+        const a = await analyseAsync(grid, { streamAreaKm2: 1 });
+        extra = { key: '__view3d', a, terrain: terrainRGBA(a), run: null, timeline: null, bounds, active: true };
+      } catch (err) {
+        say(`Couldn't fetch 3D terrain here: ${err.message || err}.`);
+        return;
+      }
+    }
+    view3d = mod.openScene3d({
+      getAnalysis: () => state.a,
+      getTerrain: () => state.terrain,
+      getRun: () => state.run,
+      getTimeline: () => state.areaKey && areaReg.get(state.areaKey)?.timeline || null,
+      getStep: () => state.timeStep || 0,
+      getBounds: () => (state.areaMeta && state.areaMeta.bounds_lonlat) || null,
+      getTiles: () => activeBasemapTiles(),
+      getAreas: () => {
+        const list = areasFor3d();
+        if (!state.a && extra) list.push(extra);   // terrain-only pseudo tile
+        return list;
+      },
+      onScrub: (k) => { scheduleTimeStep(k); },
+      onUnsupported: (text) => say(text),
+      onClose: () => { view3d = null; extra = null; for (const ar of areaReg.values()) delete ar.__area3d; },
+    });
+  }
+  // the visible map box as [s, w, n, e]; null when the map isn't open
+  function viewBounds3d() {
+    const m = state.lmap;
+    if (!m) return null;
+    const b = m.getBounds();
+    return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
+  }
+  // every modelled tile on the map, ready for a stitched 3D scene. The
+  // active area is complete; inactive ones had their analysis freed when
+  // they were left (saveActive) — rebuild it here (worker, fast) and hold
+  // it only while the 3D view is open.
+  function areasFor3d() {
+    return Array.from(areaReg.values()).map((ar) => {
+      const t = {
+        key: ar.key, a: ar.a || null, run: ar.run || null, terrain: ar.terrain || null,
+        bounds: (ar.areaMeta && ar.areaMeta.bounds_lonlat) || null,
+        active: ar.key === state.areaKey,
+      };
+      console.log('[3d] tile', ar.key, 'a?', !!t.a, 'rebuild?', !!(ar.grid && ar.areaMeta));
+      if (!t.a && ar.grid && ar.areaMeta) {
+        if (!ar.__area3d) {
+          ar.__area3d = (async () => {
+            const a = await analyseAsync(ar.grid, { streamAreaKm2: ar.streamAreaKm2 || 2 });
+            const gauge = ar.gauge >= 0 ? ar.gauge : a.defaultGauge;
+            const c = ar.ctl || {};
+            const slr = parseFloat(c.slr) || 0;
+            const s = {
+              gauge,
+              gaugeLevel: (parseFloat(c.gaugeLevel) || a.dem[gauge] + 0.3) + (parseFloat(c.extra) || 0),
+              bayLevel: (parseFloat(c.bayLevel) || 0) + slr,
+              upstreamGradient: parseFloat(c.grad) || 0,
+              controls: ar.controls || [],
+            };
+            const run = ar.gauge >= 0 ? F.inundate(a, s, { slim: 1 }) : null;
+            console.log('[3d] rebuilt', ar.key);
+            return { a, run, terrain: terrainRGBA(a) };
+          })();
+          ar.__area3d.catch((e) => console.log('[3d] rebuild failed', ar.key, String((e && e.message) || e)));
+        }
+        t.ready = ar.__area3d;
+      }
+      return t;
+    });
+  }
+  $('btn3d').addEventListener('click', () => { open3d(); });
+  // the active basemap's loaded tile images + their web-mercator bounds,
+  // for the 3D terrain drape. Leaflet keeps them in layer._tiles keyed 'x:y:z'.
+  function activeBasemapTiles() {
+    const reg = layerRegistry;
+    if (!reg || !status.basemap) return [];
+    const base = reg.layers[status.basemap];
+    if (!base) return [];
+    const out = [];
+    const collect = (l) => {
+      if (!l || !l._tiles) return;
+      for (const [key, t] of Object.entries(l._tiles)) {
+        if (!t || !t.el || !t.active) continue;
+        const [x, y, z] = key.split(':').map(Number);
+        if (!(x >= 0) || !(z > 0)) continue;
+        const zc = Math.pow(2, z);
+        const w = (x / zc) * 360 - 180, e = ((x + 1) / zc) * 360 - 180;
+        const lat = (yy) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * yy) / zc))) * 180) / Math.PI;
+        out.push({ img: t.el, z, w, e, n: lat(y), s: lat(y + 1) });
+      }
+    };
+    if (base.getLayers) base.getLayers().forEach(collect);   // featureGroup (DEA basemaps)
+    else collect(base);
+    return out;
+  }
+  window.__floodOpen3D = () => open3d();
+  window.__flood3DState = () => {
+    if (!view3d) return { open: false };
+    const tiles = view3d.tiles ? Array.from(view3d.tiles.values()).map((t) => ({
+      key: t.area.key, terrain: !!t.terrain, water: !!t.water,
+    })) : [];
+    return {
+      open: !!document.getElementById('view3d'),
+      tiles,
+      step: view3d.step || 0,
+      builds: view3d.debugCounts || [],
+      cam: view3d.camera.position.toArray().map((v) => Math.round(v)),
+      target: view3d.controls.target.toArray().map((v) => Math.round(v)),
+      exag: view3d.tiles && view3d.tiles.size ? (Array.from(view3d.tiles.values())[0].terrain ? Array.from(view3d.tiles.values())[0].terrain.scale.y : null) : null,
+    };
+  };
   window.__floodPin = () => pinScenario();
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
@@ -1049,6 +1198,7 @@ import './inertial-grid.js';
     // step and these writes were running unconditionally even when their
     // inputs hadn't changed
     scheduleMapChrome();
+    if (view3d) view3d.refresh();
     if (state.geo && state.lmap && state.overlay) drawGeoMap();
     else if (!state.geo) drawStaticMap();
   }
@@ -1129,21 +1279,21 @@ import './inertial-grid.js';
   // Basemaps offered in the layer switcher. The first is the default.
   const BASEMAPS = [
     { name: 'Satellite (Esri)', url: () => 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      opts: { attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics and the GIS User Community', maxZoom: 19 } },
+      opts: { attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics and the GIS User Community', maxZoom: 19, crossOrigin: true } },
     { name: 'Latest satellite, infrared (DEA)', wms: { layers: 's2_ls_combined', styles: 'false_colour' },
       opts: { attribution: DEA_ATTR, maxZoom: 19, maxNativeZoom: 16, minZoom: 7 } },
     { name: 'Latest satellite, true colour (DEA)', wms: { layers: 's2_ls_combined', styles: 'true_colour' },
       opts: { attribution: DEA_ATTR, maxZoom: 19, maxNativeZoom: 16, minZoom: 7 } },
     { name: 'Streets', url: () => (isDark() ? TILES.dark : TILES.light),
-      opts: { attribution: TILE_ATTR, subdomains: 'abcd', maxZoom: 19 } },
+      opts: { attribution: TILE_ATTR, subdomains: 'abcd', maxZoom: 19, crossOrigin: true } },
     { name: 'OpenStreetMap', url: () => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      opts: { attribution: OSM_ATTR, maxZoom: 19 } },
+      opts: { attribution: OSM_ATTR, maxZoom: 19, crossOrigin: true } },
     { name: 'Queensland aerial imagery', url: () => 'https://spatial-img.information.qld.gov.au/arcgis/rest/services/Basemaps/LatestStateProgram_AllUsers/ImageServer/tile/{z}/{y}/{x}',
       opts: { attribution: 'Imagery &copy; Planet Labs Netherlands B.V. under licence from Planet and Geoplex; ' + QLD_ATTR, maxZoom: 20 } },
     { name: 'Queensland topographic', url: () => QLD_GIS + 'QldMap_Topo/MapServer/tile/{z}/{y}/{x}',
       opts: { attribution: QLD_ATTR, maxZoom: 20 } },
     { name: 'Topographic (OpenTopoMap)', url: () => 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-      opts: { attribution: OSM_ATTR + ', SRTM | Style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC BY-SA)', subdomains: 'abc', maxZoom: 17 } },
+      opts: { attribution: OSM_ATTR + ', SRTM | Style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC BY-SA)', subdomains: 'abc', maxZoom: 17, crossOrigin: true } },
   ];
   const BASEMAP_KEY = 'bfe.basemap.v2'; // v2: satellite became the default
 
@@ -2426,6 +2576,7 @@ import './inertial-grid.js';
       const r = state.inertial, st = F.stats(state.a, state.run, null);
       $('summaryLine').textContent = `Local-inertial 2D · final depth at ${fmt(r.time / 60, 1)} min · ${Math.round(r.cell)} m grid`;
       $('stats').innerHTML = [['Wet land', fmt(st.wetLandKm2, 2), 'km²'], ['Deeper than 1 m', fmt(st.deepKm2, 2), 'km²'], ['Deepest water', fmt(st.maxDepth, 2), 'm'], ['Simulated time', fmt(r.time / 60, 1), 'min']].map(([k,v,u]) => `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
+      if ($('btn3d')) $('btn3d').classList.toggle('dim', !(state.a && state.run));
       return;
     }
     const st = F.stats(state.a, state.run, state.base);
@@ -2443,6 +2594,7 @@ import './inertial-grid.js';
       + `${fmt(st.floodedKm2, 1)} km² newly flooded` + (parseFloat(ctl.slr.value) && !flashOnly ? ` · +${ctl.slr.value} m sea level` : '');
     $('stats').innerHTML = cells.map(([k, v, u]) =>
       `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
+    if ($('btn3d')) $('btn3d').classList.toggle('dim', !(state.a && state.run));
   }
 
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
