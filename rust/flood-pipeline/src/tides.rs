@@ -97,6 +97,8 @@ pub fn pick<'a>(files: &'a [(String, u64)], words: &[&str]) -> Option<&'a (Strin
 }
 
 /// Sea cells next to land (no data), every `step`-th in a checkerboard.
+/// The EOT20 grids cover a wider region than Australia (they extend to
+/// Indonesia and New Zealand), so keep only the Australian coastal box.
 pub fn coastal_points(hat: &Raster, mh: &Raster, step: usize) -> Vec<Value> {
     let (w, h) = (hat.w, hat.h);
     let val = |r: &Raster, i: usize| -> f64 {
@@ -114,12 +116,17 @@ pub fn coastal_points(hat: &Raster, mh: &Raster, step: usize) -> Vec<Value> {
             if !ok[i] {
                 continue;
             }
+            let lon = hat.x0 + (c as f64 + 0.5) * hat.dx;
+            let lat = hat.y0 - (r as f64 + 0.5) * hat.dy;
+            // mainland + Tasmania (+ islands close in); excludes the Indonesian,
+            // Papua New Guinean and New Zealand coasts the grids also cover
+            if !(111.5..=155.0).contains(&lon) || !(-45.0..=-9.5).contains(&lat) {
+                continue;
+            }
             let near = (r > 0 && !ok[i - w]) || (r + 1 < h && !ok[i + w]) || (c > 0 && !ok[i - 1]) || (c + 1 < w && !ok[i + 1]);
             if !near || (r + c) % step != 0 {
                 continue;
             }
-            let lon = hat.x0 + (c as f64 + 0.5) * hat.dx;
-            let lat = hat.y0 - (r as f64 + 0.5) * hat.dy;
             pts.push(json!([num(round_to(lat, 3)), num(round_to(lon, 3)), num(round_to(val(hat, i), 2)), num(round_to(val(mh, i), 2))]));
         }
     }
