@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   makeProjection, parseKey, parentKey, tileToScene, decodeTerrarium, sampleRaster, selectTiles, resolveDraw,
-  tileHeights, tileMesh, TILE_SEGS, decimateStep, waterMesh, waterFromFrame,
+  tileHeights, tileMesh, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
 } from './terrain3d.js';
 
 const EXAG_DEFAULT = 1.5;
@@ -26,6 +26,7 @@ const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
 const HEIGHT_GUESS = [-5, 1200];  // a tile's height range until it (or its parent) is known
 const FAR = 800000;
 const IMG_CONCURRENCY = 8;
+const MAX_SEGS = 128;             // finer tile meshes where a model DEM replaces the terrain
 const MAX_ANISO = 8;
 
 let controller = null;   // one open view at a time
@@ -81,6 +82,8 @@ class Scene3d {
     this.exag = EXAG_DEFAULT;
     this.needSelect = true;
     this.lastSelect = 0;
+    this.knownBounds = [];        // [w, s, e, n] of every modelled area (tiles over them keep their raster)
+    this.areaSig = '';
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
     this.imgLoaded = 0;
@@ -189,6 +192,7 @@ class Scene3d {
     this.scene.add(this.world);
 
     this.buildWaterTiles();
+    this.syncAreas();
     this.frameCamera(true);
     this.initGlobe();
     this.updateAttribution();
@@ -403,10 +407,36 @@ class Scene3d {
     return this.hooks.fetchDemBox([w, s, e, n], 65);
   }
 
+  /* Modelled areas that have their analysis, as the height override wants them. */
+  overrideAreas() {
+    const out = [];
+    for (const t of this.areaTiles.values()) if (t.area.a && t.area.bounds) out.push({ bounds: t.area.bounds, a: t.area.a });
+    return out;
+  }
+
+  /* Inside a modelled area the ground IS the model's DEM (what the flood was
+   * computed on), so the water surface sits exactly on it; the tile source
+   * supplies the rest. Tiles over an area also get a finer vertex grid, so
+   * the river channel isn't smoothed away, and keep their raster so they
+   * can be rebuilt when an area arrives or leaves. */
   buildTile(st, raster) {
-    const heightAt = (u, v) => sampleRaster(raster.data, raster.n, u, v);
-    st.heights = tileHeights(heightAt, TILE_SEGS);
-    const m = tileMesh(this.proj, st.z, st.x, st.y, st.heights, TILE_SEGS);
+    const t = tileToScene(this.proj, st.z, st.x, st.y);
+    const [w, n] = this.proj.fromScene(t.x0, t.z0), [e, s] = this.proj.fromScene(t.x1, t.z1);
+    const box = [w, s, e, n];
+    const areas = this.overrideAreas().filter((ar) => boxesOverlap(box, ar.bounds));
+    st.raster = this.knownBounds.some((b) => boxesOverlap(box, b)) ? raster : null;
+    let segs = TILE_SEGS;
+    if (areas.length) {
+      const spacing = Math.max(25, ...areas.map((ar) => ar.a.cell || 0));
+      segs = Math.max(TILE_SEGS, Math.min(MAX_SEGS, Math.ceil(t.size / spacing)));
+    }
+    const heightAt = (u, v) => {
+      const h = sampleRaster(raster.data, raster.n, u, v);
+      return areas.length ? overrideHeight(h, areas, w + u * (e - w), this.proj.fromScene(t.x0, t.z0 + v * (t.z1 - t.z0))[1]) : h;
+    };
+    st.heights = tileHeights(heightAt, segs);
+    st.segs = segs;
+    const m = tileMesh(this.proj, st.z, st.x, st.y, st.heights, segs);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
@@ -418,9 +448,30 @@ class Scene3d {
     st.mesh.visible = false;
     st.hmin = m.hmin; st.hmax = m.hmax;
     st.uv0 = m.uvs.slice();   // the tile's own 0..1 UVs; imagery from an ancestor re-maps them
-    st.tex = null; st.imgState = null; st.imgFrom = null;
+    if (st.tex === undefined) { st.tex = null; st.imgState = null; st.imgFrom = null; }
     st.state = 'ready';
     this.world.add(st.mesh);
+  }
+
+  /* Rebuild the terrain under modelled areas when the set of areas (or
+   * their grids) changes: swap geometry, keep the tile's imagery. */
+  syncAreas() {
+    const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
+    this.knownBounds = areas.filter((a) => a.bounds && a.bounds.every(Number.isFinite)).map((a) => a.bounds);
+    const sig = areas.map((a) => (a.a && a.bounds ? `${a.key}:${a.a.W}x${a.a.H}:${a.bounds.join(',')}` : '')).join('|');
+    if (sig === this.areaSig) return;
+    this.areaSig = sig;
+    for (const st of this.cache.values()) {
+      if (st.state !== 'ready' || !st.raster) continue;
+      const was = st.mesh, visible = was.visible;
+      this.world.remove(was);
+      was.geometry.dispose(); was.material.dispose();
+      this.buildTile(st, st.raster);
+      st.mesh.visible = visible;
+      st.imgFrom = null;   // dress() puts the texture back on the new mesh
+    }
+    this.needSelect = true;
+    this.dirty = true;
   }
 
   /* LRU: dispose built tiles beyond the cap, oldest first, never ones in use. */
@@ -590,6 +641,7 @@ class Scene3d {
       if (area.a && area.bounds && !this.areaTiles.has(area.key)) { this.addWaterTile(area); added = true; }
     }
     if (added) this.dirty = true;
+    this.syncAreas();
   }
 
   buildWaterTiles() {
@@ -634,7 +686,7 @@ class Scene3d {
     // depth-scaled per-vertex alpha (shoreline feather) needs RGBA colours.
     // With a logarithmic depth buffer polygonOffset does nothing, so the
     // surface is lifted (0.05 m, in the mesh) and drawn after the terrain.
-    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false });
+    const mat = new THREE.MeshPhongMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false, shininess: 60, specular: 0x334455 });
     t.water = new THREE.Mesh(geo, mat);
     t.water.renderOrder = 2;
     this.world.add(t.water);
@@ -677,6 +729,7 @@ class Scene3d {
         this.areaTiles.delete(key);
       }
     }
+    this.syncAreas();
     this.dirty = true;
   }
 

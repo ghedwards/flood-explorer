@@ -58,6 +58,13 @@ const OUT = process.env.OUT || "shots";
   await page.waitForTimeout(20000);
   await state3d("zoomed");
   await shot("3-3d-zoomed-in");
+  // the water against the ground at 5x, then back to the default
+  const setExag = async (v) => page.evaluate((val) => { const r = document.getElementById("exag3d"); if (r) { r.value = String(val); r.dispatchEvent(new Event("input")); } }, v);
+  await step("exaggeration-5", async () => { await setExag(5); });
+  await page.waitForTimeout(3000);
+  await shot("3b-3d-exaggeration-5");
+  await step("exaggeration-default", async () => { await setExag(1.5); });
+  await page.waitForTimeout(1500);
   // tilt towards the horizon (left-drag down rotates in OrbitControls)
   await step("tilt", async () => {
     await page.mouse.move(box.x, box.y);
