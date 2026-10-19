@@ -59,6 +59,11 @@ body {
 #map { display: block; cursor: crosshair; touch-action: manipulation; max-width: 100%; max-height: 100%; }
 #lmap { position: absolute; inset: 0; background: var(--map-ground); font: 13px/1.4 var(--font-body); }
 .flood-layer { image-rendering: pixelated; }
+/* while the zoom is animating, nearest-neighbour resampling makes every cell
+   edge step between N and N+1 device pixels per frame (the blue edges
+   shimmer). Scale smoothly during the motion; crisp cells come back on
+   zoomend. */
+.flood-zooming .flood-layer { image-rendering: auto; }
 .busy {
   position: absolute; inset: 0; display: grid; place-items: center; z-index: 900;
   background: color-mix(in srgb, var(--map-ground) 70%, transparent); font: 500 14px var(--font-data);

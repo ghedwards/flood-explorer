@@ -1481,7 +1481,7 @@ import './inertial-grid.js';
     if (img) {
       // zoomed out: the stitched national image, scaled to fit
       const b = img.bounds;
-      const pic = L.imageOverlay(`data/dea/${img.file}`, [[b[1], b[0]], [b[3], b[2]]], {
+      const pic = subpixelImageOverlay(`data/dea/${img.file}`, [[b[1], b[0]], [b[3], b[2]]], {
         opacity: 0.8, attribution: DEA_ATTR, zIndex: 5,
       });
       pic.on('load', () => { st.features++; st.image = true; });
@@ -1546,7 +1546,7 @@ import './inertial-grid.js';
       const img = councilImages && councilImages.layers && councilImages.layers[o.image];
       if (img) {
         const b = img.bounds;
-        const pic = window.L.imageOverlay(`data/council/${img.file}`, [[b[1], b[0]], [b[3], b[2]]], {
+        const pic = subpixelImageOverlay(`data/council/${img.file}`, [[b[1], b[0]], [b[3], b[2]]], {
           opacity: 0.6, className: 'flood-layer', attribution: BCC_ATTR, zIndex: 3,
         });
         pic.on('load', () => { st.features++; st.image = true; });
@@ -1738,6 +1738,10 @@ import './inertial-grid.js';
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
       m.on('overlayadd', (e) => { if (e.layer === roadsLayer) renderImpact(); });
       m.on('zoomend', syncLayerLists);
+      // smooth raster scaling while any zoom motion runs (wheel gesture or
+      // animated zoom), crisp pixelated cells at rest — see styles.css
+      m.on('zoomstart', () => m.getContainer().classList.add('flood-zooming'));
+      m.on('zoomend', () => m.getContainer().classList.remove('flood-zooming'));
       m.on('layeradd layerremove', syncLayerLists);
       window.__floodTestZoom = (lat, lng, z) => m.setView([lat, lng], z, { animate: false });
       // simulate a tap on the map (not on a marker) at a place, for tests
@@ -1799,26 +1803,101 @@ import './inertial-grid.js';
   // Fluid wheel / trackpad zoom. Leaflet's own wheel zoom jumps in animated
   // steps; this eases the zoom toward a target every frame, keeping the
   // point under the cursor still (the approach of Leaflet.SmoothWheelZoom).
+  // Leaflet positions image overlays on rounded pixel coordinates (and the
+  // smooth wheel zoom below renders the ground at sub-pixel positions), so
+  // rasters snapped around by up to a pixel on every wheel frame — visible
+  // as a wobble of the flood cells against the basemap. Derive the image
+  // geometry the way the tile pane does: projected corner minus pixel
+  // origin, unrounded; mirror the unrounded math in the zoom-animation
+  // path so controlled zooms (buttons, double-tap, flyTo) track too.
+  let subpixelImageOverlayClass = null;
+  function subpixelImageOverlay(...args) {
+    const L = window.L;
+    if (!subpixelImageOverlayClass) {
+      subpixelImageOverlayClass = L.ImageOverlay.extend({
+        _reset() {
+          const map = this._map, image = this._image;
+          if (!map || !image) return;
+          const origin = map.getPixelOrigin();
+          const nw = map.project(this._bounds.getNorthWest())._subtract(origin);
+          const se = map.project(this._bounds.getSouthEast())._subtract(origin);
+          L.DomUtil.setPosition(image, nw);
+          image.style.width = `${se.x - nw.x}px`;
+          image.style.height = `${se.y - nw.y}px`;
+        },
+        _animateZoom(e) {
+          const map = this._map;
+          const topLeft = map.project(e.center, e.zoom)
+            ._subtract(map.getSize()._divideBy(2))
+            ._add(map._getMapPanePos());
+          L.DomUtil.setTransform(this._image,
+            map.project(this._bounds.getNorthWest(), e.zoom)._subtract(topLeft),
+            map.getZoomScale(e.zoom));
+        },
+      });
+    }
+    return new subpixelImageOverlayClass(...args);
+  }
+
   function enableSmoothWheelZoom(L, map) {
     const el = map.getContainer();
-    let goal = null, raf = 0, endT = 0, mouse = null, anchor = null, moved = false, subpixel = false;
+    let goal = null, raf = 0, endT = 0, mouse = null, anchor = null, moved = false;
     const PX_PER_LEVEL = 260;   // wheel pixels for one zoom level
     // Leaflet rounds the pixel origin to whole pixels (_getNewPixelOrigin
     // ends in _round), which quantises the camera while we drive _move every
     // frame at fractional zooms — the whole map jitters by a pixel. Lift the
-    // rounding for the gesture (sub-pixel transforms render fine) and restore
-    // Leaflet's default when it ends so resting maps stay pixel-crisp.
+    // rounding for the gesture, during zoom animations, and for the tile
+    // pane's own translate (GridLayer._setZoomTransform also ends in
+    // .round(), which made tiles snap a pixel against the sub-pixel camera —
+    // the basemap wobbled just like the raster overlays did). At rest every
+    // value comes out whole anyway, so resting maps stay pixel-crisp.
+    const mapProto = Object.getPrototypeOf(map);
+    const stockOrigin = mapProto._getNewPixelOrigin;
+    let subpixel = false;
+    map._getNewPixelOrigin = function (center, zoom) {
+      if (!(subpixel || this._animatingZoom)) return stockOrigin.call(this, center, zoom);
+      const viewHalf = this.getSize()._divideBy(2);
+      return this.project(center, zoom)._subtract(viewHalf)._add(this._getMapPanePos());
+    };
     function subpixelOrigin(on) {
-      if (on === subpixel) return;
       subpixel = on;
-      if (on) {
-        map._getNewPixelOrigin = function (center, zoom) {
-          const viewHalf = this.getSize()._divideBy(2);
-          return this.project(center, zoom)._subtract(viewHalf)._add(this._getMapPanePos());
-        };
-      } else if (map._getNewPixelOrigin) {
-        delete map._getNewPixelOrigin;   // back to the prototype method
-      }
+    }
+    if (!L.GridLayer.prototype.__subpixelTransform) {
+      L.GridLayer.prototype.__subpixelTransform = true;
+      L.GridLayer.prototype._setZoomTransform = function (level, center, zoom) {
+        const map = this._map;
+        const scale = map.getZoomScale(zoom, level.zoom);
+        const translate = level.origin.multiplyBy(scale)
+          .subtract(map._getNewPixelOrigin(center, zoom));
+        if (L.Browser.any3d) L.DomUtil.setTransform(level.el, translate, scale);
+        else L.DomUtil.setPosition(level.el, translate);
+      };
+    }
+    // Numbered pins wobbled too: Marker.update() derives its position from
+    // latLngToLayerPoint, which rounds the projected point to whole pixels,
+    // and it runs on every 'zoom' tick of the gesture — the pins snapped
+    // around a pixel while the ground moved smoothly underneath. Keep the
+    // icon transform unrounded (z-index must stay an integer, though).
+    if (!L.Marker.prototype.__subpixelPos) {
+      L.Marker.prototype.__subpixelPos = true;
+      const setMarkerPos = (marker, pos) => {
+        if (marker._icon) L.DomUtil.setPosition(marker._icon, pos);
+        if (marker._shadow) L.DomUtil.setPosition(marker._shadow, pos);
+        marker._zIndex = Math.round(pos.y + (marker.options.zIndexOffset || 0));
+        marker._resetZIndex();
+      };
+      L.Marker.prototype.update = function () {
+        if (this._icon && this._map) {
+          const map = this._map;
+          setMarkerPos(this, map.project(map.wrapLatLng(this._latlng))._subtract(map.getPixelOrigin()));
+        }
+        return this;
+      };
+      L.Marker.prototype._animateZoom = function (opt) {
+        if (this._icon && this._map) {
+          setMarkerPos(this, this._map._latLngToNewLayerPoint(this._latlng, opt.zoom, opt.center));
+        }
+      };
     }
     function frame() {
       const z = map.getZoom();
@@ -2025,12 +2104,12 @@ import './inertial-grid.js';
       const fromReport = state.areaMeta.reportId && reports.find((r) => r.id === state.areaMeta.reportId);
       const fromPin = state.areaMeta.pinN != null && pins.find((x) => x.n === state.areaMeta.pinN);
       area = { key, name: state.areaMeta.name || key, n: state.areaMeta.keepN != null ? state.areaMeta.keepN : fromReport ? fromReport.n : fromPin ? fromPin.n : nextNumber(), reportId: state.areaMeta.reportId || null };
-      area.overlay = L.imageOverlay(BLANK, bounds, {
+      area.overlay = subpixelImageOverlay(BLANK, bounds, {
         opacity: parseFloat($('floodOpacity').value) / 100, className: 'flood-layer', zIndex: 6,
       }).addTo(m);
       // static terrain shading under the flood raster (never re-encoded per
       // run or timeline step); blank until the first shaded render
-      area.relief = L.imageOverlay(BLANK, bounds, {
+      area.relief = subpixelImageOverlay(BLANK, bounds, {
         opacity: parseFloat($('floodOpacity').value) / 100, interactive: false, className: 'flood-layer', zIndex: 5,
       }).addTo(m);
       area.reliefShade = null;
