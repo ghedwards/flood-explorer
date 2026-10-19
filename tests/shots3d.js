@@ -10,6 +10,7 @@ const URL = process.env.SITE_URL || "https://ghedwards.github.io/flood-explorer/
 const PLACE = process.env.PLACE || "rockhampton";
 const OUT = process.env.OUT || "shots";
 
+process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${String(e).slice(0, 300)}`); });
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const report = { url: URL, place: PLACE, steps: [], errors: [], requests: { failed: [] } };
@@ -23,12 +24,18 @@ const OUT = process.env.OUT || "shots";
     const s = Date.now();
     try { await fn(); report.steps.push({ name, ok: true, ms: Date.now() - s }); } catch (e) { report.steps.push({ name, ok: false, ms: Date.now() - s, error: String(e).slice(0, 300) }); }
   };
-  const shot = async (name) => { await page.screenshot({ path: path.join(OUT, `${name}.png`) }); };
+  const shot = async (name) => {
+    try { await page.screenshot({ path: path.join(OUT, `${name}.png`), timeout: 60000 }); } catch (e) {
+      report.steps.push({ name: `shot ${name}`, ok: false, error: String(e).slice(0, 300) });
+      console.log(`::error::screenshot ${name} failed: ${String(e).slice(0, 200)}`);
+    }
+  };
   const state3d = async (label) => {
     const st = await page.evaluate(() => (window.__flood3DState ? window.__flood3DState() : null)).catch((e) => String(e));
     report[`state_${label}`] = st;
   };
 
+  try {
   await step("load", async () => {
     await page.goto(URL, { waitUntil: "networkidle", timeout: 90000 });
     await page.waitForFunction("window.__floodStatus && window.__floodStatus.mode === 'map'", null, { timeout: 60000 });
@@ -109,6 +116,10 @@ const OUT = process.env.OUT || "shots";
   await state3d("relief");
   await shot("8-3d-relief");
 
+  } catch (e) {
+    report.fatal = String(e).slice(0, 400);
+    console.log(`::error::shots3d stopped: ${report.fatal}`);
+  }
   report.totalMs = Date.now() - t0;
   fs.writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 1));
   await browser.close();
