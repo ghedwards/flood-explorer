@@ -1068,25 +1068,31 @@ import './inertial-grid.js';
   async function open3d() {
     const mod = await import('./scene3d.js');
     if (view3d) return;
-    // Terrain streams on demand (v3: the scene works like the 2D map —
-    // web-mercator tiles fetched for the ground under the camera, refined
-    // when you zoom in). Modelled places contribute water surfaces.
+    // Terrain streams on demand as web-mercator tiles (v4); modelled places
+    // contribute water surfaces.
     view3d = mod.openScene3d({
-      getAnalysis: () => state.a,
-      getTerrain: () => state.terrain,
-      getRun: () => state.run,
-      getTimeline: () => state.areaKey && areaReg.get(state.areaKey)?.timeline || null,
       getStep: () => state.timeStep || 0,
-      getBounds: () => (state.areaMeta && state.areaMeta.bounds_lonlat) || null,
       getViewBox: () => viewBounds3d(),
       getCentre: () => { const m = state.lmap; if (!m) return null; const c = m.getCenter(); return [c.lat, c.lng]; },
-      getTiles: () => activeBasemapTiles(),
       getAreas: () => areasFor3d(),
-      fetchDem: (lat, lon, halfKm, cell) => fetchDemWindow(lat, lon, halfKm, cell, { allowSea: true }),
-      terrainColors: (a) => terrainRGBA(a),
-      syncMap: (box, z) => {
-        const m = state.lmap;
-        if (m && !$('lmap').hidden) m.setView([(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], z, { animate: false });
+      // the 2D map's active XYZ basemap, for per-tile imagery in 3D. WebGL
+      // textures need CORS, so a basemap that isn't loaded crossOrigin
+      // (WMS, state aerial) falls back to the default satellite layer.
+      getBasemap: () => {
+        let bm = BASEMAPS.find((b) => b.name === status.basemap);
+        if (!bm || bm.wms || !bm.opts.crossOrigin) bm = BASEMAPS[0];
+        return { name: bm.name, template: bm.url(), subdomains: bm.opts.subdomains || '', maxZoom: bm.opts.maxZoom, attr: bm.opts.attribution };
+      },
+      // DEM-H for an exact lon/lat box: the terrain fallback when the tile
+      // service can't be reached. n x n samples, sea as SEA_LEVEL (-1.5 m).
+      fetchDemBox: async (box, n) => {
+        const { iw, ih, data, nd } = await fetchRaster(DEMH_WCS, box, n, n);
+        const out = new Float32Array(iw * ih);
+        for (let i = 0; i < out.length; i++) {
+          const v = data[i];
+          out[i] = !Number.isFinite(v) || v === nd || v < -1000 || v > 9000 ? -1.5 : Math.max(-1.5, v);
+        }
+        return { data: out, n: iw };
       },
       onScrub: (k) => { scheduleTimeStep(k); },
       onUnsupported: (text) => say(text),
@@ -1140,46 +1146,8 @@ import './inertial-grid.js';
     });
   }
   $('btn3d').addEventListener('click', () => { open3d(); });
-  // the active basemap's loaded tile images + their web-mercator bounds,
-  // for the 3D terrain drape. Leaflet keeps them in layer._tiles keyed 'x:y:z'.
-  function activeBasemapTiles() {
-    const reg = layerRegistry;
-    if (!reg || !status.basemap) return [];
-    const base = reg.layers[status.basemap];
-    if (!base) return [];
-    const out = [];
-    const collect = (l) => {
-      if (!l || !l._tiles) return;
-      for (const [key, t] of Object.entries(l._tiles)) {
-        if (!t || !t.el || !t.active) continue;
-        const [x, y, z] = key.split(':').map(Number);
-        if (!(x >= 0) || !(z > 0)) continue;
-        const zc = Math.pow(2, z);
-        const w = (x / zc) * 360 - 180, e = ((x + 1) / zc) * 360 - 180;
-        const lat = (yy) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * yy) / zc))) * 180) / Math.PI;
-        out.push({ img: t.el, z, w, e, n: lat(y), s: lat(y + 1) });
-      }
-    };
-    if (base.getLayers) base.getLayers().forEach(collect);   // featureGroup (DEA basemaps)
-    else collect(base);
-    return out;
-  }
   window.__floodOpen3D = () => open3d();
-  window.__flood3DState = () => {
-    if (!view3d) return { open: false };
-    const tiles = view3d.tiles ? Array.from(view3d.tiles.values()).map((t) => ({
-      key: t.area.key, terrain: !!t.terrain, water: !!t.water,
-    })) : [];
-    return {
-      open: !!document.getElementById('view3d'),
-      tiles,
-      step: view3d.step || 0,
-      builds: view3d.debugCounts || [],
-      cam: view3d.camera.position.toArray().map((v) => Math.round(v)),
-      target: view3d.controls.target.toArray().map((v) => Math.round(v)),
-      exag: view3d.tiles && view3d.tiles.size ? (Array.from(view3d.tiles.values())[0].terrain ? Array.from(view3d.tiles.values())[0].terrain.scale.y : null) : null,
-    };
-  };
+  window.__flood3DState = () => (view3d ? view3d.snapshot() : { open: false });
   window.__floodPin = () => pinScenario();
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };

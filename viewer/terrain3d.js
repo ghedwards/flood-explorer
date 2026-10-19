@@ -1,10 +1,11 @@
-/* Decimated mesh builders for the experimental 3D view (docs/3d-view-design.md).
+/* Mesh and projection helpers for the experimental 3D view
+ * (docs/3d-view-design.md, docs/3d-view-v4-plan.md).
  *
  * Pure data helpers, no three.js dependency, so node tests can exercise
- * them directly. Coordinates: x = east (metres), y = height (metres AHD,
- * scaled later by mesh.scale.y), z = north-negative so the up axis is +y.
- * Heights and water surfaces are NOT exaggerated here — the scene scales
- * the whole mesh on the y axis, which avoids rebuilding on every slider move.
+ * them directly. Scene coordinates: x = east, z = SOUTH (metres, local web
+ * mercator, see makeProjection), y = height in metres AHD. Heights and
+ * water surfaces are NOT exaggerated here — the scene scales its world
+ * group on y, which avoids rebuilding on every slider move.
  */
 
 const MAX_SIDE = 560;   // ≤ 560×560 samples ≈ ≤ ~314k vertices per mesh
@@ -16,34 +17,19 @@ function decimateStep(W, H, maxSide = MAX_SIDE) {
   return s % 2 ? s + 1 : s;
 }
 
-/* Terrain vertices + indices from the analysis grid.
- * Colors come straight from the relief render (`rgba` = state.terrain) so
- * the 3D view matches the 2D relief exactly. Cells that are invalid drop
- * out; a quad is emitted only when all four sampled corners survive, so
- * the coast and NoData edges stay clean. */
-function terrainMesh(a, rgba, skip, skirtM) {
-  return buildGrid(a, skip, (i) => !!a.valid[i], (i) => a.dem[i], (i, out) => {
-    const o = i * 4;
-    out[0] = rgba ? rgba[o] : 255;
-    out[1] = rgba ? rgba[o + 1] : 255;
-    out[2] = rgba ? rgba[o + 2] : 255;
-  }, { skirt: skirtM > 0, skirtM });
-}
-
 /* Water surface vertices + depth colours for the wet cells of a run.
  * NaN surface (never wet) is excluded by the NaN check. Shallow water is
  * more transparent so the shoreline feathers out; deep water reads solid. */
-function waterMesh(a, surface, depth, wet, skip) {
-  return buildGrid(a, skip, (i) => wet[i] === 1 && surface[i] === surface[i], (i) => surface[i], (i, out) => {
+function waterMesh(a, surface, depth, wet, skip, opts = {}) {
+  const lift = opts.lift || 0;
+  return buildGrid(a, skip, (i) => wet[i] === 1 && surface[i] === surface[i], (i) => surface[i] + lift, (i, out) => {
     const col = depthColor(depth[i]);
     out[0] = col[0]; out[1] = col[1]; out[2] = col[2];
-  }, { alphaFor: (i) => Math.min(1, 0.3 + depth[i] / 0.45) });
+  }, { alphaFor: (i) => Math.min(1, 0.3 + depth[i] / 0.45), colX: opts.colX, rowZ: opts.rowZ });
 }
 
-/* Shared grid builder: samples the analysis grid every `skip` cells, emits
- * quads where all four sampled corners pass `keep(i)`. Also emits UVs (0-1
- * across the model box, for imagery draping) and, for the terrain, a skirt
- * so boundary/NoData edges don't read as torn cliffs. Returns null when
+/* Water grid builder: samples the analysis grid every `skip` cells, emits
+ * quads where all four sampled corners pass `keep(i)`. Returns null when
  * nothing survives. */
 function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
   const { W, H, cell } = a;
@@ -57,8 +43,10 @@ function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
       const x = gx * skip, y = gy * skip, i = y * W + x;
       if (!keep(i)) continue;
       slot[gy * cols + gx] = positions.length / 3;
-      const px = x * cell, pz = y * cell;   // local +z = south (matches the
-      // tile group offsets, where tiles south of the scene origin sit at +z)
+      // local +z = south. With colX/rowZ (v4) the caller supplies scene
+      // coordinates per column/row from the shared projection, so meshes
+      // from different areas and the terrain tiles all agree on the ground
+      const px = opts.colX ? opts.colX[x] : x * cell, pz = opts.rowZ ? opts.rowZ[y] : y * cell;
       positions.push(px, height(i), pz);
       // texture space: u across (west→east), v 0 at south edge, 1 at north
       uvs.push(px / wM, 1 - pz / hM);
@@ -79,36 +67,6 @@ function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
     }
   }
   if (!indices.length) return null;
-  // skirt: walls down from the outermost vertices so the model edge (and
-  // NoData gaps along it) doesn't show as torn geometry. The drop is in
-  // metres, scaled by the same vertical exaggeration as everything else.
-  if (opts.skirt) {
-    let minH = Infinity;
-    for (let k = 1; k < positions.length; k += 3) if (positions[k] < minH) minH = positions[k];
-    const base = minH - (opts.skirtM || Math.max(20, wM * 0.02));
-    const drop = (from, to) => {
-      const f = from * 3, t = to * 3;
-      const fi = positions.length / 3, ti = fi + 1;
-      positions.push(positions[f], base, positions[f + 2], positions[t], base, positions[t + 2]);
-      uvs.push(uvs[from * 2], uvs[from * 2 + 1], uvs[to * 2], uvs[to * 2 + 1]);
-      const fc = from * 4, tc = to * 4;
-      colors.push(colors[fc], colors[fc + 1], colors[fc + 2], 1, colors[tc], colors[tc + 1], colors[tc + 2], 1);
-      indices.push(fi, ti, from, from, ti, to);
-    };
-    const exists = (gy, gx) => slot[gy * cols + gx];
-    for (let gx = 0; gx + 1 < cols; gx++) {
-      let v = exists(0, gx), w = exists(0, gx + 1);
-      if (v >= 0 && w >= 0) drop(v, w);
-      v = exists(rows - 1, gx); w = exists(rows - 1, gx + 1);
-      if (v >= 0 && w >= 0) drop(w, v);   // flipped winding: outward face
-    }
-    for (let gy = 0; gy + 1 < rows; gy++) {
-      let v = exists(gy, 0), w = exists(gy + 1, 0);
-      if (v >= 0 && w >= 0) drop(w, v);
-      v = exists(gy, cols - 1); w = exists(gy + 1, cols - 1);
-      if (v >= 0 && w >= 0) drop(v, w);
-    }
-  }
   return {
     positions: new Float32Array(positions),
     colors: new Float32Array(colors),
@@ -135,7 +93,7 @@ function depthColor(d) {
 
 /* Per-step water surface from a u8 timeline frame: identical arithmetic to
  * showTimeStep's frame decode (depth = q/255*maxD, wse = dem + depth). */
-function waterFromFrame(a, frame, maxD, skip) {
+function waterFromFrame(a, frame, maxD, skip, opts) {
   const { N } = a;
   const wse = new Float64Array(N);
   const depth = new Float32Array(N);
@@ -148,40 +106,296 @@ function waterFromFrame(a, frame, maxD, skip) {
       wse[i] = a.dem[i] + depth[i];
     }
   }
-  return { wse, depth, wet, mesh: waterMesh(a, wse, depth, wet, skip) };
+  return { wse, depth, wet, mesh: waterMesh(a, wse, depth, wet, skip, opts) };
 }
 
-export { decimateStep, terrainMesh, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
+export { decimateStep, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
 
-/* ---------- web-mercator tile helpers (v3 streaming terrain) ---------- */
+/* ---------- v4: one projection, terrain tiles, quadtree LOD ---------- */
 
-/* Inclusive tile range (x0,y0)-(x1,y1) at zoom z covering a [s, w, n, e] box. */
-export function mercatorTiles(s, w, n, e, z) {
-  const n2 = 1 << z;
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  const tx = (lon) => Math.floor(((lon + 180) / 360) * n2);
-  const ty = (lat) => {
-    const la = (clamp(lat, -85, 85) * Math.PI) / 180;
-    return Math.floor(((1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2) * n2);
+const R_EARTH = 6378137;
+const MERC_MAX = Math.PI * R_EARTH;   // half the width of the web-mercator world
+
+export function lonLatToMerc(lon, lat) {
+  const la = Math.max(-85.0511, Math.min(85.0511, lat));
+  return [(R_EARTH * lon * Math.PI) / 180, R_EARTH * Math.log(Math.tan(Math.PI / 4 + (la * Math.PI) / 360))];
+}
+export function mercToLonLat(mx, my) {
+  return [(mx / R_EARTH) * (180 / Math.PI), (2 * Math.atan(Math.exp(my / R_EARTH)) - Math.PI / 2) * (180 / Math.PI)];
+}
+
+/* Scene coordinates are local web mercator: metres from the origin scaled
+ * by k = cos(origin lat), so distances are true at the origin (and under 2 %
+ * out within ~200 km). +x east, +z SOUTH, +y up. Every mesh (terrain tile,
+ * water surface) goes through this one mapping, so shared edges coincide. */
+export function makeProjection(lon0, lat0) {
+  const [mx0, my0] = lonLatToMerc(lon0, lat0);
+  const k = Math.cos((lat0 * Math.PI) / 180);
+  return {
+    lon0, lat0, k, mx0, my0,
+    toScene(lon, lat) { const [mx, my] = lonLatToMerc(lon, lat); return [(mx - mx0) * k, -(my - my0) * k]; },
+    xOfLon(lon) { return (((R_EARTH * lon * Math.PI) / 180) - mx0) * k; },
+    zOfLat(lat) { return -(lonLatToMerc(0, lat)[1] - my0) * k; },
+    fromScene(x, z) { return mercToLonLat(x / k + mx0, -z / k + my0); },
   };
-  return { x0: clamp(tx(w), 0, n2 - 1), x1: clamp(tx(e), 0, n2 - 1), y0: clamp(ty(n), 0, n2 - 1), y1: clamp(ty(s), 0, n2 - 1) };
 }
 
-/* A tile's geographic bounds [w, s, e, n]. */
-export function tileBounds(z, x, y) {
-  const n2 = 1 << z;
-  const lon = (tx) => (tx / n2) * 360 - 180;
-  const lat = (ty) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * ty) / n2))) * 180) / Math.PI;
-  return [lon(x), lat(y + 1), lon(x + 1), lat(y)];
+export const tileKey = (z, x, y) => `${z}/${x}/${y}`;
+export const parseKey = (key) => key.split('/').map(Number);
+export function parentKey(key) {
+  const [z, x, y] = parseKey(key);
+  return z > 0 ? tileKey(z - 1, x >> 1, y >> 1) : null;
 }
 
-/* Tile zoom band for a ground view width (metres) at a latitude: about two
- * tiles across the view, clamped so DEM fetches stay light. */
-export function streamZoom(viewWidthM, lat) {
-  const ground = 40075016.7 * Math.cos((lat * Math.PI) / 180);
-  const z = Math.ceil(1 + Math.log2(ground / Math.max(1, viewWidthM)));
-  return Math.max(11, Math.min(13, z));
+/* A tile's corners in scene metres: { x0 (west), z0 (north), x1, z1, size }.
+ * Computed from the integer tile grid alone, so neighbours produce
+ * bit-identical shared edges. */
+export function tileToScene(proj, z, x, y) {
+  const n = 2 ** z, span = (2 * MERC_MAX) / n;
+  // each edge is a function of its integer index alone, so the east edge
+  // of tile x and the west edge of tile x+1 are the same float
+  const ex = (i) => (-MERC_MAX + i * span - proj.mx0) * proj.k, ez = (j) => -(MERC_MAX - j * span - proj.my0) * proj.k;
+  return { x0: ex(x), z0: ez(y), x1: ex(x + 1), z1: ez(y + 1), size: span * proj.k };
 }
 
-/* DEM cell (metres) paired with the tile zoom band. */
-export function streamCell(z) { return z <= 11 ? 90 : z === 12 ? 45 : 30; }
+/* The [x, y] of the zoom-z tile containing a scene point. */
+export function tileAt(proj, z, sx, sz) {
+  const n = 2 ** z, span = (2 * MERC_MAX) / n;
+  const mx = sx / proj.k + proj.mx0, my = -sz / proj.k + proj.my0;
+  const cl = (v) => Math.max(0, Math.min(n - 1, v));
+  return [cl(Math.floor((mx + MERC_MAX) / span)), cl(Math.floor((MERC_MAX - my) / span))];
+}
+
+/* Tile edge length in scene metres at zoom z. */
+export const tileSize = (proj, z) => (2 * MERC_MAX * proj.k) / 2 ** z;
+
+/* AWS Terrain Tiles "terrarium" encoding: metres = R*256 + G + B/256 - 32768.
+ * Negative values (sea-floor bathymetry) are clamped to the same -1.5 m "sea"
+ * level the DEM-H path uses, so the sea is flat and the terrain colours and
+ * the 2D relief agree. */
+export const SEA_LEVEL = -1.5;
+export const terrariumHeight = (r, g, b) => r * 256 + g + b / 256 - 32768;
+export function decodeTerrarium(rgba, n = 256) {
+  const out = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) {
+    const h = terrariumHeight(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2]);
+    out[i] = h < SEA_LEVEL ? SEA_LEVEL : h;
+  }
+  return out;
+}
+
+/* Bilinear height from an n×n raster covering a tile edge to edge (pixel
+ * centres at (i+0.5)/n), at tile coordinates u, v in [0, 1] (v from the
+ * north edge). */
+export function sampleRaster(data, n, u, v) {
+  const fx = Math.max(0, Math.min(n - 1, u * n - 0.5)), fy = Math.max(0, Math.min(n - 1, v * n - 0.5));
+  const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.min(n - 1, x0 + 1), y1 = Math.min(n - 1, y0 + 1);
+  const tx = fx - x0, ty = fy - y0;
+  const a = data[y0 * n + x0], b = data[y0 * n + x1], c = data[y1 * n + x0], d = data[y1 * n + x1];
+  return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+}
+
+/* Elevation → sRGB for the no-imagery "relief" look (and while imagery
+ * loads). Sea, green lowlands, tan, brown, then snow-ish. */
+const RELIEF = [[-1.5, [0x6f, 0xa8, 0xc8]], [0, [0x9c, 0xc4, 0xa0]], [40, [0x86, 0xb0, 0x76]], [200, [0xb4, 0xb4, 0x7c]], [600, [0xa8, 0x8a, 0x62]], [1400, [0x94, 0x7a, 0x66]], [2200, [0xe6, 0xe6, 0xe6]]];
+export function reliefColor(h, out, o = 0) {
+  let k = 0;
+  while (k < RELIEF.length - 2 && h > RELIEF[k + 1][0]) k++;
+  const [h0, c0] = RELIEF[k], [h1, c1] = RELIEF[k + 1];
+  const t = Math.max(0, Math.min(1, (h - h0) / (h1 - h0)));
+  for (let c = 0; c < 3; c++) out[o + c] = (c0[c] + (c1[c] - c0[c]) * t) / 255;
+  return out;
+}
+
+export const TILE_SEGS = 32;
+
+/* Vertex heights for a tile: (segs+1)² samples, row-major from the NW
+ * corner, via heightAt(u, v) with u, v in [0, 1] across the tile. */
+export function tileHeights(heightAt, segs = TILE_SEGS) {
+  const m = segs + 1, out = new Float32Array(m * m);
+  for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) out[j * m + i] = heightAt(i / segs, j / segs);
+  return out;
+}
+
+/* Mesh for one terrain tile, positions relative to the tile's NW corner
+ * (the scene places the mesh at [x0, 0, z0], keeping float32 precise), with
+ * heights unexaggerated (the world group scales y). Normals come from the
+ * height grid (one-sided at the border); skirts hang below each edge and
+ * copy that edge vertex's normal, UV and colour so they shade like the
+ * surface instead of showing as dark seams. */
+export function tileMesh(proj, z, x, y, heights, segs = TILE_SEGS, opts = {}) {
+  const m = segs + 1, t = tileToScene(proj, z, x, y);
+  const dx = (t.x1 - t.x0) / segs, dz = (t.z1 - t.z0) / segs;
+  const nVert = m * m, nSkirt = 4 * m, total = nVert + nSkirt;
+  const positions = new Float32Array(total * 3), normals = new Float32Array(total * 3);
+  const uvs = new Float32Array(total * 2), colors = new Float32Array(total * 3);
+  let hmin = Infinity, hmax = -Infinity;
+  for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) {
+    const v = j * m + i, h = heights[v];
+    if (h < hmin) hmin = h;
+    if (h > hmax) hmax = h;
+    positions[v * 3] = i * dx; positions[v * 3 + 1] = h; positions[v * 3 + 2] = j * dz;
+    uvs[v * 2] = i / segs; uvs[v * 2 + 1] = 1 - j / segs;
+    const hl = heights[j * m + Math.max(0, i - 1)], hr = heights[j * m + Math.min(m - 1, i + 1)];
+    const hu = heights[Math.max(0, j - 1) * m + i], hd = heights[Math.min(m - 1, j + 1) * m + i];
+    const gx = (hr - hl) / ((Math.min(m - 1, i + 1) - Math.max(0, i - 1)) * dx);
+    const gz = (hd - hu) / ((Math.min(m - 1, j + 1) - Math.max(0, j - 1)) * dz);
+    const len = Math.hypot(gx, 1, gz);
+    normals[v * 3] = -gx / len; normals[v * 3 + 1] = 1 / len; normals[v * 3 + 2] = -gz / len;
+    reliefColor(h, colors, v * 3);
+  }
+  const indices = new Uint32Array(segs * segs * 6 + 4 * segs * 6);
+  let n = 0;
+  for (let j = 0; j < segs; j++) for (let i = 0; i < segs; i++) {
+    const a0 = j * m + i, a1 = a0 + 1, b0 = a0 + m, b1 = b0 + 1;
+    indices[n++] = a0; indices[n++] = b0; indices[n++] = a1; indices[n++] = a1; indices[n++] = b0; indices[n++] = b1;
+  }
+  // skirts: one strip per edge, dropping max(5 m, tile size / 50) below the lowest height there
+  const drop = opts.skirtM != null ? opts.skirtM : Math.max(5, t.size / 50);
+  const edges = [
+    (k) => k,                     // north row
+    (k) => (m - 1) * m + k,       // south row
+    (k) => k * m,                 // west column
+    (k) => k * m + (m - 1),       // east column
+  ];
+  edges.forEach((at, e) => {
+    for (let k = 0; k < m; k++) {
+      const src = at(k), dst = nVert + e * m + k;
+      positions[dst * 3] = positions[src * 3]; positions[dst * 3 + 1] = hmin - drop; positions[dst * 3 + 2] = positions[src * 3 + 2];
+      normals[dst * 3] = normals[src * 3]; normals[dst * 3 + 1] = normals[src * 3 + 1]; normals[dst * 3 + 2] = normals[src * 3 + 2];
+      uvs[dst * 2] = uvs[src * 2]; uvs[dst * 2 + 1] = uvs[src * 2 + 1];
+      colors[dst * 3] = colors[src * 3]; colors[dst * 3 + 1] = colors[src * 3 + 1]; colors[dst * 3 + 2] = colors[src * 3 + 2];
+      if (k < segs) {
+        const s0 = src, s1 = at(k + 1), d0 = dst, d1 = dst + 1;
+        indices[n++] = s0; indices[n++] = d0; indices[n++] = s1; indices[n++] = s1; indices[n++] = d0; indices[n++] = d1;
+      }
+    }
+  });
+  return { positions, normals, uvs, colors, indices, origin: [t.x0, t.z0], size: t.size, hmin, hmax, segs };
+}
+
+/* Height of a tile's mesh surface at scene point (sx, sz), bilinear on its
+ * vertex grid; null when the point is outside the tile. */
+export function tileGroundAt(proj, z, x, y, heights, sx, sz, segs = TILE_SEGS) {
+  const t = tileToScene(proj, z, x, y);
+  const u = (sx - t.x0) / (t.x1 - t.x0), v = (sz - t.z0) / (t.z1 - t.z0);
+  if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+  const m = segs + 1, fx = u * segs, fy = v * segs;
+  const i0 = Math.min(segs - 1, Math.floor(fx)), j0 = Math.min(segs - 1, Math.floor(fy));
+  const tx = fx - i0, ty = fy - j0;
+  const h = (i, j) => heights[j * m + i];
+  return (h(i0, j0) * (1 - tx) + h(i0 + 1, j0) * tx) * (1 - ty) + (h(i0, j0 + 1) * (1 - tx) + h(i0 + 1, j0 + 1) * tx) * ty;
+}
+
+/* ---- quadtree selection ---- */
+
+/* Tiles to draw for a camera: start from the zoom-minZ tiles within
+ * maxDist of the camera and split any whose on-screen size exceeds
+ * thresholdPx, nearest-point distance measured to the tile's box (so tall
+ * terrain under the camera counts). view = { cam:[x,y,z], focalPx,
+ * frustum: [[nx,ny,nz,d],...]|null (inside is n·p+d >= 0), proj, exag,
+ * minZ, maxZ, maxDist, thresholdPx, cap, heightRange(key)->[lo, hi] }.
+ * Returns keys; if the result would exceed `cap`, the threshold is raised
+ * until it fits. */
+export function selectTiles(view) {
+  const { cam, proj, minZ = 6, maxZ = 14, maxDist = 300000, cap = 400 } = view;
+  const exag = view.exag || 1, range = view.heightRange || (() => [-5, 1500]);
+  let threshold = view.thresholdPx || 384;
+  const boxOf = (z, x, y) => {
+    const t = tileToScene(proj, z, x, y), r = range(tileKey(z, x, y));
+    return [t.x0, r[0] * exag, t.z0, t.x1, r[1] * exag, t.z1, t.size];
+  };
+  const dist = (b) => {
+    const dx = Math.max(b[0] - cam[0], 0, cam[0] - b[3]), dy = Math.max(b[1] - cam[1], 0, cam[1] - b[4]), dz = Math.max(b[2] - cam[2], 0, cam[2] - b[5]);
+    return Math.hypot(dx, dy, dz);
+  };
+  const visible = (b) => {
+    if (!view.frustum) return true;
+    for (const [nx, ny, nz, d] of view.frustum) {
+      const px = nx >= 0 ? b[3] : b[0], py = ny >= 0 ? b[4] : b[1], pz = nz >= 0 ? b[5] : b[2];
+      if (nx * px + ny * py + nz * pz + d < 0) return false;
+    }
+    return true;
+  };
+  // root tiles: the zoom-minZ square covering the horizon circle
+  const [rx0, ry0] = tileAt(proj, minZ, cam[0] - maxDist, cam[2] - maxDist);
+  const [rx1, ry1] = tileAt(proj, minZ, cam[0] + maxDist, cam[2] + maxDist);
+  const run = () => {
+    const out = [], stack = [];
+    for (let y = ry0; y <= ry1; y++) for (let x = rx0; x <= rx1; x++) stack.push([minZ, x, y]);
+    while (stack.length) {
+      const [z, x, y] = stack.pop();
+      const b = boxOf(z, x, y), d = dist(b);
+      if (d > maxDist || !visible(b)) continue;
+      const px = (b[6] / Math.max(d, 1)) * view.focalPx;
+      if (z < maxZ && px > threshold) {
+        for (let c = 0; c < 4; c++) stack.push([z + 1, x * 2 + (c & 1), y * 2 + (c >> 1)]);
+      } else out.push(tileKey(z, x, y));
+    }
+    return out;
+  };
+  let out = run();
+  for (let tries = 0; out.length > cap && tries < 24; tries++) { threshold *= 1.4; out = run(); }
+  return out;
+}
+
+/* What to actually draw for a wanted set: each wanted tile if built, else its
+ * nearest built ancestor (so nothing blanks while detail loads), else any
+ * built descendants (zooming out). A tile under another drawn tile is
+ * dropped so surfaces never overlap. */
+export function resolveDraw(wanted, isReady, maxDepth = 3) {
+  const out = new Set();
+  const below = (key, depth) => {
+    if (isReady(key)) return [key];
+    if (depth === 0) return [];
+    const [z, x, y] = parseKey(key);
+    let r = [];
+    for (let c = 0; c < 4; c++) r = r.concat(below(tileKey(z + 1, x * 2 + (c & 1), y * 2 + (c >> 1)), depth - 1));
+    return r;
+  };
+  for (const key of wanted) {
+    let k = key, found = null;
+    while (k) { if (isReady(k)) { found = k; break; } k = parentKey(k); }
+    if (found) out.add(found);
+    else for (const d of below(key, maxDepth)) out.add(d);
+  }
+  for (const key of [...out]) {
+    for (let p = parentKey(key); p; p = parentKey(p)) if (out.has(p)) { out.delete(key); break; }
+  }
+  return out;
+}
+
+/* ---- terrain height override inside modelled areas ---- */
+
+/* The model's own DEM replaces the tile source inside a modelled area, so
+ * water computed on that DEM sits exactly on the ground. Near the area's
+ * border the two blend over `featherCells` model cells (no cliff where the
+ * datasets disagree). area = { bounds: [w, s, e, n], a: { W, H, dem, valid } }.
+ * Returns { h, w } (model height, blend weight 0..1) or null outside. */
+export function areaHeight(area, lon, lat, featherCells = 6) {
+  const [w, s, e, n] = area.bounds, { W, H, dem, valid } = area.a;
+  if (lon < w || lon > e || lat < s || lat > n) return null;
+  const fx = ((lon - w) / (e - w)) * W - 0.5, fy = ((n - lat) / (n - s)) * H - 0.5;
+  const x0 = Math.max(0, Math.min(W - 1, Math.floor(fx))), y0 = Math.max(0, Math.min(H - 1, Math.floor(fy)));
+  const x1 = Math.min(W - 1, x0 + 1), y1 = Math.min(H - 1, y0 + 1);
+  const tx = Math.max(0, Math.min(1, fx - x0)), ty = Math.max(0, Math.min(1, fy - y0));
+  const i00 = y0 * W + x0, i10 = y0 * W + x1, i01 = y1 * W + x0, i11 = y1 * W + x1;
+  if (!valid[i00] || !valid[i10] || !valid[i01] || !valid[i11]) return null;
+  const h = (dem[i00] * (1 - tx) + dem[i10] * tx) * (1 - ty) + (dem[i01] * (1 - tx) + dem[i11] * tx) * ty;
+  const edge = Math.min(fx + 0.5, W - 0.5 - fx, fy + 0.5, H - 0.5 - fy);   // cells from the border
+  const t = Math.max(0, Math.min(1, edge / featherCells));
+  return { h, w: t * t * (3 - 2 * t) };
+}
+
+/* Blend the base (tile-source) height with whichever areas cover the point. */
+export function overrideHeight(base, areas, lon, lat) {
+  let h = base;
+  for (const area of areas) {
+    const r = areaHeight(area, lon, lat);
+    if (r) h = h * (1 - r.w) + r.h * r.w;
+  }
+  return h;
+}
+
+/* Does a tile's lon/lat box [w, s, e, n] touch an area's bounds? */
+export function boxesOverlap(a, b) { return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]; }

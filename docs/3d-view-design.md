@@ -155,3 +155,61 @@ still shows the inline hint; corrupt frame data hides just the water.
 
 Test plan additions (node): `mercatorTiles(s, w, n, e, z)` range math;
 stream tile bounds round-trip against the drape bake's mercator math.
+
+## v4 — one projection, tile terrain with LOD, imagery per tile
+
+Full plan and per-phase outcomes: [3d-view-v4-plan.md](3d-view-v4-plan.md).
+v4 replaces v3's terrain, imagery and camera (the chrome, mini-globe,
+compass, scrub and the water-from-model idea stay).
+
+- **Projection.** Scene coordinates are local web mercator
+  (`makeProjection` in `terrain3d.js`): x east, z south, y up, scaled by
+  cos(origin latitude). Tile corners come from the integer tile grid
+  alone (`tileToScene`), so neighbours share bit-identical edges; water
+  meshes take their per-column x / per-row z from the same projection
+  (mercator is separable), so nothing needs per-group offsets or stretch.
+- **Terrain source.** AWS Terrain Tiles (terrarium PNGs, z0–14 used),
+  decoded without colour management; sea-floor bathymetry is clamped to
+  the -1.5 m "sea" level the DEM-H path uses. Three consecutive failures
+  (CORS, blocked) switch the session to DEM-H requested for each tile's
+  exact bounds (`fetchDemBox`), with one `say()` and the source named in
+  the bar and `__flood3DState().source`.
+- **LOD.** `selectTiles` splits a quadtree (from z6) by on-screen tile
+  size (~1.5 × 256 px), culls by frustum (using each tile's height range)
+  and horizon, and caps the count. `resolveDraw` draws a built ancestor
+  until its children are ready (and built descendants when zooming out),
+  never overlapping surfaces. Fetches are ordered by on-screen size with
+  coarse ancestors first; built tiles live in an LRU (300) and are
+  disposed (geometry, material, texture) when evicted or on close.
+- **Meshes.** 33 × 33 grid per tile, normals from the height grid, skirts
+  copying the edge vertex's normal/UV/colour (no dark seams). Tiles over
+  a modelled area use a finer grid (up to 128²).
+- **Imagery.** Each drawn tile loads its own picture from the active 2D
+  basemap's XYZ template (CORS-enabled ones; otherwise the default
+  satellite layer) as a texture, and meanwhile wears a sub-rect of its
+  nearest ancestor's texture, else relief colours. The hidden-map
+  following and canvas baking are gone. The bar toggles Imagery/Relief;
+  if imagery can't load at all the view falls back to relief with one
+  message.
+- **Water on the ground.** Inside a modelled area the terrain height is
+  the model's own DEM (`overrideHeight`, blended over a few cells at the
+  border), so the water surface (`wse`, or dem + depth from timeline
+  frames) sits on the drawn ground. Tiles over areas are rebuilt when
+  areas arrive/change/leave. Water is a Phong material, lifted 0.05 m,
+  drawn after the terrain (polygonOffset does nothing with a
+  logarithmic depth buffer, so there is none).
+- **Camera.** `MapControls`: left-drag pans along the ground, right-drag
+  (two fingers) turns/tilts, wheel zooms to the cursor, double-click
+  flies to the point. The orbit target follows the terrain (camera and
+  target move together) and the camera keeps a clearance over the hills;
+  tilt is limited to 85°. Logarithmic depth buffer; sky dome gradient
+  plus fog in the horizon colour; vertical exaggeration defaults to 1.5×
+  (slider 1–10), applied as one group's scale.y.
+- **State hook.** `window.__flood3DState()` returns `{ open, source,
+  tiles: { drawn, byZoom, pending, cached, failed }, imagery: { on,
+  loaded, failed, pending }, water: [{ key, verts }], cam, target, step,
+  exag, fps, frames, ground }` for the CI screenshots (`tests/shots3d.js`).
+- **Tests.** `tests/terrain3d.test.js`: projection round trip, shared
+  tile edges, terrarium decode, bilinear sampling, skirt normals/UVs,
+  `selectTiles` (refines near, coarsens far, cap, frustum, horizon),
+  `resolveDraw`, height override and blending, water in scene coordinates.

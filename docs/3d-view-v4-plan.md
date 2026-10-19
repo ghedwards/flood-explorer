@@ -1,6 +1,6 @@
 # 3D view v4 — plan
 
-Status: planned (2026-10-19). Supersedes the v3 streaming design in
+Status: implemented on `3d-v4` through phase 5 (2026-10-19); see *Outcomes* below. Supersedes the v3 streaming design in
 [3d-view-design.md](3d-view-design.md) for the terrain, imagery and camera;
 keeps its scene/bar/globe chrome, the timeline scrub and the water-from-
 model idea. Implementation goes on the branch `3d-v4`; every push there
@@ -253,6 +253,41 @@ watch the *Lint* workflow (eslint) on the branch. Update
 `tests/shots3d.js` if the controls change (MapControls: left-drag pans,
 right-drag rotates — use `page.mouse.down({ button: 'right' })` for the
 tilt/turn poses).
+
+## Outcomes (as built)
+
+- **Phase 0** (1d337893): the camera NaN could not be pinned statically; the
+  framing now validates the 2D map's box (falling back to the modelled
+  areas), never starts the camera on its target and re-frames if camera or
+  target is ever non-finite. The clipped bar was a class collision: the
+  3D bar was `.bar`, and styles.css has a global `.bar` (10 px progress
+  track, overflow hidden); renamed `.bar3d`. Verified: terrain, imagery and
+  water drawn in every pose.
+- **Phase 1** (f3d7dd04): shared projection, Terrarium works from the CI
+  browser (CORS is fine; DEM-H fallback is implemented but unexercised),
+  seamless tiles. One deviation: the 1-pixel difference between
+  neighbouring Terrarium edge pixels is left to the skirts rather than
+  averaged.
+- **Phase 2** (8424d199): quadtree LOD to the horizon. The chrome moved to
+  the body: `#view3d` (z-index 5) is its own stacking context, which kept
+  the bar under the panel cards.
+- **Phase 3** (ed44fc07): imagery per tile; every drawn tile textured
+  within seconds in CI. Known issue: Esri World Imagery at z <= 9 is a
+  darker mosaic than at z >= 10, which shows as a straight tonal band in
+  the far distance of the high settled view (fog hides it at lower
+  altitudes). Not fixed.
+- **Phase 4** (48bf5d37): model DEM as terrain inside modelled areas, on a
+  finer grid (up to 128 segments per tile, ~model cell spacing, not the
+  33 of the plan, or the river channel was smoothed under the banks). The
+  river is continuous at 1.5x and 5x.
+- **Phase 5** (3ebc3a3e, ca105be6): MapControls with terrain-following
+  target, 85 degree tilt limit, double-click fly-to, sky dome and fog,
+  1.5x default, new state hook, SW cache for the elevation tiles (own
+  cache, 800 entries), v3 mesh/stream helpers removed. Logarithmic depth
+  buffer was switched on from phase 1.
+- Dropped/changed: the plan's per-frame cap of 4 mesh builds (builds happen
+  as each tile arrives, ~1 ms); the screen-space sky background became a
+  dome following the camera.
 
 ## Out of scope
 
