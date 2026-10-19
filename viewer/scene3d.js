@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import {
   makeProjection, parseKey, parentKey, tileToScene, decodeTerrarium, sampleRaster, selectTiles, resolveDraw,
-  tileHeights, tileMesh, tileGroundAt, tileAt, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
+  tileHeights, tileMesh, tileGroundAt, BANDS3D, tileAt, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
 } from './terrain3d.js';
 
 const EXAG_DEFAULT = 1.5;
@@ -145,6 +145,8 @@ class Scene3d {
         #view3dChrome .bar3d label{display:flex;gap:6px;align-items:center}
         #view3dChrome button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
         #view3dChrome .compass{font-weight:600;min-width:2.5em;text-align:center}
+        #view3dChrome .key3d{display:flex;gap:4px;align-items:center;font-size:11px;opacity:.9}
+        #view3dChrome .key3d i{display:inline-block;width:14px;height:10px;border-radius:2px;margin-left:5px}
         #view3dChrome .dim{font-size:12px;opacity:.75}
         #view3dChrome .attr3d{flex-basis:100%;font-size:11px;opacity:.7;line-height:1.3}
         #globe3dWrap{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 76px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
@@ -162,6 +164,7 @@ class Scene3d {
       <span id="scrub3dWrap" hidden><label>step <input id="scrub3d" type="range" min="0" max="0" value="0" style="width:220px"><span id="scrubVal"></span></label></span>
       <button type="button" id="mode3d" title="Satellite/map imagery or plain relief colours"></button>
       <span class="compass" id="compass3d">S</span>
+      <span class="key3d" title="Flood depth (the 3D view's own shades)">${['<0.5', '0.5\u20131', '1\u20132', '2\u20134', '>4'].map((t, i) => `<i style="background:rgb(${BANDS3D[i][1].join(',')})"></i>${t}`).join('')} m</span>
       <span id="tiles3d" class="dim"></span>
       <span style="margin-left:auto;font-size:12px;opacity:.75">experimental</span>
       <div class="attr3d" id="attr3d"></div>`;
@@ -834,7 +837,7 @@ class Scene3d {
     if (t.water) { this.world.remove(t.water); t.water.geometry.dispose(); t.water.material.dispose(); t.water = null; }
     const a = t.area.a;
     const skip = decimateStep(a.W, a.H);
-    const opts = { colX: t.colX, rowZ: t.rowZ, lift: 0.05 };
+    const opts = { colX: t.colX, rowZ: t.rowZ, lift: 0.05, soft: true };
     let m = null;
     const tl = t.area.timeline;
     if (tl && tl.depthFrames && tl.depthFrames.length >= (k + 1) * a.N && tl.depthFrameMax && tl.depthFrameMax.length > k) {

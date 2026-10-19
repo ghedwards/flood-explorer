@@ -74,6 +74,21 @@ test('waterFromFrame matches showTimeStep decode arithmetic', () => {
   for (let k = 1; k < mesh.positions.length; k += 3) assert.ok(Number.isFinite(mesh.positions[k]));
 });
 
+test('soft water adds a transparent ring at the neighbours\' level and 3D shades step at the legend boundaries', () => {
+  const a = makeGrid(), N = a.N;
+  const wse = new Float64Array(N), depth = new Float32Array(N), wet = new Uint8Array(N);
+  for (let y = 14; y <= 16; y++) for (let x = 20; x <= 24; x++) { const i = y * a.W + x; wet[i] = 1; depth[i] = 1.2; wse[i] = 7; }
+  const hard = t3d.waterMesh(a, wse, depth, wet, 1), soft = t3d.waterMesh(a, wse, depth, wet, 1, { soft: true });
+  assert.ok(soft.positions.length > hard.positions.length);
+  const alphas = []; for (let k = 3; k < soft.colors.length; k += 4) alphas.push(soft.colors[k]);
+  assert.ok(alphas.some((v) => v === 0) && alphas.some((v) => v > 0.5));
+  for (let k = 1; k < soft.positions.length; k += 3) assert.equal(soft.positions[k], 7);   // ring sits at the wet level
+  assert.deepEqual(t3d.depthColor3d(0.49), t3d.BANDS3D[0][1]);
+  assert.deepEqual(t3d.depthColor3d(0.5), t3d.BANDS3D[1][1]);
+  assert.deepEqual(t3d.depthColor3d(4), t3d.BANDS3D[4][1]);
+  assert.ok(t3d.depthAlpha3d(0.2) < t3d.depthAlpha3d(0.8) && t3d.depthAlpha3d(10) <= 0.88);
+});
+
 test('depthColor follows the 2D legend band boundaries', () => {
   assert.deepEqual(t3d.depthColor(0.0), [0xc9, 0xe7, 0xf7]);
   assert.deepEqual(t3d.depthColor(0.49), [0xc9, 0xe7, 0xf7]);
