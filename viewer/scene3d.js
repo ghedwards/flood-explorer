@@ -72,11 +72,15 @@ class Scene3d {
            the scenario sliders still drive the water while you're in 3D) */
         #view3d{position:fixed;inset:0;z-index:5;background:#0b1622}
         #view3d>canvas{position:absolute;inset:0}
-        #view3d .bar{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--bar) + env(safe-area-inset-bottom,0px) + 14px);display:flex;gap:14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4)}
-        #view3d .bar label{display:flex;gap:6px;align-items:center}
-        #view3d button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
-        #view3d .compass{font-weight:600;min-width:2.5em;text-align:center}
-        #globe3dWrap{position:absolute;left:14px;bottom:calc(var(--bottom) + 8px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden}
+        /* the 3D's own controls ride ABOVE the panels (they'd be hidden
+           behind the key/panel cards otherwise); the fab corner is free
+           while the 3D view is open, so the controls park on the right */
+        #view3dChrome{position:fixed;inset:0;z-index:1002;pointer-events:none}
+        #view3dChrome .bar{position:absolute;right:14px;bottom:calc(var(--bottom) + env(safe-area-inset-bottom,0px) + 14px);display:flex;gap:14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4);pointer-events:auto}
+        #view3dChrome .bar label{display:flex;gap:6px;align-items:center}
+        #view3dChrome button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
+        #view3dChrome .compass{font-weight:600;min-width:2.5em;text-align:center}
+        #globe3dWrap{position:absolute;right:14px;bottom:calc(var(--bottom) + env(safe-area-inset-bottom,0px) + 76px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
         #globe3dWrap:active{cursor:grabbing}
         #globe3d{width:100%;height:100%;display:block}
       </style>`;
@@ -99,9 +103,14 @@ class Scene3d {
     globeWrap.title = 'Drag to look around; double-click to reset north';
     globeWrap.innerHTML = '<canvas id="globe3d" width="128" height="128" aria-hidden="true"></canvas>';
 
+    // the 3D's own chrome (bar + globe) in its own layer above the panels
+    const chrome = document.createElement('div');
+    chrome.id = 'view3dChrome';
+    chrome.appendChild(bar);
+    chrome.appendChild(globeWrap);
+
     overlay.appendChild(canvas);
-    overlay.appendChild(bar);
-    overlay.appendChild(globeWrap);
+    overlay.appendChild(chrome);
     document.body.appendChild(overlay);
     document.body.classList.add('in3d');   // hide the map fabs (they act on
     // the map we've covered); the bar's Back-to-map handles the way out
