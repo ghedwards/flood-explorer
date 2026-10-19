@@ -11,8 +11,8 @@
  */
 const VERSION = '__BUILD__';
 const APP = `app-${VERSION}`;
-const TILES = 'tiles-v1', TERRAIN = 'terrain-v1', API = 'api-v1';
-const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [API]: 400 };
+const TILES = 'tiles-v1', TERRAIN = 'terrain-v1', ELEV = 'elev-v1', API = 'api-v1';
+const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [ELEV]: 800, [API]: 400 };
 
 // Vite replaces this list with every emitted chunk, worker, font and WASM asset.
 const BUILD_ASSETS = [];
@@ -22,6 +22,8 @@ const SHELL = [
   'data/national/gauges-core.min.json', 'data/national/storages.geojson', 'data/national/readings.json', 'data/national/meta.json',
 ];
 const TILE_HOSTS = /(^|\.)basemaps\.cartocdn\.com$|^tile\.openstreetmap\.org$|^server\.arcgisonline\.com$|^tiles\.arcgis\.com$|^[a-c]\.tile\.opentopomap\.org$|^spatial-img\.information\.qld\.gov\.au$|^tilecache\.rainviewer\.com$/;
+// 3D terrain tiles (AWS Terrain Tiles, terrarium PNGs): immutable per z/x/y
+const TERRAIN_TILES = /^s3\.amazonaws\.com$/;
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -34,7 +36,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    const keep = new Set([APP, TILES, TERRAIN, API]);
+    const keep = new Set([APP, TILES, TERRAIN, ELEV, API]);
     for (const k of await caches.keys()) if (!keep.has(k)) await caches.delete(k);
     await self.clients.claim();
   })());
@@ -94,6 +96,10 @@ self.addEventListener('fetch', (e) => {
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
     e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));
+    return;
+  }
+  if (TERRAIN_TILES.test(url.hostname) && url.pathname.startsWith('/elevation-tiles-prod/')) {
+    e.respondWith(cacheFirst(req, ELEV));   // its own cache: ~100 KB each, kept apart from imagery
     return;
   }
   if (TILE_HOSTS.test(url.hostname) || /\/tile\/\d+\/\d+\/\d+/.test(url.pathname)) {
