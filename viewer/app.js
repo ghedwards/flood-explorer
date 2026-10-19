@@ -1152,6 +1152,24 @@ import './inertial-grid.js';
   window.__floodOpen3D = () => open3d();
   window.__flood3DState = () => (view3d ? view3d.snapshot() : { open: false });
   window.__floodPin = () => pinScenario();
+  // numbers for the 2D polish check: how the mapped channel cells compare
+  // with the baseline ("normal level") run that decides what counts as flood
+  window.__floodChannelDiag = () => {
+    const a = state.a, run = state.run, base = state.base;
+    if (!a || !run) return null;
+    const thr = state.streamAreaKm2 * 3, cellKm2 = (a.cell * a.cell) / 1e6;
+    const o = { n: 0, baseWet: 0, runWet: 0, newly: 0, deep4: 0, demMean: 0, depthMean: 0, baseKnown: !!base, gaugeDem: state.gauge >= 0 ? a.dem[state.gauge] : null };
+    let dsum = 0, ksum = 0;
+    for (let i = 0; i < a.N; i++) {
+      if (!a.valid[i] || !a.stream[i] || a.acc[i] * cellKm2 <= thr || (a.ocean && a.ocean[i])) continue;
+      o.n++; dsum += a.dem[i];
+      if (base && base.wet[i]) o.baseWet++;
+      if (run.wet[i]) { o.runWet++; ksum += run.depth[i]; if (isFlood(i)) { o.newly++; if (run.depth[i] >= 4) o.deep4++; } }
+    }
+    if (o.n) o.demMean = dsum / o.n;
+    if (o.runWet) o.depthMean = ksum / o.runWet;
+    return o;
+  };
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
   window.__floodRelease = (pct, start, hours) => { $('relUnit').value = 'pct'; $('relFlow').value = pct; $('relStart').value = start; $('relHours').value = hours; return releaseOpts(); };
@@ -1717,7 +1735,7 @@ import './inertial-grid.js';
       m.on('zoomstart', () => m.getContainer().classList.add('flood-zooming'));
       m.on('zoomend', () => m.getContainer().classList.remove('flood-zooming'));
       m.on('layeradd layerremove', syncLayerLists);
-      window.__floodTestZoom = (lat, lng, z) => m.setView([lat, lng], z, { animate: false });
+      window.__floodTestZoom = (lat, lng, z) => { m.setView([lat, lng], z, { animate: false }); };   // returns nothing: a Leaflet map can't be serialised by the test driver
       // simulate a tap on the map (not on a marker) at a place, for tests
       window.__floodTapAt = (lat, lng) => m.fire('click', { latlng: L.latLng(lat, lng) });
       window.__floodZoom = () => m.getZoom();
