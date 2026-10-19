@@ -68,13 +68,15 @@ class Scene3d {
     overlay.id = 'view3d';
     overlay.innerHTML = `
       <style>
-        #view3d{position:fixed;inset:0;z-index:9998;background:#0b1622;display:flex;flex-direction:column}
-        #view3d canvas{flex:1;min-height:0}
-        #view3d .bar{display:flex;gap:14px;align-items:center;padding:10px 16px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif}
+        /* sits with the map (below the floating chrome, which stays live:
+           the scenario sliders still drive the water while you're in 3D) */
+        #view3d{position:fixed;inset:0;z-index:5;background:#0b1622}
+        #view3d>canvas{position:absolute;inset:0}
+        #view3d .bar{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--bar) + env(safe-area-inset-bottom,0px) + 14px);display:flex;gap:14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4)}
         #view3d .bar label{display:flex;gap:6px;align-items:center}
         #view3d button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
         #view3d .compass{font-weight:600;min-width:2.5em;text-align:center}
-        #globe3dWrap{position:absolute;right:14px;bottom:14px;width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden}
+        #globe3dWrap{position:absolute;left:14px;bottom:calc(var(--bottom) + 8px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden}
         #globe3dWrap:active{cursor:grabbing}
         #globe3d{width:100%;height:100%;display:block}
       </style>`;
@@ -101,6 +103,8 @@ class Scene3d {
     overlay.appendChild(bar);
     overlay.appendChild(globeWrap);
     document.body.appendChild(overlay);
+    document.body.classList.add('in3d');   // hide the map fabs (they act on
+    // the map we've covered); the bar's Back-to-map handles the way out
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
@@ -111,6 +115,11 @@ class Scene3d {
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;   // smooth, Earth-like camera feel
     this.controls.dampingFactor = 0.08;
+    // zoom limits until the first band is chosen; updateStream re-derives
+    // them from the streamed tile size so you can't zoom past the data
+    this.controls.minDistance = 250;
+    this.controls.maxDistance = 400000;
+    this.controls.maxPolarAngle = Math.PI / 2 + 0.28;   // ~106°: horizon and a bit past
     this.controls.addEventListener('change', () => { this.dirty = true; this.updateCompass(); });
     // fixed afternoon sun from the north-west + enough ambient for the
     // south faces; lighting stays correct as the camera orbits (the baked
@@ -191,8 +200,14 @@ class Scene3d {
     const viewM = (box[3] - box[1]) * 111320 * Math.cos((lat * Math.PI) / 180);
     const z = streamZoom(viewM, lat);
     if (z !== this.streamZ) {
-      // zoom refined: drop everything and refetch at the new detail level
+      // zoom refined: drop everything and refetch at the new detail level,
+      // and re-derive the zoom limits from the band — closest, a tile still
+      // spans the view (its imagery/dem detail is the floor); furthest, the
+      // streamed ground box (capped at 120 km) still fills the view
       this.streamZ = z;
+      const ground = 40075016.7 * Math.cos((lat * Math.PI) / 180) / (1 << z);
+      this.controls.minDistance = Math.max(150, ground * 0.7);
+      this.controls.maxDistance = Math.max(3000, 120000 / 1.67);
       for (const st of this.stream.values()) this.disposeStreamTile(st);
       this.stream.clear();
       this.pending.clear();
@@ -249,11 +264,17 @@ class Scene3d {
     const lat = (s + n) / 2, lon = (w + e) / 2;
     const halfKm = ((e - w) * 111320 * Math.cos((lat * Math.PI) / 180)) / 2000;
     if (!this.hooks.fetchDem) throw new Error('no elevation source');
-    const { grid, bounds } = await this.hooks.fetchDem(lat, lon, halfKm, streamCell(z));
+    const { grid } = await this.hooks.fetchDem(lat, lon, halfKm, streamCell(z));
     if (this.streamZ !== z) return;   // the zoom band moved on meanwhile
+    // Pin the tile to its REQUESTED mercator bounds: the raster's own
+    // tiffBounds can drift up to a cell from the request, and neighbouring
+    // windows drift independently — cracks between tiles. With the
+    // requested box the mesh and its imagery drape stay aligned and
+    // adjacent tiles abut exactly.
+    const spanM = (e - w) * 111320 * Math.cos((lat * Math.PI) / 180);
     const st = {
-      key, bounds: bounds || [w, s, e, n], group: new THREE.Group(), terrain: null, tex: null,
-      a: { W: grid.W, H: grid.H, cell: grid.cell, dem: grid.dem, valid: grid.valid, N: grid.W * grid.H },
+      key, bounds: [w, s, e, n], group: new THREE.Group(), terrain: null, tex: null,
+      a: { W: grid.W, H: grid.H, cell: spanM / grid.W, dem: grid.dem, valid: grid.valid, N: grid.W * grid.H },
     };
     this.stream.set(key, st);
     this.scene.add(st.group);
@@ -528,12 +549,13 @@ class Scene3d {
   }
 
   /* Orbit the main camera around the target (what a drag on the widget or
-   * canvas means): theta across, phi down, both clamped. */
+   * canvas means): theta across, phi down, both clamped to the same limits
+   * the drag-orbit enforces. */
   orbitBy(dTheta, dPhi) {
     const t = this.controls.target;
     const sph = new THREE.Spherical().setFromVector3(this.camera.position.clone().sub(t));
     sph.theta -= dTheta;
-    sph.phi = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - dPhi));
+    sph.phi = Math.max(0.05, Math.min(this.controls.maxPolarAngle, sph.phi - dPhi));
     this.camera.position.copy(t).add(new THREE.Vector3().setFromSpherical(sph));
     this.camera.lookAt(t);
     this.dirty = true;
@@ -575,10 +597,10 @@ class Scene3d {
     const overlay = document.getElementById('view3d');
     if (!overlay) return;
     const canvas = overlay.querySelector('canvas');
-    const bar = overlay.querySelector('.bar');
-    const w = window.innerWidth, h = window.innerHeight - bar.offsetHeight;
+    const w = window.innerWidth, h = window.innerHeight;   // the bar floats
     this.renderer.setSize(w, h, false);
     canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
     this.dirty = true;
@@ -598,6 +620,7 @@ class Scene3d {
 
   close() {
     cancelAnimationFrame(this.raf);
+    document.body.classList.remove('in3d');
     window.removeEventListener('keydown', this.onKey, true);
     window.removeEventListener('resize', this.onResize);
     for (const st of this.stream.values()) this.disposeStreamTile(st);
