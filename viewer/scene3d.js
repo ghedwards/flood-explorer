@@ -1,20 +1,22 @@
 /* Experimental 3D flood view (docs/3d-view-design.md): three.js glue.
  *
- * The app lazy-imports this module and calls openScene3d() with accessors
- * for the analysis(es), relief renders, runs and timelines. Nothing here
- * touches the flood engine: terrain is each modelled tile's own grid, water
- * is the tile's run surface elevation (or a u8 timeline frame during
- * playback), decimated by viewer/terrain3d.js. All modelled tiles on the
- * map are stitched into one scene ("the whole map", docs 3d-view-design
- * v2.1): the active tile has live water, tiles that were deactivated get
- * their analysis rebuilt by the app (worker, fast) and appear as ready.
+ * v3 — "3D slippy terrain": the scene works like the 2D map. Terrain tiles
+ * (web-mercator z/x/y) stream on demand to cover the ground under the
+ * camera — each is a DEM-H window (no WASM analysis; the mesh only wants
+ * dem + valid), decimated and skirted by viewer/terrain3d.js, draped with
+ * the basemap imagery the hidden 2D map is loading for the same ground.
+ * Zooming in (dolly) refines the tile band, so DEM and imagery refetch at
+ * more detail. Modelled areas contribute water surfaces only, positioned
+ * by their bounds; the timeline scrub drives them per step.
  * Vertical exaggeration is mesh.scale.y so the slider never rebuilds.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { decimateStep, terrainMesh, waterMesh, waterFromFrame } from './terrain3d.js';
+import { decimateStep, terrainMesh, waterMesh, waterFromFrame, mercatorTiles, tileBounds, streamZoom, streamCell } from './terrain3d.js';
 
 const EXAG_DEFAULT = 12;
+const STREAM_CONCURRENCY = 2;
+const STREAM_RETRY_MS = 60000;   // don't refetch a failed tile for a minute
 
 let controller = null;   // one open view at a time
 
@@ -37,19 +39,11 @@ export function closeScene3d() {
 // internals for debugging/testing (read-only)
 export function debugState() {
   if (!controller) return null;
-  const groups = [];
-  for (const t of controller.tiles.values()) {
-    groups.push({
-      key: t.area.key,
-      pos: t.group.position.toArray(),
-      scale: t.terrain ? t.terrain.scale.y : null,
-      normals: t.terrain ? !!t.terrain.geometry.attributes.normal : false,
-    });
-  }
   return {
     cam: controller.camera.position.toArray(),
     target: controller.controls.target.toArray(),
-    groups,
+    stream: [...controller.stream.keys()],
+    water: [...controller.tiles.keys()],
   };
 }
 
@@ -58,7 +52,17 @@ class Scene3d {
     this.hooks = hooks;
     this.dirty = true;
     this.pollCount = 0;
-    this.tiles = new Map();   // area key -> { area, group, terrain, water }
+    this.tiles = new Map();       // area key -> { area, group, water }
+    this.stream = new Map();      // 'z/x/y' -> { key, bounds, a, group, terrain, tex }
+    this.pending = new Set();     // stream keys being fetched
+    this.queue = [];              // stream keys waiting to fetch
+    this.failed = new Map();      // stream key -> failure time
+    this.fetching = 0;
+    this.streamZ = null;
+    // scene origin: [lon, lat] fixed at open (the 2D map centre); group
+    // offsets are metres from it, +x east, +z south
+    const centre = hooks.getCentre ? hooks.getCentre() : null;
+    this.origin = centre ? [centre[1], centre[0]] : null;
 
     const overlay = document.createElement('div');
     overlay.id = 'view3d';
@@ -116,8 +120,7 @@ class Scene3d {
     this.scene.add(sun);
     this.scene.add(new THREE.AmbientLight(0xbfd4e8, 1.1));
 
-    this.bakeTexture();
-    this.buildTiles();
+    this.buildWaterTiles();
     this.frameCamera(true);
     this.initGlobe();
 
@@ -158,8 +161,8 @@ class Scene3d {
         if (t >= 1) { this.flyT = null; this.flyFrom = this.flyTo = null; }
       }
       this.controls.update();
-      // deactivated tiles whose rebuilt analysis finished since the last
-      // frame get added here (the app's refresh() only runs on 2D redraws)
+      // streaming terrain + late water tiles + drape retries, on a ~0.75s
+      // cadence (cheap; keeps up with orbiting and dollying)
       if (++this.pollCount >= 45) { this.pollCount = 0; this.pollReady(); }
       this.drawGlobe();
       if (this.dirty) { this.renderer.render(this.scene, this.camera); this.dirty = false; }
@@ -167,58 +170,103 @@ class Scene3d {
     tick();
   }
 
-  pollReady() {
-    const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
-    let added = false;
-    for (const area of areas) {
-      if (area.a && area.bounds && !this.tiles.has(area.key)) { this.addTile(area); added = true; }
-    }
-    if (added) this.dirty = true;
+  /* Ground footprint of the camera as [s, w, n, e] — the target plus a
+   * generous view radius, clamped so one orbit never fetches the planet. */
+  groundBox() {
+    const t = this.controls.target;
+    const dist = this.camera.position.distanceTo(t);
+    const half = Math.min(60000, Math.max(1500, dist * Math.tan((55 / 2) * Math.PI / 180) * 1.6));
+    if (!this.origin) return null;
+    const lat = this.origin[1] - t.z / 110574;
+    const lon = this.origin[0] + t.x / (111320 * Math.cos((lat * Math.PI) / 180));
+    const halfLat = half / 110574;
+    const halfLon = half / (111320 * Math.cos((lat * Math.PI) / 180));
+    return [lat - halfLat, lon - halfLon, lat + halfLat, lon + halfLon];
   }
 
-  /* One stitched scene tile per modelled area. Tiles whose analysis was
-   * freed (inactive) arrive via their `ready` promise and are added then. */
-  buildTiles() {
-    const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
-    for (const area of areas) this.addTile(area);
+  updateStream() {
+    const box = this.groundBox();
+    if (!box) return;
+    const lat = (box[0] + box[2]) / 2;
+    const viewM = (box[3] - box[1]) * 111320 * Math.cos((lat * Math.PI) / 180);
+    const z = streamZoom(viewM, lat);
+    if (z !== this.streamZ) {
+      // zoom refined: drop everything and refetch at the new detail level
+      this.streamZ = z;
+      for (const st of this.stream.values()) this.disposeStreamTile(st);
+      this.stream.clear();
+      this.pending.clear();
+    }
+    this.syncMap(box);
+    const r = mercatorTiles(box[0], box[1], box[2], box[3], z);
+    const want = new Set();
+    for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) want.add(`${z}/${x}/${y}`);
+    for (const [key, st] of this.stream) {
+      if (!want.has(key)) { this.disposeStreamTile(st); this.stream.delete(key); }
+    }
+    // missing, closest to the view centre first; skip recent failures
+    const now = Date.now();
+    const missing = [];
+    for (const key of want) {
+      if (this.stream.has(key) || this.pending.has(key)) continue;
+      const failAt = this.failed.get(key);
+      if (failAt && now - failAt < STREAM_RETRY_MS) continue;
+      missing.push(key);
+    }
+    const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
+    const td = (key) => { const [_, x, y] = key.split('/').map(Number); return Math.hypot(x - cx, y - cy); };
+    missing.sort((a, b) => td(a) - td(b));
+    this.queue = missing;
+    this.kickFetch();
     this.updateTileCount();
   }
 
-  addTile(area) {
-    if (!area || !area.a || !area.bounds || this.tiles.has(area.key)) return;
-    const t = { area, group: new THREE.Group(), terrain: null, water: null, runRef: null };
-    this.tiles.set(area.key, t);
-    this.buildTileTerrain(t);
-    this.buildTileWater(t, this.hooks.getStep ? this.hooks.getStep() : 0);
-    this.scene.add(t.group);
-    this.updateTileCount();
-    // tiles arrive asynchronously (inactive ones after their analysis is
-    // rebuilt): frame the camera once the first one is really there — it
-    // starts at the default (0,0,0), inside the terrain, otherwise
-    if (!this.framed && t.terrain) {
-      this.framed = true;
-      this.frameCamera(true);
+  kickFetch() {
+    while (this.fetching < STREAM_CONCURRENCY && this.queue.length) {
+      const key = this.queue.shift();
+      if (this.stream.has(key) || this.pending.has(key)) continue;
+      this.pending.add(key);
+      this.fetching++;
+      this.fetchStreamTile(key)
+        .catch((err) => {
+          this.failed.set(key, Date.now());
+          if (!this.__saidFetch || Date.now() - this.__saidFetch > 8000) {
+            this.__saidFetch = Date.now();
+            if (this.hooks.onUnsupported) this.hooks.onUnsupported(`3D: couldn't fetch terrain here (${err.message || err}).`);
+          }
+        })
+        .finally(() => {
+          this.pending.delete(key);
+          this.fetching--;
+          this.kickFetch();
+        });
     }
+  }
+
+  async fetchStreamTile(key) {
+    const [z, x, y] = key.split('/').map(Number);
+    const [w, s, e, n] = tileBounds(z, x, y);
+    const lat = (s + n) / 2, lon = (w + e) / 2;
+    const halfKm = ((e - w) * 111320 * Math.cos((lat * Math.PI) / 180)) / 2000;
+    if (!this.hooks.fetchDem) throw new Error('no elevation source');
+    const { grid, bounds } = await this.hooks.fetchDem(lat, lon, halfKm, streamCell(z));
+    if (this.streamZ !== z) return;   // the zoom band moved on meanwhile
+    const st = {
+      key, bounds: bounds || [w, s, e, n], group: new THREE.Group(), terrain: null, tex: null,
+      a: { W: grid.W, H: grid.H, cell: grid.cell, dem: grid.dem, valid: grid.valid, N: grid.W * grid.H },
+    };
+    this.stream.set(key, st);
+    this.scene.add(st.group);
+    this.buildStreamTerrain(st);
     this.dirty = true;
   }
 
-  /* World offset: the tile's NW corner in metres from the scene origin
-   * (the west-most, north-most tile corner of the whole set). */
-  place(t) {
-    const b = t.area.bounds;   // [w, s, e, n]
-    const origin = this.origin || (this.origin = [b[0], b[3]]);
-    const midLat = (b[1] + b[3]) / 2;
-    t.group.position.set(
-      (b[0] - origin[0]) * 111320 * Math.cos((midLat * Math.PI) / 180),
-      0,
-      -(b[3] - origin[1]) * 110574,
-    );
-  }
-
-  buildTileTerrain(t) {
-    const a = t.area.a;
-    const skip = decimateStep(a.W, a.H);
-    const m = terrainMesh(a, t.area.terrain, skip);
+  buildStreamTerrain(st) {
+    const skip = decimateStep(st.a.W, st.a.H);
+    const rgba = this.hooks.terrainColors ? this.hooks.terrainColors(st.a) : null;
+    // no skirt: adjacent windows abut exactly, and skirt walls shade as
+    // dark seams at every tile edge; sea/NoData edges read fine raw
+    const m = terrainMesh(st.a, rgba, skip, 0);
     if (!m) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
@@ -226,27 +274,105 @@ class Scene3d {
     geo.setAttribute('uv', new THREE.BufferAttribute(m.uvs, 2));
     geo.setIndex(new THREE.BufferAttribute(m.indices, 1));
     geo.computeVertexNormals();
-    // draped satellite imagery when the 2D map's tiles can be drawn untainted;
-    // otherwise the baked hypsometric + hillshade colours, lit by a sun
-    const tex = this.tex || (this.tex = this.bakeTexture());
-    t.terrain = new THREE.Mesh(geo, tex
-      ? new THREE.MeshLambertMaterial({ map: tex })
-      : new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
-    t.terrain.scale.y = EXAG_DEFAULT;
-    t.group.add(t.terrain);
-    this.place(t);
+    st.terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    st.terrain.scale.y = EXAG_DEFAULT;
+    st.group.add(st.terrain);
+    this.placeGroup(st.group, st.bounds);
+    // vertices span (W-1)*cell but the window covers W*cell — stretch the
+    // group so tiles abut exactly instead of leaving one-cell gaps
+    st.group.scale.x = st.a.W / (st.a.W - 1);
+    st.group.scale.z = st.a.H / (st.a.H - 1);
+    this.dirty = true;
+  }
+
+  disposeStreamTile(st) {
+    if (st.terrain) {
+      st.group.remove(st.terrain);
+      if (st.terrain.material.map) st.terrain.material.map.dispose();
+      st.terrain.geometry.dispose();
+      st.terrain.material.dispose();
+      st.terrain = null;
+    }
+    st.tex = null;
+  }
+
+  /* Keep the hidden 2D map over the same ground at the same mercator zoom
+   * (the stream's own band), so its basemap streams the imagery the drape
+   * bakes from — at the refined zoom when the camera dollies in. */
+  syncMap(box) {
+    if (!this.hooks.syncMap || !this.streamZ) return;
+    const sig = box.map((v) => Math.round(v * 200)).join('|') + '|' + this.streamZ;
+    if (sig === this.__syncSig) return;
+    this.__syncSig = sig;
+    this.hooks.syncMap(box, this.streamZ);
+  }
+
+  pollReady() {
+    // late water tiles (inactive places whose analysis was rebuilt)
+    const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
+    let added = false;
+    for (const area of areas) {
+      if (area.a && area.bounds && !this.tiles.has(area.key)) { this.addWaterTile(area); added = true; }
+    }
+    if (added) this.dirty = true;
+    // stream terrain + drape retries (imagery may still be loading)
+    this.updateStream();
+    for (const st of this.stream.values()) {
+      if (!st.terrain || st.tex || (st.__bakeTries || 0) >= 40) continue;
+      st.__bakeTries++;
+      const tex = this.bakeTexture(st.bounds);
+      if (tex) {
+        st.tex = tex;
+        st.terrain.material.dispose();
+        st.terrain.material = new THREE.MeshLambertMaterial({ map: tex });
+        this.dirty = true;
+      }
+    }
+  }
+
+  /* Modelled areas: water surfaces only (terrain comes from the stream). */
+  buildWaterTiles() {
+    const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
+    for (const area of areas) this.addWaterTile(area);
+    this.updateTileCount();
+  }
+
+  addWaterTile(area) {
+    if (!area || !area.a || !area.bounds || this.tiles.has(area.key)) return;
+    const t = { area, group: new THREE.Group(), water: null, runRef: null };
+    this.tiles.set(area.key, t);
+    this.buildTileWater(t, this.hooks.getStep ? this.hooks.getStep() : 0);
+    this.scene.add(t.group);
+    this.placeGroup(t.group, area.bounds);
+    t.group.scale.x = area.a.W / (area.a.W - 1);
+    t.group.scale.z = area.a.H / (area.a.H - 1);
+    this.updateTileCount();
+    this.dirty = true;
+  }
+
+  /* World offset: the bounds' NW corner in metres from the scene origin
+   * (+x east, +z south). */
+  placeGroup(group, b) {
+    if (!this.origin) this.origin = [b[0], b[3]];
+    const midLat = (b[1] + b[3]) / 2;
+    group.position.set(
+      (b[0] - this.origin[0]) * 111320 * Math.cos((midLat * Math.PI) / 180),
+      0,
+      -(b[3] - this.origin[1]) * 110574,
+    );
   }
 
   buildTileWater(t, k) {
     if (t.water) { t.group.remove(t.water); t.water.geometry.dispose(); t.water = null; }
     const a = t.area.a;
+    const skip = decimateStep(a.W, a.H);   // same decimation the terrain uses
     let m = null;
     const tl = t.area.timeline;
     if (tl && tl.depthFrames && tl.depthFrames.length >= (k + 1) * a.N && tl.depthFrameMax && tl.depthFrameMax.length > k) {
-      m = waterFromFrame(a, tl.depthFrames.subarray(k * a.N, (k + 1) * a.N), tl.depthFrameMax[k] || 0, this.skip).mesh;
+      m = waterFromFrame(a, tl.depthFrames.subarray(k * a.N, (k + 1) * a.N), tl.depthFrameMax[k] || 0, skip).mesh;
     } else if (t.area.run) {
       const r = t.area.run;   // slim runs omit wse; level (= dem + depth) is kept
-      m = waterMesh(a, r.level, r.depth, r.wet, this.skip);
+      m = waterMesh(a, r.level, r.depth, r.wet, skip);
     }
     if (!m) return;
     const geo = new THREE.BufferGeometry();
@@ -256,7 +382,7 @@ class Scene3d {
     // depth-scaled per-vertex alpha (shoreline feather) needs RGBA colours
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
     t.water = new THREE.Mesh(geo, mat);
-    t.water.scale.y = t.terrain ? t.terrain.scale.y : EXAG_DEFAULT;
+    t.water.scale.y = EXAG_DEFAULT;
     t.group.add(t.water);
     this.dirty = true;
   }
@@ -276,27 +402,20 @@ class Scene3d {
 
   updateTileCount() {
     const el = document.getElementById('tiles3d');
-    if (el) el.textContent = this.tiles.size > 1 ? `${this.tiles.size} tiles` : '';
+    if (el) el.textContent = this.stream.size ? `${this.stream.size} terrain · ${this.tiles.size} modelled` : '';
   }
 
-  /* Called by the app after the 2D view redraws; picks up rebuilt analyses
-   * (tiles that became ready), new/removed areas, and changed runs. */
+  /* Called by the app after the 2D view redraws; picks up new/removed areas
+   * and changed runs (water rebuilds by run identity). */
   refresh() {
     const areas = this.hooks.getAreas ? this.hooks.getAreas() : [];
     const seen = new Set();
     for (const area of areas) {
       seen.add(area.key);
       if (!area.a || !area.bounds) continue;
-      if (!this.tiles.has(area.key)) { this.addTile(area); continue; }
+      if (!this.tiles.has(area.key)) { this.addWaterTile(area); continue; }
       const t = this.tiles.get(area.key);
-      if (area.a !== t.area.a) {   // the tile was reanalysed or replaced
-        this.disposeTileMeshes(t);
-        t.area = area;
-        t.runRef = null;
-        this.buildTileTerrain(t);
-      } else {
-        t.area = area;
-      }
+      t.area = area;
       const run = area.run;
       if (run !== t.runRef) {
         t.runRef = run;
@@ -314,41 +433,39 @@ class Scene3d {
   }
 
   setExaggeration(x) {
-    for (const t of this.tiles.values()) {
-      if (t.terrain) t.terrain.scale.y = x;
-      if (t.water) t.water.scale.y = x;
-    }
+    for (const st of this.stream.values()) if (st.terrain) st.terrain.scale.y = x;
+    for (const t of this.tiles.values()) if (t.water) t.water.scale.y = x;
     this.dirty = true;
   }
 
   /* Draw the active 2D basemap's loaded tiles into one canvas texture over
-   * the model bounds. Tiles are cross-origin: where the layer was created
+   * the given bounds. Tiles are cross-origin: where the layer was created
    * with crossOrigin (the CORS-verified hosts) the canvas stays clean; a
    * tainted canvas throws on the probe read and we fall back to colours. */
-  bakeTexture() {
+  bakeTexture(bounds) {
     const tiles = this.hooks.getTiles && this.hooks.getTiles();
-    const bounds = this.hooks.getBounds && this.hooks.getBounds();
     if (!tiles || !tiles.length || !bounds) return null;
     const [w, s, e, n] = bounds;
     const clampLat = (la) => Math.max(-85, Math.min(85, la));
     const merc = (lon, lat) => [((lon + 180) / 360) * (1 << 21) * 32, (((1 - Math.log(Math.tan((clampLat(lat) * Math.PI) / 180) + 1 / Math.cos((clampLat(lat) * Math.PI) / 180)) / Math.PI) / 2) * (1 << 21) * 32)];
-    // bake at the loaded tiles' own zoom (sharp), then step down until the
+    // merc() is web-mercator px at zoom 18 (2^26 px across the world).
+    // Bake at the loaded tiles' own zoom (sharp), then step down until the
     // canvas fits the cap; a blurrier bake beats a holey one
     const list = tiles.slice().sort((x, y) => x.z - y.z);   // coarser drawn first
     let z = list.reduce((m, t) => Math.max(m, t.z || 0), 6);
-    const spanX = merc(e, n)[0] - merc(w, n)[0];   // mercator px at z 26
-    while (z > 5 && (spanX / (1 << (26 - z))) > 4096) z--;
-    const scale = 1 / (1 << (26 - z));
+    const spanX = merc(e, n)[0] - merc(w, n)[0];
+    while (z > 5 && (spanX / (1 << (18 - z))) > 4096) z--;
+    const scale = 1 / (1 << (18 - z));
     const x0 = merc(w, n)[0] * scale, y0 = merc(w, n)[1] * scale;   // canvas origin = NW corner
     const Wpx = Math.ceil(merc(e, n)[0] * scale - x0), Hpx = Math.ceil(merc(w, s)[1] * scale - y0);
     if (Wpx < 8 || Hpx < 8 || Wpx > 4096 || Hpx > 4096) return null;
     const canvas = document.createElement('canvas');
     canvas.width = Wpx; canvas.height = Hpx;
     const ctx = canvas.getContext('2d');
-    const size = 256 * scale;   // a tile's side in bake pixels
     let drew = 0;
     for (const t of list) {
       if (!t.img || !(t.img.complete || t.img.naturalWidth)) continue;
+      const size = 256 * (1 << z) / (1 << t.z);   // the tile's side in bake px
       const px = merc(t.w, t.n)[0] * scale - x0, py = merc(t.w, t.n)[1] * scale - y0;
       try { ctx.drawImage(t.img, px, py, size + 1, size + 1); drew++; } catch (err) { return null; }
     }
@@ -360,19 +477,17 @@ class Scene3d {
   }
 
   frameCamera(fly = false) {
-    // frame the UNION of all tiles (the whole studied area)
-    let west = Infinity, east = -Infinity, north = Infinity, south = Infinity;
-    for (const t of this.tiles.values()) {
-      const g = t.group.position;
-      const a = t.area.a;
-      west = Math.min(west, g.x); east = Math.max(east, g.x + (a.W - 1) * a.cell);
-      north = Math.min(north, g.z); south = Math.max(south, g.z - (a.H - 1) * a.cell);
-    }
-    if (west === Infinity) return;
-    const w = east - west, h = south - north;
-    const cx = west + w / 2, cz = north + h / 2;
+    // frame the ground the 2D map was showing when the view opened
+    const box = this.hooks.getViewBox ? this.hooks.getViewBox() : null;
+    if (!box || !this.origin) { this.controls.update(); return; }
+    const [s, w, n, e] = box;
+    const westM = (w - this.origin[0]) * 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
+    const eastM = (e - this.origin[0]) * 111320 * Math.cos(((s + n) / 2) * Math.PI / 180);
+    const northM = -(n - this.origin[1]) * 110574;
+    const southM = -(s - this.origin[1]) * 110574;
+    const cx = (westM + eastM) / 2, cz = (northM + southM) / 2;
+    const d = Math.max(Math.abs(eastM - westM), Math.abs(southM - northM)) * 0.9;
     this.controls.target.set(cx, 0, cz);
-    const d = Math.max(w, h) * 0.9;
     const dest = new THREE.Vector3(cx, d * 0.55, cz + d);
     if (!fly) {
       this.camera.position.copy(dest);
@@ -485,8 +600,9 @@ class Scene3d {
     cancelAnimationFrame(this.raf);
     window.removeEventListener('keydown', this.onKey, true);
     window.removeEventListener('resize', this.onResize);
+    for (const st of this.stream.values()) this.disposeStreamTile(st);
+    this.stream.clear();
     for (const t of this.tiles.values()) this.disposeTileMeshes(t);
-    if (this.tex) { this.tex.dispose(); this.tex = null; }
     this.renderer.dispose();
     const overlay = document.getElementById('view3d');
     if (overlay) overlay.remove();

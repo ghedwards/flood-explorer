@@ -21,13 +21,13 @@ function decimateStep(W, H, maxSide = MAX_SIDE) {
  * the 3D view matches the 2D relief exactly. Cells that are invalid drop
  * out; a quad is emitted only when all four sampled corners survive, so
  * the coast and NoData edges stay clean. */
-function terrainMesh(a, rgba, skip) {
+function terrainMesh(a, rgba, skip, skirtM) {
   return buildGrid(a, skip, (i) => !!a.valid[i], (i) => a.dem[i], (i, out) => {
     const o = i * 4;
     out[0] = rgba ? rgba[o] : 255;
     out[1] = rgba ? rgba[o + 1] : 255;
     out[2] = rgba ? rgba[o + 2] : 255;
-  }, { skirt: true });
+  }, { skirt: skirtM > 0, skirtM });
 }
 
 /* Water surface vertices + depth colours for the wet cells of a run.
@@ -57,10 +57,11 @@ function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
       const x = gx * skip, y = gy * skip, i = y * W + x;
       if (!keep(i)) continue;
       slot[gy * cols + gx] = positions.length / 3;
-      const px = x * cell, pz = -y * cell;
+      const px = x * cell, pz = y * cell;   // local +z = south (matches the
+      // tile group offsets, where tiles south of the scene origin sit at +z)
       positions.push(px, height(i), pz);
       // texture space: u across (west→east), v 0 at south edge, 1 at north
-      uvs.push(px / wM, 1 + pz / hM);
+      uvs.push(px / wM, 1 - pz / hM);
       const c = [0, 0, 0];
       colorInto(i, c);
       const alpha = opts.alphaFor ? opts.alphaFor(i) : 1;
@@ -84,7 +85,7 @@ function buildGrid(a, skip, keep, height, colorInto, opts = {}) {
   if (opts.skirt) {
     let minH = Infinity;
     for (let k = 1; k < positions.length; k += 3) if (positions[k] < minH) minH = positions[k];
-    const base = minH - Math.max(20, wM * 0.02);
+    const base = minH - (opts.skirtM || Math.max(20, wM * 0.02));
     const drop = (from, to) => {
       const f = from * 3, t = to * 3;
       const fi = positions.length / 3, ti = fi + 1;
@@ -151,3 +152,36 @@ function waterFromFrame(a, frame, maxD, skip) {
 }
 
 export { decimateStep, terrainMesh, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
+
+/* ---------- web-mercator tile helpers (v3 streaming terrain) ---------- */
+
+/* Inclusive tile range (x0,y0)-(x1,y1) at zoom z covering a [s, w, n, e] box. */
+export function mercatorTiles(s, w, n, e, z) {
+  const n2 = 1 << z;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const tx = (lon) => Math.floor(((lon + 180) / 360) * n2);
+  const ty = (lat) => {
+    const la = (clamp(lat, -85, 85) * Math.PI) / 180;
+    return Math.floor(((1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2) * n2);
+  };
+  return { x0: clamp(tx(w), 0, n2 - 1), x1: clamp(tx(e), 0, n2 - 1), y0: clamp(ty(n), 0, n2 - 1), y1: clamp(ty(s), 0, n2 - 1) };
+}
+
+/* A tile's geographic bounds [w, s, e, n]. */
+export function tileBounds(z, x, y) {
+  const n2 = 1 << z;
+  const lon = (tx) => (tx / n2) * 360 - 180;
+  const lat = (ty) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * ty) / n2))) * 180) / Math.PI;
+  return [lon(x), lat(y + 1), lon(x + 1), lat(y)];
+}
+
+/* Tile zoom band for a ground view width (metres) at a latitude: about two
+ * tiles across the view, clamped so DEM fetches stay light. */
+export function streamZoom(viewWidthM, lat) {
+  const ground = 40075016.7 * Math.cos((lat * Math.PI) / 180);
+  const z = Math.ceil(1 + Math.log2(ground / Math.max(1, viewWidthM)));
+  return Math.max(11, Math.min(13, z));
+}
+
+/* DEM cell (metres) paired with the tile zoom band. */
+export function streamCell(z) { return z <= 11 ? 90 : z === 12 ? 45 : 30; }

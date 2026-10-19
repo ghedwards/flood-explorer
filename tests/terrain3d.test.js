@@ -46,7 +46,7 @@ test('terrainMesh skips invalid cells and keeps AHD heights', () => {
   const maxVertexX = Math.max(...m.positions.filter((v, k) => k % 3 === 0));
   assert.equal(maxVertexX, (cols - 2) * 2 * a.cell);
   // the picked cell's vertex carries its colour and its AHD height
-  const k = m.positions.findIndex((v, j) => j % 3 === 0 && v === 4 * a.cell && m.positions[j + 2] === -2 * a.cell) / 3;
+  const k = m.positions.findIndex((v, j) => j % 3 === 0 && v === 4 * a.cell && m.positions[j + 2] === 2 * a.cell) / 3;
   assert.ok(k >= 0);
   assert.equal(m.positions[k * 3 + 1], a.dem[pick]);
   assert.equal(Math.round(m.colors[k * 4] * 255), 250);   // RGBA vertex colours
@@ -70,7 +70,7 @@ test('waterMesh emits vertices only for wet cells with the right band colour', (
   const m2 = t3d.waterMesh(a, wse, depth, wet, 1);
   assert.ok(m2);
   // depth 1.4 → the 1–2 m band #3786c9: find the (x=20, y=15) vertex
-  const k = m2.positions.findIndex((v, j) => j % 3 === 0 && v === 20 * a.cell && m2.positions[j + 2] === -15 * a.cell) / 3;
+  const k = m2.positions.findIndex((v, j) => j % 3 === 0 && v === 20 * a.cell && m2.positions[j + 2] === 15 * a.cell) / 3;
   assert.ok(k >= 0);
   // Float32 storage + RGBA vertex colours: compare within 1e-6
   for (let c = 0; c < 3; c++) assert.ok(Math.abs(m2.colors[k * 4 + c] - [0x37, 0x86, 0xc9][c] / 255) < 1e-6);
@@ -101,5 +101,31 @@ test('depthColor follows the 2D legend band boundaries', () => {
   assert.deepEqual(t3d.depthColor(0.5), [0x79, 0xbf, 0xe8]);
   assert.deepEqual(t3d.depthColor(1.9), [0x37, 0x86, 0xc9]);
   assert.deepEqual(t3d.depthColor(4.5), [0x0c, 0x34, 0x70]);
+});
+
+test('mercatorTiles + tileBounds round-trip a box to tiles and back', () => {
+  // Brisbane-ish box, z12
+  const z = 12;
+  const r = t3d.mercatorTiles(-27.55, 152.9, -27.35, 153.15, z);
+  assert.ok(r.x1 >= r.x0 && r.y1 >= r.y0);
+  assert.ok(r.x1 - r.x0 <= 3 && r.y1 - r.y0 <= 3, 'a 20km box is a few tiles at z12');
+  // every tile's bounds intersects the box, and the union covers its centre
+  for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) {
+    const [w2, s2, e2, n2] = t3d.tileBounds(z, x, y);
+    assert.ok(e2 > 152.9 && w2 < 153.15 && n2 > -27.55 && s2 < -27.35);
+  }
+  const [w2, , e2] = t3d.tileBounds(z, r.x0, r.y0);
+  assert.ok(Math.abs((e2 - w2) - 360 / (1 << z)) < 1e-9);
+});
+
+test('streamZoom pairs a view width with a zoom band and cell size', () => {
+  // ~8.7km view at Brisbane's latitude → z13 (finer), 30 m cells
+  assert.equal(t3d.streamZoom(8700, -27.5), 13);
+  assert.equal(t3d.streamCell(13), 30);
+  // ~35km view → z11, 90 m cells (clamped floor)
+  assert.equal(t3d.streamZoom(35000, -27.5), 11);
+  assert.equal(t3d.streamCell(11), 90);
+  // a huge view still clamps to z11
+  assert.equal(t3d.streamZoom(200000, -27.5), 11);
 });
 })();

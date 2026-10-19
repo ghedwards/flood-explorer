@@ -511,6 +511,10 @@ import './inertial-grid.js';
     state.gauge = gauge;
     state.base = null;
     state.terrain = terrainRGBA(a);
+    // keep the registry entry in step: the 3D view reads entries directly
+    // (areasFor3d), and saveActive frees them again when the area is left
+    const ar = state.areaKey && areaReg.get(state.areaKey);
+    if (ar) { ar.a = state.a; ar.terrain = state.terrain; }
     if (!resetGauge) runScenario();
   }
 
@@ -683,6 +687,8 @@ import './inertial-grid.js';
           ? ' Rain-only run with sealed edges: the rain (a few mm to cm) stays on every cell, so most of the map shows as under 0.5 m — set a gauge inflow or open the sea boundary for channel flooding.'
           : '');
         state.edges = floodEdges(a, state.run);
+        const arInertial = state.areaKey && areaReg.get(state.areaKey);
+        if (arInertial) arInertial.run = state.run;   // the 3D tiles follow too
         drawMap(); drawStats(scenario()); renderEdgeNote(); drawProfile(scenario());
         maybeRenderImpact(); renderRecorded();
         $('timeSet').hidden = true;
@@ -735,6 +741,8 @@ import './inertial-grid.js';
     }
     renderStorm();
     state.edges = floodEdges(a, state.run);
+    const ar = state.areaKey && areaReg.get(state.areaKey);
+    if (ar) ar.run = state.run;   // the 3D tiles' water follows the scenario
     drawMap();
     drawStats(s);
     renderEdgeNote();
@@ -840,8 +848,9 @@ import './inertial-grid.js';
 
   function terrainRGBA(a) {
     const { W, H, dem, valid, cell } = a;
+    const ocean = a.ocean || null;   // stream tiles have no ocean mask
     const land = [];
-    for (let i = 0; i < a.N; i += 7) if (valid[i] && !a.ocean[i]) land.push(dem[i]);
+    for (let i = 0; i < a.N; i += 7) if (valid[i] && !(ocean && ocean[i])) land.push(dem[i]);
     land.sort((x, y) => x - y);
     const lo = land.length ? land[Math.floor(land.length * 0.02)] : 0;
     const hi = land.length ? land[Math.floor(land.length * 0.98)] : 1;
@@ -1054,26 +1063,9 @@ import './inertial-grid.js';
   async function open3d() {
     const mod = await import('./scene3d.js');
     if (view3d) return;
-    // With a model built the scene is stitched from the modelled tiles
-    // (water included). With none, fetch elevation for the area in view
-    // (clamped to a 30 km box around the map centre) and show terrain only
-    // — the flood water still appears wherever modelled tiles exist.
-    let extra = null;
-    if (!state.a) {
-      const box = viewBounds3d();
-      if (!box) { say('Open the Australia map first.'); return; }
-      const [s, w, n, e] = box;
-      const halfKm = Math.min(30, (e - w) * 111.32 * Math.cos(((s + n) / 2) * Math.PI / 180) / 2);
-      say('Fetching elevation for the 3D view…');
-      try {
-        const { grid, bounds } = await fetchDemWindow((s + n) / 2, (w + e) / 2, halfKm, 45);
-        const a = await analyseAsync(grid, { streamAreaKm2: 1 });
-        extra = { key: '__view3d', a, terrain: terrainRGBA(a), run: null, timeline: null, bounds, active: true };
-      } catch (err) {
-        say(`Couldn't fetch 3D terrain here: ${err.message || err}.`);
-        return;
-      }
-    }
+    // Terrain streams on demand (v3: the scene works like the 2D map —
+    // web-mercator tiles fetched for the ground under the camera, refined
+    // when you zoom in). Modelled places contribute water surfaces.
     view3d = mod.openScene3d({
       getAnalysis: () => state.a,
       getTerrain: () => state.terrain,
@@ -1081,15 +1073,19 @@ import './inertial-grid.js';
       getTimeline: () => state.areaKey && areaReg.get(state.areaKey)?.timeline || null,
       getStep: () => state.timeStep || 0,
       getBounds: () => (state.areaMeta && state.areaMeta.bounds_lonlat) || null,
+      getViewBox: () => viewBounds3d(),
+      getCentre: () => { const m = state.lmap; if (!m) return null; const c = m.getCenter(); return [c.lat, c.lng]; },
       getTiles: () => activeBasemapTiles(),
-      getAreas: () => {
-        const list = areasFor3d();
-        if (!state.a && extra) list.push(extra);   // terrain-only pseudo tile
-        return list;
+      getAreas: () => areasFor3d(),
+      fetchDem: (lat, lon, halfKm, cell) => fetchDemWindow(lat, lon, halfKm, cell),
+      terrainColors: (a) => terrainRGBA(a),
+      syncMap: (box, z) => {
+        const m = state.lmap;
+        if (m && !$('lmap').hidden) m.setView([(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], z, { animate: false });
       },
       onScrub: (k) => { scheduleTimeStep(k); },
       onUnsupported: (text) => say(text),
-      onClose: () => { view3d = null; extra = null; for (const ar of areaReg.values()) delete ar.__area3d; },
+      onClose: () => { view3d = null; for (const ar of areaReg.values()) delete ar.__area3d; },
     });
   }
   // the visible map box as [s, w, n, e]; null when the map isn't open
@@ -1110,7 +1106,6 @@ import './inertial-grid.js';
         bounds: (ar.areaMeta && ar.areaMeta.bounds_lonlat) || null,
         active: ar.key === state.areaKey,
       };
-      console.log('[3d] tile', ar.key, 'a?', !!t.a, 'rebuild?', !!(ar.grid && ar.areaMeta));
       if (!t.a && ar.grid && ar.areaMeta) {
         if (!ar.__area3d) {
           ar.__area3d = (async () => {
@@ -1126,10 +1121,13 @@ import './inertial-grid.js';
               controls: ar.controls || [],
             };
             const run = ar.gauge >= 0 ? F.inundate(a, s, { slim: 1 }) : null;
-            console.log('[3d] rebuilt', ar.key);
-            return { a, run, terrain: terrainRGBA(a) };
+            const terrain = terrainRGBA(a);
+            // the scene's poll/refresh look at the entry itself; saveActive
+            // frees it again the next time the user leaves this place
+            ar.a = a; ar.run = run; ar.terrain = terrain;
+            return { a, run, terrain };
           })();
-          ar.__area3d.catch((e) => console.log('[3d] rebuild failed', ar.key, String((e && e.message) || e)));
+          ar.__area3d.catch((err) => say(`3D: couldn't rebuild ${ar.name || ar.key}: ${err.message || err}`));
         }
         t.ready = ar.__area3d;
       }
@@ -2215,6 +2213,8 @@ import './inertial-grid.js';
         if (state.areaKey !== key || state.grid !== grid) return;
         state.a = a;
         state.terrain = terrainRGBA(a);
+        const ar = areaReg.get(key);   // the 3D view reads entries directly
+        if (ar) { ar.a = a; ar.terrain = state.terrain; }
         state.base = null;
         runScenario();
         state.edges = floodEdges(a, state.run);

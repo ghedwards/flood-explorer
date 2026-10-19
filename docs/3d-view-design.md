@@ -113,3 +113,43 @@ LOD, and a national-globe start view (each listed in docs/roadmap.md).
   canvas renders (non-black), and closing restores the map — assert via
   a `__floodOpen3D`/`__flood3DState` test hook on one preset only.
 - Browser: manual orbit/scrub/exaggeration pass on the live site.
+
+## v3 — 3D slippy terrain (streaming, on demand)
+
+v2 stitched whole modelled areas into one scene, which showed one lonely
+tile when a single place was modelled and left the camera framing a vast
+union with empty space between far-apart places. v3 makes the 3D view
+work like the 2D slippy map instead:
+
+- **Terrain streams on demand.** The scene keeps web-mercator tiles
+  (`z/x/y`) covering the ground under the camera. As the camera orbits
+  or pans, tiles that enter the ground footprint are fetched (DEM-H via
+  `fetchDemWindow`, no WASM analysis needed — the mesh only wants
+  `dem` + `valid`), decimated, skirted and added; tiles that fall out
+  are disposed. Fetches run two at a time, closest to the target first,
+  with an LRU cap so long flights don't accumulate the world.
+- **Zoom refines.** The camera's ground view width selects the tile zoom
+  band (and DEM cell: 90 m far, 45 m mid, 30 m near). Dollying in drops
+  the band to finer tiles; already-loaded tiles are replaced by more
+  detailed ones as they arrive.
+- **Imagery refetches with it.** While the 3D view is open the hidden
+  2D map's view is kept at the 3D ground centre and zoom (debounced,
+  no animation), so the basemap streams imagery for exactly the ground
+  in view — at the refined zoom when you zoom in. Each terrain tile's
+  drape bakes from those loaded tiles (per-tile texture; retries while
+  the imagery is still streaming; hypsometric fallback where the canvas
+  is tainted or nothing is loaded).
+- **Water stays model-based.** Modelled areas contribute water surfaces
+  only (their terrain now comes from the stream): the analysis rebuild
+  machinery (`areasFor3d`, `__area3d`) feeds the water meshes, the
+  timeline scrub drives them per step.
+- **Geometry conventions.** Scene origin fixed at open (the 2D map
+  centre): +x east, +z south, y up (metres, ×exaggeration). Mesh local
+  z is south-positive too (`pz = y * cell`), matching the group offsets.
+
+Failure behaviour is unchanged: fetch errors surface via `say()` once
+and the tile is skipped (retry on the next camera change); no WebGL2
+still shows the inline hint; corrupt frame data hides just the water.
+
+Test plan additions (node): `mercatorTiles(s, w, n, e, z)` range math;
+stream tile bounds round-trip against the drape bake's mercator math.
