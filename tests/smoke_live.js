@@ -8,12 +8,11 @@ const { isDeepStrictEqual } = require("node:util");
 // baseline in tests/visual/<name>.png. A missing baseline seeds one (pass);
 // UPDATE_VISUALS=1 rewrites baselines; a mismatch over threshold fails.
 const { PNG } = require("pngjs");
-const pixelmatch = require("pixelmatch");
+const pixelmatch = require("pixelmatch").default ?? require("pixelmatch");
 const fs = require("node:fs");
 const path = require("node:path");
 const VIS_DIR = path.join(__dirname, "visual");
-// eslint-disable-next-line no-unused-vars
-function snap(name, page, failures) {
+function snapVisual(name, page, failures) {
   return (async () => {
     fs.mkdirSync(VIS_DIR, { recursive: true });
     const buf = await page.screenshot({ fullPage: false });
@@ -298,7 +297,7 @@ async function main() {
       note("notice", `Report: ${formatValue(rep.slice(0, 260))}`);
     }
     await page.screenshot({ path: "smoke-national.png" });
-    await snap("national", page, failures);
+    await snapVisual("national", page, failures);
     if (
       truth(
         await page.evaluate(
@@ -1393,7 +1392,7 @@ async function main() {
       failures.push(`impact count failed: ${formatValue(imp)}`);
     }
     await page.screenshot({ path: "smoke-impact.png" });
-    await snap("impact", page, failures);
+    await snapVisual("impact", page, failures);
     // ---- the flood over time: road closures and places cut off
     try {
       var tlr = await page.evaluate("window.__floodRunTimeline()");
@@ -1418,7 +1417,7 @@ async function main() {
       }
     }
     await page.screenshot({ path: "smoke-timeline.png" });
-    await snap("timeline", page, failures);
+    await snapVisual("timeline", page, failures);
     // ---- hazard classes, comparing scenarios, the property check, a dam release
     var extra = {};
     try {
