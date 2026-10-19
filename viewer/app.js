@@ -1781,6 +1781,7 @@ import './inertial-grid.js';
       // rasters smoothly there so the shoreline is soft; crisp cells below
       const syncSmooth = () => m.getContainer().classList.toggle('flood-smooth', m.getZoom() >= 15);
       m.on('zoomend', syncSmooth); syncSmooth();
+      m.on('zoomend', declutterPins);
       m.on('layeradd layerremove', syncLayerLists);
       window.__floodTestZoom = (lat, lng, z) => { m.setView([lat, lng], z, { animate: false }); };   // returns nothing: a Leaflet map can't be serialised by the test driver
       // simulate a tap on the map (not on a marker) at a place, for tests
@@ -2614,6 +2615,7 @@ import './inertial-grid.js';
     }, 'image/png');
     if (state.gauge >= 0) {
       state.gaugeMarker.setLatLng(cellLatLng(state.gauge));
+      declutterPins();
       state.gaugeMarker.setTooltipContent(state.eventsApply ? 'Brisbane City gauge' : `Gauge: ${(state.areaMeta && state.areaMeta.name) || 'modelled area'}`);
     }
   }
@@ -3489,11 +3491,30 @@ import './inertial-grid.js';
   }
   const hiddenNums = new Set();
 
-  function numIcon(n, color, active) {
+  // off: nudged up and to the right, so a report pin doesn't sit on top of
+  // the model's gauge marker with the same number (see declutterPins)
+  function numIcon(n, color, active, off) {
     return window.L.divIcon({
       className: `report-pin${active ? ' active' : ''}`,
-      html: `<span style="background:${color}">${n}</span>`, iconSize: [24, 24], iconAnchor: [12, 12],
+      html: `<span style="background:${color}">${n}</span>`, iconSize: [24, 24], iconAnchor: off ? [-6, 32] : [12, 12],
     });
+  }
+  // A report pin and its model's gauge marker are the same number at nearly
+  // the same spot once zoomed in: offset the report pin while they'd overlap
+  // (within ~26 px) so both stay visible and tappable.
+  function declutterPins() {
+    const m = state.lmap;
+    if (!m) return;
+    for (const r of reports) {
+      const area = r.pin && areaForReport(r);
+      if (!area || !area.marker) continue;
+      const d = m.latLngToContainerPoint(r.pin.getLatLng()).distanceTo(m.latLngToContainerPoint(area.marker.getLatLng()));
+      const off = d < 26;
+      if (off !== !!r.pinOff) {
+        r.pinOff = off;
+        r.pin.setIcon(numIcon(r.n, (GAUGE_STYLE[r.kind] || GAUGE_STYLE.river).color, r === activeReport, off));
+      }
+    }
   }
 
   function closeReport(r) {
@@ -3522,7 +3543,7 @@ import './inertial-grid.js';
     $('reportPrev').hidden = $('reportNext').hidden = n < 2;
     reports.forEach((x) => {
       if (!x.pin) return;
-      x.pin.setIcon(numIcon(x.n, (GAUGE_STYLE[x.kind] || GAUGE_STYLE.river).color, x === r));
+      x.pin.setIcon(numIcon(x.n, (GAUGE_STYLE[x.kind] || GAUGE_STYLE.river).color, x === r, x.pinOff));
     });
     reports.forEach(refreshReportLink);
     renderPlaces();
@@ -6674,13 +6695,17 @@ import './inertial-grid.js';
   window.__floodCouncilLayers = () => COUNCIL_OVERLAYS.map((o) => ({ name: o.name, test: o.test, minZoom: o.minZoom }));
 
   let sayT = 0;
+  // The toast: gone after ~6 s; a failure stays until the next message or a tap
   function say(text) {
     const r = $('readout');
     r.textContent = text;
     r.hidden = !text;
+    const bad = /\b(fail(ed)?|couldn.t|could not|can.t|cannot|error|unable)\b/i.test(text || '');
+    r.classList.toggle('error', bad);
     clearTimeout(sayT);
-    sayT = setTimeout(() => { r.hidden = true; }, 5000);
+    if (!bad) sayT = setTimeout(() => { r.hidden = true; }, 6000);
   }
+  $('readout').addEventListener('click', () => { $('readout').hidden = true; });
 
   $('legendToggle').addEventListener('click', (e) => {
     const shown = e.target.getAttribute('aria-expanded') === 'true';

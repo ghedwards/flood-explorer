@@ -40,6 +40,8 @@ const OUT = process.env.OUT || "shots";
     await run("model", async () => {
       await page.selectOption("#area", `preset:${PLACE}`);
       await page.waitForFunction("window.__floodStatus.local && window.__floodStatus.local.ok === true", null, { timeout: 120000 });
+      await page.waitForTimeout(600);
+      await shot(page, "03a-toast");
       await settle(page, 5000);
     });
     await shot(page, "03-model");
