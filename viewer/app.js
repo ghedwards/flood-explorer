@@ -109,7 +109,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
    * where it drops and flattens (Maitland: 29 km² of floodplain counted as
    * normal water). Now each cell of the river's path below the gauge gets
    *   bed + normal depth + rise,
-   * where the bed is smoothed (the median over ~300 m, so a road embankment
+   * (with the bay level in place of bed + depth where that's higher), where
+   * the bed is smoothed (the median over ~300 m, so a road embankment
    * without its culvert or a deep hole in the data doesn't set the level)
    * and held at the highest bed further downstream (water pools behind a
    * riffle, so the surface never rises downstream); the rise is how far the
@@ -164,14 +165,17 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (s.wse || s.gauge == null || s.gauge < 0) return s;
     const pr = riverBelow(a, s.gauge, meta);
     if (!pr || (!pr.path.length && !pr.dam)) return s;
-    const normal = (pr.dam ? pr.dam.lake : a.dem[s.gauge]) + RIVER_DEPTH_M;
+    // the normal surface: the bed + depth, or the bay where that's higher
+    // (estuaries); the rise over it tapers to the bay at the sea, so a coastal
+    // river keeps the old straight fall from the gauge to the bay level
+    const normal = Math.max(s.bayLevel, (pr.dam ? pr.dam.lake : a.dem[s.gauge]) + RIVER_DEPTH_M);
     const rise = pr.dam ? Math.max(0, s.gaugeLevel - normal) : s.gaugeLevel - normal;
     const own = new Set((s.controls || []).map((c) => c.cell));
     const ctrl = pr.dam ? [{ cell: pr.dam.crest, level: s.gaugeLevel }] : [];
     for (let k = 0; k < pr.path.length; k++) {
       const c = pr.path[k];
       if (own.has(c)) break;   // a level point set further down takes over from here
-      ctrl.push({ cell: c, level: Math.min(s.gaugeLevel, Math.max(s.bayLevel, pr.env[k] + RIVER_DEPTH_M + rise * pr.taper[k])) });
+      ctrl.push({ cell: c, level: Math.min(s.gaugeLevel, Math.max(s.bayLevel, pr.env[k] + RIVER_DEPTH_M) + rise * pr.taper[k]) });
     }
     return Object.assign({}, s, { controls: (s.controls || []).concat(ctrl) });
   }
