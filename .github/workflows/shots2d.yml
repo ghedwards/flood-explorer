@@ -85,9 +85,10 @@ jobs:
         if: github.event_name == 'push' || inputs.target == 'build'
         continue-on-error: true
         env:
-          SITE_URL: http://127.0.0.1:8000/
           OUT: ${{ runner.temp }}/shots
-        run: node tests/normal-check.js
+        run: |
+          SITE_URL=https://ghedwards.github.io/flood-explorer/ TAG=live node tests/normal-check.js
+          SITE_URL=http://127.0.0.1:8000/ TAG=build node tests/normal-check.js
       - name: Service worker tile cache (Chromium and Firefox)
         if: github.event_name == 'push' || inputs.target == 'build'
         env:

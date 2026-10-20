@@ -917,8 +917,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
         : { gaugeLevel: a.dem[state.gauge] + 0.3, bayLevel: 0 };
       state.base = F.inundate(a, withRiverBelow(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }), state.areaMeta), { slim: !wantWse });
     }
+    ensureSatWater(a, state.geo);
+    if (state.baseMode !== 'flash') markLowGround(a, state.base);
     const mode = ctl.floodType.value;
-    state.riverRun = mode === 'flash' ? null : F.inundate(a, withRiverBelow(a, s, state.areaMeta), { slim: !wantWse });
+    state.riverRun = mode === 'flash' ? null : dryLowGround(F.inundate(a, withRiverBelow(a, s, state.areaMeta), { slim: !wantWse }), state.base);
     if (mode === 'river') { state.run = state.riverRun; state.flash = null; } else {
       const fl = F.flashFlood(a, Object.assign(storm(), { slim: 1 }));
       state.flash = fl.summary;
@@ -1037,6 +1039,85 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   const WATER = [109, 147, 173];
   // normal (river or lake) water over imagery: its own teal, clearly visible
   // but not a flood blue (WATER above stays the relief view's water colour)
+  // What is normally water. The normal-level run wets everything below the
+  // river's normal surface that connects to it, which on a terrain model
+  // includes ground that levees, drains or terrain errors keep dry, and its
+  // drainage lines run under streets. Digital Earth Australia's record of
+  // how often satellites have seen water at each spot (Landsat, 1987 on)
+  // says which is which: ground below the normal level that is almost never
+  // seen wet is "low ground", dry until the water rises above its normal
+  // level there; drainage lines never seen wet aren't tinted as water.
+  const SAT_LOW = 0.05;      // seen wet in under 5% of clear looks: not normally water
+  const SAT_CHANNEL = 0.02;  // a channel seen wet at least this often is drawn as water
+  async function fetchSatFreq(a, g) {
+    const W = Math.min(a.W, 1000), H = Math.round(W * a.H / a.W);
+    const url = `${DEA_WCS}?service=WCS&version=1.0.0&request=GetCoverage&coverage=ga_ls_wo_fq_myear_3&measurements=frequency`
+      + `&crs=EPSG:4326&bbox=${g.west},${g.south},${g.east},${g.north}&width=${W}&height=${H}&format=GeoTIFF`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`the satellite service returned ${r.status}`);
+    const buf = await r.arrayBuffer();
+    let freq, fw, fh;
+    try { const t = F.parseSimpleTiff(buf); freq = t.data; fw = t.W; fh = t.H; } catch (err) {
+      await loadGeoTiffLib();
+      const img = await (await window.GeoTIFF.fromArrayBuffer(buf)).getImage();
+      fw = img.getWidth(); fh = img.getHeight(); freq = (await img.readRasters({ samples: [0] }))[0];
+    }
+    // per model cell: the most water any satellite pixel in it saw (-1: no record)
+    const best = new Float32Array(a.N).fill(-1);
+    for (let y = 0; y < fh; y++) {
+      const ym = Math.min(a.H - 1, Math.floor(((y + 0.5) / fh) * a.H));
+      for (let x = 0; x < fw; x++) {
+        const v = freq[y * fw + x], i = ym * a.W + Math.min(a.W - 1, Math.floor(((x + 0.5) / fw) * a.W));
+        if (Number.isFinite(v) && v >= 0 && v <= 1 && v > best[i]) best[i] = v;
+      }
+    }
+    return { best, size: [fw, fh] };
+  }
+  // Start fetching the satellite record for this area (once); when it
+  // arrives, the normal water is worked out again.
+  function ensureSatWater(a, g) {
+    if (!a || !g || a.sat !== undefined) return;
+    a.sat = null;
+    fetchSatFreq(a, g).then((r) => {
+      a.sat = r.best;
+      status.normalWater = Object.assign({}, status.normalWater, { satellite: 'loaded' });
+      if (state.a === a && state.base) { state.base = null; runScenario(); }
+    }, (err) => {
+      a.sat = false;   // keep the terrain-only normal water
+      status.normalWater = { satellite: 'unavailable', error: String(err && err.message || err) };
+    });
+  }
+  // Mark low ground on a fresh normal-level run: below the normal surface
+  // but almost never seen wet. It leaves the normal water (base.wet) and is
+  // kept with its normal depth, so later runs leave it dry until deeper.
+  function markLowGround(a, base) {
+    if (!a.sat || base.lowMarked) return;
+    const idx = [], dep = [];
+    const lowMask = new Uint8Array(a.N);
+    for (let i = 0; i < a.N; i++) {
+      if (!base.wet[i] || a.ocean[i]) continue;
+      const f = a.sat[i];
+      if (f < 0 || f >= SAT_LOW) continue;
+      idx.push(i); dep.push(base.depth[i]); lowMask[i] = 1;
+      base.wet[i] = 0;
+    }
+    base.lowMarked = true;
+    base.low = { idx: Int32Array.from(idx), depth: Float32Array.from(dep), mask: lowMask };
+    const km2 = (n) => +(n * a.cell * a.cell / 1e6).toFixed(2);
+    status.normalWater = Object.assign({}, status.normalWater, { lowGroundKm2: km2(idx.length) });
+  }
+  // A river run: low ground stays dry until the water there is deeper than
+  // at the normal level.
+  function dryLowGround(run, base) {
+    const low = base && base.low;
+    if (!run || !low) return run;
+    for (let k = 0; k < low.idx.length; k++) {
+      const i = low.idx[k];
+      if (run.wet[i] && run.depth[i] <= low.depth[k] + 0.05) { run.wet[i] = 0; run.depth[i] = 0; if (run.level) run.level[i] = NaN; }
+    }
+    return run;
+  }
+
   const NORMAL_WATER = [38, 166, 154];
   const CHANNEL_ALPHA = 180;  // ~70 %
   const HYPSO = [
@@ -1188,7 +1269,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       const channel = a.stream[i] && a.acc[i] * cellKm2 > streamThr;
       if (streamA && channel) {
         d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = streamA;
-      } else if (!relief && !a.ocean[i] && (channel || (base && base.wet[i]))) {
+      } else if (!relief && !a.ocean[i] && ((channel && !(a.sat && a.sat[i] >= 0 && a.sat[i] < SAT_CHANNEL)) || (base && base.wet[i]))) {
         // river channel and normal-level water over imagery: a light neutral
         // tint (the imagery shows the real water), not a flood colour
         d[o] = NORMAL_WATER[0]; d[o + 1] = NORMAL_WATER[1]; d[o + 2] = NORMAL_WATER[2]; d[o + 3] = CHANNEL_ALPHA;
@@ -1559,27 +1640,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   window.__floodNormalCheck = async () => {
     const a = state.a, base = state.base, g = state.geo;
     if (!a || !base || !g) return null;
-    const W = Math.min(a.W, 1000), H = Math.round(W * a.H / a.W);
-    const url = `${DEA_WCS}?service=WCS&version=1.0.0&request=GetCoverage&coverage=ga_ls_wo_fq_myear_3&measurements=frequency`
-      + `&crs=EPSG:4326&bbox=${g.west},${g.south},${g.east},${g.north}&width=${W}&height=${H}&format=GeoTIFF`;
-    const r = await fetch(url);
-    if (!r.ok) return { error: `HTTP ${r.status}` };
-    const buf = await r.arrayBuffer();
-    let freq, fw, fh;
-    try { const t = F.parseSimpleTiff(buf); freq = t.data; fw = t.W; fh = t.H; } catch (err) {
-      await loadGeoTiffLib();
-      const img = await (await window.GeoTIFF.fromArrayBuffer(buf)).getImage();
-      fw = img.getWidth(); fh = img.getHeight(); freq = (await img.readRasters({ samples: [0] }))[0];
-    }
-    // per model cell: the most water any satellite pixel in it saw
-    const best = new Float32Array(a.N).fill(-1);
-    for (let y = 0; y < fh; y++) {
-      const ym = Math.min(a.H - 1, Math.floor(((y + 0.5) / fh) * a.H));
-      for (let x = 0; x < fw; x++) {
-        const v = freq[y * fw + x], xm = Math.min(a.W - 1, Math.floor(((x + 0.5) / fw) * a.W)), i = ym * a.W + xm;
-        if (Number.isFinite(v) && v >= 0 && v <= 1 && v > best[i]) best[i] = v;
-      }
-    }
+    const best = a.sat || (await fetchSatFreq(a, g)).best;
     const cellKm2 = (a.cell * a.cell) / 1e6, k = (n) => +(n * cellKm2).toFixed(2);
     const c = { channel: 0, seenOften: 0, seenSometimes: 0, rarely: 0, never: 0, noData: 0 };
     let deepLow = 0;
@@ -1589,11 +1650,19 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       const f = best[i];
       if (f < 0) c.noData++; else if (f >= 0.5) c.seenOften++; else if (f >= 0.2) c.seenSometimes++; else if (f >= 0.02) c.rarely++; else { c.never++; if (base.depth && base.depth[i] > 1) deepLow++; }
     }
+    let tinted = 0, untinted = 0;
+    const thr = parseFloat(ctl.streamArea && ctl.streamArea.value) || 0;
+    for (let i = 0; i < a.N; i++) {
+      if (!a.stream[i] || a.ocean[i] || base.wet[i]) continue;
+      if (best[i] >= 0 && best[i] < SAT_CHANNEL) untinted++; else tinted++;
+    }
     const lv = base.level && state.gauge >= 0 ? base.level[state.gauge] : null;
     return {
       cell: Math.round(a.cell), gauge: state.gauge >= 0 ? { ground: +a.dem[state.gauge].toFixed(2), normalLevel: lv != null ? +lv.toFixed(2) : null } : null,
       km2: Object.fromEntries(Object.entries(c).map(([n, v]) => [n, k(v)])), neverSeenDeeperThan1m: k(deepLow),
-      bay: parseFloat(ctl.bayLevel.value), satSize: [fw, fh],
+      lowGroundKm2: base.low ? k(base.low.idx.length) : null, satellite: a.sat ? 'used' : a.sat === false ? 'unavailable' : 'pending',
+      drainageLinesKm: { drawn: +(tinted * a.cell / 1000).toFixed(1), notDrawn: +(untinted * a.cell / 1000).toFixed(1) }, streamThr: thr,
+      bay: parseFloat(ctl.bayLevel.value),
     };
   };
   window.__floodOpenGaugeNamed = (re) => {
@@ -3540,6 +3609,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (a.ocean[i]) parts.push('sea');
     else if (run.wet[i] && state.base && state.base.wet[i]) parts.push(`normal water ${fmt(run.depth[i], 2)} m deep (river or lake, not flood)`, `level ${fmt(run.level[i], 2)} m`);
     else if (run.wet[i]) parts.push(`flood water ${fmt(run.depth[i], 2)} m deep`, `level ${fmt(run.level[i], 2)} m`);
+    else if (state.base && state.base.low && state.base.low.mask[i]) parts.push('dry: low ground, below the river\'s normal level but almost never seen wet by satellite (levees, drains or a terrain error); it floods once the water rises above its normal level');
     else parts.push('dry');
     return parts.join(' · ');
   }
@@ -6626,11 +6696,11 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
         const q = frame[c];
         if (q > 0) { wet[c] = 1; depth[c] = (q / 255) * maxD; level[c] = a.dem[c] + depth[c]; wse[c] = level[c]; }
       }
-      run = { depth, wet, level, wse, onPath: new Uint8Array(n), vx: new Float64Array(n), vy: new Float64Array(n) };
+      run = dryLowGround({ depth, wet, level, wse, onPath: new Uint8Array(n), vx: new Float64Array(n), vy: new Float64Array(n) }, state.base);
     } else {
       const t = tl.t0 + k * tl.step;
       F.waveSurface(a, tl.wave, t, wse);
-      run = F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }), { slim: 1 });
+      run = dryLowGround(F.inundate(a, Object.assign({}, tl.s, { wse, bayLevel: tl.wave.bayAt(t) }), { slim: 1 }), state.base);
     }
     state.run = run;
     state.timeView = true;
@@ -7227,7 +7297,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const a = state.a;
     if (state.gauge < 0 || ctl.floodType.value === 'flash') return null;
     const base = scenario(), lo0 = a.dem[state.gauge] + 0.3, hi0 = parseFloat(ctl.gaugeLevel.max) || lo0 + 10;
-    const wetAt = (L) => { const r = F.inundate(a, withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
+    const wetAt = (L) => { const r = dryLowGround(F.inundate(a, withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }), state.base); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
     if (wetAt(lo0)) return { level: lo0, always: true };
     if (!wetAt(hi0)) return { above: hi0 };
     let lo = lo0, hi = hi0;

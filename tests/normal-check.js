@@ -9,26 +9,35 @@ const path = require("node:path");
 
 const URL = process.env.SITE_URL || "http://127.0.0.1:8000/";
 const OUT = process.env.OUT || "shots";
+const TAG = process.env.TAG || "build";
 
 async function ready(page) {
   await page.waitForFunction("window.__floodDownstreamDiag && window.__floodDownstreamDiag()", null, { timeout: 240000 });
+  // the satellite record (this build) arrives after the first run
+  await page.waitForFunction("window.__floodStatus.normalWater && window.__floodStatus.normalWater.lowGroundKm2 != null", null, { timeout: 45000 }).catch(() => {});
   await page.waitForTimeout(2500);
 }
 
 async function measure(page, tag) {
   const r = await page.evaluate(async () => Object.assign({ summary: document.getElementById("summaryLine").textContent, area: window.__floodStatus.area || null }, await window.__floodNormalCheck()));
+  r.normalWater = await page.evaluate(() => window.__floodStatus.normalWater || null);
   const ll = await page.evaluate(() => window.__floodGaugeLatLng());
   if (ll) {
+    await page.evaluate((c) => { if (window.__floodMap) window.__floodMap.setView(c, 13); }, ll);
+    await page.waitForTimeout(3500);
+    await page.screenshot({ path: path.join(OUT, `normal-${TAG}-${tag}-wide.png`) });
     await page.evaluate((c) => { if (window.__floodMap) window.__floodMap.setView(c, 15); }, ll);
   }
   await page.waitForTimeout(3000);
-  await page.screenshot({ path: path.join(OUT, `normal-${tag}.png`) });
+  await page.screenshot({ path: path.join(OUT, `normal-${TAG}-${tag}.png`) });
   // at the normal level itself: only normal water shows
   if (r.gauge && r.gauge.normalLevel != null) {
     await page.evaluate((v) => window.__floodSetLevel(v), r.gauge.normalLevel);
     await page.waitForTimeout(3000);
     r.atNormal = await page.evaluate(() => document.getElementById("summaryLine").textContent);
-    await page.screenshot({ path: path.join(OUT, `normal-${tag}-at-normal.png`) });
+    await page.evaluate(() => { const ll = window.__floodGaugeLatLng(); if (ll && window.__floodMap) window.__floodMap.setView(ll, 13); });
+    await page.waitForTimeout(3500);
+    await page.screenshot({ path: path.join(OUT, `normal-${TAG}-${tag}-at-normal.png`) });
   }
   return r;
 }
@@ -51,7 +60,7 @@ async function measure(page, tag) {
       results[tag] = await measure(page, tag);
     } catch (e) {
       results[tag] = { error: String(e).slice(0, 300) };
-      await page.screenshot({ path: path.join(OUT, `normal-${tag}-error.png`) }).catch(() => {});
+      await page.screenshot({ path: path.join(OUT, `normal-${TAG}-${tag}-error.png`) }).catch(() => {});
     }
     console.log(tag, JSON.stringify(results[tag]));
     await page.close();
@@ -71,6 +80,6 @@ async function measure(page, tag) {
   for (const place of ["maitland", "rockhampton", "lismore"]) {
     await run(place, async (page) => { await page.selectOption("#area", `preset:${place}`); });
   }
-  fs.writeFileSync(path.join(OUT, "normal-check.json"), JSON.stringify(results, null, 1));
+  fs.writeFileSync(path.join(OUT, `normal-check-${TAG}.json`), JSON.stringify(results, null, 1));
   await browser.close();
 })();
