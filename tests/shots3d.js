@@ -153,6 +153,14 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   await page.waitForTimeout(3000);
   await state3d("relief");
   await shot("8-3d-relief");
+  // switching the basemap while in 3D re-drapes the terrain with it
+  await step("imagery-again", async () => { await page.click("#mode3d"); });
+  await step("basemap-streets", async () => { await page.evaluate(() => window.__floodSetBasemap("Streets")); });
+  await page.waitForTimeout(12000);
+  await state3d("streets");
+  await shot("8b-3d-streets-basemap");
+  await step("basemap-satellite", async () => { await page.evaluate(() => window.__floodSetBasemap("Satellite (Esri)")); });
+  await page.waitForTimeout(8000);
   // the Scenario button brings its panel back over the 3D view
   await step("scenario-panel", async () => { await page.click('.tool[data-open="panel-scenario"]'); });
   await page.waitForTimeout(2000);

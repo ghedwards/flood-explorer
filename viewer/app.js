@@ -1131,11 +1131,7 @@ import './inertial-grid.js';
       // the 2D map's active XYZ basemap, for per-tile imagery in 3D. WebGL
       // textures need CORS, so a basemap that isn't loaded crossOrigin
       // (WMS, state aerial) falls back to the default satellite layer.
-      getBasemap: () => {
-        let bm = BASEMAPS.find((b) => b.name === status.basemap);
-        if (!bm || bm.wms || !bm.opts.crossOrigin) bm = BASEMAPS[0];
-        return { name: bm.name, template: bm.url(), subdomains: bm.opts.subdomains || '', maxZoom: bm.opts.maxZoom, attr: bm.opts.attribution };
-      },
+      getBasemap: () => basemap3d(),
       // DEM-H for an exact lon/lat box: the terrain fallback when the tile
       // service can't be reached. n x n samples, sea as SEA_LEVEL (-1.5 m).
       fetchDemBox: async (box, n) => {
@@ -1151,6 +1147,21 @@ import './inertial-grid.js';
       onUnsupported: (text) => say(text),
       onClose: () => { view3d = null; for (const ar of areaReg.values()) delete ar.__area3d; },
     });
+  }
+  // the active basemap as the 3D view drapes it; one that can't be used as a
+  // WebGL texture (no CORS: WMS, state aerial) falls back to satellite
+  function basemap3d() {
+    let bm = BASEMAPS.find((b) => b.name === status.basemap);
+    const fallback = !bm || bm.wms || !bm.opts.crossOrigin;
+    if (fallback) bm = BASEMAPS[0];
+    return { name: bm.name, template: bm.url(), subdomains: bm.opts.subdomains || '', maxZoom: bm.opts.maxZoom, attr: bm.opts.attribution, fallback };
+  }
+  // a basemap switch while 3D is open re-drapes it
+  function basemapChanged() {
+    if (!view3d || !view3d.setBasemap) return;
+    const bm = basemap3d();
+    view3d.setBasemap(bm);
+    if (bm.fallback) say(`3D can't drape ${status.basemap || 'that layer'}, so it keeps showing ${bm.name}.`);
   }
   // the visible map box as [s, w, n, e]; null when the map isn't open
   function viewBounds3d() {
@@ -1804,6 +1815,7 @@ import './inertial-grid.js';
       m.on('baselayerchange', (e) => {
         status.basemap = e.name;
         try { localStorage.setItem(BASEMAP_KEY, e.name); } catch (err) { /* storage blocked */ }
+        basemapChanged();
       });
       // for the automated browser check
       window.__floodSetBasemap = (name) => setBasemap(m, layers, name);
@@ -2005,6 +2017,7 @@ import './inertial-grid.js';
     status.basemap = name;
     try { localStorage.setItem(BASEMAP_KEY, name); } catch (err) { /* storage blocked */ }
     syncLayerLists();
+    basemapChanged();
   }
 
   function probeBasemapFailover(fromName) {

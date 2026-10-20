@@ -148,15 +148,29 @@ class Scene3d {
            behind the key/panel cards otherwise); the fab corner is free
            while the 3D view is open, so the controls park on the right */
         #view3dChrome{position:fixed;inset:0;z-index:1004;pointer-events:none}
-        #view3dChrome .bar3d{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);display:flex;flex-wrap:wrap;max-width:min(calc(100vw - 28px),780px);gap:8px 14px;align-items:center;padding:9px 14px;background:rgba(10,22,36,.92);color:#dce8f2;font:14px system-ui,sans-serif;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.4);pointer-events:auto}
-        #view3dChrome .bar3d label{display:flex;gap:6px;align-items:center}
-        #view3dChrome button{font:inherit;color:#dce8f2;background:#17334d;border:1px solid #3d5a75;border-radius:6px;padding:4px 12px;cursor:pointer}
-        #view3dChrome .compass{font-weight:600;min-width:2.5em;text-align:center}
-        #view3dChrome .key3d{display:flex;gap:4px;align-items:center;font-size:11px;opacity:.9}
-        #view3dChrome .key3d i{display:inline-block;width:14px;height:10px;border-radius:2px;margin-left:5px}
-        #view3dChrome .dim{font-size:12px;opacity:.75}
-        #view3dChrome .attr3d{flex-basis:100%;font-size:11px;opacity:.7;line-height:1.3}
-        #globe3dWrap{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 76px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
+        #view3dChrome .bar3d{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 22px);width:min(560px,calc(100vw - 2 * var(--gap,12px)));display:flex;flex-direction:column;overflow:hidden;background:var(--surface,#fff);color:var(--ink,#12202a);font:400 13px/1.35 var(--font-body,system-ui,sans-serif);border-radius:12px;box-shadow:var(--shadow,0 4px 18px rgba(0,0,0,.3));pointer-events:auto}
+        #view3dChrome .head3d{display:flex;align-items:center;gap:10px;padding:8px 10px 8px 14px}
+        #view3dChrome .title3d{font:700 1rem/1.2 var(--font-display,system-ui);font-stretch:85%;white-space:nowrap}
+        #view3dChrome .dim{flex:1;min-width:0;font-size:12px;color:var(--muted,#586874);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        #view3dChrome button{font:600 13px var(--font-body,system-ui);cursor:pointer}
+        #view3dChrome #close3d{border:1px solid var(--accent,#0d5f8c);background:var(--accent,#0d5f8c);color:var(--accent-ink,#fff);border-radius:7px;padding:5px 12px;white-space:nowrap}
+        #view3dChrome .fold3d{border:0;background:none;color:var(--ink,#12202a);padding:2px;display:flex}
+        #view3dChrome .fold3d svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2;transition:transform .15s}
+        #view3dChrome .bar3d.collapsed .fold3d svg{transform:rotate(-90deg)}
+        #view3dChrome .bar3d.collapsed .body3d{display:none}
+        #view3dChrome .body3d{display:grid;gap:8px;padding:10px 14px 10px;border-top:1px solid var(--line,#d3dce2)}
+        #view3dChrome .row3d{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+        #view3dChrome .row3d label{display:flex;gap:8px;align-items:center;color:var(--muted,#586874)}
+        #view3dChrome .row3d input[type=range]{width:130px;accent-color:var(--accent,#0d5f8c)}
+        #view3dChrome .val3d{font-variant-numeric:tabular-nums;color:var(--ink,#12202a);min-width:2.6em}
+        #view3dChrome #mode3d{display:inline-flex;padding:0;border:1px solid var(--line,#d3dce2);border-radius:7px;background:var(--surface-2,#f4f7f9);overflow:hidden}
+        #view3dChrome #mode3d span{padding:4px 10px;color:var(--muted,#586874)}
+        #view3dChrome #mode3d span.on{background:var(--accent,#0d5f8c);color:var(--accent-ink,#fff)}
+        #view3dChrome .key3d{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;font-size:12px;color:var(--muted,#586874)}
+        #view3dChrome .key3d i{display:inline-block;width:14px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+        #view3dChrome .attr3d{font-size:11px;color:var(--muted,#586874);line-height:1.3}
+        @media (max-width:760px){#view3dChrome .bar3d{bottom:calc(var(--bar,64px) + env(safe-area-inset-bottom,0px) + 8px)}#globe3dWrap{bottom:calc(var(--bar,64px) + env(safe-area-inset-bottom,0px) + 70px) !important}}
+        #globe3dWrap{position:absolute;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);width:68px;height:68px;border-radius:50%;background:rgba(8,20,32,.72);border:1px solid #3d5a75;box-shadow:0 4px 18px rgba(0,0,0,.4);cursor:grab;overflow:hidden;pointer-events:auto}
         #globe3dWrap:active{cursor:grabbing}
         #globe3d{width:100%;height:100%;display:block}
       </style>`;
@@ -166,15 +180,21 @@ class Scene3d {
     // clipped this to a sliver
     bar.className = 'bar3d';
     bar.innerHTML = `
-      <button type="button" id="close3d">Back to map (Esc)</button>
-      <label>vertical ×<input id="exag3d" type="range" min="1" max="10" step="0.5" value="${EXAG_DEFAULT}" style="width:120px"><span id="exagVal">${EXAG_DEFAULT}</span></label>
-      <span id="scrub3dWrap" hidden><label>step <input id="scrub3d" type="range" min="0" max="0" value="0" style="width:220px"><span id="scrubVal"></span></label></span>
-      <button type="button" id="mode3d" title="Satellite/map imagery or plain relief colours"></button>
-      <span class="compass" id="compass3d">S</span>
-      <span class="key3d" title="Flood depth (the 3D view's own shades)">${['<0.5', '0.5\u20131', '1\u20132', '2\u20134', '>4'].map((t, i) => `<i style="background:rgb(${BANDS3D[i][1].join(',')})"></i>${t}`).join('')} m</span>
-      <span id="tiles3d" class="dim"></span>
-      <span style="margin-left:auto;font-size:12px;opacity:.75">experimental</span>
-      <div class="attr3d" id="attr3d"></div>`;
+      <div class="head3d">
+        <span class="title3d">3D view</span>
+        <span id="tiles3d" class="dim"></span>
+        <button type="button" id="close3d" title="Back to the map (Esc)">Back to map</button>
+        <button type="button" class="fold3d" id="fold3d" aria-expanded="true" aria-label="Show or hide the 3D controls"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+      </div>
+      <div class="body3d">
+        <div class="row3d">
+          <label title="Vertical exaggeration: stretches heights so low relief reads">Height ×<input id="exag3d" type="range" min="1" max="10" step="0.5" value="${EXAG_DEFAULT}"><span class="val3d" id="exagVal">${EXAG_DEFAULT}</span></label>
+          <button type="button" id="mode3d" title="Satellite/map imagery or plain relief colours" aria-pressed="false"><span data-m="img">Imagery</span><span data-m="rel">Relief</span></button>
+        </div>
+        <div class="row3d" id="scrub3dWrap" hidden><label>Time step <input id="scrub3d" type="range" min="0" max="0" value="0" style="width:200px"><span class="val3d" id="scrubVal"></span></label></div>
+        <div class="key3d" title="Flood depth">Depth ${['<0.5', '0.5\u20131', '1\u20132', '2\u20134', '>4 m'].map((t, i) => `<span><i style="background:rgb(${BANDS3D[i][1].join(',')})"></i>${t}</span>`).join('')}</div>
+        <div class="attr3d" id="attr3d"></div>
+      </div>`;
 
     // mini-globe navigation widget (Google-Earth style): a small shaded
     // sphere that mirrors where the camera looks; drag to orbit (yaw and
@@ -251,11 +271,17 @@ class Scene3d {
     window.addEventListener('keydown', this.onKey, true);
     const modeBtn = bar.querySelector('#mode3d');
     modeBtn.hidden = !this.basemap;
-    modeBtn.textContent = this.imageryOn ? 'Imagery' : 'Relief';
+    this.syncModeBtn();
     modeBtn.addEventListener('click', () => {
       this.imageryOn = !this.imageryOn;
-      modeBtn.textContent = this.imageryOn ? 'Imagery' : 'Relief';
+      this.syncModeBtn();
       this.applyImageryMode();
+    });
+    const fold = bar.querySelector('#fold3d');
+    fold.addEventListener('click', () => {
+      const open = fold.getAttribute('aria-expanded') === 'true';
+      fold.setAttribute('aria-expanded', String(!open));
+      bar.classList.toggle('collapsed', open);
     });
     const exag = bar.querySelector('#exag3d');
     exag.addEventListener('input', () => {
@@ -626,9 +652,10 @@ class Scene3d {
   loadImagery(st) {
     st.imgState = 'loading';
     this.imgLoading++;
+    const epoch = this.imgEpoch || 0;
     this.texLoader.load(this.imageUrl(st.z, st.x, st.y), (tex) => {
       this.imgLoading--;
-      if (!this.controls || !st.mesh || this.cache.get(st.key) !== st) { tex.dispose(); return; }
+      if (!this.controls || !st.mesh || this.cache.get(st.key) !== st || epoch !== (this.imgEpoch || 0)) { tex.dispose(); return; }
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = Math.min(MAX_ANISO, this.renderer.capabilities.getMaxAnisotropy());
       st.tex = tex; st.imgState = 'ready';
@@ -637,14 +664,14 @@ class Scene3d {
       this.needSelect = true;
     }, undefined, () => {
       this.imgLoading--;
+      if (epoch !== (this.imgEpoch || 0)) return;
       st.imgState = 'failed'; st.imgFailAt = Date.now();
       this.imgFailed++;
       if (this.controls && this.imgLoaded === 0 && this.imgFailed >= 8) {
         // the basemap can't be used as texture (CORS, outage): plain relief
         this.say('imagery', "3D: couldn't load imagery for the terrain, showing relief colours instead.");
         this.imageryOn = false;
-        const btn = document.getElementById('mode3d');
-        if (btn) btn.textContent = 'Relief';
+        this.syncModeBtn();
         this.applyImageryMode();
       }
       this.needSelect = true;
@@ -661,7 +688,7 @@ class Scene3d {
    * applies it as the material colour. Re-measured when the target has
    * moved far (different ground, different mosaic). */
   async calibrateImagery() {
-    if (this.calibBusy || !this.basemap) return;
+    if (this.calibBusy || !this.basemap || !/satellite/i.test(this.basemap.name)) return;
     const t = this.controls.target;
     if (this.calibAt && Math.hypot(t.x - this.calibAt[0], t.z - this.calibAt[1]) < 60000) return;
     this.calibBusy = true;
@@ -773,8 +800,40 @@ class Scene3d {
   updateStatus() {
     const el = document.getElementById('tiles3d');
     if (!el) return;
-    const pending = this.fetching + this.queue.size;
-    el.textContent = pending ? `loading ${pending} tile${pending === 1 ? '' : 's'}` : `${this.drawn.size} tiles`;
+    const pending = this.fetching + this.queue.size + this.imgLoading + this.imgQueue.size;
+    el.textContent = pending ? 'loading detail…' : '';
+  }
+
+  syncModeBtn() {
+    const btn = document.getElementById('mode3d');
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', String(!this.imageryOn));
+    for (const sp of btn.querySelectorAll('span')) sp.classList.toggle('on', (sp.dataset.m === 'img') === this.imageryOn);
+  }
+
+  /* The 2D map's basemap changed: drape the new one. Textures (and the
+   * tone match, measured per imagery service) are dropped and reloaded;
+   * tiles show relief colours until theirs arrive. */
+  setBasemap(bm) {
+    if (!bm || (this.basemap && this.basemap.template === bm.template)) return;
+    this.basemap = bm;
+    this.imgEpoch = (this.imgEpoch || 0) + 1;
+    this.gains = {}; this.offs = {}; this.calibAt = null;
+    this.imgQueue.clear();
+    this.imgLoaded = 0; this.imgFailed = 0;
+    for (const st of this.cache.values()) {
+      if (st.tex) st.tex.dispose();
+      st.tex = null; st.imgState = null; st.imgFrom = null;
+      if (!st.mesh) continue;
+      const mat = st.mesh.material;
+      mat.map = null; mat.vertexColors = true; mat.color.setRGB(1, 1, 1, THREE.LinearSRGBColorSpace); mat.userData.uOff.value.set(0, 0, 0); mat.needsUpdate = true;
+      st.mesh.geometry.attributes.uv.array.set(st.uv0); st.mesh.geometry.attributes.uv.needsUpdate = true;
+    }
+    const btn = document.getElementById('mode3d');
+    if (btn) btn.hidden = false;
+    this.updateAttribution();
+    this.needSelect = true;
+    this.dirty = true;
   }
 
   updateAttribution() {
