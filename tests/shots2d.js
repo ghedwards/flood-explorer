@@ -106,6 +106,15 @@ const OUT = process.env.OUT || "shots";
       report.impact7 = await page.evaluate(() => window.__floodStatus.impact);
     });
     await shot(page, "06e-roads-7m");
+    // slow buttons show a spinner and what they're doing while they work
+    await run("busy-button", async () => {
+      const read = () => page.evaluate(() => { const b = document.getElementById("recordedBtn"); return b ? { busy: b.getAttribute("aria-busy"), disabled: b.disabled, text: b.textContent.trim() } : null; });
+      await page.evaluate(() => document.getElementById("recordedBtn").click());
+      await page.waitForTimeout(150);
+      report.busyDuring = await read();
+      await page.waitForFunction(() => document.getElementById("recordedBtn").getAttribute("aria-busy") !== "true", null, { timeout: 60000 });
+      report.busyAfter = await read();
+    });
     await run("roads-off", async () => { await page.evaluate(() => { window.__floodSetOverlay("Flooded (red) and cut-off (orange) roads", false); window.__floodSetLevel(9); }); await settle(page, 2500); });
     // a big flood's edges through town at street level: 5 m LiDAR edges
     for (const [z, dx, name] of [[16, 0, "06b-big-flood-z16"], [15, -0.012, "06c-big-flood-z15"]]) {

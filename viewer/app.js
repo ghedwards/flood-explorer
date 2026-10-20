@@ -149,6 +149,22 @@ import './inertial-grid.js';
 
   /* ------------------------------------------------------------- loading */
 
+  /* A button whose work takes a moment (fetching or calculating): while it
+   * runs the button shows a spinner and what it's doing, can't be pressed
+   * twice, and keeps its width; it comes back when the work ends. */
+  async function withBusy(btn, label, fn) {
+    if (!btn) return fn();
+    if (btn.getAttribute('aria-busy') === 'true') return undefined;
+    const html = btn.innerHTML, minW = btn.style.minWidth;
+    btn.style.minWidth = `${btn.offsetWidth}px`;
+    btn.setAttribute('aria-busy', 'true'); btn.disabled = true; btn.classList.add('is-busy');
+    btn.innerHTML = `<span class="btn-spin" aria-hidden="true"></span>${escapeHtml(label)}`;
+    try { return await fn(); } finally {
+      btn.innerHTML = html; btn.disabled = false; btn.removeAttribute('aria-busy'); btn.classList.remove('is-busy'); btn.style.minWidth = minW;
+    }
+  }
+  const busyClick = (btn, label, fn) => btn && btn.addEventListener('click', (e) => withBusy(e.currentTarget, label, fn));
+
   function setBusy(on, text) {
     $('busy').hidden = !on;
     if (text) $('busy').textContent = text;
@@ -797,7 +813,7 @@ import './inertial-grid.js';
       + (canGrow ? `<button type="button" class="btn small" id="extendModel">Extend model area to ${2 * MODEL_SIZES[level + 1][0]} km</button>`
         : '<p class="hint">This is the largest model area. Model another place further along the river to see beyond it.</p>');
     const b = $('extendModel');
-    if (b) b.addEventListener('click', () => extendModel());
+    busyClick(b, 'Extending the model…', () => extendModel());
   }
 
   // Rebuild the active on-demand model over a larger window, shifted toward
@@ -4439,7 +4455,7 @@ import './inertial-grid.js';
     if (!jb) {
       jb = document.createElement('button');
       jb.type = 'button'; jb.className = 'btn small'; jb.id = 'joinModels';
-      jb.addEventListener('click', () => joinNeighbours());
+      busyClick(jb, 'Joining…', () => joinNeighbours());
       $('addLevelPoint').after(jb);
     }
     jb.hidden = !nb;
@@ -4584,7 +4600,7 @@ import './inertial-grid.js';
       <p class="hint">Satellite record: Digital Earth Australia water observations, Landsat 1987 to now, counting land seen wet in at least 1% of clear passes and leaving out permanent water and the sea. Clouds hide many floods' peaks, and the record mixes many events, so a perfect match isn't expected: low first figure means the scenario is smaller than past floods; low second figure means it floods land that hasn't been seen wet.</p>`;
     return status.satCheck;
   }
-  $('satCheckBtn').addEventListener('click', () => compareWithSatellite());
+  busyClick($('satCheckBtn'), 'Fetching satellite water records…', () => compareWithSatellite());
   window.__floodSatCheck = compareWithSatellite;
 
   /* ---------- sessions: share links and places remembered between visits */
@@ -5467,7 +5483,7 @@ import './inertial-grid.js';
     renderImpact();
     return status.impact;
   }
-  $('impactBtn').addEventListener('click', () => countImpact());
+  busyClick($('impactBtn'), 'Counting buildings, people and roads…', () => countImpact());
   $('floorHeight').addEventListener('input', () => { const c = $('floorUnknown'); if (c && c.checked) c.checked = false; $('floorHeight').disabled = false; $('floorHeightOut').textContent = `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
   $('floorUnknown').addEventListener('change', () => { const c = $('floorUnknown'); $('floorHeight').disabled = !!c.checked; $('floorHeightOut').textContent = c.checked ? 'not known' : `${parseFloat($('floorHeight').value).toFixed(1)} m`; renderImpact(); });
   $('bldValue').addEventListener('change', () => renderImpact());
@@ -5546,8 +5562,8 @@ import './inertial-grid.js';
       <span class="downloads"><button type="button" class="btn small" data-rec-score="${r.id}">Score this scenario</button>${state.inertial ? '' : '<button type="button" class="btn small" data-rec-fit="${r.id}">Find the matching level</button>'}</span>
       <div class="rec-out" id="recOut-${r.id}">${area.recScores && area.recScores[r.id] ? area.recScores[r.id] : ''}</div></div>`).join('')
       + '<p class="hint">Scored only around the recorded outline (within about 500 m of it), on land, so areas the survey didn\'t cover don\'t count against the model.</p>';
-    box.querySelectorAll('[data-rec-score]').forEach((b) => b.addEventListener('click', () => scoreRecorded(b.dataset.recScore)));
-    box.querySelectorAll('[data-rec-fit]').forEach((b) => b.addEventListener('click', () => fitRecorded(b.dataset.recFit)));
+    box.querySelectorAll('[data-rec-score]').forEach((b) => busyClick(b, 'Scoring…', () => scoreRecorded(b.dataset.recScore)));
+    box.querySelectorAll('[data-rec-fit]').forEach((b) => busyClick(b, 'Fitting the level…', () => fitRecorded(b.dataset.recFit)));
   }
   async function recordedMask(rec) {
     const area = state.areaKey && areaReg.get(state.areaKey), a = state.a, g = state.geo;
@@ -5642,7 +5658,7 @@ import './inertial-grid.js';
       return status.recFit;
     }
   }
-  $('recordedBtn').addEventListener('click', () => findRecorded());
+  busyClick($('recordedBtn'), 'Searching recorded floods…', () => findRecorded());
   window.__floodFindRecorded = findRecorded;
   window.__floodScoreRecorded = scoreRecorded;
   window.__floodFitRecorded = fitRecorded;
@@ -5801,7 +5817,7 @@ import './inertial-grid.js';
     drawDefenceLayer();
     return false;
   }
-  $('findDefences').addEventListener('click', () => findDefences());
+  busyClick($('findDefences'), 'Searching for levees and gates…', () => findDefences());
   $('drawLevee').addEventListener('click', () => {
     if (drawing) { finishDrawing(); return; }
     drawing = { pts: [] };
@@ -6307,7 +6323,7 @@ import './inertial-grid.js';
     // during playback the numbers are transient anyway, so refresh slower
     impactT = setTimeout(() => maybeRenderImpact(), state.timePlay ? 600 : 150);
   }
-  $('runTimeline').addEventListener('click', () => runTimeline());
+  busyClick($('runTimeline'), 'Running hour by hour…', () => runTimeline());
   window.__floodRunTimeline = runTimeline;
   window.__floodEventsHere = async () => { await ensureHistory(); return eventsHere().map((e) => e.id); };
   window.__floodTimeStep = (k) => { showTimeStep(k); return status.impact; };
@@ -6887,7 +6903,7 @@ import './inertial-grid.js';
     const name = label || `${Math.abs(lat).toFixed(4)}° S, ${lon.toFixed(4)}° E`;
     if (!hit) {
       box.innerHTML = `<p><strong>${escapeHtml(name)}</strong></p><p>No flood model covers this spot yet.</p><div class="link-row"><button type="button" class="btn small" id="propModel">Model flooding here</button></div>`;
-      $('propModel').addEventListener('click', () => modelHere(lat, lon, { name: label || 'This area' }));
+      busyClick($('propModel'), 'Building the flood model…', () => modelHere(lat, lon, { name: label || 'This area' }));
       status.property = { inModel: false };
       rememberPropertyCheck(lat, lon, name);
       return status.property;
