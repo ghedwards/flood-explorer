@@ -56,6 +56,9 @@ pub fn handle_event(broker: &Broker, e: &Value) -> Value {
         println!("refresh {}", r);
         return r;
     }
+    if e.get("flood_broker").and_then(Value::as_str) == Some("probe") {
+        return crate::probe();
+    }
     let ev = parse_event(e);
     let r = broker.handle(&Request { method: &ev.method, target: &ev.target, origin: ev.origin.as_deref(), client: &ev.client, gzip: ev.gzip, if_none_match: ev.if_none_match.as_deref() });
     to_lambda(&r)

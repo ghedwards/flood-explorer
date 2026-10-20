@@ -123,3 +123,16 @@ jobs:
           echo "readings: HTTP $rcode, $(wc -c < readings.json) bytes"
           python3 -c "import json;d=json.load(open('readings.json'));print('fetched',d.get('fetched'),'levels',len(d.get('level',{})),'storages',len(d.get('storage',{})))" || true
           echo "::notice title=Broker live::$(head -c 300 levels.json)"
+      - name: Can the broker reach the Bureau's flood pages? (probe)
+        if: steps.aws.outputs.deploy == '1'
+        continue-on-error: true
+        run: |
+          aws lambda invoke --function-name "$FUNCTION" --cli-binary-format raw-in-base64-out --cli-read-timeout 200 \
+            --payload '{"flood_broker":"probe"}' probe.json > /dev/null
+          python3 - <<'PY'
+          import json
+          for p in json.load(open('probe.json')).get('probe', []):
+              where = p['url'].split('bom.gov.au')[-1][:60]
+              res = f"HTTP {p['status']}, {p['bytes']} bytes: {p['start'][:80]}" if 'status' in p else f"error {p['error'][:120]}"
+              print(f"::notice title=Probe {p['ua']} {where}::{res}")
+          PY

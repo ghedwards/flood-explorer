@@ -4291,6 +4291,19 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     status.report = { count: n, names: reports.map((x) => x.name), active: r ? r.name : null };
   }
 
+  // How fast the river is rising (or falling), from the hourly readings
+  // (broker and build: rise3h / rise24h, metres, to the latest reading).
+  function riseHtml(r) {
+    const r3 = Number.isFinite(r.rise3h) ? r.rise3h : null, r24 = Number.isFinite(r.rise24h) ? r.rise24h : null;
+    if (r3 == null && r24 == null) return '';
+    const word = (v) => (v > 0.02 ? `up ${v.toFixed(2)} m` : v < -0.02 ? `down ${(-v).toFixed(2)} m` : 'steady');
+    const parts = [];
+    if (r3 != null) parts.push(`${word(r3)} in 3 hours`);
+    if (r24 != null) parts.push(`${word(r24)} in 24 hours`);
+    const fast = (r3 != null && r3 >= 0.3) || (r24 != null && r24 >= 1);
+    return `<span class="rise${fast ? ' rise-fast' : ''}">${fast ? '<strong>Rising:</strong> ' : ''}${escapeHtml(parts.join(', '))}</span>`;
+  }
+
   // A gauge's level reading and flood class, redrawn when a live level arrives.
   function levelReadingHtml(p) {
     const r = nat.readings.level && nat.readings.level[p.station];
@@ -4302,6 +4315,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
           <span class="hint">${live ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from <a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland's water monitoring network</a> (© State of Queensland, CC BY 4.0)`
             : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
             : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
+          ${riseHtml(r)}
           ${r.series.length ? sparkline(r.series) : ''}</div>`;
     } else {
       html = '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';

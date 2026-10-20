@@ -292,15 +292,16 @@ pub fn readings_for(http: HttpJson, wanted: &HashSet<String>, parameter: &str, u
     let ts: Vec<(String, String)> = timeseries_ids(http, parameter, DAILY, errors).into_iter().filter(|(st, _)| wanted.contains(st)).collect();
     let ids: Vec<String> = ts.iter().map(|x| x.1.clone()).collect();
     let vals = if ts.is_empty() { HashMap::new() } else { latest_values(http, &ids, "P10D", errors) };
-    // the latest hourly mean, where there is one, when it's newer than the daily
-    let mut recent: HashMap<String, Value> = HashMap::new();
+    // the hourly means (last three days), where there are some: the latest
+    // is the level now when it's newer than the daily, and they give the rise
+    let mut recent: HashMap<String, Vec<Value>> = HashMap::new();
     if hourly && !ts.is_empty() {
         let hts: Vec<(String, String)> = timeseries_ids(http, parameter, HOURLY, errors).into_iter().filter(|(st, _)| wanted.contains(st)).collect();
         let hids: Vec<String> = hts.iter().map(|x| x.1.clone()).collect();
         let hvals = if hts.is_empty() { HashMap::new() } else { latest_values(http, &hids, "P3D", errors) };
         for (st, tid) in hts {
-            if let Some(last) = hvals.get(&tid).and_then(|v| v.last()) {
-                recent.insert(st, last.clone());
+            if let Some(v) = hvals.get(&tid).filter(|v| !v.is_empty()) {
+                recent.insert(st, v.clone());
             }
         }
     }
@@ -311,11 +312,15 @@ pub fn readings_for(http: HttpJson, wanted: &HashSet<String>, parameter: &str, u
             let last10 = series[series.len().saturating_sub(10)..].to_vec();
             let daily = series[series.len() - 1].clone();
             let newer = |r: &Value| ts_epoch(r[0].as_str().unwrap_or("")).zip(ts_epoch(daily[0].as_str().unwrap_or(""))).is_some_and(|(a, b)| a > b);
-            let (latest, kind) = match recent.get(&st) {
+            let (latest, kind) = match recent.get(&st).and_then(|h| h.last()) {
                 Some(r) if newer(r) => (r.clone(), "hourly"),
                 _ => (daily, "daily"),
             };
-            out.insert(st, obj! {"unit" => unit, "series" => last10, "latest" => latest, "latestKind" => kind});
+            let mut e = obj! {"unit" => unit, "series" => last10, "latest" => latest, "latestKind" => kind};
+            if kind == "hourly" {
+                add_rise(&mut e, &recent[&st]);
+            }
+            out.insert(st, e);
         }
     }
     // Queensland's own gauges: the portal's latest hour, when it's newer
@@ -327,10 +332,13 @@ pub fn readings_for(http: HttpJson, wanted: &HashSet<String>, parameter: &str, u
                 if at(&last).zip(at(&e["latest"])).is_some_and(|(a, b)| a > b) {
                     e["latest"] = last;
                     e["latestKind"] = json!("realtime");
+                    add_rise(e, &pts);
                 }
             }
             None => {
-                out.insert(st, obj! {"unit" => unit, "series" => json!([]), "latest" => last, "latestKind" => "realtime"});
+                let mut e = obj! {"unit" => unit, "series" => json!([]), "latest" => last, "latestKind" => "realtime"};
+                add_rise(&mut e, &pts);
+                out.insert(st, e);
             }
         }
     }
@@ -338,17 +346,103 @@ pub fn readings_for(http: HttpJson, wanted: &HashSet<String>, parameter: &str, u
 }
 
 
+/// How much a level has changed over the last `hours`, from hourly points
+/// [[time, level]...] (oldest first): the latest level less the one at or
+/// just before that time, if the points reach back that far (with an hour's
+/// slack for a missing reading).
+pub fn rise_over(points: &[Value], hours: i64) -> Option<f64> {
+    let last = points.last()?;
+    let (t1, v1) = (ts_epoch(last[0].as_str()?)?, last[1].as_f64()?);
+    let want = t1 - hours * 3600;
+    let then = points.iter().rev().find(|p| p[0].as_str().and_then(ts_epoch).is_some_and(|t| t <= want))?;
+    let (t0, v0) = (ts_epoch(then[0].as_str()?)?, then[1].as_f64()?);
+    if want - t0 > 3600 {
+        return None;
+    }
+    Some(round_to(v1 - v0, 2))
+}
+
+/// Rises worth a closer look: fast (3 hours) or sustained (24 hours).
+pub const RISE_3H_M: f64 = 0.3;
+pub const RISE_24H_M: f64 = 1.0;
+
+fn add_rise(e: &mut Value, hourly: &[Value]) {
+    if let Some(r) = rise_over(hourly, 3) {
+        e["rise3h"] = json!(r);
+    }
+    if let Some(r) = rise_over(hourly, 24) {
+        e["rise24h"] = json!(r);
+    }
+}
+
+/// Gauges rising enough to watch, fastest first:
+/// [{station, level, at, rise3h, rise24h, kind}].
+pub fn watch_list(level: &Value) -> Value {
+    let mut w: Vec<Value> = level
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(_, r)| r["rise3h"].as_f64().is_some_and(|x| x >= RISE_3H_M) || r["rise24h"].as_f64().is_some_and(|x| x >= RISE_24H_M))
+                .map(|(st, r)| json!({"station": st, "level": r["latest"][1], "at": r["latest"][0], "rise3h": r["rise3h"], "rise24h": r["rise24h"], "kind": r["latestKind"]}))
+                .collect()
+        })
+        .unwrap_or_default();
+    let key = |v: &Value| v["rise3h"].as_f64().unwrap_or(0.0).max(v["rise24h"].as_f64().unwrap_or(0.0) / 8.0);
+    w.sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal));
+    Value::Array(w)
+}
+
 /// Every reading the map shows: river levels (with Queensland's live ones)
 /// and dam volumes, as readings.json.
 pub fn readings(http: HttpJson, level: &HashSet<String>, storage: &HashSet<String>, now_s: i64, errors: &mut Vec<String>) -> Value {
+    let lv = readings_for(http, level, "Water Course Level", "m", true, now_s, errors);
+    let watch = watch_list(&lv);
     obj! {
-        "level" => readings_for(http, level, "Water Course Level", "m", true, now_s, errors),
+        "level" => lv,
         "storage" => readings_for(http, storage, "Storage Volume", "ML", false, now_s, errors),
         "series" => DAILY,
+        "watch" => watch,
+        "watchRule" => format!("risen at least {} m in 3 hours or {} m in 24 hours", RISE_3H_M, RISE_24H_M),
     }
 }
 
 /// How many river levels came from Queensland's portal.
 pub fn realtime_count(readings: &Value) -> usize {
     readings["level"].as_object().map_or(0, |o| o.values().filter(|r| r["latestKind"] == "realtime").count())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hourly(levels: &[f64]) -> Vec<Value> {
+        levels.iter().enumerate().map(|(i, v)| json!([format!("2026-10-20T{:02}:00:00.000+10:00", i), v])).collect()
+    }
+
+    #[test]
+    fn rises() {
+        let pts = hourly(&[1.0, 1.0, 1.1, 1.2, 1.4, 1.9]);
+        assert_eq!(rise_over(&pts, 3), Some(0.8), "1.9 now less 1.1 three hours before");
+        assert_eq!(rise_over(&pts, 24), None, "doesn't reach back a day");
+        let day: Vec<f64> = (0..24).map(|i| 2.0 + i as f64 * 0.1).collect();
+        assert_eq!(rise_over(&hourly(&day), 3), Some(0.3));
+        // a missing hour is fine, a long gap isn't
+        let gap = vec![json!(["2026-10-20T00:00:00+10:00", 1.0]), json!(["2026-10-20T05:00:00+10:00", 2.0])];
+        assert_eq!(rise_over(&gap, 3), None);
+        let one = vec![json!(["2026-10-20T01:00:00+10:00", 1.0]), json!(["2026-10-20T05:00:00+10:00", 2.0])];
+        assert_eq!(rise_over(&one, 3), Some(1.0));
+    }
+
+    #[test]
+    fn watch_list_takes_fast_or_sustained_rises() {
+        let lv = json!({
+            "A": {"latest": ["t", 3.0], "rise3h": 0.6, "rise24h": 1.2, "latestKind": "realtime"},
+            "B": {"latest": ["t", 1.0], "rise3h": 0.1, "rise24h": 1.6, "latestKind": "hourly"},
+            "C": {"latest": ["t", 1.0], "rise3h": 0.1, "rise24h": 0.2, "latestKind": "hourly"},
+            "D": {"latest": ["t", 1.0], "latestKind": "daily"},
+        });
+        let w = watch_list(&lv);
+        let ids: Vec<&str> = w.as_array().unwrap().iter().map(|x| x["station"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["A", "B"]);
+    }
 }

@@ -420,6 +420,42 @@ pub fn fetch_with_timeout(url: &str, secs: u64) -> Result<Value, String> {
     serde_json::from_slice(&body).map_err(|e| format!("not JSON: {}", e))
 }
 
+/// Can the broker reach the Bureau pages the site build is blocked from?
+/// Each URL with our own User-Agent and a browser's: status, size, start.
+pub fn probe() -> Value {
+    use std::io::Read;
+    const URLS: [&str; 4] = [
+        "https://www.bom.gov.au/qld/flood/floodclass.shtml",
+        "https://www.bom.gov.au/fwo/IDZ00056.warnings_qld.xml",
+        "https://www.bom.gov.au/nsw/flood/floodclass.shtml",
+        // control: Water Data Online, which works
+        "https://www.bom.gov.au/waterdata/services?service=kisters&type=QueryServices&format=json&request=getrequestinfo",
+    ];
+    const UAS: [(&str, &str); 2] = [
+        ("broker", "flood-explorer-broker (+https://github.com/ghedwards/flood-explorer)"),
+        ("browser", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"),
+    ];
+    let t = Some(Duration::from_secs(20));
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(t).timeout_recv_response(t).timeout_recv_body(t).http_status_as_error(false).build().into();
+    let mut out = Vec::new();
+    for url in URLS {
+        for (name, ua) in UAS {
+            let r = agent.get(url).header("User-Agent", ua).header("Accept", "text/html,application/xml,application/json;q=0.9,*/*;q=0.8").call();
+            out.push(match r {
+                Ok(mut r) => {
+                    let code = r.status().as_u16();
+                    let mut b = Vec::new();
+                    let _ = r.body_mut().as_reader().take(4 << 20).read_to_end(&mut b);
+                    let text = String::from_utf8_lossy(&b);
+                    json!({"url": url, "ua": name, "status": code, "bytes": b.len(), "start": text.chars().filter(|c| !c.is_control()).take(120).collect::<String>()})
+                }
+                Err(e) => json!({"url": url, "ua": name, "error": e.to_string()}),
+            });
+        }
+    }
+    json!({"probe": out})
+}
+
 /// The real portal call for /v1/levels: 20 seconds per phase.
 pub fn http_fetch(url: &str) -> Result<Value, String> {
     fetch_with_timeout(url, 20)
