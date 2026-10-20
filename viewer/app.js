@@ -3928,6 +3928,13 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 
   /* ---------- reports */
 
+  // a reading's time, with how long ago it was ("19 Oct, 6:00 pm (24 h ago)")
+  function fmtWhen(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso || '';
+    const h = Math.round((Date.now() - d.getTime()) / 3600000);
+    return `${d.toLocaleString('en-AU', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} (${h < 48 ? `${h} h` : `${Math.round(h / 24)} days`} ago)`;
+  }
   function fmtDate(iso) {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso || '';
@@ -4181,7 +4188,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       if (r) {
         html += `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}</span>
           <div class="big">${r.latest[1].toFixed(2)}<small>m</small></div>
-          <span class="hint">Daily average for ${escapeHtml(fmtDate(r.latest[0]))}, on the gauge's own datum. Last ${r.series.length} days:</span>
+          <span class="hint">${r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtWhen(r.latest[0]))}` : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))}`} (Water Data Online runs about a day behind), on the gauge's own datum. Daily averages, last ${r.series.length} days:</span>
           ${sparkline(r.series)}</div>`;
       } else {
         html += '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';

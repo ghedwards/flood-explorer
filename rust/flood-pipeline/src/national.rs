@@ -16,6 +16,10 @@ use std::path::Path;
 pub const BOM_GIS: &str = "https://hosting.wsapi.cloud.bom.gov.au/arcgis/rest/services/";
 pub const KIWIS: &str = "https://www.bom.gov.au/waterdata/services";
 pub const DAILY: &str = "DMQaQc.Merged.DailyMean.24HR";
+/// Hourly means: as recent as the raw readings (Water Data Online runs
+/// about a day behind either way) at a quarter of the data; the latest one
+/// is the "level now" for river gauges (daily means stay as the history).
+pub const HOURLY: &str = "DMQaQc.Merged.HourlyMean.HR";
 const GAUGE_LAYERS: [(u32, &str); 3] = [(2, "forecast"), (3, "information"), (5, "river-tide")];
 
 fn nfgn() -> String {
@@ -205,8 +209,8 @@ pub fn col(header: &Value, name: &str) -> Option<usize> {
     header.as_array()?.iter().position(|h| h.as_str() == Some(name))
 }
 
-fn timeseries_ids(http: HttpJson, parameter: &str, errors: &mut Vec<String>) -> Vec<(String, String)> {
-    let rows = match kiwis_with(http, &kp(&[("request", "getTimeseriesList"), ("parametertype_name", parameter), ("ts_name", DAILY), ("returnfields", "station_no,ts_id")])) {
+fn timeseries_ids(http: HttpJson, parameter: &str, ts_name: &str, errors: &mut Vec<String>) -> Vec<(String, String)> {
+    let rows = match kiwis_with(http, &kp(&[("request", "getTimeseriesList"), ("parametertype_name", parameter), ("ts_name", ts_name), ("returnfields", "station_no,ts_id")])) {
         Ok(r) => r,
         Err(e) => {
             errors.push(format!("timeseries list ({}): {}", parameter, e));
@@ -234,10 +238,10 @@ fn timeseries_ids(http: HttpJson, parameter: &str, errors: &mut Vec<String>) -> 
     out
 }
 
-fn latest_values(http: HttpJson, ids: &[String], errors: &mut Vec<String>) -> HashMap<String, Vec<Value>> {
+fn latest_values(http: HttpJson, ids: &[String], period: &str, errors: &mut Vec<String>) -> HashMap<String, Vec<Value>> {
     let mut out = HashMap::new();
     for (bi, chunk) in ids.chunks(50).enumerate() {
-        let res = match kiwis_with(http, &kp(&[("request", "getTimeseriesValues"), ("ts_id", &chunk.join(",")), ("period", "P10D"), ("returnfields", "Timestamp,Value")])) {
+        let res = match kiwis_with(http, &kp(&[("request", "getTimeseriesValues"), ("ts_id", &chunk.join(",")), ("period", period), ("returnfields", "Timestamp,Value")])) {
             Ok(r) => r,
             Err(e) => {
                 errors.push(format!("values batch {}: {}", bi, e));
@@ -264,16 +268,59 @@ fn latest_values(http: HttpJson, ids: &[String], errors: &mut Vec<String>) -> Ha
     out
 }
 
-fn readings_for(http: HttpJson, features: &[Value], parameter: &str, unit: &str, errors: &mut Vec<String>) -> Value {
+/// Seconds since 1970 for a KiWIS timestamp ("2026-10-19T18:00:00.000+10:00"
+/// or "...Z"), for comparing readings from different states' time zones.
+pub fn ts_epoch(t: &str) -> Option<i64> {
+    let b = t.as_bytes();
+    if b.len() < 19 { return None; }
+    let num = |a: usize, n: usize| -> Option<i64> { std::str::from_utf8(&b[a..a + n]).ok()?.parse().ok() };
+    let (y, mo, d, h, mi, s) = (num(0, 4)?, num(5, 2)?, num(8, 2)?, num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    // days from civil (Howard Hinnant)
+    let (y2, m2) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * m2 + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let mut off = 0i64;
+    if let Some(p) = t[19..].find(['+', '-']) {
+        let z = &t[19 + p..];
+        let sign = if z.starts_with('-') { -1 } else { 1 };
+        let hh: i64 = z.get(1..3)?.parse().ok()?;
+        let mm: i64 = z.get(4..6).and_then(|x| x.parse().ok()).unwrap_or(0);
+        off = sign * (hh * 3600 + mm * 60);
+    }
+    Some(days * 86400 + h * 3600 + mi * 60 + s - off)
+}
+
+fn readings_for(http: HttpJson, features: &[Value], parameter: &str, unit: &str, hourly: bool, errors: &mut Vec<String>) -> Value {
     let wanted: HashSet<String> = features.iter().filter_map(|f| f["properties"]["station"].as_str()).filter(|s| !s.is_empty()).map(String::from).collect();
-    let ts: Vec<(String, String)> = timeseries_ids(http, parameter, errors).into_iter().filter(|(st, _)| wanted.contains(st)).collect();
+    let ts: Vec<(String, String)> = timeseries_ids(http, parameter, DAILY, errors).into_iter().filter(|(st, _)| wanted.contains(st)).collect();
     let ids: Vec<String> = ts.iter().map(|x| x.1.clone()).collect();
-    let vals = if ts.is_empty() { HashMap::new() } else { latest_values(http, &ids, errors) };
+    let vals = if ts.is_empty() { HashMap::new() } else { latest_values(http, &ids, "P10D", errors) };
+    // the latest hourly mean, where there is one, when it's newer than the daily
+    let mut recent: HashMap<String, Value> = HashMap::new();
+    if hourly && !ts.is_empty() {
+        let hts: Vec<(String, String)> = timeseries_ids(http, parameter, HOURLY, errors).into_iter().filter(|(st, _)| wanted.contains(st)).collect();
+        let hids: Vec<String> = hts.iter().map(|x| x.1.clone()).collect();
+        let hvals = if hts.is_empty() { HashMap::new() } else { latest_values(http, &hids, "P3D", errors) };
+        for (st, tid) in hts {
+            if let Some(last) = hvals.get(&tid).and_then(|v| v.last()) {
+                recent.insert(st, last.clone());
+            }
+        }
+    }
     let mut out = Map::new();
     for (st, tid) in ts {
         if let Some(series) = vals.get(&tid) {
             let last10 = series[series.len().saturating_sub(10)..].to_vec();
-            out.insert(st, obj! {"unit" => unit, "series" => last10, "latest" => series[series.len() - 1].clone()});
+            let daily = series[series.len() - 1].clone();
+            let newer = |r: &Value| ts_epoch(r[0].as_str().unwrap_or("")).zip(ts_epoch(daily[0].as_str().unwrap_or(""))).is_some_and(|(a, b)| a > b);
+            let (latest, kind) = match recent.get(&st) {
+                Some(r) if newer(r) => (r.clone(), "hourly"),
+                _ => (daily, "daily"),
+            };
+            out.insert(st, obj! {"unit" => unit, "series" => last10, "latest" => latest, "latestKind" => kind});
         }
     }
     Value::Object(out)
@@ -333,8 +380,8 @@ pub fn run(out_dir: &str, http: HttpJson) -> R<String> {
     let mut gauges = build_gauges(http, &mut errors);
     let mut storages = build_storages(http, &mut errors);
     let readings = obj! {
-        "level" => readings_for(http, &gauges, "Water Course Level", "m", &mut errors),
-        "storage" => readings_for(http, &storages, "Storage Volume", "ML", &mut errors),
+        "level" => readings_for(http, &gauges, "Water Course Level", "m", true, &mut errors),
+        "storage" => readings_for(http, &storages, "Storage Volume", "ML", false, &mut errors),
         "series" => DAILY,
     };
     // about a metre is plenty for map points
@@ -414,7 +461,9 @@ mod tests {
         if url == KIWIS {
             match param(ps, "request") {
                 Some("getTimeseriesList") => {
-                    return Ok(if param(ps, "parametertype_name") == Some("Water Course Level") {
+                    return Ok(if param(ps, "parametertype_name") == Some("Water Course Level") && param(ps, "ts_name") == Some(HOURLY) {
+                        json!([["station_no", "ts_id"], ["540198", "511"]])
+                    } else if param(ps, "parametertype_name") == Some("Water Course Level") {
                         json!([["station_no", "ts_id"], ["540198", "111"], ["999999", "222"]])
                     } else {
                         json!([["station_no", "ts_id"], ["143001A", "333"]])
@@ -426,6 +475,7 @@ mod tests {
                         let v = match i {
                             "111" => json!([["2026-10-12T00:00:00.000+10:00", 1.1], ["2026-10-13T00:00:00.000+10:00", 1.3]]),
                             "333" => json!([["2026-10-13T00:00:00.000+10:00", 900000.0]]),
+                            "511" => json!([["2026-10-13T17:00:00.000+10:00", 1.42], ["2026-10-13T18:00:00.000+10:00", 1.45]]),
                             _ => continue,
                         };
                         out.push(json!({"ts_id": i, "columns": "Timestamp,Value", "data": v}));
@@ -453,11 +503,26 @@ mod tests {
         assert_eq!(by("Brisbane Bar")["kind"], "tide");
         assert_eq!(by("Brisbane City")["id"], "540198");
         assert_eq!(storages["features"][0]["properties"]["name"], "Wivenhoe Dam");
-        assert_eq!(readings["level"]["540198"]["latest"][1], 1.3);
+        assert_eq!(readings["level"]["540198"]["latest"][1], 1.45, "the newer hourly mean is the level now");
+        assert_eq!(readings["level"]["540198"]["latestKind"], "hourly");
+        assert_eq!(readings["level"]["540198"]["series"].as_array().unwrap().len(), 2, "daily history kept");
+        assert_eq!(readings["storage"]["143001A"]["latestKind"], "daily");
         assert!(readings["level"].get("999999").is_none(), "not a mapped gauge");
         assert_eq!(readings["storage"]["143001A"]["latest"][1], 900000.0);
         assert_eq!(meta["errors"], json!([]));
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn kiwis_timestamps_compare_across_time_zones() {
+        assert_eq!(ts_epoch("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(ts_epoch("1970-01-01T10:00:00.000+10:00"), Some(0));
+        let qld = ts_epoch("2026-10-19T18:00:00.000+10:00").unwrap();
+        let wa = ts_epoch("2026-10-19T16:00:00.000+08:00").unwrap();
+        let sa = ts_epoch("2026-10-19T17:30:00.000+09:30").unwrap();
+        assert_eq!(qld, wa);
+        assert_eq!(qld, sa);
+        assert!(ts_epoch("2026-10-19T00:00:00.000+10:00").unwrap() < qld);
     }
 
     #[test]
