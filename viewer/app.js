@@ -899,7 +899,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   const DEPTH_ALPHA = [178, 230, 230, 230, 230];
   const depthBand = (dep) => { for (let k = 0; k < DEPTH_STOPS.length; k++) if (dep < DEPTH_STOPS[k][0]) return k; return DEPTH_STOPS.length - 1; };
   const WATER = [109, 147, 173];
-  const CHANNEL_ALPHA = 90;   // ~35 %: channel water tint over imagery
+  // normal (river or lake) water over imagery: its own teal, clearly visible
+  // but not a flood blue (WATER above stays the relief view's water colour)
+  const NORMAL_WATER = [38, 166, 154];
+  const CHANNEL_ALPHA = 180;  // ~70 %
   const HYPSO = [
     [0, [226, 230, 214]], [0.12, [208, 218, 186]], [0.35, [186, 186, 146]], [0.65, [160, 142, 112]], [1, [128, 112, 100]],
   ];
@@ -1052,7 +1055,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       } else if (!relief && !a.ocean[i] && (channel || (base && base.wet[i]))) {
         // river channel and normal-level water over imagery: a light neutral
         // tint (the imagery shows the real water), not a flood colour
-        d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = CHANNEL_ALPHA;
+        d[o] = NORMAL_WATER[0]; d[o + 1] = NORMAL_WATER[1]; d[o + 2] = NORMAL_WATER[2]; d[o + 3] = CHANNEL_ALPHA;
       }
     }
     return { img: waterImg, count: n };
@@ -1118,7 +1121,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       hzCls: hz ? crop(hz.cls) : null, hzVel: hz ? crop(hz.vel) : null,
       coarse: crop(composeWater().img.data, 4),   // the model's own picture: shown where there's no LiDAR
       lidar: r.data, nd: r.nd,
-      depthStops: DEPTH_STOPS, depthAlpha0: DEPTH_ALPHA[0], water: WATER, channelAlpha: CHANNEL_ALPHA, hazardColors: HAZARD_COLORS, hazardLimits: HAZARD_LIMITS,
+      depthStops: DEPTH_STOPS, depthAlpha0: DEPTH_ALPHA[0], water: NORMAL_WATER, channelAlpha: CHANNEL_ALPHA, hazardColors: HAZARD_COLORS, hazardLimits: HAZARD_LIMITS,
     };
     const tPrepped = performance.now();
     const res = await fineCompute(p);
