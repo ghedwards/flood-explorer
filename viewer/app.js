@@ -155,8 +155,11 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       hi = Math.max(hi, w[w.length >> 1]);
       env[k] = hi;
     }
-    const c0 = n ? a.chain[path[0]] : 0, c1 = n ? a.chain[path[n - 1]] : 0;
-    for (let k = 0; k < n; k++) taper[k] = end === 'sea' && c0 > c1 ? Math.max(0, Math.min(1, (a.chain[path[k]] - c1) / (c0 - c1))) : 1;
+    // to the sea: the same fall as before (by flow distance to the outlet,
+    // which runs on across the sea to the model edge), so coastal rivers keep
+    // their levels; inland the rise carries on to the edge
+    const c0 = a.chain[gauge];
+    for (let k = 0; k < n; k++) taper[k] = end === 'sea' && c0 > 0 ? Math.max(0, Math.min(1, a.chain[path[k]] / c0)) : 1;
     const v = { dam, path, end, env, taper };
     rbMemo = { a, g: gauge, dam: dam0, v };
     return v;
