@@ -12,6 +12,7 @@
 //! [`Broker::handle`] is the whole service minus the socket, so tests drive
 //! it with a stand-in portal and clock; `main.rs` puts it on a socket.
 
+pub mod lambda;
 pub mod wmip;
 
 use serde_json::{json, Map, Value};

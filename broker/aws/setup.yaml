@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Flood Explorer live data broker: one-time setup. Lets the repository's
+  GitHub Actions deploy the broker to Lambda through GitHub's OpenID Connect
+  sign-in (no stored keys), and gives the function its own minimal role.
+  The function itself is created and updated by .github/workflows/broker-deploy.yml.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: ghedwards/flood-explorer
+    Description: owner/name of the repository allowed to deploy
+  FunctionName:
+    Type: String
+    Default: flood-broker
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      "false" if this account already has the token.actions.githubusercontent.com
+      identity provider (IAM > Identity providers); only one may exist.
+
+Conditions:
+  MakeOidc: !Equals [!Ref CreateGitHubOidcProvider, "true"]
+
+Resources:
+  GitHubOidc:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidc
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # what the function runs as: write its own logs, nothing else
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${FunctionName}-exec"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${FunctionName}"
+      RetentionInDays: 30
+
+  # what GitHub Actions on the main branch may do: manage this one function
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${FunctionName}-github-deploy"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: deploy-flood-broker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:CreateFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:GetFunctionUrlConfig
+                  - lambda:CreateFunctionUrlConfig
+                  - lambda:UpdateFunctionUrlConfig
+                  - lambda:GetPolicy
+                  - lambda:AddPermission
+                  - lambda:PutFunctionConcurrency
+                  - lambda:DeleteFunctionConcurrency
+                  - lambda:TagResource
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt ExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+
+Outputs:
+  DeployRoleArn:
+    Description: set as the repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
+  Region:
+    Description: set as the repository variable AWS_REGION
+    Value: !Ref AWS::Region

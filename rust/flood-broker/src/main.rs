@@ -9,6 +9,10 @@
 //!   CACHE_MINUTES     default 10
 //!   TRUST_PROXY       "1": the client address comes from X-Forwarded-For
 //!   WORKERS           default 16
+//!
+//! On AWS Lambda (AWS_LAMBDA_RUNTIME_API set) it serves a function URL
+//! through the runtime API instead (see lambda.rs); built as `bootstrap`
+//! for the provided.al2023 runtime.
 
 use flood_broker::{http_fetch, Broker, Config, Request, Response};
 use std::io::{Read, Write};
@@ -94,6 +98,11 @@ fn main() {
         origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
         cache_ms: env("CACHE_MINUTES").and_then(|v| v.parse::<f64>().ok()).map_or(10 * 60_000, |m| (m * 60_000.0) as i64),
     };
+    // on AWS Lambda (a function URL): the runtime API loop instead of a socket
+    if let Some(api) = env("AWS_LAMBDA_RUNTIME_API") {
+        let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg);
+        flood_broker::lambda::run(&api, &broker);
+    }
     let trust_proxy = env("TRUST_PROXY").as_deref() == Some("1");
     let workers = env("WORKERS").and_then(|v| v.parse::<usize>().ok()).unwrap_or(16).clamp(1, 256);
     let addr = format!("{}:{}", env("HOST").unwrap_or_else(|| "127.0.0.1".into()), env("PORT").unwrap_or_else(|| "8787".into()));

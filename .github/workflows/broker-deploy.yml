@@ -1,0 +1,105 @@
+name: Live data broker (AWS Lambda)
+# Builds rust/flood-broker as a Lambda "bootstrap" (arm64, provided.al2023)
+# and, on main with AWS set up (broker/aws/README.md), deploys it to the
+# function URL. Other branches only check that it builds.
+on:
+  push:
+    branches: [main, 2d-broker]
+    paths:
+      - "rust/flood-broker/**"
+      - "rust/Cargo.lock"
+      - ".github/workflows/broker-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # GitHub's sign-in token for AWS (OIDC)
+
+concurrency:
+  group: broker-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FUNCTION: flood-broker
+  TARGET: aarch64-unknown-linux-gnu
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cross-compile for Lambda (arm64, glibc 2.34)
+        run: |
+          rustup target add "$TARGET"
+          pip install --quiet ziglang cargo-zigbuild
+          cd rust
+          cargo zigbuild --locked --release -p flood-broker --target "$TARGET.2.34"
+          mkdir -p ../lambda && cp "target/$TARGET/release/flood-broker" ../lambda/bootstrap
+          cd ../lambda && chmod 755 bootstrap && zip -q -9 flood-broker.zip bootstrap
+          file bootstrap; ls -l flood-broker.zip
+      - name: Check AWS is set up
+        id: aws
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ -n "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then echo "deploy=1" >> "$GITHUB_OUTPUT"
+          else echo "::notice title=Not deployed::Built only (deploys from main once AWS_DEPLOY_ROLE_ARN is set; see broker/aws/README.md)"; fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.aws.outputs.deploy == '1'
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      - name: Deploy the function and its URL
+        if: steps.aws.outputs.deploy == '1'
+        env:
+          ORIGINS: ${{ vars.BROKER_ALLOWED_ORIGINS || 'https://ghedwards.github.io' }}
+          MAX_CONCURRENCY: ${{ vars.BROKER_MAX_CONCURRENCY }}
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          role="arn:aws:iam::${account}:role/${FUNCTION}-exec"
+          envjson=$(jq -nc --arg o "$ORIGINS" '{Variables: {ALLOWED_ORIGINS: $o, CACHE_MINUTES: "10"}}')
+          if aws lambda get-function --function-name "$FUNCTION" > /dev/null 2>&1; then
+            aws lambda update-function-code --function-name "$FUNCTION" --zip-file fileb://lambda/flood-broker.zip --architectures arm64 > /dev/null
+            aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 128 --timeout 30 --environment "$envjson" > /dev/null
+            aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+          else
+            aws lambda create-function --function-name "$FUNCTION" --runtime provided.al2023 --architectures arm64 --handler bootstrap \
+              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 128 --timeout 30 --environment "$envjson" \
+              --description "Flood Explorer live river levels (github.com/${GITHUB_REPOSITORY})" --tags project=flood-explorer > /dev/null
+            aws lambda wait function-active-v2 --function-name "$FUNCTION"
+          fi
+          # a cap on simultaneous copies keeps a traffic spike from becoming a bill
+          if [ -n "$MAX_CONCURRENCY" ]; then
+            aws lambda put-function-concurrency --function-name "$FUNCTION" --reserved-concurrent-executions "$MAX_CONCURRENCY" > /dev/null \
+              || echo "::warning::Couldn't reserve concurrency (new accounts may not allow it); the function runs without a cap"
+          fi
+          # a public HTTPS address; the function checks origins itself
+          if ! aws lambda get-function-url-config --function-name "$FUNCTION" > /dev/null 2>&1; then
+            aws lambda create-function-url-config --function-name "$FUNCTION" --auth-type NONE > /dev/null
+          fi
+          policy=$(aws lambda get-policy --function-name "$FUNCTION" --query Policy --output text 2>/dev/null || echo "")
+          if ! grep -q PublicUrl <<< "$policy"; then
+            aws lambda add-permission --function-name "$FUNCTION" --statement-id PublicUrl --action lambda:InvokeFunctionUrl \
+              --principal "*" --function-url-auth-type NONE > /dev/null
+          fi
+          if ! grep -q PublicUrlInvoke <<< "$policy"; then
+            aws lambda add-permission --function-name "$FUNCTION" --statement-id PublicUrlInvoke --action lambda:InvokeFunction \
+              --principal "*" --invoked-via-function-url > /dev/null \
+              || echo "::warning::Couldn't add the InvokeFunction permission for the URL (older AWS CLI?)"
+          fi
+          url=$(aws lambda get-function-url-config --function-name "$FUNCTION" --query FunctionUrl --output text)
+          url="${url%/}"
+          echo "URL=$url" >> "$GITHUB_ENV"
+          echo "::notice title=Broker URL::$url (set the repository variable FLOOD_BROKER_URL to this)"
+      - name: Smoke test
+        if: steps.aws.outputs.deploy == '1'
+        run: |
+          set -euo pipefail
+          sleep 5
+          curl -fsS --retry 4 --retry-delay 5 "$URL/health" | tee health.json; echo
+          code=$(curl -s -o levels.json -w '%{http_code}' -H "Origin: https://ghedwards.github.io" -D h.txt "$URL/v1/levels?sites=143001C,130005A")
+          echo "levels: HTTP $code"; head -c 600 levels.json; echo
+          grep -i '^access-control-allow-origin: https://ghedwards.github.io' h.txt
+          test "$code" = 200
+          echo "::notice title=Broker live::$(head -c 300 levels.json)"

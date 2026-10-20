@@ -26,7 +26,12 @@ It's a small Rust program, `flood-broker` (source in `rust/flood-broker`),
 built with the rest of the Rust workspace: a single binary of about 2.5 MB
 using a few MB of memory. The smallest VPS will do.
 
-## Run it on a server
+## Run it on AWS Lambda (no server)
+
+See [aws/README.md](aws/README.md): GitHub Actions builds it and deploys it
+to a Lambda function URL in your AWS account, inside the free tier.
+
+## Or run it on a server
 
 The map is served over HTTPS, so the broker must be too. The simplest way is
 Caddy in front, which gets and renews the certificate itself.
