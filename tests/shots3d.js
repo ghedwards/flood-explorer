@@ -96,6 +96,12 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   await step("exaggeration-5", async () => { await setExag(5); });
   await page.waitForTimeout(3000);
   await shot("3b-3d-exaggeration-5");
+  // flood water opacity in 3D (the map's flood layer opacity)
+  await step("water-40", async () => { await page.evaluate(() => { const r = document.getElementById("water3d"); r.value = "40"; r.dispatchEvent(new Event("input")); }); });
+  await page.waitForTimeout(1500);
+  report.waterOpacity = await page.evaluate(() => ({ map: document.getElementById("floodOpacity").value, label: (document.getElementById("waterVal") || {}).textContent }));
+  await shot("3a-3d-water-40");
+  await step("water-back", async () => { await page.evaluate(() => { const r = document.getElementById("water3d"); r.value = "80"; r.dispatchEvent(new Event("input")); }); });
   await step("exaggeration-default", async () => { await setExag(1.5); });
   await page.waitForTimeout(1500);
   // street level: imagery keeps refining past the terrain's z14

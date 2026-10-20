@@ -113,6 +113,8 @@ class Scene3d {
     this.fps = 0;
     this.lastNow = 0;
     this.exag = EXAG_DEFAULT;
+    // the map's "Flood layer opacity", applied to the 3D water too
+    this.waterOpacity = hooks.getWaterOpacity ? hooks.getWaterOpacity() : 1;
     this.needSelect = true;
     this.lastSelect = 0;
     this.knownBounds = [];        // [w, s, e, n] of every modelled area (tiles over them keep their raster)
@@ -194,6 +196,7 @@ class Scene3d {
       <div class="body3d">
         <div class="row3d">
           <label title="Vertical exaggeration: stretches heights so low relief reads">Height ×<input id="exag3d" type="range" min="1" max="10" step="0.5" value="${EXAG_DEFAULT}"><span class="val3d" id="exagVal">${EXAG_DEFAULT}</span></label>
+          <label title="How see-through the flood water is (the same setting as the map's flood layer opacity)">Water<input id="water3d" type="range" min="20" max="100" step="5" value="${Math.round(this.waterOpacity * 100)}"><span class="val3d" id="waterVal">${Math.round(this.waterOpacity * 100)}%</span></label>
           <button type="button" id="mode3d" title="Satellite/map imagery or plain relief colours" aria-pressed="false"><span data-m="img">Imagery</span><span data-m="rel">Relief</span></button>
         </div>
         <div class="row3d" id="scrub3dWrap" hidden><label>Time step <input id="scrub3d" type="range" min="0" max="0" value="0" style="width:200px"><span class="val3d" id="scrubVal"></span></label></div>
@@ -287,6 +290,11 @@ class Scene3d {
       const open = fold.getAttribute('aria-expanded') === 'true';
       fold.setAttribute('aria-expanded', String(!open));
       bar.classList.toggle('collapsed', open);
+    });
+    const water = bar.querySelector('#water3d');
+    water.addEventListener('input', () => {
+      const pct = parseFloat(water.value);
+      if (hooks.onWaterOpacity) hooks.onWaterOpacity(pct); else this.setWaterOpacity(pct / 100);
     });
     const exag = bar.querySelector('#exag3d');
     exag.addEventListener('input', () => {
@@ -1050,7 +1058,7 @@ class Scene3d {
     // depth-scaled per-vertex alpha (shoreline feather) needs RGBA colours.
     // With a logarithmic depth buffer polygonOffset does nothing, so the
     // surface is lifted (0.05 m, in the mesh) and drawn after the terrain.
-    const mat = new THREE.MeshPhongMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false, shininess: 60, specular: 0x334455 });
+    const mat = new THREE.MeshPhongMaterial({ vertexColors: true, transparent: true, opacity: this.waterOpacity, side: THREE.DoubleSide, depthWrite: false, shininess: 60, specular: 0x334455 });
     // Far away the terrain under the water is a coarse tile (vertices
     // hundreds of metres apart) that pokes through shallow water in rows.
     // Pull the water towards the camera by 0.2 % of its distance: the same
@@ -1103,6 +1111,16 @@ class Scene3d {
       }
     }
     this.syncAreas();
+    this.dirty = true;
+  }
+
+  /* Flood water opacity (0..1), multiplying the depth-based per-vertex alpha. */
+  setWaterOpacity(v) {
+    this.waterOpacity = Math.max(0.05, Math.min(1, v));
+    for (const t of this.areaTiles.values()) if (t.water) t.water.material.opacity = this.waterOpacity;
+    const el = document.getElementById('water3d'), out = document.getElementById('waterVal');
+    if (el) el.value = String(Math.round(this.waterOpacity * 100));
+    if (out) out.textContent = `${Math.round(this.waterOpacity * 100)}%`;
     this.dirty = true;
   }
 

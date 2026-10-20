@@ -1310,6 +1310,9 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     // contribute water surfaces.
     view3d = mod.openScene3d({
       getStep: () => state.timeStep || 0,
+      // one flood opacity for the map and the 3D water
+      getWaterOpacity: () => parseFloat($('floodOpacity').value) / 100,
+      onWaterOpacity: (pct) => { $('floodOpacity').value = String(pct); $('floodOpacity').dispatchEvent(new Event('input')); },
       getViewBox: () => viewBounds3d(),
       getCentre: () => { const m = state.lmap; if (!m) return null; const c = m.getCenter(); return [c.lat, c.lng]; },
       getAreas: () => areasFor3d(),
@@ -3006,6 +3009,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       if (a.relief) a.relief.setOpacity(parseFloat(e.target.value) / 100);
     }
     if (fine && fine.ov) fine.ov.setOpacity(parseFloat(e.target.value) / 100);
+    if (view3d && view3d.setWaterOpacity) view3d.setWaterOpacity(parseFloat(e.target.value) / 100);
     $('floodOpacityOut').textContent = e.target.value + '%';
   });
   $('showRelief').addEventListener('change', () => { if (state.geo) drawGeoMap(); });
