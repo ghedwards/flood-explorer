@@ -109,7 +109,11 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
    * flow path from the gauge to where the ground drops DAM_DROP_M below the
    * lake's surface), and below the wall the river gets its normal depth plus
    * whatever is spilling: the gauge level above the lake's normal level
-   * (the elevation data's water surface + 0.3 m, as the normal-level run). */
+   * (the elevation data's water surface + 0.3 m, as the normal-level run).
+   * Below the wall the river surface follows its bed (bed + depth, never
+   * rising downstream, never below the bay): a straight slope from the
+   * wall's foot to the sea sat metres above the ground where the bed drops
+   * steeply below a dam and then flattens. */
   const DAM_DROP_M = 4, DAM_SEARCH_M = 5000, RIVER_DEPTH_M = 0.3;
   let damMemo = null;
   const isDamModel = (meta) => !!meta && /^storage:/.test(String(meta.reportId || ''));
@@ -122,6 +126,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       if (a.valid[c] && a.dem[c] < lake - DAM_DROP_M) { v = { crest: prev, below: c, lake }; break; }
       prev = c;
     }
+    if (v) {   // the river's path from the wall's foot to the sea or the model edge
+      v.path = [];
+      for (let c = v.below; c >= 0 && v.path.length < 20000; c = a.rec[c]) { if (a.ocean && a.ocean[c]) break; v.path.push(c); }
+    }
     damMemo = { a, g: gauge, v };
     return v;
   }
@@ -129,10 +137,16 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const d = damOutlet(a, s.gauge, meta);
     if (!d) return s;
     const spill = Math.max(0, s.gaugeLevel - (d.lake + RIVER_DEPTH_M));
-    const below = Math.min(s.gaugeLevel, a.dem[d.below] + RIVER_DEPTH_M + spill);
-    return Object.assign({}, s, { controls: (s.controls || []).concat([{ cell: d.crest, level: s.gaugeLevel }, { cell: d.below, level: below }]) });
+    const ctrl = [{ cell: d.crest, level: s.gaugeLevel }];
+    let lv = s.gaugeLevel;
+    for (const c of d.path) {
+      if (!a.valid[c]) continue;
+      lv = Math.max(s.bayLevel, Math.min(lv, a.dem[c] + RIVER_DEPTH_M + spill));
+      ctrl.push({ cell: c, level: lv });
+    }
+    return Object.assign({}, s, { controls: (s.controls || []).concat(ctrl) });
   }
-  window.__floodDam = () => { const d = state.a && damOutlet(state.a, state.gauge, state.areaMeta); return d ? { lake: d.lake, crest: cellLatLng(d.crest), below: cellLatLng(d.below), belowGround: state.a.dem[d.below] } : null; };
+  window.__floodDam = () => { const d = state.a && damOutlet(state.a, state.gauge, state.areaMeta); return d ? { lake: d.lake, crest: cellLatLng(d.crest), below: cellLatLng(d.below), belowGround: state.a.dem[d.below], pathCells: d.path.length } : null; };
 
   function syncOutputs() {
     $('gaugeLevelOut').textContent = fmt(ctl.gaugeLevel.value, 2) + ' m';
