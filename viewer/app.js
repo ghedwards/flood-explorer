@@ -1040,7 +1040,8 @@ import './inertial-grid.js';
   async function updateFine() {
     const m = state.lmap, a = state.a, run = state.run, g = state.geo, coarse = state.overlay;
     const meta = state.areaMeta;
-    const on = m && a && run && g && coarse && useLidar() && m.getZoom() >= FINE_Z && colorMode() === 'depth'
+    const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null;
+    const on = m && a && run && g && coarse && useLidar() && m.getZoom() >= FINE_Z && (mode === 'depth' || (mode === 'hazard' && hz && hz.vel))
       && !$('showRelief').checked && meta && meta.lidarShare > 0;
     if (!on) { clearFine(); status.fine = null; return; }
     const vb = m.getBounds().pad(0.15);
@@ -1052,7 +1053,7 @@ import './inertial-grid.js';
     if (W < 2 || H < 2 || W > FINE_MAX_PX || H > FINE_MAX_PX) { clearFine(); return; }
     const gen = ++fineGen, areaKey = state.areaKey, t0 = performance.now();
     const r = await fineLidar(box, W, H);
-    if (gen !== fineGen || areaKey !== state.areaKey || run !== state.run) return;   // superseded
+    if (gen !== fineGen || areaKey !== state.areaKey || run !== state.run || mode !== colorMode()) return;   // superseded
     if (!r || r.iw !== W || r.ih !== H) { clearFine(); status.fine = { lidar: false }; return; }
     // the coarse picture as drawn now: copied where there is no LiDAR
     const coarseImg = composeWater().img.data;
@@ -1078,7 +1079,7 @@ import './inertial-grid.js';
         // water levels from the wet model cells around this spot: this
         // scenario's, and the baseline's (normal river), so the river's
         // own edge is drawn at 5 m too
-        let ws = 0, wsum = 0, bs = 0, bsum = 0, nIn = 0, nBase = 0;
+        let ws = 0, wsum = 0, bs = 0, bsum = 0, nIn = 0, nBase = 0, vs = 0, vsum = 0;
         for (let dy = -1; dy <= 1; dy++) {
           const yy = cy + dy;
           if (yy < 0 || yy >= a.H) continue;
@@ -1091,6 +1092,7 @@ import './inertial-grid.js';
             if (!a.valid[k] || a.ocean[k]) continue;
             const w = 1 / (0.25 + (xx - fx) ** 2 + (yy - fy) ** 2);
             if (run.wet[k]) { ws += w * (a.dem[k] + run.depth[k]); wsum += w; }
+            if (hz && hz.cls[k]) { vs += w * hz.vel[k]; vsum += w; }
             if (baseDepth && base.wet[k]) { bs += w * (a.dem[k] + baseDepth[k]); bsum += w; }
           }
         }
@@ -1100,6 +1102,9 @@ import './inertial-grid.js';
         // surface, which can sit above the model's baseline level)
         if (depBase > 0.02 || (nBase === nIn && nIn > 0)) {   // the light channel tint
           d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = CHANNEL_ALPHA;
+        } else if (dep > 0.02 && hz) {   // hazard: 5 m depth with the speed of the flooded cells around
+          const col = HAZARD_COLORS[hazardClass(dep, vsum ? vs / vsum : 0) - 1];
+          d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
         } else if (dep > 0.02) {
           const band = depthBand(dep), col = DEPTH_STOPS[band][1];
           d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = band === 0 ? DEPTH_ALPHA[0] : 255;
@@ -1142,6 +1147,13 @@ import './inertial-grid.js';
   const HAZARD_TEXT = ['generally safe', 'unsafe for small vehicles', 'unsafe for vehicles, children and the elderly', 'unsafe for vehicles and people', 'unsafe for people and vehicles; buildings need special design', 'unsafe for all; all buildings vulnerable'];
   const COMPARE_COLORS = { onlyNow: [230, 97, 1], onlyPinned: [94, 60, 153], both: [158, 202, 225] };
   const colorMode = () => { const v = $('colorMode') ? $('colorMode').value : 'depth'; return v === 'compare' && !(state.pinned && state.pinned.key === state.areaKey) ? 'depth' : v; };
+  // AIDR 7-3 hazard class from depth (m) and speed (m/s): the same limits
+  // as flood-core's hazard_class (surface.rs HAZARD_LIMITS)
+  const HAZARD_LIMITS = [[0.3, 2.0, 0.3], [0.5, 2.0, 0.6], [1.2, 2.0, 0.6], [2.0, 2.0, 1.0], [4.0, 4.0, 4.0]];
+  function hazardClass(dep, v) {
+    for (let k = 0; k < HAZARD_LIMITS.length; k++) { const [dl, vl, dvl] = HAZARD_LIMITS[k]; if (dep <= dl && v <= vl && dep * v <= dvl) return k + 1; }
+    return 6;
+  }
   function hazardNow() {
     if (!state.a || !state.run) return null;
     const vx = state.run.vx, vy = state.run.vy;
@@ -3483,8 +3495,9 @@ import './inertial-grid.js';
       nat.dotsWired = true;
       m.on('zoomend', scaleDots);
       m.on('overlayadd', orderDots);
+      m.on('zoomend overlayadd overlayremove layeradd layerremove', (e) => { if (!e.layer || !nat.clusters || !nat.clusters.hasLayer(e.layer)) scheduleClusters(); });
     }
-    scaleDots(); orderDots();
+    scaleDots(); orderDots(); clusterDots();
     syncLayerLists();
   }
 
@@ -3503,6 +3516,8 @@ import './inertial-grid.js';
       });
     }
   }
+  let clusterT = 0;
+  function scheduleClusters() { clearTimeout(clusterT); clusterT = setTimeout(clusterDots, 60); }
   function orderDots() {
     const m = state.lmap;
     if (!m) return;
@@ -3510,6 +3525,58 @@ import './inertial-grid.js';
       const l = nat.layers[n];
       if (l && l.eachLayer && m.hasLayer(l)) l.eachLayer((c) => c.bringToFront && c.bringToFront());
     }
+  }
+
+  // Below z7 nearby dots are grouped: dots sharing a ~34 px square become one
+  // numbered circle, coloured by the most important dot in it (a red ring if
+  // any is under a flood warning); a tap zooms in on the group. Lone dots
+  // stay as they are. The grouped dots are only hidden (styled out), so the
+  // Layers switches and their state are untouched.
+  const CLUSTER_Z = 7, CLUSTER_PX = 34;
+  const DOT_RANK = { 'Gauges under a current flood warning (BoM)': 0, 'Flood forecast gauges (BoM)': 1, 'Flood information gauges (BoM)': 2, 'Tide gauges (BoM)': 3, 'Dams and water storages (BoM)': 4, 'Other river gauges (BoM)': 5 };
+  function clusterDots() {
+    const m = state.lmap, L = window.L;
+    if (!m || !L) return;
+    if (!nat.clusters) nat.clusters = L.layerGroup().addTo(m);
+    nat.clusters.clearLayers();
+    const z = m.getZoom(), on = z < CLUSTER_Z;
+    const cells = new Map();
+    for (const [name, l] of Object.entries(nat.layers)) {
+      if (!(name in DOT_RANK) || !l.eachLayer) continue;
+      const shown = m.hasLayer(l);
+      l.eachLayer((c) => {
+        if (!c.getLatLng || !c.setStyle) return;
+        if (c._hidden) { c.setStyle(c._style0); c.options.interactive = c._interactive0; c._hidden = false; }
+        if (!on || !shown) return;
+        const p = m.project(c.getLatLng(), z), key = `${Math.floor(p.x / CLUSTER_PX)},${Math.floor(p.y / CLUSTER_PX)}`;
+        let cl = cells.get(key);
+        if (!cl) cells.set(key, (cl = { dots: [], rank: 9, color: null, warn: false, lat: 0, lng: 0 }));
+        const rank = DOT_RANK[name];
+        if (rank === 0) cl.warn = true;
+        else {
+          cl.dots.push(c);
+          const ll = c.getLatLng(); cl.lat += ll.lat; cl.lng += ll.lng;
+          if (rank < cl.rank) { cl.rank = rank; cl.color = c.options.fillColor; }
+        }
+        if (rank === 0) cl.rings = (cl.rings || []).concat(c);
+      });
+    }
+    let groups = 0;
+    for (const cl of cells.values()) {
+      if (cl.dots.length < 2) continue;
+      groups++;
+      for (const c of cl.dots.concat(cl.rings || [])) {
+        if (!c._style0) c._style0 = { opacity: c.options.opacity == null ? 1 : c.options.opacity, fillOpacity: c.options.fillOpacity == null ? 0.2 : c.options.fillOpacity };
+        c.setStyle({ opacity: 0, fillOpacity: 0 }); c._hidden = true;
+        c._interactive0 = c.options.interactive; c.options.interactive = false;   // the canvas skips it for taps and hovers
+      }
+      const n = cl.dots.length, ll = [cl.lat / n, cl.lng / n], size = n >= 100 ? 34 : n >= 10 ? 28 : 24;
+      const icon = L.divIcon({ className: 'dot-cluster', iconSize: [size, size], html: `<span style="background:${cl.color}${cl.warn ? ';box-shadow:0 0 0 2.5px #c62828' : ''}">${n}</span>` });
+      L.marker(ll, { icon, keyboard: true, title: `${n} gauges and dams here${cl.warn ? ', some under a flood warning' : ''}: zoom in`, zIndexOffset: 500 - cl.rank * 50 })
+        .on('click', () => m.setView(ll, Math.min(CLUSTER_Z, z + 2)))
+        .addTo(nat.clusters);
+    }
+    status.dotClusters = groups;
   }
 
   async function enterNational(opts) {

@@ -35,7 +35,11 @@ const OUT = process.env.OUT || "shots";
     // desktop
     const page = await open({ width: 1400, height: 900 });
     await settle(page, 6000);
+    report.dotClusters = await page.evaluate(() => window.__floodStatus.dotClusters);
     await shot(page, "01-australia");
+    await run("zoom-se-qld-6", async () => { await page.evaluate(() => window.__floodTestZoom(-27.5, 152.8, 6)); await settle(page, 3000); });
+    report.dotClusters6 = await page.evaluate(() => window.__floodStatus.dotClusters);
+    await shot(page, "01b-se-qld-z6");
     await run("zoom-qld", async () => { await page.evaluate(() => window.__floodTestZoom(-23.4, 150.5, 8)); await settle(page, 5000); });
     await shot(page, "02-region-gauges");
     await run("model", async () => {
@@ -85,6 +89,13 @@ const OUT = process.env.OUT || "shots";
       });
       await shot(page, name);
     }
+    await run("big-flood-hazard-z15", async () => {
+      await page.evaluate(() => window.__floodColorMode && window.__floodColorMode("hazard"));
+      await settle(page, 6000);
+      report.fine_hazard = await page.evaluate(() => window.__floodStatus.fine);
+    });
+    await shot(page, "06d-big-flood-hazard-z15");
+    await run("depth-again", async () => { await page.evaluate(() => window.__floodColorMode && window.__floodColorMode("depth")); });
     await run("back-out", async () => { await page.evaluate(() => { const m = window.__floodMap; if (m) m.setZoom(12, { animate: false }); }); await settle(page, 3000); });
     await run("basemap-street", async () => { await page.evaluate(() => window.__floodSetBasemap && window.__floodSetBasemap("Streets")); await settle(page, 4000); });
     await shot(page, "07-street-basemap");
