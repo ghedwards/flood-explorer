@@ -45,7 +45,7 @@ fn run(args: &[String]) -> R<String> {
     let a = |i: usize| -> R<&str> { args.get(i).map(|s| s.as_str()).ok_or_else(usage) };
     match args.first().map(|s| s.as_str()) {
         Some("national") => national::run(a(1)?, &national::http_json),
-        Some("floodinfo") => floodinfo::run(a(1)?, &floodinfo::http_text, Some(&flood_feeds::flood_warnings)),
+        Some("floodinfo") => floodinfo::run(a(1)?, &floodinfo::http_text, Some(&flood_feeds::flood_warnings), Some(&flood_feeds::flood_classes)),
         Some("events") => events::run(a(1)?, a(2)?, a(3)?, &national::kiwis),
         Some("sealevels") if args.get(1).map(|s| s.as_str()) == Some("merge") => sealevels::merge(a(2)?, a(3)?, a(4)?),
         Some("sealevels") => sealevels::run(a(1)?, a(2)?),

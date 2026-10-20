@@ -68,19 +68,30 @@ pub struct Readings {
     pause: Box<dyn Fn() + Send + Sync>,
     rain_http: Option<Http>,
     warnings: Option<Warnings>,
+    classes: Option<Classes>,
 }
+
+/// Fetches flood class levels and current classes: errors -> {station: ...}.
+pub type Classes = Box<dyn Fn(&mut Vec<String>) -> Value + Send + Sync>;
+const CLASSES_EVERY_MS: i64 = 60 * 60_000;
 
 /// Fetches the current flood warnings: (now, iso now, errors) -> warnings.json.
 pub type Warnings = Box<dyn Fn(i64, &str, &mut Vec<String>) -> Value + Send + Sync>;
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None }
     }
 
     /// Fetch plain-text files (the storm tide CSV) with this.
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = Some(text);
+        self
+    }
+
+    /// Fetch the Bureau's flood class levels with this (hourly).
+    pub fn with_classes(mut self, c: Classes) -> Self {
+        self.classes = Some(c);
         self
     }
 
@@ -206,6 +217,25 @@ impl Readings {
                 r["warningsFetched"] = r["warnings"]["fetched"].clone();
             }
         }
+        // flood class levels and the Bureau's current class at each gauge, hourly
+        if let Some(cf) = &self.classes {
+            match Self::carry(&prev, "floodclass", "floodclassFetched", started, CLASSES_EVERY_MS) {
+                Some((fc, at)) => {
+                    r["floodclass"] = fc;
+                    r["floodclassFetched"] = at;
+                }
+                None => {
+                    let fc = cf(&mut errors);
+                    if fc.as_object().is_some_and(|o| !o.is_empty()) {
+                        r["floodclass"] = fc;
+                        r["floodclassFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                    } else if let Some((fc, at)) = Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000) {
+                        r["floodclass"] = fc;
+                        r["floodclassFetched"] = at;
+                    }
+                }
+            }
+        }
         let t_warn = (self.now)();
         r["watch"] = feeds::watch_list(&r);
         let nl = r["level"].as_object().map_or(0, |o| o.len());
@@ -227,6 +257,7 @@ impl Readings {
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
             "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "seconds": (fetched - started) / 1000,
             "warnings": r["warnings"]["warnings"].as_array().map(|a| a.len()),
+            "floodClasses": r["floodclass"].as_object().map(|o| o.len()),
             "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000, "warnings": (t_warn - t_sea) / 1000}}))
     }
 

@@ -3542,7 +3542,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     gauges.sort((a, b) => sev(b.status.severity).rank - sev(a.status.severity).rank);
     const flooding = gauges.filter((g) => sev(g.status.severity).rank >= 2);
     const flash = (fh.flashFloodEvents || []).length;
-    $('forecastBadge').hidden = !(flooding.length || flash || nat.warningCount);
+    $('forecastBadge').hidden = !(flooding.length || flash || nat.warningCount || (nat.readingsSource === 'runtime' && nat.readings && nat.readings.watch && nat.readings.watch.length));
     let html = '';
     if (!flooding.length && !flash) {
       html += `<p>No flooding forecast at ${gauges.length} Flood Hub gauge${gauges.length === 1 ? '' : 's'} in Australia.</p>`;
@@ -3838,8 +3838,11 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       [nat.floodclass, nat.warnings] = await Promise.all([opt('floodclass.json'), opt('warnings.json')]);
       // the broker's warnings (every 15 minutes) when readings come from it
       if (nat.readingsSource === 'runtime' && readings.warnings && readings.warnings.ok) nat.warnings = readings.warnings;
+      // and its flood class levels (the Bureau's river height pages, hourly)
+      if (nat.readingsSource === 'runtime' && readings.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, readings.floodclass);
       nat.floodclass = nat.floodclass || {};
       renderWarnings();
+      renderWatch();
     } catch (e) {
       nat.data = { gauges: [], storages: [], meta: { errors: [String(e)] } };
       nat.readings = { level: {}, storage: {} };
@@ -4792,7 +4795,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (!c) return '';
     const st = r ? floodStatus(r.latest[1], c) : null;
     const cell = (v) => (v == null ? '–' : `${v.toFixed(2)} m${c.zero != null ? `<br><small>${(c.zero + v).toFixed(2)} m AHD</small>` : ''}`);
-    return `<div class="classes"><span class="label">Flood classes (BoM)</span>${st ? ` <strong>· now ${st}</strong>` : ''}
+    const bomNow = c.class && !/no classification/i.test(c.class) ? `<span class="hint">Bureau: ${escapeHtml(String(c.class).toLowerCase())}${c.tendency ? `, ${escapeHtml(c.tendency)}` : ''}${Number.isFinite(c.level) ? ` at ${c.level.toFixed(2)} m` : ''}${c.at ? ` (${escapeHtml(c.at.replace('T', ' ').slice(0, 16))}, local time)` : ''}.</span>` : '';
+    return `<div class="classes"><span class="label">Flood classes (BoM)</span>${st ? ` <strong>· now ${st}</strong>` : ''}${bomNow}
       <table><tr><th>Minor</th><th>Moderate</th><th>Major</th></tr><tr><td>${cell(c.minor)}</td><td>${cell(c.moderate)}</td><td>${cell(c.major)}</td></tr></table>
       <span class="hint">On the gauge board${c.zero != null ? `; gauge zero is ${c.zero.toFixed(2)} m AHD, so these can set a flood model's level` : '; no gauge zero is published, so they can\'t be converted to heights'}.</span></div>`;
   }
@@ -4813,6 +4817,61 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const d = new Date(t);
     return Number.isNaN(d.getTime()) ? t : `issued ${d.toLocaleString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`;
   }
+  // What's worth a look now (the broker's watch list): Bureau warnings,
+  // gauges in flood, fast or sustained rises, storm surges and heavy rain
+  // forecast, each with the reason, most pressing first.
+  const WATCH_ICON = { warning: '⚠', flood: '▲', river: '↑', sea: '≈' };
+  function watchName(w) {
+    if (w.kind === 'river') {
+      const f = nat.data && nat.data.gauges.find((g) => g.properties.station === w.station);
+      return f ? f.properties.name : `Gauge ${w.station}`;
+    }
+    if (w.kind === 'sea') return `${w.name || w.station} (storm tide gauge)`;
+    return w.name || w.station;
+  }
+  function renderWatch() {
+    const box = $('watchBox');
+    if (!box) return;
+    const list = (nat.readings && nat.readings.watch) || [];
+    status.watch = { count: list.length, kinds: list.reduce((m, w) => (m[w.kind] = (m[w.kind] || 0) + 1, m), {}) };
+    if (nat.readingsSource !== 'runtime') { box.hidden = true; return; }
+    box.hidden = false;
+    const shown = list.slice(0, 40);
+    box.innerHTML = `<h3 class="places-sub">Watch list${list.length ? ` (${list.length})` : ''}</h3>
+      ${list.length ? `<ul class="watch-list">${shown.map((w, i) => `<li><button type="button" class="watch-item watch-${escapeHtml(w.kind)}" data-watch="${i}">
+        <span class="watch-icon" aria-hidden="true">${WATCH_ICON[w.kind] || '•'}</span>
+        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small></span></button></li>`).join('')}</ul>`
+        : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
+      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))}. ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} A pointer to look closer, not a warning; follow official warnings.</p>`;
+    box.querySelectorAll('[data-watch]').forEach((b) => b.addEventListener('click', () => openWatchItem(shown[+b.dataset.watch])));
+    const n = list.length;
+    const badge = $('forecastBadge');
+    if (n) { badge.hidden = false; badge.textContent = String(n); }
+  }
+  async function openWatchItem(w) {
+    if (!w) return;
+    if (w.kind === 'warning') { if (w.link) window.open(w.link, '_blank', 'noopener'); return; }
+    if (w.kind === 'sea') {
+      const x = nat.readings.sea && nat.readings.sea[w.station];
+      if (x && state.lmap) {
+        const lyr = nat.layers['Storm tide gauges, live (Qld)'];
+        if (lyr && !state.lmap.hasLayer(lyr)) { lyr.addTo(state.lmap); syncLayerLists(); }
+        state.lmap.setView([x.lat, x.lon], 12);
+        window.L.popup().setLatLng([x.lat, x.lon]).setContent(seaPopupHtml(x)).openOn(state.lmap);
+      }
+      return;
+    }
+    if (typeof ensureRiverGauges === 'function') { try { await ensureRiverGauges(); } catch (e) { /* the core gauges still work */ } }
+    const gs = (nat.data && nat.data.gauges) || [];
+    const f = w.kind === 'flood' ? gs.find((g) => String(g.properties.bom) === String(w.station)) : gs.find((g) => g.properties.station === w.station);
+    if (!f) { say(`That gauge (${w.station}) isn't on the map.`); return; }
+    const [lo, la] = f.geometry.coordinates;
+    if (state.lmap) state.lmap.setView([la, lo], Math.max(state.lmap.getZoom(), 11));
+    openReport(f);
+  }
+  window.__floodWatch = () => ({ list: (nat.readings && nat.readings.watch) || [], shown: !$('watchBox').hidden, items: document.querySelectorAll('#watchBox [data-watch]').length });
+  window.__floodOpenWatch = (i) => openWatchItem(((nat.readings && nat.readings.watch) || [])[i || 0]);
+
   function renderWarnings() {
     const box = $('warningsBox');
     if (!box) return;

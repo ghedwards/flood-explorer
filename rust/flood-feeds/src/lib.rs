@@ -466,11 +466,24 @@ pub fn watch_list(doc: &Value) -> Value {
             }
         }
     }
+    // gauges the Bureau has at minor, moderate or major flooding now
+    if let Some(fc) = doc["floodclass"].as_object() {
+        for (st, g) in fc {
+            let rank = class_rank(g["class"].as_str().unwrap_or(""));
+            if rank == 0 {
+                continue;
+            }
+            let tend = g["tendency"].as_str().unwrap_or("");
+            w.push(((rank as f64) * 6.0 + 6.0, json!({"kind": "flood", "station": st, "name": g["name"], "level": g["level"], "at": g["at"],
+                "why": [format!("{} flooding now{} (Bureau of Meteorology)", g["class"].as_str().unwrap_or(""), if tend.is_empty() { String::new() } else { format!(", {}", tend) })]})));
+        }
+    }
     // the Bureau's own warnings come first
     for x in doc["warnings"]["warnings"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
         let sev = x["severity"].as_str().unwrap_or("");
         let score = match sev { "Extreme" | "Major" => 30.0, "Severe" | "Moderate" => 20.0, _ => 10.0 };
-        w.push((score, json!({"kind": "warning", "station": x["id"], "name": x["title"], "at": x["published"], "why": [format!("{} flood warning (Bureau of Meteorology)", if sev.is_empty() { "current" } else { sev })], "link": x["link"]})));
+        let label = match sev { "" | "Unknown" => "Flood warning".to_string(), s => format!("{} flood warning", s) };
+        w.push((score, json!({"kind": "warning", "station": x["id"], "name": x["title"], "at": x["published"], "why": [format!("{} (Bureau of Meteorology)", label)], "link": x["link"]})));
     }
     w.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     Value::Array(w.into_iter().map(|(sc, mut v)| { v["score"] = json!(round_to(sc, 2)); v }).collect())
@@ -478,7 +491,7 @@ pub fn watch_list(doc: &Value) -> Value {
 
 /// What puts something on the watch list, for the map to explain.
 pub fn watch_rule() -> String {
-    format!("a current Bureau flood warning; river up at least {} m in 3 hours or {} m in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
+    format!("a current Bureau flood warning; a gauge the Bureau has at minor flooding or above; river up at least {} m in 3 hours or {} m in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
         RISE_3H_M, RISE_24H_M, RAIN_24H_MM, RAIN_72H_MM, SURGE_M)
 }
 
@@ -972,5 +985,122 @@ mod warning_tests {
         let later = ts_epoch("2026-10-24T00:00:00Z").unwrap();
         assert!(parse_cap_flood(CAP, later).is_none(), "expired");
         assert!(parse_cap_flood(&CAP.replace("Riverine Flood", "Severe Thunderstorm"), now).is_none(), "not a flood");
+    }
+}
+
+/* ------------------------------------------------- flood class levels */
+
+/// One gauge from the Bureau's river height map pages (IDx653xx.html on
+/// the FTP server): each gauge's marker carries
+/// PopupRiver("name", 'station', 'lat', 'lon', 'level', 'class',
+/// 'tendency', 'dd-mm-yyyy hh:mm:ss', 'minor', 'moderate', 'major', ...).
+pub fn parse_river_popups(html: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(i) = rest.find("PopupRiver(") {
+        rest = &rest[i + "PopupRiver(".len()..];
+        let end = rest.find(')').unwrap_or(rest.len());
+        let args_src = xml_unescape(&rest[..end]);
+        // split on commas outside quotes
+        let (mut args, mut cur, mut q) = (Vec::new(), String::new(), None::<char>);
+        for ch in args_src.chars() {
+            match (q, ch) {
+                (None, '\'' | '"') => q = Some(ch),
+                (Some(c), _) if ch == c => q = None,
+                (None, ',') => args.push(std::mem::take(&mut cur).trim().to_string()),
+                _ => cur.push(ch),
+            }
+        }
+        args.push(cur.trim().to_string());
+        if args.len() < 11 {
+            continue;
+        }
+        let num = |s: &str| s.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let station = args[1].trim().trim_start_matches('0').to_string();
+        if station.is_empty() || !station.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        // "21-10-2026 09:00:01" (local time at the gauge; no zone given)
+        let at = {
+            let t = args[7].trim();
+            if t.len() >= 16 { format!("{}-{}-{}T{}", &t[6..10], &t[3..5], &t[0..2], &t[11..]) } else { String::new() }
+        };
+        out.push(json!({
+            "station": station, "name": args[0], "lat": num(&args[2]), "lon": num(&args[3]),
+            "level": num(&args[4]), "class": args[5], "tendency": args[6], "at": at,
+            "minor": num(&args[8]), "moderate": num(&args[9]), "major": num(&args[10]),
+        }));
+    }
+    out
+}
+
+/// Every flood gauge's class levels and current class from the river height
+/// map pages: {Bureau station number: {name, minor, moderate, major, class,
+/// tendency, level, at, lat, lon}} (60-second limit).
+pub fn flood_classes(errors: &mut Vec<String>) -> Value {
+    let mut out = Map::new();
+    let mut s = match ftp::Session::open(BOM_FTP_HOST, 30) {
+        Ok(s) => s,
+        Err(e) => {
+            errors.push(format!("flood classes: {}", e));
+            return Value::Object(out);
+        }
+    };
+    let names = match s.list(BOM_FTP_DIR) {
+        Ok(n) => n,
+        Err(e) => {
+            errors.push(format!("flood classes: {}", e));
+            return Value::Object(out);
+        }
+    };
+    let pages: Vec<&String> = names.iter().filter(|n| n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && &n[3..6] == "653").collect();
+    let t0 = std::time::Instant::now();
+    for n in pages {
+        if t0.elapsed().as_secs() > 60 {
+            errors.push("flood classes: out of time; the rest wait for the next refresh".into());
+            break;
+        }
+        match s.get(&format!("{}{}", BOM_FTP_DIR, n)) {
+            Ok(b) => {
+                for g in parse_river_popups(&String::from_utf8_lossy(&b)) {
+                    let has_levels = ["minor", "moderate", "major"].iter().any(|k| g[*k].is_number());
+                    let st = g["station"].as_str().unwrap_or("").to_string();
+                    // the same gauge can be on several pages: keep one with levels
+                    if has_levels || !out.contains_key(&st) {
+                        out.insert(st, g);
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("flood classes {}: {}", n, e)),
+        }
+    }
+    Value::Object(out)
+}
+
+/// Is a Bureau flood class one of minor, moderate or major flooding?
+pub fn class_rank(class: &str) -> u8 {
+    let c = class.to_lowercase();
+    if c.contains("major") { 3 } else if c.contains("moderate") { 2 } else if c.contains("minor") { 1 } else { 0 }
+}
+
+#[cfg(test)]
+mod class_tests {
+    use super::*;
+
+    #[test]
+    fn river_popups() {
+        let html = r#"<area onmouseover="javascript:PopupRiver(&quot;Balonne River at St George&quot;,'043104','-28.0667','148.5667','0.86','Below Flood Level','steady','21-10-2026 08:00:00','6.00','8.00','10.00','Click mouse to display plot')"/>
+<area onmouseover="javascript:PopupRiver(&quot;Moonie River at Gundablouie&quot;,'548006','-29.1667','148.6333','-0.18','No Classification','steady','21-10-2026 09:00:01','','','','Click')"/>
+<area onmouseover="javascript:PopupRiver(&quot;Barcoo River at Blackall, Qld&quot;,'036034','-24.42','145.47','2.10','Minor','rising','21-10-2026 09:00:00','2.00','3.50','5.00','x')"/>"#;
+        let g = parse_river_popups(html);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0]["station"], "43104", "leading zeros dropped, as the map's Bureau numbers are");
+        assert_eq!(g[0]["minor"], 6.0);
+        assert_eq!(g[0]["major"], 10.0);
+        assert_eq!(g[0]["at"], "2026-10-21T08:00:00");
+        assert_eq!(g[1]["minor"], Value::Null);
+        assert_eq!(g[2]["name"], "Barcoo River at Blackall, Qld", "commas inside the name survive");
+        assert_eq!(class_rank(g[2]["class"].as_str().unwrap()), 1);
+        assert_eq!(class_rank("Below Flood Level"), 0);
     }
 }

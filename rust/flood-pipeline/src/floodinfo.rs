@@ -178,7 +178,10 @@ pub fn parse_rss(xml: &str, state: &str) -> Vec<Value> {
 /// website's feeds turn automated requests away): (now, iso now, errors).
 pub type CapWarnings<'a> = &'a dyn Fn(i64, &str, &mut Vec<String>) -> Value;
 
-pub fn run(out_dir: &str, http: HttpText, cap: Option<CapWarnings>) -> R<String> {
+/// Flood class levels from the FTP server's river height map pages.
+pub type FtpClasses<'a> = &'a dyn Fn(&mut Vec<String>) -> Value;
+
+pub fn run(out_dir: &str, http: HttpText, cap: Option<CapWarnings>, ftp_classes: Option<FtpClasses>) -> R<String> {
     let out = Path::new(out_dir);
     std::fs::create_dir_all(out).map_err(err)?;
     let mut classes = Map::new();
@@ -213,6 +216,16 @@ pub fn run(out_dir: &str, http: HttpText, cap: Option<CapWarnings>) -> R<String>
         }
         if !ok {
             werr.push(last);
+        }
+    }
+    // the website's pages failed: the river height map pages on the FTP server
+    if classes.is_empty() {
+        if let Some(fc) = ftp_classes {
+            let mut e = Vec::new();
+            if let Value::Object(m) = fc(&mut e) {
+                notes.push(format!("ftp={}", m.len()));
+                classes.extend(m);
+            }
         }
     }
     if !classes.is_empty() {
@@ -294,7 +307,7 @@ mod tests {
                 Err("unreachable".into())
             }
         };
-        run(d.to_str().unwrap(), &fake, None).unwrap();
+        run(d.to_str().unwrap(), &fake, None, None).unwrap();
         let classes = read_json(d.join("floodclass.json")).unwrap();
         let warn = read_json(d.join("warnings.json")).unwrap();
         assert!(classes.get("82106").is_some());

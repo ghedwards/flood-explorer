@@ -59,6 +59,8 @@ const OUT = process.env.OUT || "shots";
       rain: Object.keys(rd.body.rain || {}).length, rainCells: rd.body.rainCells, sea: Object.keys(rd.body.sea || {}).length,
       withRise: Object.values(rd.body.level || {}).filter((x) => 'rise3h' in x || 'rise24h' in x).length,
       tidal: Object.values(rd.body.level || {}).filter((x) => x.tidal).length,
+      floodClasses: Object.keys(rd.body.floodclass || {}).length,
+      inFlood: Object.values(rd.body.floodclass || {}).filter((g) => /minor|moderate|major/i.test(g.class || '')).map((g) => [g.name, g.class, g.tendency]).slice(0, 8),
       warnings: rd.body.warnings ? { ok: rd.body.warnings.ok, capFiles: rd.body.warnings.capFiles, list: (rd.body.warnings.warnings || []).map((w) => [w.id, w.severity, w.title]) } : null,
       watch: (rd.body.watch || []).slice(0, 10).map((w) => [w.kind, w.station, w.why]),
       seaSample: Object.values(rd.body.sea || {}).slice(0, 4).map((x) => [x.name, x.residual, x.residualNormal, x.surge]),
@@ -72,6 +74,19 @@ const OUT = process.env.OUT || "shots";
       await p3.goto(SITE + "?data=build", { waitUntil: "load", timeout: 90000 });
       await p3.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
       r.mapReadingsOverride = await p3.evaluate(() => window.__floodStatus.national.readingsSource);
+      // the watch list on the map, and opening its first gauge
+      await page2.click('.tool[data-open="panel-forecast"]').catch(() => {});
+      await page2.waitForTimeout(800);
+      r.watchPanel = await page2.evaluate(() => window.__floodWatch && window.__floodWatch());
+      if (r.watchPanel) r.watchPanel.list = r.watchPanel.list.slice(0, 6).map((w) => [w.kind, w.station, w.why]);
+      await page2.screenshot({ path: path.join(OUT, "15-watch-list.png") });
+      const gaugeIdx = await page2.evaluate(() => ((window.__floodWatch() || {}).list || []).findIndex((w) => w.kind === 'river' || w.kind === 'flood'));
+      if (gaugeIdx >= 0) {
+        await page2.evaluate((i) => window.__floodOpenWatch(i), gaugeIdx);
+        await page2.waitForTimeout(2500);
+        r.watchOpened = await page2.evaluate(() => { const c = [...document.querySelectorAll('.report-card')].pop(); return c ? c.innerText.replace(/\s+/g, ' ').slice(0, 400) : null; });
+        await page2.screenshot({ path: path.join(OUT, "16-watch-gauge.png") });
+      }
     }
     r.health = await (await fetch(`${BROKER}/health`)).json();
     r.errors = errors.slice(0, 5);

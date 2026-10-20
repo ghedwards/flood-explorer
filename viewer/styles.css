@@ -307,6 +307,15 @@ body.in3d #legendCard { display: none; }
 .reading { display: grid; gap: 4px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; }
 .reading .big { font: 500 1.5rem/1.1 var(--font-data); font-variant-numeric: tabular-nums; }
 .reading .big small { font-size: .55em; color: var(--muted); margin-left: 3px; }
+.watch-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
+.watch-item { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.watch-item:hover { background: var(--surface-2); }
+.watch-item small { display: block; color: var(--muted); }
+.watch-icon { width: 1.2em; text-align: center; font-weight: 700; }
+.watch-warning { border-left-color: #b71c1c; }
+.watch-flood { border-left-color: #e65100; }
+.watch-river { border-left-color: #f9a825; }
+.watch-sea { border-left-color: #1565c0; }
 .warn-text { display: block; font-size: .85rem; margin: 2px 0; color: var(--text); }
 .warn-item.sev-major { border-left: 4px solid #b71c1c; }
 .warn-item.sev-moderate { border-left: 4px solid #e65100; }
