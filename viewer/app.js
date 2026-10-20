@@ -5190,9 +5190,9 @@ import './inertial-grid.js';
     // area objects are replaced per scenario, invalidating naturally (like
     // state.hazard); draw and per-call work beyond one floor loop goes away.
     if (!useCache || !d.cache || d.cache.a !== a || d.cache.run !== run) {
-      const ts = performance.now();
+      const ts = Date.now();   // (Date, not performance: tests run this outside a browser)
       d.cache = { a, run, base: computeScenarioImpact(d, a, run) };
-      status.impactTiming = Object.assign(status.impactTiming || {}, { sweepMs: Math.round((performance.now() - ts) * 10) / 10, buildings: d.bx.length, roads: d.roads ? d.roads.length : null });
+      d.cache.sweepMs = Date.now() - ts;
     }
     const base = d.cache.base;
     const noFloor = $('floorUnknown') && $('floorUnknown').checked;
@@ -5413,6 +5413,7 @@ import './inertial-grid.js';
     if (d.error) { box.innerHTML = `<p class="hint">Couldn't fetch what's here: ${escapeHtml(d.error)}.</p>`; return; }
     const r = computeImpact(d, true);
     if (!r) return;
+    if (d.cache) status.impactTiming = Object.assign(status.impactTiming || {}, { sweepMs: d.cache.sweepMs, buildings: d.bx.length, roads: d.roads ? d.roads.length : null });
     status.impact = {
       buildings: r.buildings, bWet: r.bWet, overFloor: r.overFloor, workWet: r.workWet, workers: r.workers == null ? null : Math.round(r.workers), isolated: r.isolatedB, damage: r.damage == null ? null : Math.round(r.damage),
       people: r.people == null ? null : Math.round(r.people), peopleIsolated: r.peopleIsolated == null ? null : Math.round(r.peopleIsolated),
