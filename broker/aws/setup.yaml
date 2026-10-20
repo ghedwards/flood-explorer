@@ -168,6 +168,7 @@ Resources:
                   - lambda:PutFunctionConcurrency
                   - lambda:DeleteFunctionConcurrency
                   - lambda:TagResource
+                  - lambda:InvokeFunction   # the first readings refresh after a deploy
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
               - Effect: Allow
                 Action: iam:PassRole
