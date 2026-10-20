@@ -16,8 +16,10 @@ short-lived OpenID Connect token, so no AWS keys are stored in GitHub.
 
 **Cost:** expected to be nothing, inside AWS's always-free allowances:
 
-- **Lambda:** arm64 with 128 MB. The 15-minute refresh takes a minute or
-  two, about 45,000 GB-seconds a month against 400,000 free. Visits add a
+- **Lambda:** arm64 with 128 MB. A refresh usually takes two to four
+  minutes (the Bureau sets the pace), about 50,000 to 100,000 GB-seconds a
+  month against 400,000 free. The time limit is 15 minutes; only time
+  actually used is billed. Visits add a
   little more, against 1 million free requests.
 - **Data out:** the readings go out gzipped (about 70 KB instead of 615 KB).
   A browser that already has the current copy gets an empty "not modified"

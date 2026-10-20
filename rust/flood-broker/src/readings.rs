@@ -22,9 +22,8 @@ pub type Text = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
 const RAIN_EVERY_MS: i64 = 3 * 3_600_000; // the forecast models run every 6 hours
 const SEA_EVERY_MS: i64 = 30 * 60_000;
-/// Rain forecasts are left for the next refresh once this much of the
-/// refresh has gone (Lambda allows 5 minutes in all).
-const RAIN_DEADLINE_MS: i64 = 200_000;
+/// Rain forecasts get this long; batches left over wait for the next refresh.
+const RAIN_DEADLINE_MS: i64 = 150_000;
 
 struct Stations {
     level: HashSet<String>,
@@ -121,6 +120,7 @@ impl Readings {
         let mut errors = Vec::new();
         let http = |u: &str, p: &[(String, String)]| (self.http)(u, p);
         let mut r = feeds::readings(&http, &st.level, &st.storage, started / 1000, &mut errors);
+        let t_readings = (self.now)();
         let prev = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
         // rain forecast near the flood network's gauges, every 3 hours
         if !st.coords.is_empty() {
@@ -132,8 +132,9 @@ impl Readings {
                 None => {
                     let (cells, of) = feeds::rain_cells(&st.coords, feeds::RAIN_MAX_POINTS);
                     let rain_http = |u: &str, p: &[(String, String)]| match &self.rain_http { Some(h) => h(u, p), None => (self.http)(u, p) };
-                    // the whole refresh must finish well inside Lambda's 5 minutes
-                    let time_left = || (self.now)() - started < RAIN_DEADLINE_MS;
+                    // rain gets its own budget; what doesn't arrive waits for the next refresh
+                    let rain_started = (self.now)();
+                    let time_left = || (self.now)() - rain_started < RAIN_DEADLINE_MS;
                     let got = feeds::rain_forecast(&rain_http, &cells, started / 1000, &*self.pause, &time_left, &mut errors);
                     // cells that didn't arrive keep their last forecast
                     let old = prev.as_ref().map(|p| p["rain"].clone()).unwrap_or(Value::Null);
@@ -156,6 +157,7 @@ impl Readings {
                 }
             }
         }
+        let t_rain = (self.now)();
         // Queensland's storm tide gauges, every 30 minutes
         if let Some(text) = &self.text {
             match Self::carry(&prev, "sea", "seaFetched", started, SEA_EVERY_MS) {
@@ -181,6 +183,7 @@ impl Readings {
                 },
             }
         }
+        let t_sea = (self.now)();
         r["watch"] = feeds::watch_list(&r);
         let nl = r["level"].as_object().map_or(0, |o| o.len());
         let ns = r["storage"].as_object().map_or(0, |o| o.len());
@@ -199,7 +202,8 @@ impl Readings {
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(Doc::new(body, fetched, None))));
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
-            "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "seconds": (fetched - started) / 1000}))
+            "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "seconds": (fetched - started) / 1000,
+            "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000}}))
     }
 
     /// The latest readings, if there are any yet.
