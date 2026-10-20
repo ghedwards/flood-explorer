@@ -1554,6 +1554,55 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       normalWetKm2: { channel: +(channel * cellKm2).toFixed(2), offChannel: +(offChannel * cellKm2).toFixed(2) },
     };
   };
+  // Normal water against the satellite record: of the land the normal-level
+  // run wets (not sea), how much satellites see as water, and how often.
+  window.__floodNormalCheck = async () => {
+    const a = state.a, base = state.base, g = state.geo;
+    if (!a || !base || !g) return null;
+    const W = Math.min(a.W, 1000), H = Math.round(W * a.H / a.W);
+    const url = `${DEA_WCS}?service=WCS&version=1.0.0&request=GetCoverage&coverage=ga_ls_wo_fq_myear_3&measurements=frequency`
+      + `&crs=EPSG:4326&bbox=${g.west},${g.south},${g.east},${g.north}&width=${W}&height=${H}&format=GeoTIFF`;
+    const r = await fetch(url);
+    if (!r.ok) return { error: `HTTP ${r.status}` };
+    const buf = await r.arrayBuffer();
+    let freq, fw, fh;
+    try { const t = F.parseSimpleTiff(buf); freq = t.data; fw = t.W; fh = t.H; } catch (err) {
+      await loadGeoTiffLib();
+      const img = await (await window.GeoTIFF.fromArrayBuffer(buf)).getImage();
+      fw = img.getWidth(); fh = img.getHeight(); freq = (await img.readRasters({ samples: [0] }))[0];
+    }
+    // per model cell: the most water any satellite pixel in it saw
+    const best = new Float32Array(a.N).fill(-1);
+    for (let y = 0; y < fh; y++) {
+      const ym = Math.min(a.H - 1, Math.floor(((y + 0.5) / fh) * a.H));
+      for (let x = 0; x < fw; x++) {
+        const v = freq[y * fw + x], xm = Math.min(a.W - 1, Math.floor(((x + 0.5) / fw) * a.W)), i = ym * a.W + xm;
+        if (Number.isFinite(v) && v >= 0 && v <= 1 && v > best[i]) best[i] = v;
+      }
+    }
+    const cellKm2 = (a.cell * a.cell) / 1e6, k = (n) => +(n * cellKm2).toFixed(2);
+    const c = { channel: 0, seenOften: 0, seenSometimes: 0, rarely: 0, never: 0, noData: 0 };
+    let deepLow = 0;
+    for (let i = 0; i < a.N; i++) {
+      if (!base.wet[i] || a.ocean[i]) continue;
+      if (a.stream[i]) { c.channel++; continue; }
+      const f = best[i];
+      if (f < 0) c.noData++; else if (f >= 0.5) c.seenOften++; else if (f >= 0.2) c.seenSometimes++; else if (f >= 0.02) c.rarely++; else { c.never++; if (base.depth && base.depth[i] > 1) deepLow++; }
+    }
+    const lv = base.level && state.gauge >= 0 ? base.level[state.gauge] : null;
+    return {
+      cell: Math.round(a.cell), gauge: state.gauge >= 0 ? { ground: +a.dem[state.gauge].toFixed(2), normalLevel: lv != null ? +lv.toFixed(2) : null } : null,
+      km2: Object.fromEntries(Object.entries(c).map(([n, v]) => [n, k(v)])), neverSeenDeeperThan1m: k(deepLow),
+      bay: parseFloat(ctl.bayLevel.value), satSize: [fw, fh],
+    };
+  };
+  window.__floodOpenGaugeNamed = (re) => {
+    const rx = new RegExp(re, 'i');
+    const f = nat.data && [...nat.data.gauges, ...nat.data.storages].find((x) => rx.test(x.properties.name || ''));
+    if (!f) return null;
+    openReport(f);
+    return f.properties;
+  };
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
   window.__floodRelease = (pct, start, hours) => { $('relUnit').value = 'pct'; $('relFlow').value = pct; $('relStart').value = start; $('relHours').value = hours; return releaseOpts(); };

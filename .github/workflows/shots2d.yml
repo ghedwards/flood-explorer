@@ -81,6 +81,13 @@ jobs:
           SITE_URL: http://127.0.0.1:8000/
           OUT: ${{ runner.temp }}/shots
         run: node tests/downstream-check.js
+      - name: Normal water against the satellite record
+        if: github.event_name == 'push' || inputs.target == 'build'
+        continue-on-error: true
+        env:
+          SITE_URL: http://127.0.0.1:8000/
+          OUT: ${{ runner.temp }}/shots
+        run: node tests/normal-check.js
       - name: Service worker tile cache (Chromium and Firefox)
         if: github.event_name == 'push' || inputs.target == 'build'
         env:
