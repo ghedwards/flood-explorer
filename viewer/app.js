@@ -1107,13 +1107,17 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     status.normalWater = Object.assign({}, status.normalWater, { lowGroundKm2: km2(idx.length) });
   }
   // A river run: low ground stays dry until the water there is deeper than
-  // at the normal level.
+  // at the normal level, and then its depth is counted from the normal
+  // water surface: ground that is never wet can't really lie below the water
+  // it connects to, so a terrain hole there isn't read as metres of flood.
   function dryLowGround(run, base) {
     const low = base && base.low;
     if (!run || !low) return run;
     for (let k = 0; k < low.idx.length; k++) {
       const i = low.idx[k];
-      if (run.wet[i] && run.depth[i] <= low.depth[k] + 0.05) { run.wet[i] = 0; run.depth[i] = 0; if (run.level) run.level[i] = NaN; }
+      if (!run.wet[i]) continue;
+      const above = run.depth[i] - low.depth[k];
+      if (above <= 0.05) { run.wet[i] = 0; run.depth[i] = 0; if (run.level) run.level[i] = NaN; } else run.depth[i] = above;
     }
     return run;
   }
@@ -3608,8 +3612,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const parts = [`Ground ${fmt(a.dem[i], 1)} m`];
     if (a.ocean[i]) parts.push('sea');
     else if (run.wet[i] && state.base && state.base.wet[i]) parts.push(`normal water ${fmt(run.depth[i], 2)} m deep (river or lake, not flood)`, `level ${fmt(run.level[i], 2)} m`);
-    else if (run.wet[i]) parts.push(`flood water ${fmt(run.depth[i], 2)} m deep`, `level ${fmt(run.level[i], 2)} m`);
-    else if (state.base && state.base.low && state.base.low.mask[i]) parts.push('dry: low ground, below the river\'s normal level but almost never seen wet by satellite (levees, drains or a terrain error); it floods once the water rises above its normal level');
+    else if (run.wet[i]) parts.push(`flood water ${fmt(run.depth[i], 2)} m deep${state.base && state.base.low && state.base.low.mask[i] ? ' (low ground: counted from the river\'s normal level, which satellites show it is above)' : ''}`, `level ${fmt(run.level[i], 2)} m`);
+    else if (state.base && state.base.low && state.base.low.mask[i]) parts.push('dry: low ground, below the river\'s normal level but almost never seen wet by satellite (levees, drains or a terrain error); it floods once the water rises above its normal level, counted from there');
     else parts.push('dry');
     return parts.join(' · ');
   }
