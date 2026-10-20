@@ -1074,6 +1074,7 @@ import './inertial-grid.js';
     if (W < 2 || H < 2 || W > FINE_MAX_PX || H > FINE_MAX_PX) { clearFine(); return; }
     const gen = ++fineGen, areaKey = state.areaKey, t0 = performance.now();
     const r = await fineLidar(box, W, H);
+    const tFetched = performance.now();
     if (gen !== fineGen || areaKey !== state.areaKey || run !== state.run || mode !== colorMode() || state.timePlay) return;   // superseded
     if (!r || r.iw !== W || r.ih !== H) { clearFine(); status.fine = { lidar: false }; return; }
     // the coarse picture as drawn now: copied where there is no LiDAR
@@ -1136,10 +1137,12 @@ import './inertial-grid.js';
       }
     }
     if (have < 0.02 * W * H) { clearFine(); status.fine = { lidar: false }; return; }
+    const tComputed = performance.now();
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
     c.getContext('2d').putImageData(out, 0, 0);
     const blob = await new Promise((ok) => c.toBlob(ok, 'image/png'));
+    const tEncoded = performance.now();
     if (!blob || gen !== fineGen || areaKey !== state.areaKey) return;
     const url = URL.createObjectURL(blob);
     const bounds = window.L.latLngBounds([box[1], box[0]], [box[3], box[2]]);
@@ -1158,7 +1161,8 @@ import './inertial-grid.js';
     const y0 = pct((yN - merc(box[3])) / (yN - yS)), y1 = pct((yN - merc(box[1])) / (yN - yS));
     const el = coarse.getElement();
     if (el) el.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x0} ${y0}, ${x1} ${y0}, ${x1} ${y1}, ${x0} ${y1}, ${x0} ${y0})`;
-    status.fine = { W, H, lidar: +(have / (W * H)).toFixed(2), ms: Math.round(performance.now() - t0) };
+    status.fine = { W, H, lidar: +(have / (W * H)).toFixed(2), ms: Math.round(performance.now() - t0),
+      fetchMs: Math.round(tFetched - t0), computeMs: Math.round(tComputed - tFetched), encodeMs: Math.round(tEncoded - tComputed) };
   }
 
   // What the flood colours show: depth, hazard class, or the change from a
@@ -3587,7 +3591,11 @@ import './inertial-grid.js';
       nat.dotsWired = true;
       m.on('zoomend', scaleDots);
       m.on('overlayadd', orderDots);
-      m.on('zoomend overlayadd overlayremove layeradd layerremove', (e) => { if (!e.layer || !nat.clusters || !nat.clusters.hasLayer(e.layer)) scheduleClusters(); });
+      // regroup on zoom, and when a gauge or dam layer is switched (not for
+      // every pin, popup or flood overlay that comes and goes)
+      const dotLayer = (l) => Object.entries(nat.layers).some(([n, x]) => x === l && n in DOT_RANK);
+      m.on('zoomend', scheduleClusters);
+      m.on('layeradd layerremove', (e) => { if (dotLayer(e.layer)) scheduleClusters(); });
     }
     scaleDots(); orderDots(); clusterDots();
     syncLayerLists();
