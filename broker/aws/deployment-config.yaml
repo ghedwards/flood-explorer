@@ -1,4 +1,3 @@
 template-file-path: broker/aws/setup.yaml
-parameters:
-  CreateGitHubOidcProvider: "false"
+parameters: {}
 tags: {}
