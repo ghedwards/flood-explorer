@@ -16,6 +16,7 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   const report = { url: URL, place: PLACE, steps: [], errors: [], requests: { failed: [] } };
   const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  page.on("response", (r) => { if (r.status() >= 400) { report.http = report.http || []; if (report.http.length < 30) report.http.push(`${r.status()} ${r.url().slice(0, 200)}`); } });
   page.on("pageerror", (e) => report.errors.push(String(e).slice(0, 400)));
   page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") report.errors.push(`${m.type()}: ${m.text().slice(0, 300)}`); });
   page.on("requestfailed", (r) => { if (report.requests.failed.length < 40) report.requests.failed.push(`${r.failure() && r.failure().errorText} ${r.url().slice(0, 160)}`); });

@@ -1078,7 +1078,7 @@ import './inertial-grid.js';
         // water levels from the wet model cells around this spot: this
         // scenario's, and the baseline's (normal river), so the river's
         // own edge is drawn at 5 m too
-        let ws = 0, wsum = 0, bs = 0, bsum = 0;
+        let ws = 0, wsum = 0, bs = 0, bsum = 0, nIn = 0, nBase = 0;
         for (let dy = -1; dy <= 1; dy++) {
           const yy = cy + dy;
           if (yy < 0 || yy >= a.H) continue;
@@ -1086,6 +1086,8 @@ import './inertial-grid.js';
             const xx = cx + dx;
             if (xx < 0 || xx >= a.W) continue;
             const k = yy * a.W + xx;
+            nIn++;
+            if (base && base.wet[k]) nBase++;
             if (!a.valid[k] || a.ocean[k]) continue;
             const w = 1 / (0.25 + (xx - fx) ** 2 + (yy - fy) ** 2);
             if (run.wet[k]) { ws += w * (a.dem[k] + run.depth[k]); wsum += w; }
@@ -1093,7 +1095,10 @@ import './inertial-grid.js';
           }
         }
         const dep = wsum ? ws / wsum - h : 0, depBase = bsum ? bs / bsum - h : 0;
-        if (depBase > 0.02) {   // under the normal river level: the light channel tint
+        // under the normal river level, or well inside the channel (every
+        // model cell around is normal river: LiDAR there records the water
+        // surface, which can sit above the model's baseline level)
+        if (depBase > 0.02 || (nBase === nIn && nIn > 0)) {   // the light channel tint
           d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = CHANNEL_ALPHA;
         } else if (dep > 0.02) {
           const band = depthBand(dep), col = DEPTH_STOPS[band][1];

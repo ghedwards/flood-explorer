@@ -20,6 +20,7 @@ const OUT = process.env.OUT || "shots";
   };
   const open = async (viewport) => {
     const page = await browser.newPage({ viewport });
+    page.on("response", (r) => { if (r.status() >= 400) { report.http = report.http || []; if (report.http.length < 30) report.http.push(`${r.status()} ${r.url().slice(0, 200)}`); } });
     page.on("pageerror", (e) => report.errors.push(String(e).slice(0, 300)));
     page.on("console", (m) => { if (m.type() === "error") report.errors.push(m.text().slice(0, 300)); });
     await page.goto(URL, { waitUntil: "networkidle", timeout: 90000 });

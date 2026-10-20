@@ -977,6 +977,15 @@ class Scene3d {
     // With a logarithmic depth buffer polygonOffset does nothing, so the
     // surface is lifted (0.05 m, in the mesh) and drawn after the terrain.
     const mat = new THREE.MeshPhongMaterial({ vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false, shininess: 60, specular: 0x334455 });
+    // Far away the terrain under the water is a coarse tile (vertices
+    // hundreds of metres apart) that pokes through shallow water in rows.
+    // Pull the water towards the camera by 0.2 % of its distance: the same
+    // place on screen (along the view ray), but it wins the depth test
+    // against coarse ground (60 m at 30 km, 2 m at 1 km).
+    mat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\nmvPosition.xyz *= 0.998;\ngl_Position = projectionMatrix * mvPosition;');
+    };
+    mat.customProgramCacheKey = () => 'waterPull';
     t.water = new THREE.Mesh(geo, mat);
     t.water.renderOrder = 2;
     this.world.add(t.water);
