@@ -53,6 +53,14 @@ jobs:
           PLACE: ${{ inputs.place || 'rockhampton' }}
           OUT: ${{ runner.temp }}/shots
         run: node tests/shots2d.js
+      - name: Dam model check (Lake Kurwongbah), live site and this build
+        if: github.event_name == 'push' || inputs.target == 'build'
+        continue-on-error: true
+        env:
+          OUT: ${{ runner.temp }}/shots
+        run: |
+          SITE_URL=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ TAG=dam-live node tests/dam-check.js || true
+          SITE_URL=http://127.0.0.1:8000/ TAG=dam-build node tests/dam-check.js
       - name: Service worker tile cache (Chromium and Firefox)
         if: github.event_name == 'push' || inputs.target == 'build'
         env:

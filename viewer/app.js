@@ -102,6 +102,38 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     };
   }
 
+  /* Dam models (started from a dam report): the gauge is in the lake, and a
+   * river model would slope the lake's level down the river below the wall
+   * to the bay, flooding the valley under the dam even at normal levels.
+   * Instead the lake stays level out to the wall (found by following the
+   * flow path from the gauge to where the ground drops DAM_DROP_M below the
+   * lake's surface), and below the wall the river gets its normal depth plus
+   * whatever is spilling: the gauge level above the lake's normal level
+   * (the elevation data's water surface + 0.3 m, as the normal-level run). */
+  const DAM_DROP_M = 4, DAM_SEARCH_M = 5000, RIVER_DEPTH_M = 0.3;
+  let damMemo = null;
+  const isDamModel = (meta) => !!meta && /^storage:/.test(String(meta.reportId || ''));
+  function damOutlet(a, gauge, meta) {
+    if (!a || gauge == null || gauge < 0 || !isDamModel(meta) || !a.rec || !a.chain) return null;
+    if (damMemo && damMemo.a === a && damMemo.g === gauge) return damMemo.v;
+    const lake = a.dem[gauge];
+    let v = null, prev = gauge;
+    for (let c = a.rec[gauge]; c >= 0 && Math.abs(a.chain[gauge] - a.chain[c]) <= DAM_SEARCH_M; c = a.rec[c]) {
+      if (a.valid[c] && a.dem[c] < lake - DAM_DROP_M) { v = { crest: prev, below: c, lake }; break; }
+      prev = c;
+    }
+    damMemo = { a, g: gauge, v };
+    return v;
+  }
+  function withDam(a, s, meta) {
+    const d = damOutlet(a, s.gauge, meta);
+    if (!d) return s;
+    const spill = Math.max(0, s.gaugeLevel - (d.lake + RIVER_DEPTH_M));
+    const below = Math.min(s.gaugeLevel, a.dem[d.below] + RIVER_DEPTH_M + spill);
+    return Object.assign({}, s, { controls: (s.controls || []).concat([{ cell: d.crest, level: s.gaugeLevel }, { cell: d.below, level: below }]) });
+  }
+  window.__floodDam = () => { const d = state.a && damOutlet(state.a, state.gauge, state.areaMeta); return d ? { lake: d.lake, crest: cellLatLng(d.crest), below: cellLatLng(d.below), belowGround: state.a.dem[d.below] } : null; };
+
   function syncOutputs() {
     $('gaugeLevelOut').textContent = fmt(ctl.gaugeLevel.value, 2) + ' m';
     $('bayLevelOut').textContent = fmt(ctl.bayLevel.value, 2) + ' m';
@@ -747,10 +779,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       const base = state.eventsApply || state.gauge < 0
         ? BASELINE
         : { gaugeLevel: a.dem[state.gauge] + 0.3, bayLevel: 0 };
-      state.base = F.inundate(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }), { slim: !wantWse });
+      state.base = F.inundate(a, withDam(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }), state.areaMeta), { slim: !wantWse });
     }
     const mode = ctl.floodType.value;
-    state.riverRun = mode === 'flash' ? null : F.inundate(a, s, { slim: !wantWse });
+    state.riverRun = mode === 'flash' ? null : F.inundate(a, withDam(a, s, state.areaMeta), { slim: !wantWse });
     if (mode === 'river') { state.run = state.riverRun; state.flash = null; } else {
       const fl = F.flashFlood(a, Object.assign(storm(), { slim: 1 }));
       state.flash = fl.summary;
@@ -1332,7 +1364,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
               upstreamGradient: parseFloat(c.grad) || 0,
               controls: ar.controls || [],
             };
-            const run = ar.gauge >= 0 ? F.inundate(a, s, { slim: 1 }) : null;
+            const run = ar.gauge >= 0 ? F.inundate(a, withDam(a, s, ar.areaMeta), { slim: 1 }) : null;
             const terrain = terrainRGBA(a);
             // the scene's poll/refresh look at the entry itself; saveActive
             // frees it again the next time the user leaves this place
@@ -3278,7 +3310,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (!a.valid[i]) return 'No data here.';
     const parts = [`Ground ${fmt(a.dem[i], 1)} m`];
     if (a.ocean[i]) parts.push('sea');
-    else if (run.wet[i]) parts.push(`water ${fmt(run.depth[i], 2)} m deep`, `level ${fmt(run.level[i], 2)} m`);
+    else if (run.wet[i] && state.base && state.base.wet[i]) parts.push(`normal water ${fmt(run.depth[i], 2)} m deep (river or lake, not flood)`, `level ${fmt(run.level[i], 2)} m`);
+    else if (run.wet[i]) parts.push(`flood water ${fmt(run.depth[i], 2)} m deep`, `level ${fmt(run.level[i], 2)} m`);
     else parts.push('dry');
     return parts.join(' · ');
   }
@@ -6872,7 +6905,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const a = state.a;
     if (state.gauge < 0 || ctl.floodType.value === 'flash') return null;
     const base = scenario(), lo0 = a.dem[state.gauge] + 0.3, hi0 = parseFloat(ctl.gaugeLevel.max) || lo0 + 10;
-    const wetAt = (L) => { const r = F.inundate(a, Object.assign({}, base, { gaugeLevel: L }), { slim: 1 }); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
+    const wetAt = (L) => { const r = F.inundate(a, withDam(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
     if (wetAt(lo0)) return { level: lo0, always: true };
     if (!wetAt(hi0)) return { above: hi0 };
     let lo = lo0, hi = hi0;
