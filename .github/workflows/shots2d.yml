@@ -45,6 +45,18 @@ jobs:
           curl -fsS https://ghedwards.github.io/flood-explorer/data/national/stations.json -o "$RUNNER_TEMP/st/stations.json" \
             || curl -fsS https://ghedwards.github.io/flood-explorer/data/national/readings.json \
                | python3 -c "import json,sys;d=json.load(sys.stdin);json.dump({'level':sorted(d['level']),'storage':sorted(d['storage'])},open('$RUNNER_TEMP/st/stations.json','w'))"
+          # flood network locations for the rain forecasts, if the live list hasn't got them yet
+          curl -fsS https://ghedwards.github.io/flood-explorer/data/national/gauges.geojson -o "$RUNNER_TEMP/st/g.json" && python3 - "$RUNNER_TEMP/st" <<'PY'
+          import json, sys
+          d = sys.argv[1]
+          st = json.load(open(f"{d}/stations.json"))
+          if not st.get("coords"):
+              g = json.load(open(f"{d}/g.json"))
+              st["coords"] = {f["properties"]["station"]: f["geometry"]["coordinates"][:2] for f in g["features"]
+                              if f["properties"].get("kind") in ("forecast", "information") and f["properties"].get("station")}
+              json.dump(st, open(f"{d}/stations.json", "w"))
+          print("stations", len(st["level"]), "with locations", len(st.get("coords", {})))
+          PY
           (cd "$RUNNER_TEMP/st" && python3 -m http.server 8790 > /dev/null 2>&1 &)
           ALLOWED_ORIGINS=http://127.0.0.1:8000 STATIONS_URL=http://127.0.0.1:8790/stations.json rust/target/release/flood-broker > broker.log 2>&1 &
           for attempt in {1..15}; do
