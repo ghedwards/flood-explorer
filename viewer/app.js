@@ -1402,6 +1402,35 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   window.__floodOpen3D = () => open3d();
   window.__flood3DState = () => (view3d ? view3d.snapshot() : { open: false });
   window.__floodPin = () => pinScenario();
+  // Diagnostic for the river below the gauge: follow the flow path to the
+  // sea (or the model edge) and report how deep the normal-level run puts
+  // water on that channel (it should be about the normal 0.3 m), and how
+  // much land the normal-level run wets away from mapped channels.
+  window.__floodDownstreamDiag = () => {
+    const a = state.a, base = state.base, run = state.run, g = state.gauge;
+    if (!a || !base || g < 0 || !base.level) return null;
+    const depths = [], flood = [];
+    let end = 'edge', c = a.rec[g];
+    for (; c >= 0; c = a.rec[c]) {
+      if (a.ocean[c]) { end = 'sea'; break; }
+      if (!a.valid[c]) continue;
+      const lv = base.level[c];
+      depths.push(Number.isFinite(lv) ? lv - a.dem[c] : NaN);
+      if (run && run.level) flood.push(Number.isFinite(run.level[c]) ? run.level[c] - a.dem[c] : NaN);
+    }
+    const km = (n) => +(n * a.cell / 1000).toFixed(1);
+    const fin = depths.filter(Number.isFinite), sorted = [...fin].sort((x, y) => x - y);
+    let offChannel = 0, channel = 0;
+    for (let i = 0; i < a.N; i++) { if (!base.wet[i] || a.ocean[i]) continue; if (a.stream[i]) channel++; else offChannel++; }
+    const cellKm2 = (a.cell * a.cell) / 1e6;
+    return {
+      gaugeGround: +a.dem[g].toFixed(1), cell: Math.round(a.cell), end, pathKm: km(depths.length),
+      normalDepthOnChannel: sorted.length ? { median: +sorted[Math.floor(sorted.length / 2)].toFixed(2), p90: +sorted[Math.floor(sorted.length * 0.9)].toFixed(2), max: +sorted[sorted.length - 1].toFixed(2) } : null,
+      kmDeeperThan2m: km(fin.filter((d) => d > 2).length), kmDeeperThan5m: km(fin.filter((d) => d > 5).length), kmDry: km(fin.filter((d) => d <= 0).length + depths.filter((d) => !Number.isFinite(d)).length),
+      floodMaxOnChannel: flood.length ? +Math.max(...flood.filter(Number.isFinite)).toFixed(2) : null,
+      normalWetKm2: { channel: +(channel * cellKm2).toFixed(2), offChannel: +(offChannel * cellKm2).toFixed(2) },
+    };
+  };
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
   window.__floodRelease = (pct, start, hours) => { $('relUnit').value = 'pct'; $('relFlow').value = pct; $('relStart').value = start; $('relHours').value = hours; return releaseOpts(); };
