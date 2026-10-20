@@ -1,0 +1,37 @@
+name: Probe data sources
+# temporary: what real-time services return (results as notices)
+on:
+  push:
+    branches: ["probe-*"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Queensland WMIP stage, last day
+        run: |
+          set +e
+          now=$(TZ=Australia/Brisbane date +%Y%m%d%H%M%S); from=$(TZ=Australia/Brisbane date -d '-30 hours' +%Y%m%d%H%M%S)
+          for host in water-monitoring.information.qld.gov.au watermonitoring.information.qld.gov.au; do
+            q='{"function":"get_ts_traces","version":"2","params":{"site_list":"130005A,143001C,145102B","datasource":"AT","varfrom":"100.00","varto":"100.00","start_time":"'$from'","end_time":"'$now'","data_type":"mean","interval":"hour","multiplier":"1"}}'
+            curl -sS -m 60 -D h.txt -G "https://$host/cgi/webservice.exe" --data-urlencode "$q" -o out.json
+            echo "::notice title=WMIP $host status::$(head -1 h.txt) $(grep -i '^access-control' h.txt | tr -d '\r' | tr '\n' ' ') bytes $(wc -c < out.json) now $now"
+            echo "::notice title=WMIP $host head::$(head -c 900 out.json | tr '\n' ' ')"
+            python3 - <<'PY'
+          import json
+          try:
+            j=json.load(open('out.json'))
+            for t in j.get('return',{}).get('traces',[]):
+              pts=t.get('trace',[])
+              print('::notice title=WMIP trace %s::points %d last %s' % (t.get('site'), len(pts), json.dumps(pts[-3:])))
+          except Exception as e:
+            print('::notice title=WMIP parse::%s' % e)
+          PY
+          done
+      - name: Queensland WMIP site list (open stations, stage)
+        run: |
+          set +e
+          q='{"function":"get_site_list","version":"1","params":{"site_list":"GROUP(OPEN_STATIONS)"}}'
+          curl -sS -m 60 -G "https://water-monitoring.information.qld.gov.au/cgi/webservice.exe" --data-urlencode "$q" -o sites.json
+          echo "::notice title=WMIP sites::bytes $(wc -c < sites.json) head $(head -c 600 sites.json | tr '\n' ' ')"
