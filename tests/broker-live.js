@@ -59,6 +59,7 @@ const OUT = process.env.OUT || "shots";
       rain: Object.keys(rd.body.rain || {}).length, rainCells: rd.body.rainCells, sea: Object.keys(rd.body.sea || {}).length,
       withRise: Object.values(rd.body.level || {}).filter((x) => 'rise3h' in x || 'rise24h' in x).length,
       tidal: Object.values(rd.body.level || {}).filter((x) => x.tidal).length,
+      warnings: rd.body.warnings ? { ok: rd.body.warnings.ok, capFiles: rd.body.warnings.capFiles, list: (rd.body.warnings.warnings || []).map((w) => [w.id, w.severity, w.title]) } : null,
       watch: (rd.body.watch || []).slice(0, 10).map((w) => [w.kind, w.station, w.why]),
       seaSample: Object.values(rd.body.sea || {}).slice(0, 4).map((x) => [x.name, x.residual, x.residualNormal, x.surge]),
     } : rd;
@@ -66,7 +67,7 @@ const OUT = process.env.OUT || "shots";
       const page2 = await browser.newPage({ viewport: { width: 1280, height: 860 } });
       await page2.goto(SITE, { waitUntil: "load", timeout: 90000 });
       await page2.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
-      r.mapReadings = await page2.evaluate(() => { const n = window.__floodStatus.national; return { dataSource: n.dataSource, readingsSource: n.readingsSource, fetched: n.readingsFetched, levels: n.levelReadings }; });
+      r.mapReadings = await page2.evaluate(() => { const n = window.__floodStatus.national; return { dataSource: n.dataSource, readingsSource: n.readingsSource, fetched: n.readingsFetched, levels: n.levelReadings, warnings: window.__floodStatus.warnings || null, sea: window.__floodStatus.sea || null }; });
       const p3 = await browser.newPage();
       await p3.goto(SITE + "?data=build", { waitUntil: "load", timeout: 90000 });
       await p3.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });

@@ -118,7 +118,7 @@ fn main() {
         None => Store::Memory,
     };
     let in_memory = matches!(store, Store::Memory);
-    let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)).with_text(Box::new(readings::http_text)).with_rain_http(Box::new(readings::http_json_once)));
+    let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)).with_text(Box::new(readings::http_text)).with_rain_http(Box::new(readings::http_json_once)).with_warnings(Box::new(flood_feeds::flood_warnings)));
     // on AWS Lambda (a function URL): the runtime API loop instead of a socket
     if let Some(api) = env("AWS_LAMBDA_RUNTIME_API") {
         let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg).with_readings(rd);

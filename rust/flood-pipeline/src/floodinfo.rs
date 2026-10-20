@@ -174,7 +174,11 @@ pub fn parse_rss(xml: &str, state: &str) -> Vec<Value> {
     out
 }
 
-pub fn run(out_dir: &str, http: HttpText) -> R<String> {
+/// The Bureau's flood warnings from its FTP server's CAP files (the
+/// website's feeds turn automated requests away): (now, iso now, errors).
+pub type CapWarnings<'a> = &'a dyn Fn(i64, &str, &mut Vec<String>) -> Value;
+
+pub fn run(out_dir: &str, http: HttpText, cap: Option<CapWarnings>) -> R<String> {
     let out = Path::new(out_dir);
     std::fs::create_dir_all(out).map_err(err)?;
     let mut classes = Map::new();
@@ -213,6 +217,20 @@ pub fn run(out_dir: &str, http: HttpText) -> R<String> {
     }
     if !classes.is_empty() {
         write_json(out.join("floodclass.json"), &Value::Object(classes.clone()))?;
+    }
+    // the feeds failed: the same warnings from the FTP server's CAP files
+    if werr.len() == FEEDS.len() {
+        if let Some(cap) = cap {
+            let mut e = Vec::new();
+            let w = cap(now_s() as i64, &now_iso(), &mut e);
+            if w["ok"] == Value::Bool(true) {
+                warnings = w["warnings"].as_array().cloned().unwrap_or_default();
+                via.push("'all': 'ftp cap'".to_string());
+                werr.clear();
+            } else {
+                werr.extend(e);
+            }
+        }
     }
     write_json(out.join("warnings.json"), &obj! {"fetched" => now_iso(), "ok" => werr.len() < FEEDS.len(), "errors" => werr.clone(), "warnings" => warnings.clone()})?;
     let via_txt = if via.is_empty() { "none".to_string() } else { format!("{{{}}}", via.join(", ")) };
@@ -276,7 +294,7 @@ mod tests {
                 Err("unreachable".into())
             }
         };
-        run(d.to_str().unwrap(), &fake).unwrap();
+        run(d.to_str().unwrap(), &fake, None).unwrap();
         let classes = read_json(d.join("floodclass.json")).unwrap();
         let warn = read_json(d.join("warnings.json")).unwrap();
         assert!(classes.get("82106").is_some());

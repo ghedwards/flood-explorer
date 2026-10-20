@@ -466,13 +466,19 @@ pub fn watch_list(doc: &Value) -> Value {
             }
         }
     }
+    // the Bureau's own warnings come first
+    for x in doc["warnings"]["warnings"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let sev = x["severity"].as_str().unwrap_or("");
+        let score = match sev { "Extreme" | "Major" => 30.0, "Severe" | "Moderate" => 20.0, _ => 10.0 };
+        w.push((score, json!({"kind": "warning", "station": x["id"], "name": x["title"], "at": x["published"], "why": [format!("{} flood warning (Bureau of Meteorology)", if sev.is_empty() { "current" } else { sev })], "link": x["link"]})));
+    }
     w.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     Value::Array(w.into_iter().map(|(sc, mut v)| { v["score"] = json!(round_to(sc, 2)); v }).collect())
 }
 
 /// What puts something on the watch list, for the map to explain.
 pub fn watch_rule() -> String {
-    format!("river up at least {} m in 3 hours or {} m in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
+    format!("a current Bureau flood warning; river up at least {} m in 3 hours or {} m in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
         RISE_3H_M, RISE_24H_M, RAIN_24H_MM, RAIN_72H_MM, SURGE_M)
 }
 
@@ -733,5 +739,238 @@ mod tests {
         assert!((24.0..=26.0).contains(&a), "{}", a);
         assert!((72.0..=74.0).contains(&b), "{}", b);
         assert!(r[1].is_some());
+    }
+}
+
+/* ---------------------------------------------------- flood warnings */
+
+/// The Bureau's anonymous FTP server: its sanctioned channel for automated
+/// access (its website turns automated requests away). Each current
+/// warning is there as CAP (Common Alerting Protocol) XML, among others.
+pub const BOM_FTP_HOST: &str = "ftp.bom.gov.au";
+pub const BOM_FTP_DIR: &str = "/anon/gen/fwo/";
+
+pub mod ftp {
+    //! Anonymous FTP, passive mode: a directory's names and a file's bytes.
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    pub struct Session {
+        ctl: TcpStream,
+        rd: BufReader<TcpStream>,
+        host: String,
+        timeout: Duration,
+    }
+
+    fn connect(host: &str, port: u16, to: Duration) -> Result<TcpStream, String> {
+        let addr = (host, port).to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
+        let s = TcpStream::connect_timeout(&addr, to).map_err(|e| format!("ftp connect: {}", e))?;
+        s.set_read_timeout(Some(to)).map_err(|e| e.to_string())?;
+        s.set_write_timeout(Some(to)).map_err(|e| e.to_string())?;
+        Ok(s)
+    }
+
+    impl Session {
+        pub fn open(host: &str, timeout_s: u64) -> Result<Session, String> {
+            let timeout = Duration::from_secs(timeout_s);
+            let ctl = connect(host, 21, timeout)?;
+            let rd = BufReader::new(ctl.try_clone().map_err(|e| e.to_string())?);
+            let mut s = Session { ctl, rd, host: host.to_string(), timeout };
+            let (c, m) = s.reply()?;
+            if c != 220 {
+                return Err(format!("ftp: {}", m));
+            }
+            let (c, m) = s.cmd("USER anonymous")?;
+            if c == 331 {
+                let (c2, m2) = s.cmd("PASS anonymous@")?;
+                if c2 != 230 {
+                    return Err(format!("ftp: {}", m2));
+                }
+            } else if c != 230 {
+                return Err(format!("ftp: {}", m));
+            }
+            s.cmd("TYPE I")?;
+            Ok(s)
+        }
+
+        fn reply(&mut self) -> Result<(u32, String), String> {
+            let mut line = String::new();
+            self.rd.read_line(&mut line).map_err(|e| e.to_string())?;
+            let code: u32 = line.get(..3).and_then(|c| c.parse().ok()).ok_or_else(|| format!("ftp: odd reply {:?}", line))?;
+            let mut all = line.clone();
+            if line.as_bytes().get(3) == Some(&b'-') {
+                loop {
+                    let mut l = String::new();
+                    if self.rd.read_line(&mut l).map_err(|e| e.to_string())? == 0 {
+                        break;
+                    }
+                    all.push_str(&l);
+                    if l.starts_with(&format!("{} ", code)) {
+                        break;
+                    }
+                }
+            }
+            Ok((code, all.trim().to_string()))
+        }
+
+        fn cmd(&mut self, c: &str) -> Result<(u32, String), String> {
+            self.ctl.write_all(format!("{}\r\n", c).as_bytes()).map_err(|e| e.to_string())?;
+            self.reply()
+        }
+
+        fn transfer(&mut self, c: &str) -> Result<Vec<u8>, String> {
+            let (code, m) = self.cmd("PASV")?;
+            if code != 227 {
+                return Err(format!("ftp: {}", m));
+            }
+            let inner = m.split('(').nth(1).and_then(|x| x.split(')').next()).ok_or("ftp: odd PASV reply")?;
+            let n: Vec<u16> = inner.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if n.len() != 6 {
+                return Err(format!("ftp: odd PASV reply {}", m));
+            }
+            let host = self.host.clone();
+            let mut data = connect(&host, n[4] * 256 + n[5], self.timeout)?;
+            let (code, m) = self.cmd(c)?;
+            if code != 150 && code != 125 {
+                return Err(format!("ftp: {}", m));
+            }
+            let mut body = Vec::new();
+            data.read_to_end(&mut body).map_err(|e| e.to_string())?;
+            drop(data);
+            let (code, m) = self.reply()?;
+            if code >= 400 {
+                return Err(format!("ftp: {}", m));
+            }
+            Ok(body)
+        }
+
+        /// The names in a directory (NLST).
+        pub fn list(&mut self, dir: &str) -> Result<Vec<String>, String> {
+            let b = self.transfer(&format!("NLST {}", dir))?;
+            Ok(String::from_utf8_lossy(&b).lines().map(|l| l.trim().rsplit('/').next().unwrap_or("").to_string()).filter(|l| !l.is_empty()).collect())
+        }
+
+        pub fn get(&mut self, path: &str) -> Result<Vec<u8>, String> {
+            self.transfer(&format!("RETR {}", path))
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            let _ = self.ctl.write_all(b"QUIT\r\n");
+        }
+    }
+}
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'").replace("&amp;", "&")
+}
+
+fn tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{}>", name);
+    let a = xml.find(&open)? + open.len();
+    let b = xml[a..].find(&format!("</{}>", name))? + a;
+    Some(&xml[a..b])
+}
+
+/// The state a Bureau product ID belongs to (IDQ20860 is Queensland's).
+pub fn product_state(id: &str) -> &'static str {
+    match id.as_bytes().get(2) {
+        Some(b'N') => "NSW",
+        Some(b'V') => "VIC",
+        Some(b'Q') => "QLD",
+        Some(b'S') => "SA",
+        Some(b'T') => "TAS",
+        Some(b'W') => "WA",
+        Some(b'D') => "NT",
+        _ => "",
+    }
+}
+
+/// A flood warning from a CAP file, or None if it isn't one (or has
+/// expired): {id, state, title, severity, event, description, published,
+/// expires, area, link}.
+pub fn parse_cap_flood(xml: &str, now_s: i64) -> Option<Value> {
+    let event = tag(xml, "event").map(xml_unescape)?;
+    if !event.to_lowercase().contains("flood") {
+        return None;
+    }
+    let expires = tag(xml, "expires").map(|s| s.trim().to_string());
+    if expires.as_deref().and_then(ts_epoch).is_some_and(|t| t < now_s) {
+        return None;
+    }
+    let ident = tag(xml, "identifier").unwrap_or("");
+    let id = ident.split('-').find(|p| p.starts_with("ID") && p.len() >= 8).unwrap_or("").to_string();
+    let get = |n: &str| tag(xml, n).map(|s| xml_unescape(s.trim())).unwrap_or_default();
+    Some(json!({
+        "id": id, "state": product_state(&id), "title": get("headline"), "severity": get("severity"), "event": event,
+        "description": get("description"), "published": get("sent"), "expires": expires,
+        "area": get("areaDesc"),
+        "link": if id.is_empty() { "https://www.bom.gov.au/australia/warnings/".to_string() } else { format!("https://www.bom.gov.au/products/{}.shtml", id) },
+    }))
+}
+
+/// Every current flood warning on the Bureau's FTP server, as the map's
+/// warnings.json: {ok, fetched, source, warnings: [...]}, most severe first.
+pub fn flood_warnings(now_s: i64, iso_now: &str, errors: &mut Vec<String>) -> Value {
+    let fail = |e: String, errors: &mut Vec<String>| {
+        errors.push(format!("flood warnings: {}", e));
+        json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e})
+    };
+    let mut s = match ftp::Session::open(BOM_FTP_HOST, 30) {
+        Ok(s) => s,
+        Err(e) => return fail(e, errors),
+    };
+    let names = match s.list(BOM_FTP_DIR) {
+        Ok(n) => n,
+        Err(e) => return fail(e, errors),
+    };
+    let caps: Vec<&String> = names.iter().filter(|n| n.ends_with(".cap.xml") && n.starts_with("ID")).collect();
+    let mut out = Vec::new();
+    let t0 = std::time::Instant::now();
+    for n in caps {
+        if t0.elapsed().as_secs() > 90 {
+            errors.push("flood warnings: out of time; the rest wait for the next refresh".into());
+            break;
+        }
+        match s.get(&format!("{}{}", BOM_FTP_DIR, n)) {
+            Ok(b) => {
+                if let Some(w) = parse_cap_flood(&String::from_utf8_lossy(&b), now_s) {
+                    out.push(w);
+                }
+            }
+            Err(e) => errors.push(format!("flood warnings {}: {}", n, e)),
+        }
+    }
+    let rank = |w: &Value| match w["severity"].as_str().unwrap_or("") {
+        "Extreme" | "Major" => 0,
+        "Severe" | "Moderate" => 1,
+        "Minor" => 2,
+        _ => 3,
+    };
+    out.sort_by_key(|w| (rank(w), w["state"].as_str().unwrap_or("").to_string()));
+    json!({"ok": true, "fetched": iso_now, "source": "ftp", "capFiles": names.iter().filter(|n| n.ends_with(".cap.xml")).count(), "attribution": "© Commonwealth of Australia (Bureau of Meteorology)", "warnings": out})
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    const CAP: &str = r#"<?xml version="1.0" encoding="UTF-8"?><alert xmlns="urn:oasis:names:tc:emergency:cap:1.2"><identifier>AusBoM-IDQ20860-2026-10-20T01:33:24+00:00</identifier><sent>2026-10-20T01:33:24+00:00</sent><info><event>Riverine Flood</event><severity>Minor</severity><expires>2026-10-23T04:33:24+00:00</expires><headline>Minor Flood Warning for Barcoo River to Isisford and Barcoo River at Blackall</headline><description>The Barcoo River at Blackall may peak above the minor flood level (2.00 m) from Tuesday into Wednesday &amp; more.</description><area><areaDesc>Queensland: Barcoo River to Isisford and Barcoo River at Blackall</areaDesc></area></info></alert>"#;
+
+    #[test]
+    fn cap_flood_warning() {
+        let now = ts_epoch("2026-10-21T00:00:00Z").unwrap();
+        let w = parse_cap_flood(CAP, now).unwrap();
+        assert_eq!(w["id"], "IDQ20860");
+        assert_eq!(w["state"], "QLD");
+        assert_eq!(w["severity"], "Minor");
+        assert!(w["title"].as_str().unwrap().starts_with("Minor Flood Warning for Barcoo River"));
+        assert!(w["description"].as_str().unwrap().ends_with("& more."));
+        assert_eq!(w["link"], "https://www.bom.gov.au/products/IDQ20860.shtml");
+        let later = ts_epoch("2026-10-24T00:00:00Z").unwrap();
+        assert!(parse_cap_flood(CAP, later).is_none(), "expired");
+        assert!(parse_cap_flood(&CAP.replace("Riverine Flood", "Severe Thunderstorm"), now).is_none(), "not a flood");
     }
 }

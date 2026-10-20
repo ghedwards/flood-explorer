@@ -3836,6 +3836,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       if (split) setTimeout(() => ensureRiverGauges(), 1500); else riverP = Promise.resolve();
       const opt = async (f) => { try { const r = await fetch(`data/national/${f}`, { cache: 'no-cache' }); return r.ok ? r.json() : null; } catch (e) { return null; } };
       [nat.floodclass, nat.warnings] = await Promise.all([opt('floodclass.json'), opt('warnings.json')]);
+      // the broker's warnings (every 15 minutes) when readings come from it
+      if (nat.readingsSource === 'runtime' && readings.warnings && readings.warnings.ok) nat.warnings = readings.warnings;
       nat.floodclass = nat.floodclass || {};
       renderWarnings();
     } catch (e) {
@@ -4805,7 +4807,11 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   function warningsHtml(p) {
     const ws = warningsFor(p);
     if (!ws.length) return '';
-    return `<div>${ws.map((w) => `<a class="warn-item" href="${escapeHtml(w.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(w.title)}</strong><small>Current Bureau of Meteorology warning${w.published ? ` · ${escapeHtml(w.published)}` : ''}</small></a>`).join('')}</div>`;
+    return `<div>${ws.map((w) => `<a class="warn-item${w.severity ? ` sev-${escapeHtml(w.severity.toLowerCase())}` : ''}" href="${escapeHtml(w.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(w.title)}</strong>${w.description ? `<span class="warn-text">${escapeHtml(w.description)}</span>` : ''}<small>${w.severity ? `${escapeHtml(w.severity)} · ` : ''}Current Bureau of Meteorology warning${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small></a>`).join('')}</div>`;
+  }
+  function fmtWarnTime(t) {
+    const d = new Date(t);
+    return Number.isNaN(d.getTime()) ? t : `issued ${d.toLocaleString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`;
   }
   function renderWarnings() {
     const box = $('warningsBox');
@@ -4815,7 +4821,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (!w) { box.innerHTML = '<p class="hint">Current flood warnings could not be loaded.</p>'; return; }
     const list = w.warnings || [];
     box.innerHTML = `<h3 class="places-sub">Current flood warnings (BoM)</h3>${list.length
-      ? list.map((x) => `<a class="warn-item" href="${escapeHtml(x.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.title)}</strong><small>${escapeHtml(x.state)}${x.published ? ` · ${escapeHtml(x.published)}` : ''}</small></a>`).join('')
+      ? list.map((x) => `<a class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}" href="${escapeHtml(x.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${escapeHtml(x.state)}${x.severity ? ` · ${escapeHtml(x.severity)}` : ''}${x.published ? ` · ${escapeHtml(fmtWarnTime(x.published))}` : ''}</small></a>`).join('')
       : `<p class="hint">${w.ok ? 'No flood warnings or watches are current.' : 'The warning feeds could not be reached at the last update.'}</p>`}
       <p class="hint">Checked ${escapeHtml(ago(w.fetched))}. Always follow official warnings at <a href="https://www.bom.gov.au/australia/warnings/" target="_blank" rel="noopener">bom.gov.au</a>.</p>`;
     nat.warningCount = list.length;

@@ -67,16 +67,26 @@ pub struct Readings {
     text: Option<Text>,
     pause: Box<dyn Fn() + Send + Sync>,
     rain_http: Option<Http>,
+    warnings: Option<Warnings>,
 }
+
+/// Fetches the current flood warnings: (now, iso now, errors) -> warnings.json.
+pub type Warnings = Box<dyn Fn(i64, &str, &mut Vec<String>) -> Value + Send + Sync>;
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None }
     }
 
     /// Fetch plain-text files (the storm tide CSV) with this.
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = Some(text);
+        self
+    }
+
+    /// Fetch the Bureau's flood warnings with this.
+    pub fn with_warnings(mut self, w: Warnings) -> Self {
+        self.warnings = Some(w);
         self
     }
 
@@ -184,6 +194,19 @@ impl Readings {
             }
         }
         let t_sea = (self.now)();
+        // the Bureau's flood warnings, every refresh; a failed fetch keeps the last list (for 6 hours)
+        if let Some(wf) = &self.warnings {
+            let w = wf(started / 1000, &crate::wmip::iso_utc((self.now)()), &mut errors);
+            if w["ok"] == json!(true) {
+                r["warnings"] = w;
+            } else if let Some((old, _)) = Self::carry(&prev, "warnings", "warningsFetched", started, 6 * 3_600_000) {
+                r["warnings"] = old;
+            }
+            if r["warnings"]["ok"] == json!(true) {
+                r["warningsFetched"] = r["warnings"]["fetched"].clone();
+            }
+        }
+        let t_warn = (self.now)();
         r["watch"] = feeds::watch_list(&r);
         let nl = r["level"].as_object().map_or(0, |o| o.len());
         let ns = r["storage"].as_object().map_or(0, |o| o.len());
@@ -203,7 +226,8 @@ impl Readings {
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
             "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "seconds": (fetched - started) / 1000,
-            "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000}}))
+            "warnings": r["warnings"]["warnings"].as_array().map(|a| a.len()),
+            "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000, "warnings": (t_warn - t_sea) / 1000}}))
     }
 
     /// The latest readings, if there are any yet.
