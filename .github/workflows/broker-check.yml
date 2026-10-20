@@ -43,6 +43,19 @@ jobs:
           )
             echo "::notice title=$p HTTP $code ($size bytes${age:+, age ${age}s})::$summary"
           done
+      - name: Compression and revalidation
+        env:
+          URL: ${{ inputs.url || vars.FLOOD_BROKER_URL }}
+        run: |
+          set +e
+          [ -z "$URL" ] && exit 0
+          URL="${URL%/}"
+          code=$(curl -s -m 60 --compressed -o r.json -D h.txt -w '%{http_code} %{size_download}' -H "Origin: https://ghedwards.github.io" "$URL/v1/readings")
+          enc=$(grep -i '^content-encoding' h.txt | tr -d '\r' | cut -d' ' -f2); etag=$(grep -i '^etag' h.txt | tr -d '\r' | cut -d' ' -f2-)
+          cc=$(grep -i '^cache-control' h.txt | tr -d '\r' | cut -d' ' -f2-)
+          again=$(curl -s -m 60 -o /dev/null -w '%{http_code} %{size_download}' -H "If-None-Match: $etag" -H "Accept-Encoding: gzip" "$URL/v1/readings")
+          valid=$(python3 -c "import json;d=json.load(open('r.json'));print(len(d.get('level',{})),'levels')" 2>&1)
+          echo "::notice title=Readings transfer::HTTP/bytes on the wire $code, encoding ${enc:-none}, $valid, cache-control '$cc', revalidation with ETag: $again"
       - name: The live site's readings source
         run: |
           set +e

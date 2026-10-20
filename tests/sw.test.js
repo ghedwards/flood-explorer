@@ -45,3 +45,26 @@ test('an HTTP error without a cached copy preserves the server response', async 
   assert.equal(res.status, 503);
   assert.equal(await res.text(), 'unavailable');
 });
+
+test('broker readings: the last copy when offline', async () => {
+  const handlers = {};
+  const stored = new Map();
+  const context = vm.createContext({
+    self: { addEventListener(t, f) { handlers[t] = f; }, location: { origin: 'https://ghedwards.github.io' } },
+    fetch: async () => { throw new Error('offline'); },
+    caches: { open: async (name) => ({
+      match: async (req) => stored.get(`${name} ${req.url}`)?.clone(),
+      put: async (req, res) => stored.set(`${name} ${req.url}`, res),
+      keys: async () => [],
+    }) },
+    setTimeout() {},
+    URL,
+  });
+  vm.runInContext(source, context);
+  const url = 'https://abc.lambda-url.ap-southeast-2.on.aws/v1/readings';
+  stored.set(`live-v1 ${url}`, new Response('{"level":{}}', { headers: { 'content-type': 'application/json' } }));
+  let answer = null;
+  handlers.fetch({ request: new Request(url), respondWith: (p) => { answer = p; } });
+  assert.ok(answer, 'the broker request is handled');
+  assert.equal(await (await answer).text(), '{"level":{}}');
+});

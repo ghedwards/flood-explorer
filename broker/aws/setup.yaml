@@ -21,8 +21,28 @@ Parameters:
       "false" if this account already has the token.actions.githubusercontent.com
       identity provider (IAM > Identity providers); only one may exist.
 
+  RefreshMinutes:
+    Type: Number
+    Default: 15
+    AllowedValues: [15, 30, 60]
+    Description: >-
+      How often the readings are refreshed. Most gauges report hourly, so 30
+      halves the refresh cost for at most 15 more minutes' delay. Set the
+      repository variable BROKER_REFRESH_MINUTES to the same value.
+  BudgetEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      An address to email if this account's AWS spend for the month heads
+      past MonthlyBudgetUsd (AWS Budgets, free). Leave empty for no alert.
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 5
+    Description: the monthly spend (US dollars) the alert watches
+
 Conditions:
   MakeOidc: !Equals [!Ref CreateGitHubOidcProvider, "true"]
+  HasBudgetEmail: !Not [!Equals [!Ref BudgetEmail, ""]]
 
 Resources:
   GitHubOidc:
@@ -114,7 +134,7 @@ Resources:
     Properties:
       Name: !Sub "${FunctionName}-refresh-readings"
       Description: Refresh Flood Explorer's river and dam readings
-      ScheduleExpression: rate(15 minutes)
+      ScheduleExpression: !Sub "rate(${RefreshMinutes} minutes)"
       FlexibleTimeWindow: { Mode: "OFF" }
       State: ENABLED
       Target:
@@ -122,6 +142,22 @@ Resources:
         RoleArn: !GetAtt ScheduleRole.Arn
         Input: '{"flood_broker": "refresh"}'
         RetryPolicy: { MaximumRetryAttempts: 0 }
+
+  # an email if the month's spend heads past the budget (the whole account)
+  SpendAlert:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudgetEmail
+    Properties:
+      Budget:
+        BudgetName: !Sub "${FunctionName}-monthly"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref MonthlyBudgetUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
 
   # what GitHub Actions on the main branch may do: manage this one function
   DeployRole:

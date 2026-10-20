@@ -7,14 +7,18 @@
  *   answers (councils, states, census areas) are kept as they are used, so
  *   areas you have looked at and models you have built work offline. Each
  *   of these caches is trimmed to a set number of entries, oldest first.
+ * - Live readings from the data broker are fetched fresh when online and the
+ *   last copy is served when not, so the map shows the latest levels offline.
  * The build stamps its version below, so each deploy refreshes the app.
  */
 const VERSION = '__BUILD__';
 const APP = `app-${VERSION}`;
 // tiles-v2: drops v1, which held opaque copies of tiles the map now loads
 // crossOrigin (served to it, they failed and were never refetched)
-const TILES = 'tiles-v2', TERRAIN = 'terrain-v1', ELEV = 'elev-v1', API = 'api-v1';
-const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [ELEV]: 800, [API]: 400 };
+const TILES = 'tiles-v2', TERRAIN = 'terrain-v1', ELEV = 'elev-v1', API = 'api-v1', LIVE = 'live-v1';
+const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [ELEV]: 800, [API]: 400, [LIVE]: 40 };
+// the live data broker (rust/flood-broker): Lambda function URLs, or any host serving its paths
+const BROKER_PATH = /^\/v1\/(readings|levels)$/;
 
 // Vite replaces this list with every emitted chunk, worker, font and WASM asset.
 const BUILD_ASSETS = [];
@@ -38,7 +42,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    const keep = new Set([APP, TILES, TERRAIN, ELEV, API]);
+    const keep = new Set([APP, TILES, TERRAIN, ELEV, API, LIVE]);
     for (const k of await caches.keys()) if (!keep.has(k)) await caches.delete(k);
     await self.clients.claim();
   })());
@@ -100,6 +104,11 @@ self.addEventListener('fetch', (e) => {
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
     e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));
+    return;
+  }
+  // live readings: fresh within 6 s (the app gives up at 8), else the last copy
+  if (BROKER_PATH.test(url.pathname)) {
+    e.respondWith(networkFirst(req, LIVE, 6000));
     return;
   }
   if (TERRAIN_TILES.test(url.hostname) && url.pathname.startsWith('/elevation-tiles-prod/')) {

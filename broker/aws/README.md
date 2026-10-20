@@ -14,11 +14,31 @@ GitHub Actions builds it and deploys it to your account
 (`.github/workflows/broker-deploy.yml`). It signs in to AWS with GitHub's
 short-lived OpenID Connect token, so no AWS keys are stored in GitHub.
 
-**Cost:** the function is arm64 with 256 MB. The 15-minute refresh is
-about 3,000 runs a month of a minute or two each. With visits on top, that
-stays well inside Lambda's free tier
-(1 million requests and 400,000 GB-seconds a month), and function URLs are
-free. The only other charge is CloudWatch logs, which are kept for 30 days.
+**Cost:** expected to be nothing, inside AWS's always-free allowances:
+
+- **Lambda:** arm64 with 128 MB. The 15-minute refresh takes a minute or
+  two, about 45,000 GB-seconds a month against 400,000 free. Visits add a
+  little more, against 1 million free requests.
+- **Data out:** the readings go out gzipped (about 70 KB instead of 615 KB).
+  A browser that already has the current copy gets an empty "not modified"
+  reply, and browsers keep the readings until the next refresh is due.
+  100 GB a month is free.
+- **S3:** one write per refresh. Each running copy checks for a newer file at
+  most once a minute, and only downloads it when it has changed. A few cents
+  a month at most.
+- **Logs:** CloudWatch logs are kept for 30 days.
+
+Guard rails:
+
+- **Concurrency cap:** at most 5 copies of the function run at once
+  (`BROKER_MAX_CONCURRENCY`), so a flood of requests can't run up a bill.
+  New AWS accounts may not allow a cap; the deploy warns and carries on.
+- **Spend alert:** the stack can set up an AWS Budgets alert that emails you
+  if the month's spend heads past a limit (`BudgetEmail`,
+  `MonthlyBudgetUsd`, $5 by default). The alert itself is free.
+- **Refresh interval:** `RefreshMinutes` can be 15 (default), 30 or 60. Most
+  gauges report hourly, so 30 halves the refresh cost for at most 15 more
+  minutes' delay. Set `BROKER_REFRESH_MINUTES` in GitHub to match.
 
 ## One-time setup (about 5 minutes)
 

@@ -35,11 +35,13 @@ const RATE_BURST: f64 = 30.0;
 pub struct Config {
     pub origins: HashSet<String>,
     pub cache_ms: i64,
+    /// how often the readings are refreshed (for browser cache lifetimes)
+    pub refresh_ms: i64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { origins: ["https://ghedwards.github.io".to_string()].into(), cache_ms: 10 * 60_000 }
+        Config { origins: ["https://ghedwards.github.io".to_string()].into(), cache_ms: 10 * 60_000, refresh_ms: 15 * 60_000 }
     }
 }
 
@@ -50,6 +52,10 @@ pub struct Request<'a> {
     pub origin: Option<&'a str>,
     /// the client address used for rate limits
     pub client: &'a str,
+    /// the client takes gzip (Accept-Encoding)
+    pub gzip: bool,
+    /// If-None-Match: the ETag of the copy the client has
+    pub if_none_match: Option<&'a str>,
 }
 
 pub struct Response {
@@ -257,8 +263,9 @@ impl Broker {
         if let Some(o) = req.origin.filter(|o| self.cfg.origins.contains(*o) || self.cfg.origins.contains("*")) {
             headers.push(("Access-Control-Allow-Origin".into(), o.to_string()));
         }
-        headers.push(("Vary".into(), "Origin".into()));
-        headers.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let vary_more = extra.iter().filter(|(k, _)| *k == "Vary").map(|(_, v)| *v).collect::<Vec<_>>();
+        headers.push(("Vary".into(), std::iter::once("Origin").chain(vary_more).collect::<Vec<_>>().join(", ")));
+        headers.extend(extra.iter().filter(|(k, _)| *k != "Vary").map(|(k, v)| (k.to_string(), v.to_string())));
         let body = if status == 204 || req.method == "HEAD" { Vec::new() } else { body.to_string().into_bytes() };
         Response { status, headers, body }
     }
@@ -273,8 +280,28 @@ impl Broker {
         let Some(rd) = &self.readings else { return self.reply(req, 404, &json!({"error": "not found"}), &[]) };
         match rd.latest() {
             Ok(Some(doc)) => {
-                let age = (((self.now)() - doc.fetched_ms) / 1000).max(0).to_string();
-                self.reply_raw(req, 200, doc.body.as_ref().clone(), &[("Cache-Control", "public, max-age=120"), ("X-Readings-Age", &age)])
+                let now = (self.now)();
+                let age = ((now - doc.fetched_ms) / 1000).max(0).to_string();
+                // browsers keep it until the next refresh is due (plus the
+                // couple of minutes a refresh takes), then ask again
+                let period = self.cfg.refresh_ms.max(60_000);
+                let due = doc.fetched_ms + period + 180_000;
+                let max_age = ((due - now) / 1000).clamp(60, period / 1000);
+                let cc = format!("public, max-age={}, stale-while-revalidate=600", max_age);
+                let base: [(&str, &str); 3] = [("Cache-Control", &cc), ("ETag", &doc.etag), ("X-Readings-Age", &age)];
+                if req.if_none_match.is_some_and(|m| m.split(',').any(|t| t.trim().trim_start_matches("W/") == doc.etag)) {
+                    let mut r = self.reply_raw(req, 304, Vec::new(), &base);
+                    r.headers.retain(|(k, _)| k != "Content-Type");
+                    return r;
+                }
+                let mut extra = base.to_vec();
+                extra.push(("Vary", "Accept-Encoding"));
+                if req.gzip && !doc.gz.is_empty() {
+                    extra.push(("Content-Encoding", "gzip"));
+                    self.reply_raw(req, 200, doc.gz.as_ref().clone(), &extra)
+                } else {
+                    self.reply_raw(req, 200, doc.body.as_ref().clone(), &extra)
+                }
             }
             Ok(None) => self.reply(req, 503, &json!({"error": "readings haven't been fetched yet"}), &[("Retry-After", "60"), ("Cache-Control", "no-store")]),
             Err(e) => self.reply(req, 502, &json!({"error": format!("readings store: {}", e)}), &[("Cache-Control", "no-store")]),
@@ -440,7 +467,7 @@ mod tests {
     }
 
     fn get(b: &Broker, target: &str, origin: Option<&str>) -> (u16, Value, Vec<(String, String)>) {
-        let r = b.handle(&Request { method: "GET", target, origin, client: "1.2.3.4" });
+        let r = b.handle(&Request { method: "GET", target, origin, client: "1.2.3.4", gzip: false, if_none_match: None });
         let v = if r.body.is_empty() { Value::Null } else { serde_json::from_slice(&r.body).unwrap() };
         (r.status, v, r.headers)
     }
@@ -481,7 +508,7 @@ mod tests {
         let many: Vec<String> = (0..61).map(|i| format!("{}A", 100000 + i)).collect();
         assert_eq!(get(&b, &format!("/v1/levels?sites={}", many.join(",")), None).0, 400);
         assert_eq!(get(&b, "/nope", None).0, 404);
-        let r = b.handle(&Request { method: "POST", target: "/v1/levels", origin: None, client: "x" });
+        let r = b.handle(&Request { method: "POST", target: "/v1/levels", origin: None, client: "x", gzip: false, if_none_match: None });
         assert_eq!(r.status, 405);
         let (_, v, _) = get(&b, "/health", None);
         assert_eq!(v["ok"], true);
@@ -515,7 +542,7 @@ mod tests {
                 let (b, ok) = (b.clone(), ok.clone());
                 std::thread::spawn(move || {
                     let client = format!("10.0.0.{}", i);
-                    let r = b.handle(&Request { method: "GET", target: "/v1/levels?sites=143001C,130005A", origin: None, client: &client });
+                    let r = b.handle(&Request { method: "GET", target: "/v1/levels?sites=143001C,130005A", origin: None, client: &client, gzip: false, if_none_match: None });
                     let v: Value = serde_json::from_slice(&r.body).unwrap();
                     if r.status == 200 && v["sites"].get("143001C").is_some() {
                         ok.fetch_add(1, Ordering::SeqCst);
@@ -548,6 +575,43 @@ mod tests {
         assert_eq!(r["ok"], false, "nothing fetched is an error");
         let (_, v, _) = get(&b, "/health", None);
         assert!(v["lastError"]["message"].as_str().unwrap().contains("readings refresh"));
+    }
+
+    #[test]
+    fn readings_are_gzipped_revalidated_and_kept_until_the_next_refresh() {
+        use std::io::Read;
+        let (_, t, b) = setup(0);
+        let b = Arc::try_unwrap(b).ok().unwrap();
+        let http = |u: &str, p: &[(String, String)]| -> Result<Value, String> {
+            if u.contains("stations") { return Ok(json!({"level": ["540198"], "storage": []})); }
+            if u.contains("webservice") { return Ok(json!({"error_num": 0, "return": {"sites": []}})); }
+            let req = p.iter().find(|x| x.0 == "request").map(|x| x.1.as_str());
+            Ok(if req == Some("getTimeseriesList") { json!([["station_no", "ts_id"], ["540198", "1"]]) } else { json!([{"ts_id": "1", "data": [["2026-10-20T00:00:00.000+10:00", 1.5]]}]) })
+        };
+        let t2 = t.clone();
+        let rd = Arc::new(readings::Readings::new(Box::new(http), readings::Store::Memory, "https://x/stations.json".into(), Box::new(move || t2.load(std::sync::atomic::Ordering::SeqCst))));
+        let b = b.with_readings(rd);
+        assert_eq!(b.refresh_readings()["ok"], true);
+        let get = |gzip: bool, inm: Option<&str>| b.handle(&Request { method: "GET", target: "/v1/readings", origin: Some("https://ghedwards.github.io"), client: "9.9.9.9", gzip, if_none_match: inm });
+        let plain = get(false, None);
+        let zipped = get(true, None);
+        let h = |r: &Response, k: &str| r.headers.iter().find(|(a, _)| a.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone());
+        assert_eq!(h(&zipped, "content-encoding").as_deref(), Some("gzip"));
+        assert!(zipped.body.len() < plain.body.len());
+        let mut un = Vec::new();
+        flate2::read::GzDecoder::new(&zipped.body[..]).read_to_end(&mut un).unwrap();
+        assert_eq!(un, plain.body, "gzip round-trips");
+        assert_eq!(h(&zipped, "vary").as_deref(), Some("Origin, Accept-Encoding"));
+        let etag = h(&plain, "etag").unwrap();
+        let cc = h(&plain, "cache-control").unwrap();
+        assert!(cc.starts_with("public, max-age=900"), "fresh: until the next refresh, capped at the period: {}", cc);
+        let again = get(true, Some(&etag));
+        assert_eq!(again.status, 304);
+        assert!(again.body.is_empty());
+        assert_eq!(get(true, Some("\"other\"")).status, 200);
+        t.fetch_add(14 * 60_000, std::sync::atomic::Ordering::SeqCst);
+        let later = get(false, None);
+        assert!(h(&later, "cache-control").unwrap().starts_with("public, max-age=240"), "{:?}", h(&later, "cache-control"));
     }
 
     #[test]

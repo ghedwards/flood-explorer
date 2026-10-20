@@ -90,7 +90,14 @@ fn serve(broker: &Broker, mut s: TcpStream, trust_proxy: bool) {
     let peer = s.peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|_| "?".into());
     let client = if trust_proxy { h("x-forwarded-for").and_then(|v| v.split(',').next()).map(str::trim).filter(|v| !v.is_empty()).unwrap_or(&peer) } else { &peer };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        broker.handle(&Request { method: req.method.unwrap_or(""), target: req.path.unwrap_or("/"), origin: h("origin"), client })
+        broker.handle(&Request {
+            method: req.method.unwrap_or(""),
+            target: req.path.unwrap_or("/"),
+            origin: h("origin"),
+            client,
+            gzip: h("accept-encoding").is_some_and(|v| v.split(',').any(|x| x.trim().starts_with("gzip"))),
+            if_none_match: h("if-none-match"),
+        })
     }))
     .unwrap_or_else(|_| plain(500, "broker error"));
     write_response(&mut s, &r);
@@ -102,6 +109,7 @@ fn main() {
     let cfg = Config {
         origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
         cache_ms: env("CACHE_MINUTES").and_then(|v| v.parse::<f64>().ok()).map_or(10 * 60_000, |m| (m * 60_000.0) as i64),
+        refresh_ms: env("READINGS_REFRESH_MINUTES").and_then(|v| v.parse::<i64>().ok()).filter(|m| *m > 0).unwrap_or(15) * 60_000,
     };
     // readings for the whole map: in S3 when a bucket is given (Lambda),
     // otherwise in memory

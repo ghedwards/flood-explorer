@@ -14,6 +14,8 @@ pub struct Event {
     pub target: String,
     pub origin: Option<String>,
     pub client: String,
+    pub gzip: bool,
+    pub if_none_match: Option<String>,
 }
 
 pub fn parse_event(e: &Value) -> Event {
@@ -29,6 +31,8 @@ pub fn parse_event(e: &Value) -> Event {
         // the address Lambda saw the request come from (not a header the
         // caller can set)
         client: s(http.and_then(|h| h.get("sourceIp"))),
+        gzip: header("accept-encoding").is_some_and(|v| v.split(',').any(|x| x.trim().starts_with("gzip"))),
+        if_none_match: header("if-none-match"),
     }
 }
 
@@ -36,6 +40,11 @@ pub fn to_lambda(r: &Response) -> Value {
     let mut h = Map::new();
     for (k, v) in &r.headers {
         h.insert(k.to_ascii_lowercase(), json!(v));
+    }
+    // compressed bodies are bytes, which Lambda takes as base64
+    if r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-encoding")) {
+        use base64::Engine;
+        return json!({"statusCode": r.status, "headers": Value::Object(h), "body": base64::engine::general_purpose::STANDARD.encode(&r.body), "isBase64Encoded": true});
     }
     json!({"statusCode": r.status, "headers": Value::Object(h), "body": String::from_utf8_lossy(&r.body), "isBase64Encoded": false})
 }
@@ -48,7 +57,7 @@ pub fn handle_event(broker: &Broker, e: &Value) -> Value {
         return r;
     }
     let ev = parse_event(e);
-    let r = broker.handle(&Request { method: &ev.method, target: &ev.target, origin: ev.origin.as_deref(), client: &ev.client });
+    let r = broker.handle(&Request { method: &ev.method, target: &ev.target, origin: ev.origin.as_deref(), client: &ev.client, gzip: ev.gzip, if_none_match: ev.if_none_match.as_deref() });
     to_lambda(&r)
 }
 
@@ -108,5 +117,12 @@ mod tests {
         assert_eq!(v["headers"]["access-control-allow-origin"], "https://x");
         assert_eq!(v["body"], "{\"ok\":true}");
         assert_eq!(v["isBase64Encoded"], false);
+        let gz = Response { status: 200, headers: vec![("Content-Encoding".into(), "gzip".into())], body: vec![0x1f, 0x8b, 0, 255] };
+        let v = to_lambda(&gz);
+        assert_eq!(v["isBase64Encoded"], true);
+        assert_eq!(v["body"], "H4sA/w==");
+        let ev = parse_event(&json!({"rawPath": "/v1/readings", "headers": {"accept-encoding": "br, gzip", "if-none-match": "\"abc\""}, "requestContext": {"http": {"method": "GET"}}}));
+        assert!(ev.gzip);
+        assert_eq!(ev.if_none_match.as_deref(), Some("\"abc\""));
     }
 }

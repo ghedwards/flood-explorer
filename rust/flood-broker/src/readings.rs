@@ -24,9 +24,25 @@ pub enum Store {
     S3(Bucket),
 }
 
+/// One version of the readings, ready to send: as is, gzipped (about a
+/// tenth of the size), and its ETag so browsers can ask "has it changed?".
 pub struct Doc {
     pub body: Arc<Vec<u8>>,
+    pub gz: Arc<Vec<u8>>,
+    pub etag: String,
     pub fetched_ms: i64,
+    /// S3's ETag for the stored copy (for cheap "unchanged?" checks)
+    pub s3_etag: Option<String>,
+}
+
+impl Doc {
+    pub fn new(body: Vec<u8>, fetched_ms: i64, s3_etag: Option<String>) -> Doc {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 6), flate2::Compression::new(6));
+        let gz = enc.write_all(&body).and_then(|_| enc.finish()).unwrap_or_default();
+        let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
+        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag }
+    }
 }
 
 pub struct Readings {
@@ -75,7 +91,7 @@ impl Readings {
         if let Store::S3(b) = &self.store {
             b.put(KEY, &body, "application/json", fetched)?;
         }
-        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(Doc { body: Arc::new(body), fetched_ms: fetched })));
+        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(Doc::new(body, fetched, None))));
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "errors": errors.len(), "seconds": (fetched - started) / 1000}))
     }
 
@@ -91,15 +107,21 @@ impl Readings {
                         return Ok(Some(doc.clone()));
                     }
                 }
-                match b.get(KEY, now) {
-                    Ok(Some(body)) => {
-                        let fetched_ms = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["fetched"].as_str().and_then(crate::wmip::epoch_ms)).unwrap_or(now);
-                        let doc = Arc::new(Doc { body: Arc::new(body), fetched_ms });
+                // only download it again when it has changed
+                let have = cur.as_ref().and_then(|c| c.1.s3_etag.clone());
+                match b.get(KEY, have.as_deref(), now) {
+                    Ok(crate::s3::Got::Unchanged) if cur.is_some() => {
+                        let doc = cur.unwrap().1;
                         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
                         Ok(Some(doc))
                     }
-                    Ok(None) => Ok(None),
-                    // S3 trouble: the copy in hand, if any
+                    Ok(crate::s3::Got::Body(body, s3_etag)) => {
+                        let fetched_ms = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["fetched"].as_str().and_then(crate::wmip::epoch_ms)).unwrap_or(now);
+                        let doc = Arc::new(Doc::new(body, fetched_ms, s3_etag));
+                        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
+                        Ok(Some(doc))
+                    }
+                    Ok(_) => Ok(None),
                     Err(e) => cur.map(|c| Some(c.1)).ok_or(e),
                 }
             }

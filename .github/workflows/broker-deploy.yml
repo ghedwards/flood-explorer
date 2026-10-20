@@ -61,21 +61,24 @@ jobs:
         if: steps.aws.outputs.deploy == '1'
         env:
           ORIGINS: ${{ vars.BROKER_ALLOWED_ORIGINS || 'https://ghedwards.github.io' }}
-          MAX_CONCURRENCY: ${{ vars.BROKER_MAX_CONCURRENCY }}
+          # at most this many copies at once: a traffic spike can't become a bill
+          MAX_CONCURRENCY: ${{ vars.BROKER_MAX_CONCURRENCY || '5' }}
+          # must match the stack's RefreshMinutes (browser cache lifetimes follow it)
+          REFRESH_MINUTES: ${{ vars.BROKER_REFRESH_MINUTES || '15' }}
         run: |
           set -euo pipefail
           account=$(aws sts get-caller-identity --query Account --output text)
           role="arn:aws:iam::${account}:role/${FUNCTION}-exec"
           bucket="${FUNCTION}-data-${account}-${AWS_REGION}"
-          envjson=$(jq -nc --arg o "$ORIGINS" --arg b "$bucket" '{Variables: {ALLOWED_ORIGINS: $o, CACHE_MINUTES: "10", READINGS_BUCKET: $b}}')
+          envjson=$(jq -nc --arg o "$ORIGINS" --arg b "$bucket" --arg r "$REFRESH_MINUTES" '{Variables: {ALLOWED_ORIGINS: $o, CACHE_MINUTES: "10", READINGS_BUCKET: $b, READINGS_REFRESH_MINUTES: $r}}')
           if aws lambda get-function --function-name "$FUNCTION" > /dev/null 2>&1; then
             aws lambda update-function-code --function-name "$FUNCTION" --zip-file fileb://lambda/flood-broker.zip --architectures arm64 > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION"
-            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 256 --timeout 300 --environment "$envjson" > /dev/null
+            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 128 --timeout 300 --environment "$envjson" > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION"
           else
             aws lambda create-function --function-name "$FUNCTION" --runtime provided.al2023 --architectures arm64 --handler bootstrap \
-              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 256 --timeout 300 --environment "$envjson" \
+              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 128 --timeout 300 --environment "$envjson" \
               --description "Flood Explorer live river levels (github.com/${GITHUB_REPOSITORY})" --tags project=flood-explorer > /dev/null
             aws lambda wait function-active-v2 --function-name "$FUNCTION"
           fi

@@ -61,6 +61,13 @@ pub fn authorization(method: &str, path: &str, query: &str, headers: &[(&str, St
     format!("AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}", creds.key, scope, signed, sig)
 }
 
+pub enum Got {
+    /// the object and S3's ETag for it
+    Body(Vec<u8>, Option<String>),
+    Unchanged,
+    Missing,
+}
+
 pub struct Bucket {
     pub name: String,
     pub region: String,
@@ -71,7 +78,7 @@ impl Bucket {
         format!("{}.s3.{}.amazonaws.com", self.name, self.region)
     }
 
-    fn send(&self, method: &str, key: &str, body: Option<(&[u8], &str)>, now_ms: i64) -> Result<(u16, Vec<u8>), String> {
+    fn send(&self, method: &str, key: &str, body: Option<(&[u8], &str)>, if_none_match: Option<&str>, now_ms: i64) -> Result<(u16, Vec<u8>, Option<String>), String> {
         let creds = Creds::from_env().ok_or("no AWS credentials in the environment")?;
         let path = format!("/{}", key.split('/').map(crate::wmip::encode).collect::<Vec<_>>().join("/"));
         let payload = sha256_hex(body.map_or(&[][..], |b| b.0));
@@ -87,6 +94,10 @@ impl Bucket {
         let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(t).timeout_recv_response(t).timeout_recv_body(t).timeout_send_body(t).http_status_as_error(false).build().into();
         let url = format!("https://{}{}", self.host(), path);
         let mut req = ureq::http::Request::builder().method(method).uri(&url).header("Authorization", auth);
+        // not signed: S3 accepts unsigned conditional headers
+        if let Some(e) = if_none_match {
+            req = req.header("If-None-Match", e);
+        }
         for (k, v) in &headers {
             if *k != "host" {
                 req = req.header(*k, v);
@@ -95,24 +106,26 @@ impl Bucket {
         let req = req.body(body.map_or(Vec::new(), |b| b.0.to_vec())).map_err(|e| e.to_string())?;
         let mut r = agent.run(req).map_err(|e| e.to_string())?;
         let code = r.status().as_u16();
+        let etag = r.headers().get("ETag").and_then(|v| v.to_str().ok()).map(String::from);
         let mut out = Vec::new();
         r.body_mut().as_reader().take(32 << 20).read_to_end(&mut out).map_err(|e| e.to_string())?;
-        Ok((code, out))
+        Ok((code, out, etag))
     }
 
-    /// The object, or None if there isn't one yet.
-    pub fn get(&self, key: &str, now_ms: i64) -> Result<Option<Vec<u8>>, String> {
-        match self.send("GET", key, None, now_ms)? {
-            (200, b) => Ok(Some(b)),
-            (404, _) => Ok(None),
-            (c, b) => Err(format!("S3 GET {}: HTTP {} {}", key, c, String::from_utf8_lossy(&b[..b.len().min(200)]))),
+    /// The object unless it is unchanged since `if_none_match` (S3's ETag).
+    pub fn get(&self, key: &str, if_none_match: Option<&str>, now_ms: i64) -> Result<Got, String> {
+        match self.send("GET", key, None, if_none_match, now_ms)? {
+            (200, b, e) => Ok(Got::Body(b, e)),
+            (304, _, _) => Ok(Got::Unchanged),
+            (404, _, _) => Ok(Got::Missing),
+            (c, b, _) => Err(format!("S3 GET {}: HTTP {} {}", key, c, String::from_utf8_lossy(&b[..b.len().min(200)]))),
         }
     }
 
     pub fn put(&self, key: &str, body: &[u8], content_type: &str, now_ms: i64) -> Result<(), String> {
-        match self.send("PUT", key, Some((body, content_type)), now_ms)? {
-            (200, _) => Ok(()),
-            (c, b) => Err(format!("S3 PUT {}: HTTP {} {}", key, c, String::from_utf8_lossy(&b[..b.len().min(200)]))),
+        match self.send("PUT", key, Some((body, content_type)), None, now_ms)? {
+            (200, _, _) => Ok(()),
+            (c, b, _) => Err(format!("S3 PUT {}: HTTP {} {}", key, c, String::from_utf8_lossy(&b[..b.len().min(200)]))),
         }
     }
 }
