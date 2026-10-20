@@ -79,6 +79,24 @@ const OUT = process.env.OUT || "shots";
       await settle(page, 5000);
     });
     await shot(page, "06-big-flood");
+    // what the impact count and the flooded-roads layer cost: load, the
+    // per-scenario sweep and the drawing, at 9 m and again at 7 m
+    await run("impact-roads", async () => {
+      const t0 = Date.now();
+      report.impact = await page.evaluate(() => window.__floodCountImpact());
+      report.impactWallMs = Date.now() - t0;
+      await page.evaluate(() => window.__floodSetOverlay("Flooded (red) and cut-off (orange) roads", true));
+      await settle(page, 2000);
+      report.impactTiming9 = await page.evaluate(() => window.__floodStatus.impactTiming);
+      const t1 = Date.now();
+      await page.evaluate(() => window.__floodSetLevel(7));
+      await settle(page, 2500);
+      report.levelChangeWallMs = Date.now() - t1;
+      report.impactTiming7 = await page.evaluate(() => window.__floodStatus.impactTiming);
+      report.impact7 = await page.evaluate(() => window.__floodStatus.impact);
+    });
+    await shot(page, "06e-roads-7m");
+    await run("roads-off", async () => { await page.evaluate(() => { window.__floodSetOverlay("Flooded (red) and cut-off (orange) roads", false); window.__floodSetLevel(9); }); await settle(page, 2500); });
     // a big flood's edges through town at street level: 5 m LiDAR edges
     for (const [z, dx, name] of [[16, 0, "06b-big-flood-z16"], [15, -0.012, "06c-big-flood-z15"]]) {
       await run(name, async () => {

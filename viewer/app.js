@@ -5088,7 +5088,9 @@ import './inertial-grid.js';
     // area objects are replaced per scenario, invalidating naturally (like
     // state.hazard); draw and per-call work beyond one floor loop goes away.
     if (!useCache || !d.cache || d.cache.a !== a || d.cache.run !== run) {
+      const ts = performance.now();
       d.cache = { a, run, base: computeScenarioImpact(d, a, run) };
+      status.impactTiming = Object.assign(status.impactTiming || {}, { sweepMs: Math.round((performance.now() - ts) * 10) / 10, buildings: d.bx.length, roads: d.roads ? d.roads.length : null });
     }
     const base = d.cache.base;
     const noFloor = $('floorUnknown') && $('floorUnknown').checked;
@@ -5341,6 +5343,7 @@ import './inertial-grid.js';
       const roadOn = state.lmap.hasLayer(roadsLayer);
       const changed = !impactDrawn || impactDrawn.d !== d || impactDrawn.run !== state.run || impactDrawn.a !== state.a || impactDrawn.roadOn !== roadOn;
       if (changed) {
+        const td = performance.now();
         impactLayer.clearLayers();
         roadsLayer.clearLayers();
         if (roadOn) {
@@ -5356,6 +5359,7 @@ import './inertial-grid.js';
         r.sitesHit.forEach((s) => window.L.circleMarker([s.lat, s.lon], { radius: 7, color: '#c62828', weight: 2.5, fillColor: '#fff', fillOpacity: 0.9 })
           .bindTooltip(`${s.name}: ${s.kind}, ${s.depth.toFixed(1)} m of water`).addTo(impactLayer));
         impactDrawn = { d, run: state.run, a: state.a, roadOn };
+        status.impactTiming = Object.assign(status.impactTiming || {}, { drawMs: Math.round((performance.now() - td) * 10) / 10, cutSegs: r.cutEdges.length, islandSegs: r.islandEdges.length });
       }
       impactShown = { areaKey: state.areaKey, run: state.run };
       if ($('impactStale')) $('impactStale').hidden = true;
@@ -5367,7 +5371,8 @@ import './inertial-grid.js';
     const box = $('impactBox');
     box.innerHTML = '<p class="hint">Fetching buildings, roads and key sites from OpenStreetMap, and population from the ABS…</p>';
     status.impact = { loading: true };
-    try { area.impact = await loadImpactData(area); } catch (err) { area.impact = { error: String(err.message || err) }; status.impact = { error: area.impact.error }; }
+    const tl = performance.now();
+    try { area.impact = await loadImpactData(area); status.impactTiming = { loadMs: Math.round(performance.now() - tl) }; } catch (err) { area.impact = { error: String(err.message || err) }; status.impact = { error: area.impact.error }; }
     renderImpact();
     return status.impact;
   }
