@@ -358,7 +358,11 @@ class Scene3d {
           if (st.raster && !seen.has(st.raster.data)) { seen.add(st.raster.data); bytes += st.raster.data.byteLength; }
           if (st.tex) tex++;
         }
-        return { heightGrids: seen.size, heightMB: +(bytes / 1048576).toFixed(1), textures: tex, textureMB: +(tex * 0.33).toFixed(0) };
+        // finestTiles: tiles at the terrain's finest level in the cache, each of
+        // which used to keep its grid (for comparing with heightGrids)
+        let finest = 0;
+        for (const st of this.cache.values()) if (st.state === 'ready' && st.z === this.maxZ() && !st.virtual) finest++;
+        return { heightGrids: seen.size, heightMB: +(bytes / 1048576).toFixed(1), finestTiles: finest, textures: tex, textureMB: +(tex * 0.33).toFixed(0) };
       })(),
       imagery: { on: this.imageryOn, loaded: this.imgLoaded, failed: this.imgFailed, pending: this.imgLoading + this.imgQueue.size },
       water: [...this.areaTiles.entries()].map(([key, t]) => ({ key, verts: t.water ? t.water.geometry.attributes.position.count : 0 })),
