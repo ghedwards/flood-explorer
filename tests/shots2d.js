@@ -136,6 +136,30 @@ const OUT = process.env.OUT || "shots";
     await run("basemap-street", async () => { await page.evaluate(() => window.__floodSetBasemap && window.__floodSetBasemap("Streets")); await settle(page, 4000); });
     await shot(page, "07-street-basemap");
     await page.close();
+    // a study area near Lismore: progress with Stop, stopped part-way, its
+    // places grouped under it in Places
+    const sp = await open({ width: 1400, height: 900 });
+    await settle(sp, 5000);
+    await run("study", async () => {
+      await sp.evaluate(() => { window.__studyJob = window.__floodStudyArea(-28.95, 153.10, -28.65, 153.45); });
+      await sp.waitForFunction(() => !document.getElementById("studyProgress").hidden && /flood model 1 of/.test(document.getElementById("studyProgressText").textContent), null, { timeout: 120000 });
+      report.studyProgress = await sp.evaluate(() => document.getElementById("studyProgressText").textContent);
+      await shot(sp, "12a-study-progress");
+      await sp.click("#studyStop");
+      report.study = await sp.evaluate(() => window.__studyJob);
+      await settle(sp, 2000);
+      report.studies = await sp.evaluate(() => window.__floodStudies());
+      report.studyPlaces = await sp.evaluate(() => ({
+        topRows: document.querySelectorAll("#areaList > ul.places > li.place").length,
+        studyRows: document.querySelectorAll("#areaList [data-study]").length,
+        toggle: (document.querySelector("[data-study-open]") || {}).textContent,
+      }));
+      await sp.evaluate(() => { const t = document.querySelector("[data-study-open]"); if (t) t.click(); });
+      await settle(sp, 800);
+      report.studyMembersShown = await sp.evaluate(() => document.querySelectorAll(".study-members li.place").length);
+    });
+    await shot(sp, "12b-study-grouped");
+    await sp.close();
     // phone
     const phone = await open({ width: 390, height: 844 });
     await settle(phone, 5000);

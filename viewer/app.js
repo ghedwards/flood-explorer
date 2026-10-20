@@ -513,9 +513,12 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     $('levelHint').hidden = true;
     if (state.eventsApply) ctl.gaugeLevel.value = 4.46;
     else if (state.gauge >= 0) {
-      const surface = state.a.dem[state.gauge];
+      const surface = state.a.dem[state.gauge], v = Math.round((surface + 3) * 20) / 20;
+      // range first: a range input clamps its value to the current max, and
+      // inland gauges (tens of metres up) were clamped below the river bed
+      ctl.gaugeLevel.max = Math.max(10, Math.ceil(v + 8));
       ctl.gaugeLevel.min = Math.max(0, Math.floor(surface - 2));
-      ctl.gaugeLevel.value = Math.round((surface + 3) * 20) / 20;
+      ctl.gaugeLevel.value = v;
       $('levelHint').hidden = false;
       $('levelHint').textContent = `Heights are metres above sea level. The river surface at the gauge is about ${surface.toFixed(1)} m in the elevation model; the default is 3 m above that.`;
     }
@@ -2701,27 +2704,13 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     }
     if (!nums.includes(selectedNum)) selectedNum = act ? act.n : null;
     status.selectedPlace = selectedNum;
-    const rows = nums.map((n) => {
-      const r = reports.find((x) => x.n === n), a = areaByNumber(n), pin = pins.find((x) => x.n === n);
-      const hidden = hiddenNums.has(n), isActive = a && a.key === state.areaKey, sel = selectedNum === n;
-      const name = (r && r.name) || (pin && pin.name) || (a && a.name) || `Place ${n}`;
-      const tags = [r ? (r.kind === 'storage' ? 'dam report' : r.kind === 'tide' ? 'tide report' : 'gauge report') : null, pin ? 'pinned place' : null, a ? 'flood model' : null].filter(Boolean).join(' + ');
-      const color = a ? (isActive ? AREA_COLOR : '#8a6a4a') : r ? (GAUGE_STYLE[r.kind] || GAUGE_STYLE.river).color : PIN_COLOR;
-      const repLabel = r ? `Open the report for ${name}` : `Report on the gauge or dam nearest ${name}`;
-      return `<li class="place${sel ? ' on' : ''}${hidden ? ' off' : ''}">
-        <button type="button" class="place-main" data-num="${n}" aria-pressed="${sel}" title="Select ${escapeHtml(name)}">
-          <span class="pin-num" style="background:${color}">${n}</span>
-          <span class="place-text"><span class="place-name">${escapeHtml(name)}</span><span class="place-tags">${tags}</span></span>
-        </button>
-        <button type="button" class="icon-btn" data-act="${r ? 'report' : 'nearest'}" data-n="${n}" aria-label="${escapeHtml(repLabel)}" title="${r ? 'Report' : 'Report on nearest gauge'}">${ICON_REPORT}</button>
-        <button type="button" class="icon-btn" data-act="zoom" data-n="${n}" aria-label="Zoom to ${escapeHtml(name)}" title="Zoom to">${ICON_ZOOM}</button>
-        <button type="button" class="icon-btn" data-drop="${n}" aria-label="Remove ${escapeHtml(name)}" title="Remove">×</button>
-      </li>`;
-    }).join('');
+    // places a study area brought in are listed under it, not here
+    const inStudy = new Set(studies.flatMap((st) => st.nums || []));
+    const rows = nums.filter((n) => !inStudy.has(n)).map(placeRowHtml).join('');
     // the how-it-works text is shown the first time places appear, then
     // folds behind a "?" (remembered in this browser)
     if (!placesHelpSeen) { placesHelpOpen = true; placesHelpSeen = true; try { localStorage.setItem(HELP_KEY, '1'); } catch (e) { /* storage blocked */ } }
-    box.innerHTML = `<ul class="places">${rows}</ul>
+    box.innerHTML = `${rows ? `<ul class="places">${rows}</ul>` : ''}
       ${placesHelpOpen ? '<p class="hint">Choosing a place here works like tapping its number on the map. Your places are kept in this browser for next time.</p>' : ''}
       <p class="hint places-foot"><button type="button" class="link-btn" id="placesHelp" aria-expanded="${placesHelpOpen}" aria-label="How places work">? How places work</button> · <button type="button" class="link-btn" id="clearPlaces">Clear all places</button></p>${propertyChecksHtml()}${studiesHtml()}`;
     $('placesHelp').addEventListener('click', () => { placesHelpOpen = !placesHelpOpen; renderPlaces(); });
@@ -2731,18 +2720,38 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     saveSessionSoon();
     box.querySelectorAll('[data-num]').forEach((b) => b.addEventListener('click', () => selectPlace(+b.dataset.num, { fromList: true })));
     box.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => placeAction(b.dataset.act, +b.dataset.n)));
-    box.querySelectorAll('[data-drop]').forEach((b) => b.addEventListener('click', () => {
-      const n = +b.dataset.drop, a = areaByNumber(n);
-      reports.filter((r) => r.n === n).forEach(closeReport);
-      if (a) removeArea(a.key);
-      for (let i = pins.length - 1; i >= 0; i--) if (pins[i].n === n) {
-        if (pins[i].marker && state.lmap) state.lmap.removeLayer(pins[i].marker);
-        pins.splice(i, 1);
-      }
-      hiddenNums.delete(n);
-      if (selectedNum === n) selectedNum = null;
-      renderPlaces();
-    }));
+    box.querySelectorAll('[data-drop]').forEach((b) => b.addEventListener('click', () => { dropPlace(+b.dataset.drop); renderPlaces(); }));
+  }
+  // one numbered place (report, pinned place and/or flood model) as a list row
+  function placeRowHtml(n) {
+    const r = reports.find((x) => x.n === n), a = areaByNumber(n), pin = pins.find((x) => x.n === n);
+    const hidden = hiddenNums.has(n), isActive = a && a.key === state.areaKey, sel = selectedNum === n;
+    const name = (r && r.name) || (pin && pin.name) || (a && a.name) || `Place ${n}`;
+    const tags = [r ? (r.kind === 'storage' ? 'dam report' : r.kind === 'tide' ? 'tide report' : 'gauge report') : null, pin ? 'pinned place' : null, a ? 'flood model' : null].filter(Boolean).join(' + ');
+    const color = a ? (isActive ? AREA_COLOR : '#8a6a4a') : r ? (GAUGE_STYLE[r.kind] || GAUGE_STYLE.river).color : PIN_COLOR;
+    const repLabel = r ? `Open the report for ${name}` : `Report on the gauge or dam nearest ${name}`;
+    return `<li class="place${sel ? ' on' : ''}${hidden ? ' off' : ''}">
+        <button type="button" class="place-main" data-num="${n}" aria-pressed="${sel}" title="Select ${escapeHtml(name)}">
+          <span class="pin-num" style="background:${color}">${n}</span>
+          <span class="place-text"><span class="place-name">${escapeHtml(name)}</span><span class="place-tags">${tags}</span></span>
+        </button>
+        <button type="button" class="icon-btn" data-act="${r ? 'report' : 'nearest'}" data-n="${n}" aria-label="${escapeHtml(repLabel)}" title="${r ? 'Report' : 'Report on nearest gauge'}">${ICON_REPORT}</button>
+        <button type="button" class="icon-btn" data-act="zoom" data-n="${n}" aria-label="Zoom to ${escapeHtml(name)}" title="Zoom to">${ICON_ZOOM}</button>
+        <button type="button" class="icon-btn" data-drop="${n}" aria-label="Remove ${escapeHtml(name)}" title="Remove">×</button>
+      </li>`;
+  }
+  // remove a numbered place: its report, flood model and pin
+  function dropPlace(n) {
+    const a = areaByNumber(n);
+    reports.filter((r) => r.n === n).forEach(closeReport);
+    if (a) removeArea(a.key);
+    for (let i = pins.length - 1; i >= 0; i--) if (pins[i].n === n) {
+      if (pins[i].marker && state.lmap) state.lmap.removeLayer(pins[i].marker);
+      pins.splice(i, 1);
+    }
+    hiddenNums.delete(n);
+    if (selectedNum === n) selectedNum = null;
+    for (const st of studies) if (st.nums && st.nums.includes(n)) { st.nums = st.nums.filter((x) => x !== n); saveStudies(); }
   }
 
   const ICON_RENAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13 7l4 4"/></svg>';
@@ -4708,7 +4717,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     }
     const act = state.areaKey && areaReg.get(state.areaKey);
     out.active = act ? act.n : (selectedNum != null ? selectedNum : null);
-    out.studies = studies.map((x) => ({ l: x.letter, b: x.bounds.map(r5), name: x.name }));
+    out.studies = studies.map((x) => ({ l: x.letter, b: x.bounds.map(r5), name: x.name, m: x.nums || [] }));
     return out;
   }
   const b64 = (str) => {
@@ -4743,7 +4752,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       if (!nat.data) await loadNationalData();
       for (const x of st.studies || []) {
         if (studies.some((y) => y.bounds.join() === x.b.join())) continue;
-        const sObj = { letter: studies.some((y) => y.letter === x.l) ? nextLetter() : x.l, bounds: x.b, name: x.name, created: new Date().toISOString(), summary: null, loaded: false };
+        const sObj = { letter: studies.some((y) => y.letter === x.l) ? nextLetter() : x.l, bounds: x.b, name: x.name, created: new Date().toISOString(), summary: null, loaded: false, nums: Array.isArray(x.m) ? x.m : [] };
         studies.push(sObj); drawStudy(sObj);
       }
       saveStudies();
@@ -6635,7 +6644,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   const ICON_RUN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg>';
   function saveStudies() {
     try {
-      localStorage.setItem(STUDY_KEY, JSON.stringify(studies.map((x) => ({ letter: x.letter, bounds: x.bounds, name: x.name, created: x.created, summary: x.summary }))));
+      localStorage.setItem(STUDY_KEY, JSON.stringify(studies.map((x) => ({ letter: x.letter, bounds: x.bounds, name: x.name, created: x.created, summary: x.summary, nums: x.nums || [] }))));
     } catch (e) { /* storage unavailable: studies last for this visit */ }
   }
   function nextLetter() {
@@ -6661,7 +6670,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (studies.length) return;
     try {
       const saved = JSON.parse(localStorage.getItem(STUDY_KEY) || '[]');
-      saved.forEach((x) => { if (Array.isArray(x.bounds) && x.bounds.length === 4) studies.push(Object.assign({}, x, { loaded: false })); });
+      // a study whose places are still here needs no rebuild: they come back with the other places
+      saved.forEach((x) => { if (Array.isArray(x.bounds) && x.bounds.length === 4) studies.push(Object.assign({ nums: [] }, x, { loaded: false })); });
     } catch (e) { /* nothing saved */ }
     studies.forEach(drawStudy);
     renderPlaces();
@@ -6670,7 +6680,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const bounds = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
     const c = [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2];
     const near = nearestNamed(c[0], c[1], 60);
-    const st = { letter: nextLetter(), bounds, name: near ? `Around ${near.f.properties.name}` : `${c[0].toFixed(2)}, ${c[1].toFixed(2)}`, created: new Date().toISOString(), summary: null, loaded: false };
+    const st = { letter: nextLetter(), bounds, name: near ? `Around ${near.f.properties.name}` : `${c[0].toFixed(2)}, ${c[1].toFixed(2)}`, created: new Date().toISOString(), summary: null, loaded: false, nums: [] };
     studies.push(st);
     drawStudy(st);
     saveStudies();
@@ -6690,12 +6700,20 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const [S, W, N, E] = st.bounds;
     return `${Math.round((E - W) * 111.32 * Math.cos(((S + N) / 2) * Math.PI / 180))} × ${Math.round((N - S) * 110.574)} km`;
   }
+  // the study's own places that are still on the map
+  const studyMembers = (st) => {
+    const have = new Set([...reports.map((r) => r.n), ...Array.from(areaReg.values()).map((a) => a.n), ...pins.map((p) => p.n)]);
+    return (st.nums || []).filter((n) => have.has(n)).sort((a, b) => a - b);
+  };
   function studiesHtml() {
     if (!studies.length) return '';
     const rows = studies.map((st) => {
-      const sm = st.summary;
-      const tags = [studySize(st), sm ? `${sm.gauges} gauge${sm.gauges === 1 ? '' : 's'}, ${sm.dams} dam${sm.dams === 1 ? '' : 's'}` : null,
-        st.loaded ? `${sm ? sm.models : 0} model${sm && sm.models === 1 ? '' : 's'} on the map` : 'saved: run to load its models'].filter(Boolean).join(' · ');
+      const sm = st.summary, members = studyMembers(st);
+      const models = members.filter((n) => areaByNumber(n)).length;
+      const state0 = st.running ? 'building…' : members.length ? `${models} flood model${models === 1 ? '' : 's'}${sm && sm.stopped ? ' (stopped part-way)' : ''}` : st.loaded ? 'no places left' : 'saved: run to load it';
+      const tags = [studySize(st), sm ? `${sm.gauges} gauge${sm.gauges === 1 ? '' : 's'}, ${sm.dams} dam${sm.dams === 1 ? '' : 's'}` : null, state0].filter(Boolean).join(' · ');
+      const toggle = members.length ? `<button type="button" class="link-btn study-toggle" data-study-open="${st.letter}" aria-expanded="${!!st.open}">${st.open ? 'Hide' : 'Show'} its ${members.length} place${members.length === 1 ? '' : 's'}</button>` : '';
+      const list = st.open && members.length ? `<ul class="places study-members">${members.map(placeRowHtml).join('')}</ul>` : '';
       return `<li class="place study-row${selectedStudy === st.letter ? ' on' : ''}">
         <button type="button" class="place-main" data-study="${st.letter}" title="Show study area ${st.letter}">
           <span class="pin-num study-badge">${st.letter}</span>
@@ -6704,6 +6722,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
         <button type="button" class="icon-btn" data-study-run="${st.letter}" aria-label="${st.loaded ? 'Run again' : 'Run'}: load its gauges, dams and flood models" title="${st.loaded ? 'Run again' : 'Run study'}">${ICON_RUN}</button>
         <button type="button" class="icon-btn" data-study-zoom="${st.letter}" aria-label="Zoom to study area ${st.letter}" title="Zoom to">${ICON_ZOOM}</button>
         <button type="button" class="icon-btn" data-study-drop="${st.letter}" aria-label="Remove study area ${st.letter}" title="Remove">×</button>
+        ${toggle ? `<div class="study-more">${toggle}</div>` : ''}${list}
       </li>`;
     }).join('');
     return `<h3 class="places-sub">Studied areas</h3><ul class="places">${rows}</ul>`;
@@ -6711,6 +6730,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   function wireStudyRows(box) {
     box.querySelectorAll('[data-study]').forEach((b) => b.addEventListener('click', () => selectStudy(b.dataset.study)));
     box.querySelectorAll('[data-study-zoom]').forEach((b) => b.addEventListener('click', () => selectStudy(b.dataset.studyZoom)));
+    box.querySelectorAll('[data-study-open]').forEach((b) => b.addEventListener('click', () => {
+      const st = studies.find((x) => x.letter === b.dataset.studyOpen);
+      if (st) { st.open = !st.open; renderPlaces(); }
+    }));
     box.querySelectorAll('[data-study-run]').forEach((b) => b.addEventListener('click', () => {
       const st = studies.find((x) => x.letter === b.dataset.studyRun);
       if (st) { const [S, W, N, E] = st.bounds; studyArea(window.L.latLngBounds([S, W], [N, E]), st); }
@@ -6718,7 +6741,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     box.querySelectorAll('[data-study-drop]').forEach((b) => b.addEventListener('click', () => {
       const i = studies.findIndex((x) => x.letter === b.dataset.studyDrop);
       if (i < 0) return;
-      const st = studies[i];
+      const st = studies[i], members = studyMembers(st);
+      if (members.length && !window.confirm(`Remove study area ${st.letter} and its ${members.length} place${members.length === 1 ? '' : 's'} (reports and flood models)?`)) return;
+      if (st.running) st.stop = true;
+      members.forEach(dropPlace);
       [st.rect, st.label].forEach((l) => l && state.lmap && state.lmap.removeLayer(l));
       studies.splice(i, 1);
       if (selectedStudy === st.letter) selectedStudy = null;
@@ -6730,7 +6756,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 
   async function studyArea(b, existing) {
     const study = existing || addStudy(b);
+    if (study.running) return status.study;
     selectedStudy = study.letter;
+    study.nums = study.nums || [];
+    const claim = (n) => { if (n != null && !study.nums.includes(n)) study.nums.push(n); };
     if (!nat.data) await loadNationalData();
     const S = b.getSouth(), N = b.getNorth(), Wl = b.getWest(), E = b.getEast();
     const midLat = (S + N) / 2;
@@ -6773,6 +6802,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     }
     const summary = { ok: true, km: 2 * size[0], tiles: tiles.length, models: 0, reports: 0, gauges: gauges.length, dams: dams.length, layers: [] };
     status.study = Object.assign({ running: true }, summary);
+    study.running = true; study.stop = false;
+    const progress = (text) => { $('studyProgressText').textContent = `Study area ${study.letter}: ${text}`; $('studyProgress').hidden = false; };
+    $('studyStop').onclick = () => { study.stop = true; progress('stopping after this step…'); };
+    renderPlaces();
     state.lmap.fitBounds(b, { padding: [30, 30] });
     // state flood layers for the states in the box
     const states = new Set([...gauges, ...dams].map((f) => f.properties.state).filter(Boolean));
@@ -6784,16 +6817,21 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     // reports for every gauge and dam in the box, tile gauges first
     const want = [...tiles.map((t) => t.gauge || t.tide).filter(Boolean), ...dams, ...gauges];
     const seen = new Set();
+    progress(`opening ${want.length} gauge and dam reports…`);
     for (const f of want) {
       const id = `${f.properties.kind}:${f.properties.id}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      if (!reports.some((r) => r.id === id)) summary.reports++;
-      openReport(f);
+      const isNew = !reports.some((r) => r.id === id);
+      if (isNew) summary.reports++;
+      openReport(f, { select: false });
+      if (isNew) { const r = reports.find((x) => x.id === id); if (r) claim(r.n); }   // places that were already here stay where they are
     }
     // models, one per tile
     summary.models = tiles.length - todo.length;   // already covered
     for (const [k, t] of todo.entries()) {
+      if (study.stop) { summary.stopped = true; break; }
+      progress(`building flood model ${k + 1} of ${todo.length} (${2 * size[0]} km)…`);
       setBusy(true, `Modelling part ${k + 1} of ${todo.length} of the area…`);
       const src = t.gauge || t.tide;
       let ok;
@@ -6804,18 +6842,22 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
         ok = await modelHere(la, lo, { kind: p.kind === 'tide' ? 'coast' : 'river', name: p.name, reportId: r ? r.id : null, halfKm: size[0], cellM: size[1], center: t.c });
       } else {
         const pin = addPin(t.c[0], t.c[1]);
+        claim(pin.n);
         ok = await modelHere(t.c[0], t.c[1], { kind: 'river', name: pin.name, pinN: pin.n, halfKm: size[0], cellM: size[1], center: t.c });
       }
       if (ok) summary.models++;
     }
     setBusy(false);
+    $('studyProgress').hidden = true;
+    study.running = false;
     status.study = summary;
-    study.summary = { gauges: summary.gauges, dams: summary.dams, models: summary.models, km: summary.km };
+    study.summary = { gauges: summary.gauges, dams: summary.dams, models: summary.models, km: summary.km, stopped: !!summary.stopped };
     study.loaded = true;
+    if (!studies.includes(study)) { status.study = Object.assign(summary, { removed: true }); return summary; }   // removed while it ran
     saveStudies();
     renderPlaces();
     const first = tiles.map((t) => t.gauge || t.tide).find(Boolean);
-    say(`Area study: ${summary.models} flood model${summary.models === 1 ? '' : 's'} (${summary.km} km each), ${summary.gauges} gauge${summary.gauges === 1 ? '' : 's'} and ${summary.dams} dam${summary.dams === 1 ? '' : 's'} inside${summary.layers.length ? `; ${summary.layers.join(', ')} on` : ''}.`);
+    say(`Area study${summary.stopped ? ' (stopped: the models built so far are kept)' : ''}: ${summary.models} flood model${summary.models === 1 ? '' : 's'} (${summary.km} km each), ${summary.gauges} gauge${summary.gauges === 1 ? '' : 's'} and ${summary.dams} dam${summary.dams === 1 ? '' : 's'} inside${summary.layers.length ? `; ${summary.layers.join(', ')} on` : ''}.`);
     if (first) { const r = reports.find((x) => x.id === `${first.properties.kind}:${first.properties.id}`); if (r) selectPlace(r.n); }
     state.lmap.fitBounds(b, { padding: [30, 30] });
     return summary;
