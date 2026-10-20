@@ -50,7 +50,6 @@ const OUT = process.env.OUT || "shots";
       await settle(page, 5000);
     });
     await shot(page, "03-model");
-    await run("channel-diag", async () => { report.channelDiag = await page.evaluate(() => window.__floodChannelDiag && window.__floodChannelDiag()); });
     await run("places-help-fold", async () => { await page.click("#placesHelp"); await settle(page, 500); });
     await shot(page, "03b-places-folded");
     await run("zoom-in", async () => {

@@ -1036,7 +1036,7 @@ import './inertial-grid.js';
   const FINE_Z = 15, FINE_M = 5, FINE_MAX_PX = 1800, FINE_SNAP = 0.004;   // snap boxes to ~400 m so pans reuse fetches
   let fine = null, fineTimer = null, fineGen = 0;
   const fineCache = new Map();   // box key -> Promise<raster | null>
-  function scheduleFine() { clearTimeout(fineTimer); fineTimer = setTimeout(() => { updateFine().catch((err) => { status.fine = { error: String(err) }; clearFine(); }); }, 300); }
+  function scheduleFine() { if (state.timePlay) clearFine(); clearTimeout(fineTimer); fineTimer = setTimeout(() => { updateFine().catch((err) => { status.fine = { error: String(err) }; clearFine(); }); }, 300); }
   function clearFine() {
     if (!fine) return;
     if (fine.ov) fine.ov.remove();
@@ -1048,7 +1048,8 @@ import './inertial-grid.js';
   function fineLidar(box, W, H) {
     const key = `${box.map((v) => v.toFixed(5)).join(',')}:${W}x${H}`;
     if (!fineCache.has(key)) {
-      fineCache.set(key, fetchLidarBox(box, W, H).catch(() => null));
+      // a failed fetch isn't kept, so a dropped request can be tried again
+      fineCache.set(key, fetchLidarBox(box, W, H).catch(() => { fineCache.delete(key); return null; }));
       while (fineCache.size > 16) fineCache.delete(fineCache.keys().next().value);
     }
     return fineCache.get(key);
@@ -1057,8 +1058,10 @@ import './inertial-grid.js';
     const m = state.lmap, a = state.a, run = state.run, g = state.geo, coarse = state.overlay;
     const meta = state.areaMeta;
     const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null;
-    const on = m && a && run && g && coarse && useLidar() && m.getZoom() >= FINE_Z && (mode === 'depth' || (mode === 'hazard' && hz && hz.vel))
-      && !$('showRelief').checked && meta && meta.lidarShare > 0;
+    // not while the timeline plays (each step would redraw it on the main
+    // thread, a step behind); not for a hidden or removed place
+    const on = m && a && run && g && coarse && m.hasLayer(coarse) && !state.timePlay && useLidar() && m.getZoom() >= FINE_Z
+      && (mode === 'depth' || (mode === 'hazard' && hz && hz.vel)) && !$('showRelief').checked && meta && meta.lidarShare > 0;
     if (!on) { clearFine(); status.fine = null; return; }
     const vb = m.getBounds().pad(0.15);
     const snapDn = (v) => Math.floor(v / FINE_SNAP) * FINE_SNAP, snapUp = (v) => Math.ceil(v / FINE_SNAP) * FINE_SNAP;
@@ -1069,7 +1072,7 @@ import './inertial-grid.js';
     if (W < 2 || H < 2 || W > FINE_MAX_PX || H > FINE_MAX_PX) { clearFine(); return; }
     const gen = ++fineGen, areaKey = state.areaKey, t0 = performance.now();
     const r = await fineLidar(box, W, H);
-    if (gen !== fineGen || areaKey !== state.areaKey || run !== state.run || mode !== colorMode()) return;   // superseded
+    if (gen !== fineGen || areaKey !== state.areaKey || run !== state.run || mode !== colorMode() || state.timePlay) return;   // superseded
     if (!r || r.iw !== W || r.ih !== H) { clearFine(); status.fine = { lidar: false }; return; }
     // the coarse picture as drawn now: copied where there is no LiDAR
     const coarseImg = composeWater().img.data;
@@ -1308,7 +1311,8 @@ import './inertial-grid.js';
     let bm = BASEMAPS.find((b) => b.name === status.basemap);
     const fallback = !bm || bm.wms || !bm.opts.crossOrigin;
     if (fallback) bm = BASEMAPS[0];
-    return { name: bm.name, template: bm.url(), subdomains: bm.opts.subdomains || '', maxZoom: bm.opts.maxZoom, attr: bm.opts.attribution, fallback };
+    // the finest level the service has (maxNativeZoom), not how far the 2D map scales it
+    return { name: bm.name, template: bm.url(), subdomains: bm.opts.subdomains || '', maxZoom: bm.opts.maxNativeZoom || bm.opts.maxZoom, attr: bm.opts.attribution, fallback };
   }
   // a basemap switch while 3D is open re-drapes it
   function basemapChanged() {
@@ -1356,7 +1360,7 @@ import './inertial-grid.js';
             ar.a = a; ar.run = run; ar.terrain = terrain;
             return { a, run, terrain };
           })();
-          ar.__area3d.catch((err) => say(`3D: couldn't rebuild ${ar.name || ar.key}: ${err.message || err}`));
+          ar.__area3d.catch((err) => say(`3D: couldn't rebuild ${ar.name || ar.key}: ${err.message || err}`, { error: true }));
         }
         t.ready = ar.__area3d;
       }
@@ -1367,24 +1371,6 @@ import './inertial-grid.js';
   window.__floodOpen3D = () => open3d();
   window.__flood3DState = () => (view3d ? view3d.snapshot() : { open: false });
   window.__floodPin = () => pinScenario();
-  // numbers for the 2D polish check: how the mapped channel cells compare
-  // with the baseline ("normal level") run that decides what counts as flood
-  window.__floodChannelDiag = () => {
-    const a = state.a, run = state.run, base = state.base;
-    if (!a || !run) return null;
-    const thr = state.streamAreaKm2 * 3, cellKm2 = (a.cell * a.cell) / 1e6;
-    const o = { n: 0, baseWet: 0, runWet: 0, newly: 0, deep4: 0, demMean: 0, depthMean: 0, baseKnown: !!base, gaugeDem: state.gauge >= 0 ? a.dem[state.gauge] : null };
-    let dsum = 0, ksum = 0;
-    for (let i = 0; i < a.N; i++) {
-      if (!a.valid[i] || !a.stream[i] || a.acc[i] * cellKm2 <= thr || (a.ocean && a.ocean[i])) continue;
-      o.n++; dsum += a.dem[i];
-      if (base && base.wet[i]) o.baseWet++;
-      if (run.wet[i]) { o.runWet++; ksum += run.depth[i]; if (isFlood(i)) { o.newly++; if (run.depth[i] >= 4) o.deep4++; } }
-    }
-    if (o.n) o.demMean = dsum / o.n;
-    if (o.runWet) o.depthMean = ksum / o.runWet;
-    return o;
-  };
   window.__floodGaugeLatLng = () => (state.a && state.gauge >= 0 ? cellLatLng(state.gauge) : null);
   window.__floodSetLevel = (v) => { ctl.gaugeLevel.value = v; syncOutputs(); runScenario(); return parseFloat(ctl.gaugeLevel.value); };
   window.__floodRelease = (pct, start, hours) => { $('relUnit').value = 'pct'; $('relFlow').value = pct; $('relStart').value = start; $('relHours').value = hours; return releaseOpts(); };
@@ -1876,7 +1862,7 @@ import './inertial-grid.js';
       await loadLeaflet();
     } catch (err) {
       leaveGeoMode();
-      say(`${err.message} Showing the terrain picture instead.`);
+      say(`${err.message} Showing the terrain picture instead.`, { error: true });
       return false;
     }
     const L = window.L;
@@ -1906,7 +1892,7 @@ import './inertial-grid.js';
           // leaving a silently dark map ("satellite island")
           st.streak = (st.streak || 0) + 1;
           if (st.streak === 8 && status.basemap === bm.name) {
-            say('Basemap tiles are failing to load (the imagery service may be busy). Pan slightly, reload, or pick another basemap in Layers.');
+            say('Basemap tiles are failing to load (the imagery service may be busy). Pan slightly, reload, or pick another basemap in Layers.', { error: true });
             probeBasemapFailover(bm.name);
           }
         });
@@ -2015,7 +2001,7 @@ import './inertial-grid.js';
       wireStudy();
       m.on('mousemove', onGeoMove);
       m.on('locationfound', onLocated);
-      m.on('locationerror', (e) => { say(`Couldn’t get your location: ${e.message}`); });
+      m.on('locationerror', (e) => { say(`Couldn’t get your location: ${e.message}`, { error: true }); });
       state.lmap = m;
     }
     // area-specific layers: Brisbane City Council's, once per session
@@ -2479,6 +2465,7 @@ import './inertial-grid.js';
     reports.filter((r) => r.n === n && r.pin).forEach((r) => (hidden ? m.removeLayer(r.pin) : r.pin.addTo(m)));
     pins.filter((p) => p.n === n && p.marker).forEach((p) => (hidden ? m.removeLayer(p.marker) : p.marker.addTo(m)));
     if (hidden && area && area.key === state.areaKey) say(`${n}. ${area.name} is hidden. Its scenario is kept; show it again from Places.`);
+    scheduleFine();   // the 5 m patch follows its place's flood layer
     reports.forEach(refreshReportLink);
     renderPlaces();
   }
@@ -2569,6 +2556,7 @@ import './inertial-grid.js';
     if (!area) return;
     const m = state.lmap;
     [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && m.removeLayer(l));
+    if (fine && fine.coarse === area.overlay) clearFine();   // its 5 m patch goes with it
     if (area.overlay && area.overlay._floodUrl) URL.revokeObjectURL(area.overlay._floodUrl);
     areaReg.delete(key);
     if (!reports.some((r) => r.n === area.n)) hiddenNums.delete(area.n);
@@ -3692,7 +3680,7 @@ import './inertial-grid.js';
     if (!ok) {
       useSampleOption();
       await loadArea('sample');
-      say('The street map could not load, so the Australia-wide view is unavailable. Showing the sample terrain.');
+      say('The street map could not load, so the Australia-wide view is unavailable. Showing the sample terrain.', { error: true });
       return;
     }
     await loadNationalData();
@@ -4760,7 +4748,7 @@ import './inertial-grid.js';
   async function restoreOnStart() {
     const m = /[#&]s=([A-Za-z0-9_-]+)/.exec(location.hash || '');
     if (m) {
-      try { await restoreSession(JSON.parse(unb64(m[1])), 'link'); } catch (e) { say('That link could not be read.'); }
+      try { await restoreSession(JSON.parse(unb64(m[1])), 'link'); } catch (e) { say('That link could not be read.', { error: true }); }
       return;
     }
     let saved;
@@ -6250,12 +6238,12 @@ import './inertial-grid.js';
     // rAF-coalesce slider drags: showTimeStep does a full re-inundation
     slider.addEventListener('input', () => scheduleTimeStep(+slider.value));
     $('tlPlay').addEventListener('click', () => {
-      if (state.timePlay) { clearInterval(state.timePlay); state.timePlay = 0; $('tlPlay').textContent = 'Play'; return; }
+      if (state.timePlay) { clearInterval(state.timePlay); state.timePlay = 0; $('tlPlay').textContent = 'Play'; scheduleFine(); return; }
       $('tlPlay').textContent = 'Pause';
       state.timePlay = setInterval(() => {
         const k = (+slider.value + 1) % K;
         slider.value = k; showTimeStep(k);
-        if (k === K - 1) { clearInterval(state.timePlay); state.timePlay = 0; $('tlPlay').textContent = 'Play'; }
+        if (k === K - 1) { clearInterval(state.timePlay); state.timePlay = 0; $('tlPlay').textContent = 'Play'; scheduleFine(); }
       }, 350);
     });
     updateTimeLabel(state.timeStep);
@@ -6513,7 +6501,7 @@ import './inertial-grid.js';
       return true;
     } catch (err) {
       status.local = { ok: false, error: String(err.message || err) };
-      say(`Couldn’t model this area: ${err.message || err}.`);
+      say(`Couldn’t model this area: ${err.message || err}.`, { error: true });
       return false;
     } finally {
       setBusy(false);
@@ -7075,12 +7063,13 @@ import './inertial-grid.js';
   window.__floodCouncilLayers = () => COUNCIL_OVERLAYS.map((o) => ({ name: o.name, test: o.test, minZoom: o.minZoom }));
 
   let sayT = 0;
-  // The toast: gone after ~6 s; a failure stays until the next message or a tap
-  function say(text) {
+  // The toast: gone after ~6 s; a failure (opts.error) stays until the next
+  // message or a tap
+  function say(text, opts) {
     const r = $('readout');
     r.textContent = text;
     r.hidden = !text;
-    const bad = /\b(fail(ed)?|couldn.t|could not|can.t|cannot|error|unable)\b/i.test(text || '');
+    const bad = !!(opts && opts.error);
     r.classList.toggle('error', bad);
     clearTimeout(sayT);
     if (!bad) sayT = setTimeout(() => { r.hidden = true; }, 6000);

@@ -689,6 +689,7 @@ class Scene3d {
    * moved far (different ground, different mosaic). */
   async calibrateImagery() {
     if (this.calibBusy || !this.basemap || !/satellite/i.test(this.basemap.name)) return;
+    const epoch = this.imgEpoch || 0;   // a basemap switch mid-measurement makes the result stale
     const t = this.controls.target;
     if (this.calibAt && Math.hypot(t.x - this.calibAt[0], t.z - this.calibAt[1]) < 60000) return;
     this.calibBusy = true;
@@ -731,6 +732,7 @@ class Scene3d {
       gains[l] = S.map((v) => Math.max(0.4, Math.min(2.5, v)));
       offs[l] = O.map((v) => Math.max(-0.3, Math.min(0.3, v)));
     }
+    if (epoch !== (this.imgEpoch || 0)) { this.calibBusy = false; return; }   // measured on the previous basemap
     if (Object.keys(counts).length) { this.gains = gains; this.offs = offs; }
     this.calibAt = at;
     this.needSelect = true;
