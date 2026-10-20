@@ -3918,7 +3918,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (sea && Object.keys(sea).length) {
       const surgeColor = (r) => (!Number.isFinite(r) ? '#9aa0a6' : r >= 0.3 ? '#c62828' : r >= 0.15 ? '#ef6c00' : r <= -0.15 ? '#1565c0' : '#2e7d32');
       nat.layers['Storm tide gauges, live (Qld)'] = L.layerGroup(Object.values(sea).filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon)).map((x) => {
-        const m = L.circleMarker([x.lat, x.lon], { renderer, radius: 7, color: '#ffffff', weight: 1.5, fillColor: surgeColor(x.residual), fillOpacity: 0.95 });
+        const m = L.circleMarker([x.lat, x.lon], { renderer, radius: 7, color: '#ffffff', weight: 1.5, fillColor: surgeColor(Number.isFinite(x.surge) ? x.surge : NaN), fillOpacity: 0.95 });
         m.bindPopup(() => seaPopupHtml(x));
         return m;
       }));
@@ -4102,11 +4102,12 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   }
 
   function seaPopupHtml(x) {
-    const res = Number.isFinite(x.residual) ? x.residual : null;
-    const surge = res == null ? '' : res >= 0.02 ? `${res.toFixed(2)} m above the predicted tide` : res <= -0.02 ? `${(-res).toFixed(2)} m below the predicted tide` : 'at the predicted tide';
-    const max = Number.isFinite(x.residualMax24h) && x.residualMax24h >= 0.1 ? `<br>Highest in the last 24 hours: ${x.residualMax24h.toFixed(2)} m above the tide.` : '';
+    // the surge: how much higher (or lower) the sea is against the predicted
+    // tide than this gauge usually reads (some predictions sit a fixed amount off)
+    const su = Number.isFinite(x.surge) ? x.surge : null;
+    const surge = su == null ? 'not enough readings yet to tell a surge' : su >= 0.05 ? `${su.toFixed(2)} m higher than usual against the tide` : su <= -0.05 ? `${(-su).toFixed(2)} m lower than usual against the tide` : 'about as usual against the tide';
     return `<div class="sea-popup"><strong>${escapeHtml(x.name)}</strong> storm tide gauge<br>
-      Sea ${Number.isFinite(x.level) ? x.level.toFixed(2) : '?'} m, predicted ${Number.isFinite(x.predicted) ? x.predicted.toFixed(2) : '?'} m: <strong>${escapeHtml(surge)}</strong>${max}
+      Sea ${Number.isFinite(x.level) ? x.level.toFixed(2) : '?'} m, predicted tide ${Number.isFinite(x.predicted) ? x.predicted.toFixed(2) : '?'} m: <strong>${escapeHtml(surge)}</strong>
       ${x.series && x.series.length > 1 ? sparkline(x.series) : ''}
       <span class="hint">${escapeHtml(fmtReadingTime(x.at))}. Heights on the gauge's own datum. Storm tide data &copy; State of Queensland, CC BY 4.0.</span></div>`;
   }
@@ -4330,6 +4331,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const parts = [];
     if (r3 != null) parts.push(`${word(r3)} in 3 hours`);
     if (r24 != null) parts.push(`${word(r24)} in 24 hours`);
+    if (r.tidal) return `<span class="rise">Tidal: rises and falls with the tide (${escapeHtml(parts.join(', '))})</span>`;
     const fast = (r3 != null && r3 >= 0.3) || (r24 != null && r24 >= 1);
     return `<span class="rise${fast ? ' rise-fast' : ''}">${fast ? '<strong>Rising:</strong> ' : ''}${escapeHtml(parts.join(', '))}</span>`;
   }

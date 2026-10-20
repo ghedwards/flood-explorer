@@ -58,7 +58,9 @@ const OUT = process.env.OUT || "shots";
       errors: (rd.body.errors || []).length, errorList: (rd.body.errors || []).slice(0, 5),
       rain: Object.keys(rd.body.rain || {}).length, rainCells: rd.body.rainCells, sea: Object.keys(rd.body.sea || {}).length,
       withRise: Object.values(rd.body.level || {}).filter((x) => 'rise3h' in x || 'rise24h' in x).length,
-      watch: (rd.body.watch || []).slice(0, 8).map((w) => [w.kind, w.station, w.why]),
+      tidal: Object.values(rd.body.level || {}).filter((x) => x.tidal).length,
+      watch: (rd.body.watch || []).slice(0, 10).map((w) => [w.kind, w.station, w.why]),
+      seaSample: Object.values(rd.body.sea || {}).slice(0, 4).map((x) => [x.name, x.residual, x.residualNormal, x.surge]),
     } : rd;
     if (rd && rd.body) {
       const page2 = await browser.newPage({ viewport: { width: 1280, height: 860 } });

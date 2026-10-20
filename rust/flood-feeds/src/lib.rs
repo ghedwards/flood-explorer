@@ -371,7 +371,51 @@ pub const RAIN_72H_MM: f64 = 100.0;
 /// A sea this much above the predicted tide (storm surge, metres).
 pub const SURGE_M: f64 = 0.3;
 
+/// Does the last day of hourly levels rise and fall with the tide? (At
+/// least three turns of 0.15 m or more: a river doesn't do that in a day.)
+pub fn looks_tidal(hourly: &[Value]) -> bool {
+    let Some(t1) = hourly.last().and_then(|p| p[0].as_str()).and_then(ts_epoch) else { return false };
+    let v: Vec<f64> = hourly.iter().filter(|p| p[0].as_str().and_then(ts_epoch).is_some_and(|t| t > t1 - 86_400)).filter_map(|p| p[1].as_f64()).collect();
+    if v.len() < 8 {
+        return false;
+    }
+    // turning points that stand out by at least 0.15 m
+    let (mut turns, mut dir, mut ext) = (0, 0i8, v[0]);
+    for &x in &v[1..] {
+        match dir {
+            0 => {
+                if (x - ext).abs() >= 0.15 {
+                    dir = if x > ext { 1 } else { -1 };
+                    ext = x;
+                }
+            }
+            1 => {
+                if x > ext {
+                    ext = x;
+                } else if ext - x >= 0.15 {
+                    turns += 1;
+                    dir = -1;
+                    ext = x;
+                }
+            }
+            _ => {
+                if x < ext {
+                    ext = x;
+                } else if x - ext >= 0.15 {
+                    turns += 1;
+                    dir = 1;
+                    ext = x;
+                }
+            }
+        }
+    }
+    turns >= 3
+}
+
 fn add_rise(e: &mut Value, hourly: &[Value]) {
+    if looks_tidal(hourly) {
+        e["tidal"] = json!(true);
+    }
     if let Some(r) = rise_over(hourly, 3) {
         e["rise3h"] = json!(r);
     }
@@ -389,7 +433,9 @@ pub fn watch_list(doc: &Value) -> Value {
         for (st, r) in lv {
             let mut why = Vec::new();
             let mut score = 0.0f64;
-            let (r3, r24) = (r["rise3h"].as_f64(), r["rise24h"].as_f64());
+            // a tidal river rises and falls twice a day: its rises aren't news
+            let tidal = r["tidal"].as_bool() == Some(true);
+            let (r3, r24) = if tidal { (None, None) } else { (r["rise3h"].as_f64(), r["rise24h"].as_f64()) };
             if let Some(x) = r3.filter(|x| *x >= RISE_3H_M) {
                 why.push(format!("up {:.2} m in 3 hours", x));
                 score = score.max(x / RISE_3H_M);
@@ -412,9 +458,11 @@ pub fn watch_list(doc: &Value) -> Value {
     }
     if let Some(sea) = doc["sea"].as_object() {
         for (site, x) in sea {
-            if let Some(res) = x["residual"].as_f64().filter(|r| *r >= SURGE_M) {
-                w.push((res / SURGE_M, json!({"kind": "sea", "station": site, "name": x["name"], "level": x["level"], "at": x["at"],
-                    "why": [format!("sea {:.2} m above the predicted tide", res)]})));
+            // the surge: the residual less this gauge's usual residual (some
+            // sites' predictions sit a constant amount off)
+            if let Some(su) = x["surge"].as_f64().filter(|r| *r >= SURGE_M) {
+                w.push((su / SURGE_M, json!({"kind": "sea", "station": site, "name": x["name"], "level": x["level"], "at": x["at"],
+                    "why": [format!("sea {:.2} m higher above the predicted tide than usual", su)]})));
             }
         }
     }
@@ -459,11 +507,18 @@ pub fn parse_storm_tide(csv: &str) -> Value {
         let Some(last) = rows.iter().rev().find(|r| ok(r.level) && ok(r.pred)) else { continue };
         let day: Vec<&Row> = rows.iter().filter(|r| r.secs > last.secs - 86_400).collect();
         let max_res = day.iter().filter(|r| ok(r.resid)).map(|r| r.resid).fold(f64::NEG_INFINITY, f64::max);
+        // this gauge's usual residual over the week (the median)
+        let mut all: Vec<f64> = rows.iter().filter(|r| ok(r.resid)).map(|r| r.resid).collect();
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let normal = if all.len() >= 36 { Some(all[all.len() / 2]) } else { None };
+        let resid = if ok(last.resid) { last.resid } else { last.level - last.pred };
         let series: Vec<Value> = day.iter().filter(|r| r.secs % 1800 == 0 && ok(r.level)).map(|r| json!([format!("{}:00+10:00", r.time), round_to(r.level, 3), if ok(r.pred) { json!(round_to(r.pred, 3)) } else { Value::Null }])).collect();
         out.insert(site.clone(), json!({
             "name": site, "lat": lat, "lon": lon, "at": format!("{}:00+10:00", last.time),
             "level": round_to(last.level, 3), "predicted": round_to(last.pred, 3),
-            "residual": if ok(last.resid) { json!(round_to(last.resid, 3)) } else { json!(round_to(last.level - last.pred, 3)) },
+            "residual": round_to(resid, 3),
+            "residualNormal": normal.map(|n| round_to(n, 3)),
+            "surge": normal.map(|n| round_to(resid - n, 3)),
             "residualMax24h": if max_res.is_finite() { json!(round_to(max_res, 3)) } else { Value::Null },
             "series": series,
         }));
@@ -504,11 +559,15 @@ pub fn rain_cells(coords: &[(String, f64, f64)], max: usize) -> (Vec<(f64, f64)>
 
 /// Rain forecast for the next 24 and 72 hours (mm) at each cell, in
 /// batches of 100 locations, pausing between batches.
-pub fn rain_forecast(http: HttpJson, cells: &[(f64, f64)], now_s: i64, pause: &dyn Fn(), errors: &mut Vec<String>) -> Vec<Option<(f64, f64)>> {
+pub fn rain_forecast(http: HttpJson, cells: &[(f64, f64)], now_s: i64, pause: &dyn Fn(), time_left: &dyn Fn() -> bool, errors: &mut Vec<String>) -> Vec<Option<(f64, f64)>> {
     let mut out = vec![None; cells.len()];
     for (bi, chunk) in cells.chunks(100).enumerate() {
         if bi > 0 {
             pause();
+        }
+        if !time_left() {
+            errors.push(format!("rain forecast: out of time after {} of {} batches", bi, cells.len().div_ceil(100)));
+            break;
         }
         let lat = chunk.iter().map(|c| c.0.to_string()).collect::<Vec<_>>().join(",");
         let lon = chunk.iter().map(|c| c.1.to_string()).collect::<Vec<_>>().join(",");
@@ -587,7 +646,7 @@ mod tests {
                 "D": {"latest": ["t", 1.0], "latestKind": "daily"},
             },
             "rain": {"D": [80.0, 140.0], "C": [5.0, 10.0]},
-            "sea": {"whyteislandnx": {"name": "whyteislandnx", "level": 2.1, "at": "t", "residual": 0.45}, "x": {"residual": 0.05}},
+            "sea": {"whyteislandnx": {"name": "whyteislandnx", "level": 2.1, "at": "t", "residual": 0.45, "surge": 0.45}, "x": {"residual": 1.7, "surge": 0.05}},
         });
         let w = watch_list(&doc);
         let ids: Vec<&str> = w.as_array().unwrap().iter().map(|x| x["station"].as_str().unwrap()).collect();
@@ -617,6 +676,38 @@ mod tests {
     }
 
     #[test]
+    fn tides_are_not_rising_rivers() {
+        let tide: Vec<f64> = (0..30).map(|h| 1.0 + 0.8 * ((h as f64) * std::f64::consts::TAU / 12.42).sin()).collect();
+        assert!(looks_tidal(&hourly_n(&tide)));
+        let flood: Vec<f64> = (0..30).map(|h| 1.0 + (h as f64) * 0.1).collect();
+        assert!(!looks_tidal(&hourly_n(&flood)));
+        let mut e = json!({"latest": ["t", 1.0]});
+        add_rise(&mut e, &hourly_n(&tide));
+        assert_eq!(e["tidal"], true);
+        let doc = json!({"level": {"T": {"latest": ["t", 1.0], "rise3h": 0.9, "tidal": true}}});
+        assert_eq!(watch_list(&doc), json!([]), "a tidal gauge's rise isn't flagged");
+    }
+
+    #[test]
+    fn surge_is_measured_against_the_sites_usual_residual() {
+        // a site whose prediction always sits 1.7 m low, then a real 0.4 m surge
+        let mut csv = String::from("Site, Seconds, DateTime, Water Level, Prediction, Residual, Latitude, Longitude\n");
+        for i in 0..60 {
+            let r = if i == 59 { 2.1 } else { 1.7 };
+            csv.push_str(&format!("offset,{},2026-10-20T{:02}:{:02},{:.3},1.000,{:.3},-26.4,153.0\n", 1_792_440_000 + i * 600, i / 6, (i % 6) * 10, 1.0 + r, r));
+        }
+        let s = parse_storm_tide(&csv);
+        assert_eq!(s["offset"]["residualNormal"], 1.7);
+        assert_eq!(s["offset"]["surge"], 0.4);
+        let w = watch_list(&json!({"sea": s}));
+        assert_eq!(w[0]["station"], "offset");
+    }
+
+    fn hourly_n(levels: &[f64]) -> Vec<Value> {
+        levels.iter().enumerate().map(|(i, v)| json!([format!("2026-10-{:02}T{:02}:00:00.000+10:00", 19 + i / 24, i % 24), v])).collect()
+    }
+
+    #[test]
     fn rain_cells_share_and_coarsen() {
         let coords: Vec<(String, f64, f64)> = vec![("a".into(), 153.02, -27.47), ("b".into(), 153.03, -27.48), ("c".into(), 150.5, -23.37)];
         let (cells, of) = rain_cells(&coords, 10);
@@ -637,7 +728,7 @@ mod tests {
             Ok(if n == 1 { one } else { Value::Array(vec![one; n]) })
         };
         let mut errors = Vec::new();
-        let r = rain_forecast(&http, &[(-27.5, 153.0), (-23.4, 150.5)], now, &|| {}, &mut errors);
+        let r = rain_forecast(&http, &[(-27.5, 153.0), (-23.4, 150.5)], now, &|| {}, &|| true, &mut errors);
         let (a, b) = r[0].unwrap();
         assert!((24.0..=26.0).contains(&a), "{}", a);
         assert!((72.0..=74.0).contains(&b), "{}", b);

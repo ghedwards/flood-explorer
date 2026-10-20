@@ -22,6 +22,9 @@ pub type Text = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
 const RAIN_EVERY_MS: i64 = 3 * 3_600_000; // the forecast models run every 6 hours
 const SEA_EVERY_MS: i64 = 30 * 60_000;
+/// Rain forecasts are left for the next refresh once this much of the
+/// refresh has gone (Lambda allows 5 minutes in all).
+const RAIN_DEADLINE_MS: i64 = 200_000;
 
 struct Stations {
     level: HashSet<String>,
@@ -64,16 +67,23 @@ pub struct Readings {
     refreshing: Mutex<()>,
     text: Option<Text>,
     pause: Box<dyn Fn() + Send + Sync>,
+    rain_http: Option<Http>,
 }
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))) }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None }
     }
 
     /// Fetch plain-text files (the storm tide CSV) with this.
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = Some(text);
+        self
+    }
+
+    /// Fetch rain forecasts with this (one quick try, no retries).
+    pub fn with_rain_http(mut self, h: Http) -> Self {
+        self.rain_http = Some(h);
         self
     }
 
@@ -121,11 +131,18 @@ impl Readings {
                 }
                 None => {
                     let (cells, of) = feeds::rain_cells(&st.coords, feeds::RAIN_MAX_POINTS);
-                    let got = feeds::rain_forecast(&http, &cells, started / 1000, &*self.pause, &mut errors);
+                    let rain_http = |u: &str, p: &[(String, String)]| match &self.rain_http { Some(h) => h(u, p), None => (self.http)(u, p) };
+                    // the whole refresh must finish well inside Lambda's 5 minutes
+                    let time_left = || (self.now)() - started < RAIN_DEADLINE_MS;
+                    let got = feeds::rain_forecast(&rain_http, &cells, started / 1000, &*self.pause, &time_left, &mut errors);
+                    // cells that didn't arrive keep their last forecast
+                    let old = prev.as_ref().map(|p| p["rain"].clone()).unwrap_or(Value::Null);
                     let mut rain = serde_json::Map::new();
                     for (s, i) in &of {
                         if let Some((a, b)) = got[*i] {
                             rain.insert(s.clone(), json!([a, b]));
+                        } else if let Some(o) = old.get(s) {
+                            rain.insert(s.clone(), o.clone());
                         }
                     }
                     if !rain.is_empty() {
@@ -217,6 +234,13 @@ impl Readings {
             }
         }
     }
+}
+
+/// One quick JSON GET, no retries (rain forecasts: a slow batch waits for
+/// the next refresh rather than holding this one up).
+pub fn http_json_once(url: &str, params: &[(String, String)]) -> Result<Value, String> {
+    let full = format!("{}?{}", url, params.iter().map(|(k, v)| format!("{}={}", feeds::encode(k), feeds::encode(v))).collect::<Vec<_>>().join("&"));
+    crate::fetch_with_timeout(&full, 25)
 }
 
 /// A plain-text GET (the storm tide CSV), two-minute budget.
@@ -339,7 +363,8 @@ mod tests {
         assert_eq!(s["seaGauges"], 1);
         let v: Value = serde_json::from_slice(&r.latest().unwrap().unwrap().body).unwrap();
         assert_eq!(v["rain"]["540198"][0], 72.0, "3 mm an hour for 24 hours");
-        assert!(v["watch"].as_array().unwrap().iter().any(|w| w["kind"] == "sea"), "a 0.49 m surge is on the watch list");
+        assert_eq!(v["sea"]["whyteislandnx"]["residual"], 0.492);
+        assert!(!v["watch"].as_array().unwrap().iter().any(|w| w["kind"] == "sea"), "one reading: no usual residual to measure a surge against");
         assert!(v["watch"].as_array().unwrap().iter().any(|w| w["station"] == "540198"), "72 mm of rain forecast is on the watch list");
         let n = calls.load(Ordering::SeqCst);
         t.fetch_add(15 * 60_000, Ordering::SeqCst);
