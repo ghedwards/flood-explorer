@@ -1,6 +1,6 @@
 # 2D map polish — plan
 
-Status: planned (2026-10-19). Evidence: `shots2d` run on main 9cbf680
+Status: done (2026-10-20): phases 1–5 merged from `2d-polish`; follow-ups since: key card back at bottom centre with a Places-style header, 5 m LiDAR flood edges at z15+, Streets on Esri's grey canvas (CARTO now needs a key). Open: gauge-dot clustering at country zoom; small flood-coloured specks inside the river at 5 m where the LiDAR water surface sits below the baseline level. Originally planned 2026-10-19. Evidence: `shots2d` run on main 9cbf680
 (live site; images on the `shots-2d` branch). Implementation on a
 `2d-polish` branch (pushes to `2d-*` build and screenshot it in CI).
 

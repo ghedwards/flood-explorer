@@ -1,6 +1,6 @@
 # 3D view v4 — plan
 
-Status: implemented on `3d-v4` through phase 5 (2026-10-19); see *Outcomes* below. Supersedes the v3 streaming design in
+Status: done and merged (2026-10-19/20), with a polish pass (imagery tone match, shorelines, DEM-H fallback switch), imagery refining past the terrain to z18, panels kept in 3D, a tidier bottom card and basemap switching while open; see *Outcomes* below. Supersedes the v3 streaming design in
 [3d-view-design.md](3d-view-design.md) for the terrain, imagery and camera;
 keeps its scene/bar/globe chrome, the timeline scrub and the water-from-
 model idea. Implementation goes on the branch `3d-v4`; every push there
