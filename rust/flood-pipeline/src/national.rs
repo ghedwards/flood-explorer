@@ -20,6 +20,11 @@ pub const DAILY: &str = "DMQaQc.Merged.DailyMean.24HR";
 /// about a day behind either way) at a quarter of the data; the latest one
 /// is the "level now" for river gauges (daily means stay as the history).
 pub const HOURLY: &str = "DMQaQc.Merged.HourlyMean.HR";
+/// Queensland's Water Monitoring Information Portal: its own gauges' stage,
+/// about an hour behind (Water Data Online is about a day behind). The
+/// query is a JSON object as the whole query string.
+pub const WMIP: &str = "https://water-monitoring.information.qld.gov.au/cgi/webservice.exe";
+pub const WMIP_ATTRIBUTION: &str = "© State of Queensland (Department of Regional Development, Manufacturing and Water), CC BY 4.0";
 const GAUGE_LAYERS: [(u32, &str); 3] = [(2, "forecast"), (3, "information"), (5, "river-tide")];
 
 fn nfgn() -> String {
@@ -293,6 +298,93 @@ pub fn ts_epoch(t: &str) -> Option<i64> {
     Some(days * 86400 + h * 3600 + mi * 60 + s - off)
 }
 
+fn wmip(http: HttpJson, q: &Value) -> R<Value> {
+    let res = http(&format!("{}?{}", WMIP, net::quote(&q.to_string(), "")), &[])?;
+    match res.get("error_num").and_then(|e| e.as_i64()) {
+        Some(0) | None => Ok(res),
+        Some(n) => Err(format!("WMIP error {}: {}", n, s_or_empty(res.get("error_msg")))),
+    }
+}
+
+/// A WMIP time (20261020173616, Queensland time) as ISO 8601.
+pub fn wmip_time(t: &Value) -> Option<String> {
+    let d = match t {
+        Value::Number(n) => n.as_u64()?.to_string(),
+        Value::String(x) => x.trim().to_string(),
+        _ => return None,
+    };
+    if d.len() != 14 || !d.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("{}-{}-{}T{}:{}:{}+10:00", &d[0..4], &d[4..6], &d[6..8], &d[8..10], &d[10..12], &d[12..14]))
+}
+
+/// Seconds since 1970 as Queensland's YYYYMMDDHHMMSS.
+fn wmip_stamp(epoch: i64) -> String {
+    let t = epoch + 10 * 3600;
+    let (days, secs) = (t.div_euclid(86400), t.rem_euclid(86400));
+    // civil from days (Howard Hinnant)
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{:04}{:02}{:02}{:02}{:02}{:02}", y, m, d, secs / 3600, secs % 3600 / 60, secs % 60)
+}
+
+/// The latest hourly stage (variable 100.00) from Queensland's portal for
+/// the gauges it runs: station -> [[time, level]...], the last day or so.
+pub fn qld_realtime(http: HttpJson, stations: &HashSet<String>, now_epoch: i64, errors: &mut Vec<String>) -> HashMap<String, Vec<Value>> {
+    let mut out = HashMap::new();
+    let open = match wmip(http, &json!({"function": "get_site_list", "version": "1", "params": {"site_list": "GROUP(OPEN_STATIONS)"}})) {
+        Ok(r) => r,
+        Err(e) => {
+            errors.push(format!("Queensland site list: {}", e));
+            return out;
+        }
+    };
+    let mut sites: Vec<String> = arr(open.pointer("/return/sites")).iter().filter_map(|x| x.as_str()).map(|x| x.trim().to_string()).filter(|x| stations.contains(x)).collect();
+    sites.sort();
+    sites.dedup();
+    let (from, to) = (wmip_stamp(now_epoch - 30 * 3600), wmip_stamp(now_epoch));
+    for (bi, chunk) in sites.chunks(25).enumerate() {
+        let q = json!({"function": "get_ts_traces", "version": "2", "params": {"site_list": chunk.join(","), "datasource": "AT", "varfrom": "100.00", "varto": "100.00",
+            "start_time": from, "end_time": to, "data_type": "mean", "interval": "hour", "multiplier": "1"}});
+        let res = match wmip(http, &q) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(format!("Queensland batch {}: {}", bi, e));
+                continue;
+            }
+        };
+        for tr in arr(res.pointer("/return/traces")) {
+            let Some(site) = tr.get("site").and_then(|x| x.as_str()) else { continue };
+            // quality codes of 200 and up are missing or unusable
+            let pts: Vec<Value> = arr(tr.get("trace"))
+                .iter()
+                .filter(|p| p.get("q").and_then(|q| q.as_i64()).is_none_or(|q| q < 200))
+                .filter_map(|p| {
+                    let v = match p.get("v")? {
+                        Value::String(x) => x.trim().parse::<f64>().ok()?,
+                        Value::Number(n) => n.as_f64()?,
+                        _ => return None,
+                    };
+                    Some(json!([wmip_time(p.get("t")?)?, round_to(v, 3)]))
+                })
+                .filter(|p| p[1].as_f64().is_some_and(f64::is_finite))
+                .collect();
+            if !pts.is_empty() {
+                out.insert(site.trim().to_string(), pts);
+            }
+        }
+    }
+    out
+}
+
 fn readings_for(http: HttpJson, features: &[Value], parameter: &str, unit: &str, hourly: bool, errors: &mut Vec<String>) -> Value {
     let wanted: HashSet<String> = features.iter().filter_map(|f| f["properties"]["station"].as_str()).filter(|s| !s.is_empty()).map(String::from).collect();
     let ts: Vec<(String, String)> = timeseries_ids(http, parameter, DAILY, errors).into_iter().filter(|(st, _)| wanted.contains(st)).collect();
@@ -311,6 +403,7 @@ fn readings_for(http: HttpJson, features: &[Value], parameter: &str, unit: &str,
         }
     }
     let mut out = Map::new();
+    let live = if hourly { qld_realtime(http, &wanted, now_s() as i64, errors) } else { HashMap::new() };
     for (st, tid) in ts {
         if let Some(series) = vals.get(&tid) {
             let last10 = series[series.len().saturating_sub(10)..].to_vec();
@@ -321,6 +414,22 @@ fn readings_for(http: HttpJson, features: &[Value], parameter: &str, unit: &str,
                 _ => (daily, "daily"),
             };
             out.insert(st, obj! {"unit" => unit, "series" => last10, "latest" => latest, "latestKind" => kind});
+        }
+    }
+    // Queensland's own gauges: the portal's latest hour, when it's newer
+    for (st, pts) in live {
+        let last = pts[pts.len() - 1].clone();
+        let at = |r: &Value| ts_epoch(r[0].as_str().unwrap_or(""));
+        match out.get_mut(&st) {
+            Some(e) => {
+                if at(&last).zip(at(&e["latest"])).is_some_and(|(a, b)| a > b) {
+                    e["latest"] = last;
+                    e["latestKind"] = json!("realtime");
+                }
+            }
+            None => {
+                out.insert(st, obj! {"unit" => unit, "series" => json!([]), "latest" => last, "latestKind" => "realtime"});
+            }
         }
     }
     Value::Object(out)
@@ -413,13 +522,14 @@ pub fn run(out_dir: &str, http: HttpJson) -> R<String> {
     let nl = readings["level"].as_object().map_or(0, |o| o.len());
     let ns = readings["storage"].as_object().map_or(0, |o| o.len());
     let kinds_txt = format!("{{{}}}", kinds.iter().map(|(k, v)| format!("'{}': {}", k, v)).collect::<Vec<_>>().join(", "));
+    let nrt = readings["level"].as_object().map_or(0, |o| o.values().filter(|r| r["latestKind"] == "realtime").count());
     let meta = obj! {
-        "fetched" => now_iso(), "gauges" => gauges.len(), "gaugeKinds" => Value::Object(kinds), "storages" => storages.len(),
+        "fetched" => now_iso(), "realtimeReadings" => nrt, "realtimeAttribution" => WMIP_ATTRIBUTION, "gauges" => gauges.len(), "gaugeKinds" => Value::Object(kinds), "storages" => storages.len(),
         "levelReadings" => nl, "storageReadings" => ns, "errors" => errors.clone(),
         "attribution" => "© Commonwealth of Australia (Bureau of Meteorology)",
     };
     write_json_indent(out.join("meta.json"), &meta, 1)?;
-    let mut msg = format!("National: {} gauges {}, {} storages, {} level readings, {} storage readings, {} errors", gauges.len(), kinds_txt, storages.len(), nl, ns, errors.len());
+    let mut msg = format!("National: {} gauges {}, {} storages, {} level readings ({} live from Queensland), {} storage readings, {} errors", gauges.len(), kinds_txt, storages.len(), nl, nrt, ns, errors.len());
     for e in errors.iter().take(5) {
         msg.push_str(&format!("\nwarning: {}", e));
     }
@@ -456,6 +566,20 @@ mod tests {
                 _ => json!({"type": "FeatureCollection", "features": [
                     pt(153.03, -27.47, json!({"bom_stn_num": 540198, "awrc_stateid": "540198", "name": "Brisbane City", "location_types": "River Gauge"})),
                     pt(153.17, -27.37, json!({"bom_stn_num": 540683, "awrc_stateid": "540683", "name": "Brisbane Bar", "location_types": "Tide Gauge"}))]}),
+            });
+        }
+        if let Some(q) = url.strip_prefix(&format!("{}?", WMIP)) {
+            let q: Value = serde_json::from_str(&net::unquote(q)).unwrap();
+            assert!(ps.is_empty());
+            return Ok(match q["function"].as_str().unwrap() {
+                "get_site_list" => json!({"error_num": 0, "return": {"sites": ["143001C", "130005A"]}}),
+                "get_ts_traces" => {
+                    assert_eq!(q["params"]["site_list"], "143001C", "only open stations the map has");
+                    assert_eq!(q["params"]["varfrom"], "100.00");
+                    json!({"error_num": 0, "return": {"traces": [{"site": "143001C", "trace": [
+                        {"v": "2.100", "t": 20261020160000u64, "q": 130}, {"v": "2.250", "t": 20261020170000u64, "q": 130}, {"v": "9.9", "t": 20261020180000u64, "q": 255}]}]}})
+                }
+                f => panic!("unexpected WMIP {}", f),
             });
         }
         if url == KIWIS {
@@ -509,8 +633,46 @@ mod tests {
         assert_eq!(readings["storage"]["143001A"]["latestKind"], "daily");
         assert!(readings["level"].get("999999").is_none(), "not a mapped gauge");
         assert_eq!(readings["storage"]["143001A"]["latest"][1], 900000.0);
+        let moggill = &readings["level"]["143001C"];
+        assert_eq!(moggill["latest"], json!(["2026-10-20T17:00:00+10:00", 2.25]), "Queensland's latest usable hour");
+        assert_eq!(moggill["latestKind"], "realtime");
+        assert_eq!(meta["realtimeReadings"], 1);
         assert_eq!(meta["errors"], json!([]));
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn queensland_times() {
+        assert_eq!(wmip_time(&json!(20261020173616u64)).as_deref(), Some("2026-10-20T17:36:16+10:00"));
+        assert_eq!(wmip_time(&json!("2026102017")), None);
+        let e = ts_epoch("2026-10-20T17:36:16+10:00").unwrap();
+        assert_eq!(wmip_stamp(e), "20261020173616");
+        assert_eq!(wmip_stamp(ts_epoch("2026-12-31T14:00:00Z").unwrap()), "20270101000000");
+    }
+
+    #[test]
+    fn realtime_replaces_an_older_daily_level() {
+        let feats = vec![pt(152.9, -27.55, json!({"station": "143001C"}))];
+        let http = |url: &str, ps: &[(String, String)]| -> R<Value> {
+            if url.starts_with(WMIP) {
+                let q: Value = serde_json::from_str(&net::unquote(url.split_once('?').unwrap().1)).unwrap();
+                return Ok(if q["function"] == "get_site_list" {
+                    json!({"error_num": 0, "return": {"sites": ["143001C"]}})
+                } else {
+                    json!({"error_num": 0, "return": {"traces": [{"site": "143001C", "trace": [{"v": "3.5", "t": 20261020170000u64, "q": 10}]}]}})
+                });
+            }
+            Ok(match param(ps, "request") {
+                Some("getTimeseriesList") => json!([["station_no", "ts_id"], ["143001C", "7"]]),
+                _ => json!([{"ts_id": "7", "data": [["2026-10-19T00:00:00.000+10:00", 1.0]]}]),
+            })
+        };
+        let mut errors = Vec::new();
+        let r = readings_for(&http, &feats, "Water Course Level", "m", true, &mut errors);
+        assert_eq!(r["143001C"]["latestKind"], "realtime");
+        assert_eq!(r["143001C"]["latest"][1], 3.5);
+        assert_eq!(r["143001C"]["series"].as_array().unwrap().len(), 1, "daily history kept");
+        assert!(errors.iter().all(|e| !e.contains("Queensland")), "{:?}", errors);
     }
 
     #[test]

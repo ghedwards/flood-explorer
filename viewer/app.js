@@ -3553,6 +3553,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (m.national) {
       const nm = nat.data && nat.data.meta;
       html = '<strong>Australia-wide.</strong> Tap a flood gauge, tide gauge or dam for a report, or tap anywhere to model flooding there from the national elevation model. Gauges, dams and readings: Bureau of Meteorology'
+        + (nm && nm.realtimeReadings ? `; live Queensland river levels © State of Queensland, CC BY 4.0` : '')
         + (nm && nm.fetched ? `, updated ${escapeHtml(ago(nm.fetched))}` : '') + '. Not official warnings.';
     } else if (m.local) {
       html = `<strong>Screening only.</strong> ${escapeHtml(m.source || '')} It includes buildings and trees in some places and misses levees and drains. Do not use for evacuation or property decisions.`;
@@ -4188,8 +4189,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       if (r) {
         html += `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}</span>
           <div class="big">${r.latest[1].toFixed(2)}<small>m</small></div>
-          <span class="hint">${r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}` : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))}`} (Water Data Online runs about a day behind), on the gauge's own datum. Daily averages, last ${r.series.length} days:</span>
-          ${sparkline(r.series)}</div>`;
+          <span class="hint">${r.latestKind === 'realtime' ? `Live: hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from Queensland's water monitoring network`
+            : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
+            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
+          ${r.series.length ? sparkline(r.series) : ''}</div>`;
       } else {
         html += '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
       }
@@ -4219,8 +4222,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (p.url) links.push(`<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">BoM water storage page</a>`);
     links.push('<a href="https://www.bom.gov.au/water/data/" target="_blank" rel="noopener">Water Data Online</a>');
     if (p.kind !== 'storage') links.push(`<a href="https://www.bom.gov.au/australia/flood/" target="_blank" rel="noopener">BoM flood warnings</a>`);
+    const live = p.kind !== 'storage' && nat.readings.level && nat.readings.level[p.station] && nat.readings.level[p.station].latestKind === 'realtime';
+    if (live) links.push('<a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland water monitoring</a>');
     html += `<p class="hint">${links.join(' · ')}</p>`;
-    html += '<p class="hint">Readings: Water Data Online (Bureau of Meteorology and data owners). Not an official warning.</p>';
+    html += `<p class="hint">Readings: Water Data Online (Bureau of Meteorology and data owners)${live ? '; level now © State of Queensland, CC BY 4.0' : ''}. Not an official warning.</p>`;
 
     const el = document.createElement('article');
     el.className = 'report-card';
