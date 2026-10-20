@@ -1,0 +1,25 @@
+# /etc/systemd/system/flood-broker.service
+[Unit]
+Description=Flood Explorer live data broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=flood-broker
+ExecStart=/usr/local/bin/flood-broker
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+Environment=TRUST_PROXY=1
+Environment=ALLOWED_ORIGINS=https://ghedwards.github.io
+Restart=always
+RestartSec=5
+# locked down: it only needs the network
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

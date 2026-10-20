@@ -4144,6 +4144,58 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     status.report = { count: n, names: reports.map((x) => x.name), active: r ? r.name : null };
   }
 
+  // A gauge's level reading and flood class, redrawn when a live level arrives.
+  function levelReadingHtml(p) {
+    const r = nat.readings.level && nat.readings.level[p.station];
+    let html;
+    if (r) {
+      const live = r.latestKind === 'realtime';
+      html = `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}${live ? ' <span class="live-tag">live</span>' : ''}</span>
+          <div class="big">${r.latest[1].toFixed(2)}<small>m</small></div>
+          <span class="hint">${live ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from <a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland's water monitoring network</a> (© State of Queensland, CC BY 4.0)`
+            : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
+            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
+          ${r.series.length ? sparkline(r.series) : ''}</div>`;
+    } else {
+      html = '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
+    }
+    return html + classHtml(p, r);
+  }
+
+  // Live levels through the Flood Explorer broker (broker/server.mjs), for
+  // the state portals a browser can't ask directly. Only Queensland so far.
+  const BROKER = String(import.meta.env.VITE_BROKER || '').replace(/\/+$/, '');
+  const QLD_SITE = /^[0-9]{6}[A-Z]$/;
+  const liveAsked = new Map();          // station -> time asked (ms)
+  const LIVE_MS = 5 * 60e3;
+  async function refreshLiveLevel(p, box) {
+    const st = String(p.station || '');
+    const qld = /^(QLD|QUEENSLAND)$/i.test(String(p.state || 'QLD'));
+    if (!BROKER || !box || !qld || !QLD_SITE.test(st)) return;
+    const asked = liveAsked.get(st);
+    if (asked && Date.now() - asked < LIVE_MS) return;
+    liveAsked.set(st, Date.now());
+    let res;
+    try {
+      const r = await fetch(`${BROKER}/v1/levels?sites=${encodeURIComponent(st)}`, { signal: AbortSignal.timeout(10000) });
+      res = await r.json();
+      if (!r.ok && !(res && res.sites)) throw new Error(`HTTP ${r.status}${res && res.error ? `: ${res.error}` : ''}`);
+    } catch (e) {
+      liveAsked.delete(st);
+      logProblem('live', `Live level for ${p.name || st} unavailable`, String(e && e.message || e));
+      return;
+    }
+    const got = res && res.sites && res.sites[st];
+    if (!got || !Array.isArray(got.latest)) return;
+    if (!nat.readings.level) nat.readings.level = {};
+    const old = nat.readings.level[st];
+    const t = (x) => new Date(x && x[0]).getTime();
+    if (old && !(t(got.latest) > t(old.latest))) return;
+    nat.readings.level[st] = { unit: 'm', series: old ? old.series : [], ...(old || {}), latest: got.latest, latestKind: 'realtime' };
+    if (box.isConnected) box.innerHTML = levelReadingHtml(p);
+    status.live = { station: st, at: got.latest[0], level: got.latest[1] };
+  }
+
   function openReport(f, opts) {
     const select = !opts || opts.select !== false;
     nat.picked = f;
@@ -4185,18 +4237,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
         html += '<p class="hint">No recent storage reading is published for this dam.</p>';
       }
     } else {
-      const r = nat.readings.level && nat.readings.level[p.station];
-      if (r) {
-        html += `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}</span>
-          <div class="big">${r.latest[1].toFixed(2)}<small>m</small></div>
-          <span class="hint">${r.latestKind === 'realtime' ? `Live: hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from Queensland's water monitoring network`
-            : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
-            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
-          ${r.series.length ? sparkline(r.series) : ''}</div>`;
-      } else {
-        html += '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
-      }
-      html += classHtml(p, r);
+      html += `<div class="js-reading">${levelReadingHtml(p)}</div>`;
     }
     html += warningsHtml(p);
 
@@ -4222,10 +4263,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (p.url) links.push(`<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">BoM water storage page</a>`);
     links.push('<a href="https://www.bom.gov.au/water/data/" target="_blank" rel="noopener">Water Data Online</a>');
     if (p.kind !== 'storage') links.push(`<a href="https://www.bom.gov.au/australia/flood/" target="_blank" rel="noopener">BoM flood warnings</a>`);
-    const live = p.kind !== 'storage' && nat.readings.level && nat.readings.level[p.station] && nat.readings.level[p.station].latestKind === 'realtime';
-    if (live) links.push('<a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland water monitoring</a>');
     html += `<p class="hint">${links.join(' · ')}</p>`;
-    html += `<p class="hint">Readings: Water Data Online (Bureau of Meteorology and data owners)${live ? '; level now © State of Queensland, CC BY 4.0' : ''}. Not an official warning.</p>`;
+    html += '<p class="hint">Readings: Water Data Online (Bureau of Meteorology and data owners). Not an official warning.</p>';
 
     const el = document.createElement('article');
     el.className = 'report-card';
@@ -4254,6 +4293,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       }
     });
     if (p.kind === 'storage') addWaterHistory(p.id, q('.js-history'));
+    else refreshLiveLevel(p, q('.js-reading'));
     const link = document.createElement('div');
     link.className = 'js-link';
     q('.actions').before(link);
@@ -4274,6 +4314,14 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     return STATE_OVERLAYS.find((o) => o.state === norm && o.layer) || null;
   }
 
+  // tests: Queensland portal stations on the map, and a report by station
+  window.__floodQldStations = (n) => ((nat.data && nat.data.gauges) || []).map((g) => g.properties)
+    .filter((p) => QLD_SITE.test(String(p.station || '')) && /^(QLD|QUEENSLAND)$/i.test(String(p.state || ''))).slice(0, n || 40).map((p) => p.station);
+  window.__floodOpenGauge = (station) => {
+    const f = nat.data && nat.data.gauges.find((g) => g.properties.station === station);
+    if (f) openReport(f);
+    return !!f;
+  };
   window.__floodOpenReport = (index) => {
     const f = nat.data && nat.data.gauges.filter((g) => g.properties.kind === 'forecast')[index || 0];
     if (f) openReport(f);

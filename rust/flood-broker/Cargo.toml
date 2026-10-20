@@ -1,0 +1,16 @@
+[package]
+name = "flood-broker"
+version = "0.1.0"
+edition = "2021"
+description = "Flood Explorer's live data broker: fetches river levels from the state water portals once for everyone, caches them and answers the map with CORS headers."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "flood-broker"
+path = "src/main.rs"
+
+[dependencies]
+ureq = "3.4"
+serde_json = { version = "1", features = ["preserve_order"] }
+httparse = "1"

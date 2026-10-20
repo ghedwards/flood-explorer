@@ -15,7 +15,11 @@ export default defineConfig({
   },
   worker: { format: "es" },
   // the commit this site was built from, shown with logged problems
-  define: { "import.meta.env.VITE_BUILD": JSON.stringify((process.env.GITHUB_SHA || "dev").slice(0, 8)) },
+  // and the live data broker's address (broker/; none: build data only)
+  define: {
+    "import.meta.env.VITE_BUILD": JSON.stringify((process.env.GITHUB_SHA || "dev").slice(0, 8)),
+    "import.meta.env.VITE_BROKER": JSON.stringify(process.env.FLOOD_BROKER_URL || ""),
+  },
   server: {
     host: "127.0.0.1",
     port: 8000,

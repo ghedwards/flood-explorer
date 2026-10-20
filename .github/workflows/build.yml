@@ -102,6 +102,9 @@ jobs:
         run: flood hydrology config/brisbane.json work/brisbane
 
       - name: Assemble site
+        env:
+          # the live data broker (broker/README.md); a repository variable
+          FLOOD_BROKER_URL: ${{ vars.FLOOD_BROKER_URL }}
         run: |
           mkdir -p site/data
           npm run build

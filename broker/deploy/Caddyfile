@@ -1,0 +1,7 @@
+# /etc/caddy/Caddyfile — replace the name with your own; Caddy gets the
+# HTTPS certificate itself (the map is served over HTTPS, so the broker
+# must be too).
+broker.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8787
+}

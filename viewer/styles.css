@@ -307,6 +307,7 @@ body.in3d #legendCard { display: none; }
 .reading { display: grid; gap: 4px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; }
 .reading .big { font: 500 1.5rem/1.1 var(--font-data); font-variant-numeric: tabular-nums; }
 .reading .big small { font-size: .55em; color: var(--muted); margin-left: 3px; }
+.live-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #1e7d4f; color: #fff; font-size: .72em; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
 .spark { width: 100%; height: 46px; display: block; }
 .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--accent); }

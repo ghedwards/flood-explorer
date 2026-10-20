@@ -1,0 +1,4 @@
+# docker build -f broker/Dockerfile . only needs rust/ sources
+*
+!rust/
+rust/target/
