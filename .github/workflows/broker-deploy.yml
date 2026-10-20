@@ -43,7 +43,16 @@ jobs:
         run: |
           if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ -n "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then echo "deploy=1" >> "$GITHUB_OUTPUT"
           else echo "::notice title=Not deployed::Built only (deploys from main once AWS_DEPLOY_ROLE_ARN is set; see broker/aws/README.md)"; fi
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Show what GitHub's sign-in token says (no secrets)
+        if: steps.aws.outputs.deploy == '1'
+        run: |
+          tok=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          claims=$(cut -d. -f2 <<< "$tok" | tr '_-' '/+' | base64 -d 2>/dev/null; true)
+          echo "token: iss=$(jq -r .iss <<< "$claims" 2>/dev/null) aud=$(jq -r .aud <<< "$claims" 2>/dev/null) sub=$(jq -r .sub <<< "$claims" 2>/dev/null)"
+          role="${{ vars.AWS_DEPLOY_ROLE_ARN }}"
+          echo "role: $role (account $(cut -d: -f5 <<< "$role")), region ${{ vars.AWS_REGION || 'ap-southeast-2' }}"
+          echo "::notice title=Sign-in details::iss=$(jq -r .iss <<< "$claims" 2>/dev/null) aud=$(jq -r .aud <<< "$claims" 2>/dev/null) sub=$(jq -r .sub <<< "$claims" 2>/dev/null) role=$role"
+      - uses: aws-actions/configure-aws-credentials@v5
         if: steps.aws.outputs.deploy == '1'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
