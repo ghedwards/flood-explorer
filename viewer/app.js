@@ -1148,13 +1148,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   const HAZARD_TEXT = ['generally safe', 'unsafe for small vehicles', 'unsafe for vehicles, children and the elderly', 'unsafe for vehicles and people', 'unsafe for people and vehicles; buildings need special design', 'unsafe for all; all buildings vulnerable'];
   const COMPARE_COLORS = { onlyNow: [230, 97, 1], onlyPinned: [94, 60, 153], both: [158, 202, 225] };
   const colorMode = () => { const v = $('colorMode') ? $('colorMode').value : 'depth'; return v === 'compare' && !(state.pinned && state.pinned.key === state.areaKey) ? 'depth' : v; };
-  // AIDR 7-3 hazard class from depth (m) and speed (m/s): the same limits
-  // as flood-core's hazard_class (surface.rs HAZARD_LIMITS)
+  // AIDR 7-3 hazard limits [depth m, speed m/s, depth×speed]: the same as
+  // flood-core's hazard_class (surface.rs HAZARD_LIMITS); the 5 m layer
+  // classifies with them (fine-raster.js)
   const HAZARD_LIMITS = [[0.3, 2.0, 0.3], [0.5, 2.0, 0.6], [1.2, 2.0, 0.6], [2.0, 2.0, 1.0], [4.0, 4.0, 4.0]];
-  function hazardClass(dep, v) {
-    for (let k = 0; k < HAZARD_LIMITS.length; k++) { const [dl, vl, dvl] = HAZARD_LIMITS[k]; if (dep <= dl && v <= vl && dep * v <= dvl) return k + 1; }
-    return 6;
-  }
   function hazardNow() {
     if (!state.a || !state.run) return null;
     const vx = state.run.vx, vy = state.run.vy;
