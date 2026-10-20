@@ -43,3 +43,20 @@ jobs:
           )
             echo "::notice title=$p HTTP $code ($size bytes${age:+, age ${age}s})::$summary"
           done
+      - name: The live site's readings source
+        run: |
+          set +e
+          npm init -y > /dev/null && npm i --silent playwright@1 > /dev/null 2>&1 && npx playwright install chromium > /dev/null 2>&1
+          cat > site.js <<'JS'
+          const { chromium } = require("playwright");
+          (async () => {
+            const b = await chromium.launch();
+            const p = await b.newPage();
+            await p.goto("https://ghedwards.github.io/flood-explorer/", { waitUntil: "load", timeout: 90000 });
+            await p.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
+            const n = await p.evaluate(() => window.__floodStatus.national);
+            console.log(`::notice title=Live site readings::dataSource=${n.dataSource} readingsSource=${n.readingsSource} fetched=${n.readingsFetched} levels=${n.levelReadings} storages=${n.storageReadings}`);
+            await b.close();
+          })().catch((e) => { console.log(`::warning title=Live site check failed::${String(e).slice(0, 300)}`); });
+          JS
+          node site.js
