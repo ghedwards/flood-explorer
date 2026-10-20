@@ -1036,7 +1036,7 @@ pub fn parse_river_popups(html: &str) -> Vec<Value> {
 
 /// Every flood gauge's class levels and current class from the river height
 /// map pages: {Bureau station number: {name, minor, moderate, major, class,
-/// tendency, level, at, lat, lon}} (60-second limit).
+/// tendency, level, at, lat, lon}} (150-second limit).
 pub fn flood_classes(errors: &mut Vec<String>) -> Value {
     let mut out = Map::new();
     let mut s = match ftp::Session::open(BOM_FTP_HOST, 30) {
@@ -1056,7 +1056,7 @@ pub fn flood_classes(errors: &mut Vec<String>) -> Value {
     let pages: Vec<&String> = names.iter().filter(|n| n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && &n[3..6] == "653").collect();
     let t0 = std::time::Instant::now();
     for n in pages {
-        if t0.elapsed().as_secs() > 60 {
+        if t0.elapsed().as_secs() > 150 {
             errors.push("flood classes: out of time; the rest wait for the next refresh".into());
             break;
         }

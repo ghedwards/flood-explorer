@@ -225,7 +225,15 @@ impl Readings {
                     r["floodclassFetched"] = at;
                 }
                 None => {
-                    let fc = cf(&mut errors);
+                    let mut fc = cf(&mut errors);
+                    // gauges this fetch didn't reach keep their last entry (a day at most)
+                    if let (Some(new), Some((old, _))) = (fc.as_object_mut(), Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000)) {
+                        if !new.is_empty() {
+                            for (k, v) in old.as_object().into_iter().flatten() {
+                                new.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+                    }
                     if fc.as_object().is_some_and(|o| !o.is_empty()) {
                         r["floodclass"] = fc;
                         r["floodclassFetched"] = json!(crate::wmip::iso_utc((self.now)()));

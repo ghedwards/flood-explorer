@@ -1218,7 +1218,7 @@ async function main() {
       truth(
         await page.evaluate(
           ([n]) => window.__floodSetOverlay(n, true),
-          ["Rain radar, latest (RainViewer)"],
+          ["Rain radar, last 2 hours (RainViewer)"],
         ),
       )
     ) {
@@ -1232,7 +1232,7 @@ async function main() {
         async (...args) => {
           await (([n]) => window.__floodSetOverlay(n, false))(...args);
         },
-        ["Rain radar, latest (RainViewer)"],
+        ["Rain radar, last 2 hours (RainViewer)"],
       );
     } else {
       failures.push("the rain radar overlay is missing");

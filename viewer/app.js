@@ -3897,26 +3897,78 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       });
 
     }
-    // Rain radar from RainViewer's free tier: the latest 10-minute frame,
-    // available to zoom 7 and scaled up beyond that; refreshed while shown.
-    const BLANK_TILE = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
-    const radar = L.tileLayer(BLANK_TILE, {
-      opacity: 0.65, maxNativeZoom: 7, maxZoom: 20, zIndex: 9,
-      attribution: 'Rain radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>',
-    });
+    // Rain radar from RainViewer's free tier: the last two hours of
+    // 10-minute frames, played as a loop (pausing on the latest) so you can
+    // see which way the rain is moving; to zoom 7, scaled up beyond that.
+    const radar = L.layerGroup();
+    let radarFrames = [], radarShown = -1, radarT = 0, radarPlay = 0, radarPaused = false, radarCtl = null;
     status.radar = { ok: null };
+    const radarTime = (t) => new Date(t * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    const showRadarFrame = (i) => {
+      if (!radarFrames.length) return;
+      i = (i + radarFrames.length) % radarFrames.length;
+      radarFrames.forEach((f, k) => f.layer.setOpacity(k === i ? 0.65 : 0));
+      radarShown = i;
+      if (radarCtl) {
+        const last = i === radarFrames.length - 1;
+        radarCtl.querySelector('.radar-time').textContent = `${radarTime(radarFrames[i].time)}${last ? ' (latest)' : ''}`;
+      }
+    };
+    const radarStep = () => {
+      // dwell on the latest frame, then run the loop again
+      const atEnd = radarShown === radarFrames.length - 1;
+      showRadarFrame(radarShown + 1);
+      clearTimeout(radarPlay);
+      if (!radarPaused) radarPlay = setTimeout(radarStep, radarShown === radarFrames.length - 1 ? 2000 : atEnd ? 700 : 500);
+    };
     const loadRadar = async () => {
       try {
         const j = await (await fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-cache' })).json();
-        const fr = j.radar.past[j.radar.past.length - 1];
-        radar.setUrl(`${j.host}${fr.path}/256/{z}/{x}/{y}/2/1_1.png`);
-        status.radar = { ok: true, time: fr.time, age: Math.round(Date.now() / 60000 - fr.time / 60) };
+        const past = (j.radar && j.radar.past) || [];
+        if (!past.length) throw new Error('no radar frames');
+        radar.clearLayers();
+        radarFrames = past.slice(-12).map((fr) => ({
+          time: fr.time,
+          layer: L.tileLayer(`${j.host}${fr.path}/256/{z}/{x}/{y}/2/1_1.png`, {
+            opacity: 0, maxNativeZoom: 7, maxZoom: 20, zIndex: 9,
+            attribution: 'Rain radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>',
+          }),
+        }));
+        radarFrames.forEach((f) => radar.addLayer(f.layer));
+        showRadarFrame(radarFrames.length - 1);
+        const fr = past[past.length - 1];
+        status.radar = { ok: true, time: fr.time, age: Math.round(Date.now() / 60000 - fr.time / 60), frames: radarFrames.length };
+        clearTimeout(radarPlay);
+        if (!radarPaused) radarPlay = setTimeout(radarStep, 2000);
       } catch (err) { status.radar = { ok: false, error: String(err.message || err) }; }
     };
-    let radarT = 0;
-    radar.on('add', () => { loadRadar(); clearInterval(radarT); radarT = setInterval(loadRadar, 10 * 60 * 1000); });
-    radar.on('remove', () => clearInterval(radarT));
-    nat.layers['Rain radar, latest (RainViewer)'] = radar;
+    const RadarControl = L.Control.extend({
+      options: { position: 'bottomleft' },
+      onAdd() {
+        const d = L.DomUtil.create('div', 'radar-ctl');
+        d.innerHTML = '<button type="button" class="radar-play" aria-label="Pause the radar loop" title="Pause">❚❚</button><span class="radar-time">Loading radar…</span>';
+        L.DomEvent.disableClickPropagation(d);
+        d.querySelector('.radar-play').addEventListener('click', (e) => {
+          radarPaused = !radarPaused;
+          e.currentTarget.textContent = radarPaused ? '▶' : '❚❚';
+          e.currentTarget.title = radarPaused ? 'Play' : 'Pause';
+          e.currentTarget.setAttribute('aria-label', radarPaused ? 'Play the radar loop' : 'Pause the radar loop');
+          clearTimeout(radarPlay);
+          if (radarPaused) showRadarFrame(radarFrames.length - 1); else radarPlay = setTimeout(radarStep, 500);
+        });
+        return d;
+      },
+    });
+    radar.on('add', () => {
+      loadRadar();
+      clearInterval(radarT); radarT = setInterval(loadRadar, 10 * 60 * 1000);
+      if (state.lmap && !radarCtl) { const c = new RadarControl(); c.addTo(state.lmap); radarCtl = c.getContainer(); radarCtl._ctl = c; }
+    });
+    radar.on('remove', () => {
+      clearInterval(radarT); clearTimeout(radarPlay);
+      if (radarCtl) { radarCtl._ctl.remove(); radarCtl = null; }
+    });
+    nat.layers['Rain radar, last 2 hours (RainViewer)'] = radar;
     // Queensland's storm tide gauges, live from the broker: how far the sea
     // is above or below the predicted tide (a storm surge shows as red)
     const sea = nat.readings && nat.readings.sea;
@@ -4356,7 +4408,12 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
           ${rainHtml(p)}
           ${r.series.length ? sparkline(r.series) : ''}</div>`;
     } else {
-      html = '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
+      const c = classFor(p);
+      html = c && Number.isFinite(c.level) && c.at
+        ? `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}</span>
+          <div class="big">${c.level.toFixed(2)}<small>m</small></div>
+          <span class="hint">From the Bureau's river height pages, ${escapeHtml(c.at.replace('T', ' ').slice(0, 16))} (local time)${c.tendency ? `, ${escapeHtml(c.tendency)}` : ''}, on the gauge's own datum. No recent reading is published for it on Water Data Online.</span></div>`
+        : '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
     }
     return html + classHtml(p, r);
   }
@@ -4795,7 +4852,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (!c) return '';
     const st = r ? floodStatus(r.latest[1], c) : null;
     const cell = (v) => (v == null ? '–' : `${v.toFixed(2)} m${c.zero != null ? `<br><small>${(c.zero + v).toFixed(2)} m AHD</small>` : ''}`);
-    const bomNow = c.class && !/no classification/i.test(c.class) ? `<span class="hint">Bureau: ${escapeHtml(String(c.class).toLowerCase())}${c.tendency ? `, ${escapeHtml(c.tendency)}` : ''}${Number.isFinite(c.level) ? ` at ${c.level.toFixed(2)} m` : ''}${c.at ? ` (${escapeHtml(c.at.replace('T', ' ').slice(0, 16))}, local time)` : ''}.</span>` : '';
+    const bomNow = c.class && !/no classification/i.test(c.class) ? `<span class="hint bom-now">Bureau: ${escapeHtml(String(c.class).toLowerCase())}${c.tendency ? `, ${escapeHtml(c.tendency)}` : ''}${Number.isFinite(c.level) ? ` at ${c.level.toFixed(2)} m` : ''}${c.at ? ` (${escapeHtml(c.at.replace('T', ' ').slice(0, 16))}, local time)` : ''}.</span>` : '';
     return `<div class="classes"><span class="label">Flood classes (BoM)</span>${st ? ` <strong>· now ${st}</strong>` : ''}${bomNow}
       <table><tr><th>Minor</th><th>Moderate</th><th>Major</th></tr><tr><td>${cell(c.minor)}</td><td>${cell(c.moderate)}</td><td>${cell(c.major)}</td></tr></table>
       <span class="hint">On the gauge board${c.zero != null ? `; gauge zero is ${c.zero.toFixed(2)} m AHD, so these can set a flood model's level` : '; no gauge zero is published, so they can\'t be converted to heights'}.</span></div>`;
@@ -4811,7 +4868,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   function warningsHtml(p) {
     const ws = warningsFor(p);
     if (!ws.length) return '';
-    return `<div>${ws.map((w) => `<a class="warn-item${w.severity ? ` sev-${escapeHtml(w.severity.toLowerCase())}` : ''}" href="${escapeHtml(w.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(w.title)}</strong>${w.description ? `<span class="warn-text">${escapeHtml(w.description)}</span>` : ''}<small>${w.severity ? `${escapeHtml(w.severity)} · ` : ''}Current Bureau of Meteorology warning${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small></a>`).join('')}</div>`;
+    return `<div>${ws.map((w) => `<a class="warn-item${w.severity ? ` sev-${escapeHtml(w.severity.toLowerCase())}` : ''}" href="${escapeHtml(w.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(w.title)}</strong>${w.description ? `<span class="warn-text">${escapeHtml(w.description)}</span>` : ''}<small>${w.severity && w.severity !== 'Unknown' ? `${escapeHtml(w.severity)} · ` : ''}Current Bureau of Meteorology warning${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small></a>`).join('')}</div>`;
   }
   function fmtWarnTime(t) {
     const d = new Date(t);
@@ -4880,7 +4937,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (!w) { box.innerHTML = '<p class="hint">Current flood warnings could not be loaded.</p>'; return; }
     const list = w.warnings || [];
     box.innerHTML = `<h3 class="places-sub">Current flood warnings (BoM)</h3>${list.length
-      ? list.map((x) => `<a class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}" href="${escapeHtml(x.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${escapeHtml(x.state)}${x.severity ? ` · ${escapeHtml(x.severity)}` : ''}${x.published ? ` · ${escapeHtml(fmtWarnTime(x.published))}` : ''}</small></a>`).join('')
+      ? list.map((x) => `<a class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}" href="${escapeHtml(x.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${escapeHtml(x.state)}${x.severity && x.severity !== 'Unknown' ? ` · ${escapeHtml(x.severity)}` : ''}${x.published ? ` · ${escapeHtml(fmtWarnTime(x.published))}` : ''}</small></a>`).join('')
       : `<p class="hint">${w.ok ? 'No flood warnings or watches are current.' : 'The warning feeds could not be reached at the last update.'}</p>`}
       <p class="hint">Checked ${escapeHtml(ago(w.fetched))}. Always follow official warnings at <a href="https://www.bom.gov.au/australia/warnings/" target="_blank" rel="noopener">bom.gov.au</a>.</p>`;
     nat.warningCount = list.length;
