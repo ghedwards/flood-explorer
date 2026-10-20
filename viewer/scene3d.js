@@ -561,7 +561,9 @@ class Scene3d {
     st.overArea = overArea;
     st.raster = overArea || (!raster.sub && st.z === this.maxZ()) ? raster : null;
     st.rasterGone = false;
-    if (st.raster && !raster.sub && !overArea) { this.rasterLru.delete(st.key); this.rasterLru.set(st.key, true); this.trimRasters(); }
+    // a tile's own grid counts towards RASTER_KEEP (over a modelled area too:
+    // it's only needed again if the areas change, and then re-read)
+    if (st.raster && !raster.sub) { this.rasterLru.delete(st.key); this.rasterLru.set(st.key, true); this.trimRasters(); }
     let segs = TILE_SEGS;
     if (areas.length) {
       const spacing = Math.max(25, ...areas.map((ar) => ar.a.cell || 0));
@@ -600,14 +602,14 @@ class Scene3d {
     this.world.add(st.mesh);
   }
 
-  /* Drop the oldest kept height grids beyond RASTER_KEEP (not ones over a
-   * modelled area); reloadRaster brings one back when it's needed. */
+  /* Drop the oldest kept height grids beyond RASTER_KEEP; reloadRaster
+   * brings one back when it's needed. */
   trimRasters() {
     for (const key of this.rasterLru.keys()) {
       if (this.rasterLru.size <= RASTER_KEEP) break;
       this.rasterLru.delete(key);
       const st = this.cache.get(key);
-      if (st && st.raster && !st.overArea) { st.raster = null; st.rasterGone = true; }
+      if (st && st.raster && !st.raster.sub) { st.raster = null; st.rasterGone = true; }
     }
   }
 
@@ -640,7 +642,6 @@ class Scene3d {
     const sig = areas.map((a) => (a.a && a.bounds ? `${a.key}:${a.a.W}x${a.a.H}:${a.bounds.join(',')}` : '')).join('|');
     if (sig === this.areaSig) return;
     this.areaSig = sig;
-    const tz = this.maxZ();
     for (const st of [...this.cache.values()]) {
       if (st.state !== 'ready') continue;
       if (!st.raster) {
@@ -652,7 +653,7 @@ class Scene3d {
         // terrain's finest level is rebuilt from its ancestor, a finest-level
         // tile re-reads its grid
         if (st.virtual) { this.disposeTile(st); this.cache.delete(st.key); this.rasterLru.delete(st.key); }
-        else if (st.z === tz && st.rasterGone) this.reloadRaster(st, true);
+        else if (st.rasterGone) this.reloadRaster(st, true);
         continue;
       }
       const was = st.mesh, visible = was.visible;
