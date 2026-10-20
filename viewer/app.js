@@ -2241,7 +2241,7 @@ import './inertial-grid.js';
       const id = 'ov-' + i;
       const lab = document.createElement('label');
       lab.className = 'check';
-      lab.innerHTML = `<input type="checkbox" id="${id}"> ${escapeHtml(name)}`;
+      lab.innerHTML = `<input type="checkbox" id="${id}"> <span class="layer-name">${escapeHtml(name)}</span>`;
       const input = lab.querySelector('input');
       input.dataset.layer = name;
       const zn = overlays[name].zoomNote;
