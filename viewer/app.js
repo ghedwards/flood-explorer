@@ -1434,11 +1434,15 @@ import './inertial-grid.js';
   // Brisbane, so a lat/lon-aligned overlay lines up to a few metres.
 
   const TILES = {
-    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    // Esri's grey canvas maps (no key; CARTO's now need one): a base and a
+    // labels layer drawn over it
+    light: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    dark: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    lightLabels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+    darkLabels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
   };
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  const TILE_ATTR = OSM_ATTR + ' &copy; <a href="https://carto.com/attributions">CARTO</a>';
+  const TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, TomTom, Garmin, ' + OSM_ATTR + ', and the GIS User Community';
   const QLD_ATTR = '&copy; State of Queensland (Department of Natural Resources and Mines, Manufacturing and Regional and Rural Development), <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>';
   const QLD_GIS = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Basemaps/';
   // Digital Earth Australia (Geoscience Australia) map services, CC BY 4.0
@@ -1458,8 +1462,8 @@ import './inertial-grid.js';
       opts: { attribution: DEA_ATTR, maxZoom: 19, maxNativeZoom: 16, minZoom: 7 } },
     { name: 'Latest satellite, true colour (DEA)', wms: { layers: 's2_ls_combined', styles: 'true_colour' },
       opts: { attribution: DEA_ATTR, maxZoom: 19, maxNativeZoom: 16, minZoom: 7 } },
-    { name: 'Streets', url: () => (isDark() ? TILES.dark : TILES.light),
-      opts: { attribution: TILE_ATTR, subdomains: 'abcd', maxZoom: 19, crossOrigin: true } },
+    { name: 'Streets', url: () => (isDark() ? TILES.dark : TILES.light), labels: () => (isDark() ? TILES.darkLabels : TILES.lightLabels),
+      opts: { attribution: TILE_ATTR, maxZoom: 19, maxNativeZoom: 16, crossOrigin: true } },
     { name: 'OpenStreetMap', url: () => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       opts: { attribution: OSM_ATTR, maxZoom: 19, crossOrigin: true } },
     { name: 'Queensland aerial imagery', url: () => 'https://spatial-img.information.qld.gov.au/arcgis/rest/services/Basemaps/LatestStateProgram_AllUsers/ImageServer/tile/{z}/{y}/{x}',
@@ -1874,9 +1878,14 @@ import './inertial-grid.js';
           }
         });
         // below zoom 5 (whole-country view), Esri imagery underneath shows
-        const layer = bm.wms
+        let layer = bm.wms
           ? L.featureGroup([L.tileLayer(BASEMAPS[0].url(), Object.assign({}, BASEMAPS[0].opts, { zIndex: 0 })), own])
           : own;
+        if (bm.labels) {   // place and street names in their own layer over the base
+          bm.labelLayer = L.tileLayer(bm.labels(), Object.assign({}, bm.opts, { attribution: '', zIndex: 2 }));
+          layer = L.featureGroup([own, bm.labelLayer]);
+          bm.baseLayer = own;
+        }
         layers[bm.name] = layer;
         bm.layer = layer;
       }
@@ -1884,7 +1893,9 @@ import './inertial-grid.js';
       try { saved = localStorage.getItem(BASEMAP_KEY); } catch (e) { /* storage blocked */ }
       const first = layers[saved] ? saved : BASEMAPS[0].name;
       layers[first].addTo(m);
-      state.tiles = layers.Streets; // the one that follows light/dark mode
+      // the one that follows light/dark mode (base + labels)
+      const streets = BASEMAPS.find((b) => b.name === 'Streets');
+      state.tiles = streets && streets.baseLayer; state.tileLabels = streets && streets.labelLayer;
       status.basemap = first;
       status.overlays = {};
       const overlays = {};
@@ -2135,7 +2146,9 @@ import './inertial-grid.js';
     if (!layers[name]) return;
     Object.values(layers).forEach((l) => m.hasLayer(l) && m.removeLayer(l));
     layers[name].addTo(m);
-    if (layers[name].bringToBack) layers[name].bringToBack();
+    // only the base goes to the back: a labels layer stays over it
+    const back = (BASEMAPS.find((b) => b.name === name) || {}).baseLayer || layers[name];
+    if (back.bringToBack) back.bringToBack();
     status.basemap = name;
     try { localStorage.setItem(BASEMAP_KEY, name); } catch (err) { /* storage blocked */ }
     syncLayerLists();
@@ -3198,6 +3211,7 @@ import './inertial-grid.js';
   try {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (state.tiles) state.tiles.setUrl(isDark() ? TILES.dark : TILES.light);
+      if (state.tileLabels) state.tileLabels.setUrl(isDark() ? TILES.darkLabels : TILES.lightLabels);
       if (state.run) drawProfile(scenario());
     });
   } catch (e) { /* older browsers */ }
