@@ -1025,7 +1025,8 @@ import './inertial-grid.js';
     if (!fine) return;
     if (fine.ov) fine.ov.remove();
     if (fine.coarse && fine.coarse.getElement()) fine.coarse.getElement().style.clipPath = '';
-    if (fine.url) setTimeout(() => URL.revokeObjectURL(fine.url), 2000);
+    const url = fine.url;
+    if (url) setTimeout(() => URL.revokeObjectURL(url), 2000);
     fine = null;
   }
   function fineLidar(box, W, H) {
@@ -1055,6 +1056,7 @@ import './inertial-grid.js';
     if (!r || r.iw !== W || r.ih !== H) { clearFine(); status.fine = { lidar: false }; return; }
     // the coarse picture as drawn now: copied where there is no LiDAR
     const coarseImg = composeWater().img.data;
+    const base = state.base, baseDepth = base && base.depth && base.wet ? base.depth : null;
     const out = new ImageData(W, H), d = out.data;
     const gw = g.east - g.west, gh = g.north - g.south;
     let have = 0;
@@ -1072,8 +1074,11 @@ import './inertial-grid.js';
           continue;
         }
         have++;
-        // water level from flooded model cells around this spot
-        let ws = 0, wsum = 0;
+        if (a.ocean[ci]) { const co = ci * 4; d[o] = coarseImg[co]; d[o + 1] = coarseImg[co + 1]; d[o + 2] = coarseImg[co + 2]; d[o + 3] = coarseImg[co + 3]; continue; }
+        // water levels from the wet model cells around this spot: this
+        // scenario's, and the baseline's (normal river), so the river's
+        // own edge is drawn at 5 m too
+        let ws = 0, wsum = 0, bs = 0, bsum = 0;
         for (let dy = -1; dy <= 1; dy++) {
           const yy = cy + dy;
           if (yy < 0 || yy >= a.H) continue;
@@ -1081,16 +1086,19 @@ import './inertial-grid.js';
             const xx = cx + dx;
             if (xx < 0 || xx >= a.W) continue;
             const k = yy * a.W + xx;
-            if (!a.valid[k] || !run.wet[k] || !isFlood(k)) continue;
+            if (!a.valid[k] || a.ocean[k]) continue;
             const w = 1 / (0.25 + (xx - fx) ** 2 + (yy - fy) ** 2);
-            ws += w * (a.dem[k] + run.depth[k]); wsum += w;
+            if (run.wet[k]) { ws += w * (a.dem[k] + run.depth[k]); wsum += w; }
+            if (baseDepth && base.wet[k]) { bs += w * (a.dem[k] + baseDepth[k]); bsum += w; }
           }
         }
-        const dep = wsum ? ws / wsum - h : 0;
-        if (dep > 0.02) {
+        const dep = wsum ? ws / wsum - h : 0, depBase = bsum ? bs / bsum - h : 0;
+        if (depBase > 0.02) {   // under the normal river level: the light channel tint
+          d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = CHANNEL_ALPHA;
+        } else if (dep > 0.02) {
           const band = depthBand(dep), col = DEPTH_STOPS[band][1];
           d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = band === 0 ? DEPTH_ALPHA[0] : 255;
-        } else if (!(run.wet[ci] && isFlood(ci))) {   // normal river tint etc. as the model draws it
+        } else if (!(run.wet[ci] && isFlood(ci))) {   // stream tint etc. as the model draws it
           const co = ci * 4;
           d[o] = coarseImg[co]; d[o + 1] = coarseImg[co + 1]; d[o + 2] = coarseImg[co + 2]; d[o + 3] = coarseImg[co + 3];
         }
