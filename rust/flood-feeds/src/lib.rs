@@ -365,6 +365,11 @@ pub fn rise_over(points: &[Value], hours: i64) -> Option<f64> {
 /// Rises worth a closer look: fast (3 hours) or sustained (24 hours).
 pub const RISE_3H_M: f64 = 0.3;
 pub const RISE_24H_M: f64 = 1.0;
+/// Heavy rain forecast near a gauge (mm in the next 24 or 72 hours).
+pub const RAIN_24H_MM: f64 = 50.0;
+pub const RAIN_72H_MM: f64 = 100.0;
+/// A sea this much above the predicted tide (storm surge, metres).
+pub const SURGE_M: f64 = 0.3;
 
 fn add_rise(e: &mut Value, hourly: &[Value]) {
     if let Some(r) = rise_over(hourly, 3) {
@@ -375,35 +380,174 @@ fn add_rise(e: &mut Value, hourly: &[Value]) {
     }
 }
 
-/// Gauges rising enough to watch, fastest first:
-/// [{station, level, at, rise3h, rise24h, kind}].
-pub fn watch_list(level: &Value) -> Value {
-    let mut w: Vec<Value> = level
-        .as_object()
-        .map(|o| {
-            o.iter()
-                .filter(|(_, r)| r["rise3h"].as_f64().is_some_and(|x| x >= RISE_3H_M) || r["rise24h"].as_f64().is_some_and(|x| x >= RISE_24H_M))
-                .map(|(st, r)| json!({"station": st, "level": r["latest"][1], "at": r["latest"][0], "rise3h": r["rise3h"], "rise24h": r["rise24h"], "kind": r["latestKind"]}))
-                .collect()
-        })
-        .unwrap_or_default();
-    let key = |v: &Value| v["rise3h"].as_f64().unwrap_or(0.0).max(v["rise24h"].as_f64().unwrap_or(0.0) / 8.0);
-    w.sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal));
-    Value::Array(w)
+/// Things worth a closer look, most pressing first: river gauges rising
+/// fast or with heavy rain forecast, and tide gauges with a storm surge.
+/// [{kind: "river"|"sea", station, level, at, why: [...], score}].
+pub fn watch_list(doc: &Value) -> Value {
+    let mut w: Vec<(f64, Value)> = Vec::new();
+    if let Some(lv) = doc["level"].as_object() {
+        for (st, r) in lv {
+            let mut why = Vec::new();
+            let mut score = 0.0f64;
+            let (r3, r24) = (r["rise3h"].as_f64(), r["rise24h"].as_f64());
+            if let Some(x) = r3.filter(|x| *x >= RISE_3H_M) {
+                why.push(format!("up {:.2} m in 3 hours", x));
+                score = score.max(x / RISE_3H_M);
+            }
+            if let Some(x) = r24.filter(|x| *x >= RISE_24H_M) {
+                why.push(format!("up {:.2} m in 24 hours", x));
+                score = score.max(x / RISE_24H_M);
+            }
+            if let Some(rain) = doc["rain"].get(st) {
+                let (a, b) = (rain[0].as_f64().unwrap_or(0.0), rain[1].as_f64().unwrap_or(0.0));
+                if a >= RAIN_24H_MM || b >= RAIN_72H_MM {
+                    why.push(format!("{:.0} mm of rain forecast nearby in 24 hours, {:.0} mm in 72", a, b));
+                    score = score.max((a / RAIN_24H_MM).max(b / RAIN_72H_MM) * 0.8);
+                }
+            }
+            if !why.is_empty() {
+                w.push((score, json!({"kind": "river", "station": st, "level": r["latest"][1], "at": r["latest"][0], "rise3h": r["rise3h"], "rise24h": r["rise24h"], "why": why})));
+            }
+        }
+    }
+    if let Some(sea) = doc["sea"].as_object() {
+        for (site, x) in sea {
+            if let Some(res) = x["residual"].as_f64().filter(|r| *r >= SURGE_M) {
+                w.push((res / SURGE_M, json!({"kind": "sea", "station": site, "name": x["name"], "level": x["level"], "at": x["at"],
+                    "why": [format!("sea {:.2} m above the predicted tide", res)]})));
+            }
+        }
+    }
+    w.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    Value::Array(w.into_iter().map(|(sc, mut v)| { v["score"] = json!(round_to(sc, 2)); v }).collect())
+}
+
+/// What puts something on the watch list, for the map to explain.
+pub fn watch_rule() -> String {
+    format!("river up at least {} m in 3 hours or {} m in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
+        RISE_3H_M, RISE_24H_M, RAIN_24H_MM, RAIN_72H_MM, SURGE_M)
+}
+
+/* ---------------------------------------------------------- the sea */
+
+/// Queensland's storm tide gauges: the last 7 days of 10-minute readings
+/// for every site, with the predicted tide and the residual (surge).
+pub const STORM_TIDE_CSV: &str = "https://apps.des.qld.gov.au/data-sets/storm-tides/tide-7dayopdata.csv";
+pub const STORM_TIDE_ATTRIBUTION: &str = "Storm tide data © State of Queensland (Department of the Environment, Tourism, Science and Innovation), CC BY 4.0";
+
+/// Site, Seconds, DateTime, Water Level, Prediction, Residual, Latitude,
+/// Longitude (-99 = missing). Per site: the latest good reading, the largest
+/// residual in the last 24 hours, and a half-hourly series for that day.
+pub fn parse_storm_tide(csv: &str) -> Value {
+    struct Row { secs: i64, time: String, level: f64, pred: f64, resid: f64 }
+    let mut sites: std::collections::BTreeMap<String, (f64, f64, Vec<Row>)> = std::collections::BTreeMap::new();
+    for line in csv.lines() {
+        let f: Vec<&str> = line.split(',').map(str::trim).collect();
+        if f.len() < 8 {
+            continue;
+        }
+        let (Ok(secs), Ok(level), Ok(pred), Ok(resid), Ok(lat), Ok(lon)) = (f[1].parse::<i64>(), f[3].parse::<f64>(), f[4].parse::<f64>(), f[5].parse::<f64>(), f[6].parse::<f64>(), f[7].parse::<f64>()) else {
+            continue; // the header and title lines
+        };
+        let e = sites.entry(f[0].to_string()).or_insert((lat, lon, Vec::new()));
+        e.2.push(Row { secs, time: f[2].to_string(), level, pred, resid });
+    }
+    let ok = |x: f64| x > -90.0 && x.is_finite();
+    let mut out = Map::new();
+    for (site, (lat, lon, mut rows)) in sites {
+        rows.sort_by_key(|r| r.secs);
+        let Some(last) = rows.iter().rev().find(|r| ok(r.level) && ok(r.pred)) else { continue };
+        let day: Vec<&Row> = rows.iter().filter(|r| r.secs > last.secs - 86_400).collect();
+        let max_res = day.iter().filter(|r| ok(r.resid)).map(|r| r.resid).fold(f64::NEG_INFINITY, f64::max);
+        let series: Vec<Value> = day.iter().filter(|r| r.secs % 1800 == 0 && ok(r.level)).map(|r| json!([format!("{}:00+10:00", r.time), round_to(r.level, 3), if ok(r.pred) { json!(round_to(r.pred, 3)) } else { Value::Null }])).collect();
+        out.insert(site.clone(), json!({
+            "name": site, "lat": lat, "lon": lon, "at": format!("{}:00+10:00", last.time),
+            "level": round_to(last.level, 3), "predicted": round_to(last.pred, 3),
+            "residual": if ok(last.resid) { json!(round_to(last.resid, 3)) } else { json!(round_to(last.level - last.pred, 3)) },
+            "residualMax24h": if max_res.is_finite() { json!(round_to(max_res, 3)) } else { Value::Null },
+            "series": series,
+        }));
+    }
+    Value::Object(out)
+}
+
+/* --------------------------------------------------- rain forecasts */
+
+pub const OPEN_METEO: &str = "https://api.open-meteo.com/v1/forecast";
+pub const RAIN_ATTRIBUTION: &str = "Rain forecasts: Open-Meteo.com (CC BY 4.0)";
+/// Open-Meteo's free tier allows 10,000 calls a day and 600 a minute;
+/// each location counts, so gauges share grid cells and calls are paced.
+pub const RAIN_MAX_POINTS: usize = 600;
+
+/// Group gauges into grid cells, coarsening the grid until there are at most
+/// `max` cells: (cell centres as (lat, lon), gauge -> cell index).
+pub fn rain_cells(coords: &[(String, f64, f64)], max: usize) -> (Vec<(f64, f64)>, HashMap<String, usize>) {
+    let mut step = 0.25;
+    loop {
+        let mut cells: Vec<(f64, f64)> = Vec::new();
+        let mut index: HashMap<(i64, i64), usize> = HashMap::new();
+        let mut of = HashMap::new();
+        for (st, lon, lat) in coords {
+            let k = ((lat / step).floor() as i64, (lon / step).floor() as i64);
+            let i = *index.entry(k).or_insert_with(|| {
+                cells.push((round_to((k.0 as f64 + 0.5) * step, 3), round_to((k.1 as f64 + 0.5) * step, 3)));
+                cells.len() - 1
+            });
+            of.insert(st.clone(), i);
+        }
+        if cells.len() <= max || step > 4.0 {
+            return (cells, of);
+        }
+        step *= 1.5;
+    }
+}
+
+/// Rain forecast for the next 24 and 72 hours (mm) at each cell, in
+/// batches of 100 locations, pausing between batches.
+pub fn rain_forecast(http: HttpJson, cells: &[(f64, f64)], now_s: i64, pause: &dyn Fn(), errors: &mut Vec<String>) -> Vec<Option<(f64, f64)>> {
+    let mut out = vec![None; cells.len()];
+    for (bi, chunk) in cells.chunks(100).enumerate() {
+        if bi > 0 {
+            pause();
+        }
+        let lat = chunk.iter().map(|c| c.0.to_string()).collect::<Vec<_>>().join(",");
+        let lon = chunk.iter().map(|c| c.1.to_string()).collect::<Vec<_>>().join(",");
+        let res = match http(OPEN_METEO, &[p("latitude", lat), p("longitude", lon), p("hourly", "precipitation"), p("forecast_days", 4), p("timezone", "UTC"), p("timeformat", "unixtime")]) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(format!("rain forecast batch {}: {}", bi, e));
+                continue;
+            }
+        };
+        let list: Vec<Value> = match res {
+            Value::Array(a) => a,
+            one => vec![one],
+        };
+        for (j, x) in list.iter().enumerate().take(chunk.len()) {
+            let times = arr(x.pointer("/hourly/time"));
+            let rain = arr(x.pointer("/hourly/precipitation"));
+            let sum = |hours: i64| -> f64 {
+                times.iter().zip(rain).filter(|(t, _)| t.as_i64().is_some_and(|t| t >= now_s - 3600 && t < now_s + hours * 3600)).map(|(_, v)| v.as_f64().unwrap_or(0.0)).sum()
+            };
+            if !times.is_empty() {
+                out[bi * 100 + j] = Some((round_to(sum(24), 1), round_to(sum(72), 1)));
+            }
+        }
+    }
+    out
 }
 
 /// Every reading the map shows: river levels (with Queensland's live ones)
 /// and dam volumes, as readings.json.
 pub fn readings(http: HttpJson, level: &HashSet<String>, storage: &HashSet<String>, now_s: i64, errors: &mut Vec<String>) -> Value {
-    let lv = readings_for(http, level, "Water Course Level", "m", true, now_s, errors);
-    let watch = watch_list(&lv);
-    obj! {
-        "level" => lv,
+    let mut doc = obj! {
+        "level" => readings_for(http, level, "Water Course Level", "m", true, now_s, errors),
         "storage" => readings_for(http, storage, "Storage Volume", "ML", false, now_s, errors),
         "series" => DAILY,
-        "watch" => watch,
-        "watchRule" => format!("risen at least {} m in 3 hours or {} m in 24 hours", RISE_3H_M, RISE_24H_M),
-    }
+    };
+    doc["watch"] = watch_list(&doc);
+    doc["watchRule"] = json!(watch_rule());
+    doc
 }
 
 /// How many river levels came from Queensland's portal.
@@ -434,15 +578,69 @@ mod tests {
     }
 
     #[test]
-    fn watch_list_takes_fast_or_sustained_rises() {
-        let lv = json!({
-            "A": {"latest": ["t", 3.0], "rise3h": 0.6, "rise24h": 1.2, "latestKind": "realtime"},
-            "B": {"latest": ["t", 1.0], "rise3h": 0.1, "rise24h": 1.6, "latestKind": "hourly"},
-            "C": {"latest": ["t", 1.0], "rise3h": 0.1, "rise24h": 0.2, "latestKind": "hourly"},
-            "D": {"latest": ["t", 1.0], "latestKind": "daily"},
+    fn watch_list_with_reasons() {
+        let doc = json!({
+            "level": {
+                "A": {"latest": ["t", 3.0], "rise3h": 0.6, "rise24h": 1.2, "latestKind": "realtime"},
+                "B": {"latest": ["t", 1.0], "rise3h": 0.1, "rise24h": 1.6, "latestKind": "hourly"},
+                "C": {"latest": ["t", 1.0], "rise3h": 0.1, "rise24h": 0.2, "latestKind": "hourly"},
+                "D": {"latest": ["t", 1.0], "latestKind": "daily"},
+            },
+            "rain": {"D": [80.0, 140.0], "C": [5.0, 10.0]},
+            "sea": {"whyteislandnx": {"name": "whyteislandnx", "level": 2.1, "at": "t", "residual": 0.45}, "x": {"residual": 0.05}},
         });
-        let w = watch_list(&lv);
+        let w = watch_list(&doc);
         let ids: Vec<&str> = w.as_array().unwrap().iter().map(|x| x["station"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["A", "B"]);
+        // measured rises and surges rank above a forecast of rain
+        assert_eq!(ids, ["A", "B", "whyteislandnx", "D"]);
+        assert_eq!(w[0]["why"], json!(["up 0.60 m in 3 hours", "up 1.20 m in 24 hours"]));
+        assert_eq!(w[2]["kind"], "sea");
+        assert!(w[3]["why"][0].as_str().unwrap().contains("80 mm of rain"));
+    }
+
+    #[test]
+    fn storm_tide_file() {
+        let csv = "Tide Data provided @ 07:45hrs on 21-10-2026\n Site, Seconds, DateTime, Water Level, Prediction, Residual, Latitude, Longitude\n\
+            whyteislandnx,1792530000,2026-10-21T07:00,1.593,1.501,0.092,-27.4017,153.1574\n\
+            whyteislandnx,1792530600,2026-10-21T07:10,1.551,1.471,0.080,-27.4017,153.1574\n\
+            whyteislandnx,1792532400,2026-10-21T07:40,-99.000,1.370,-99.000,-27.4017,153.1574\n\
+            abellpoint,1791900000,2026-10-14T00:00,2.089,2.089,0.000,-20.2608,148.7103\n";
+        let s = parse_storm_tide(csv);
+        let w = &s["whyteislandnx"];
+        assert_eq!(w["at"], "2026-10-21T07:10:00+10:00", "the latest good reading, not the -99");
+        assert_eq!(w["level"], 1.551);
+        assert_eq!(w["residual"], 0.08);
+        assert_eq!(w["residualMax24h"], 0.092);
+        assert_eq!(w["lat"], -27.4017);
+        assert_eq!(w["series"].as_array().unwrap().len(), 1, "half-hourly: 07:00 only");
+        assert!(s.get("abellpoint").is_some());
+    }
+
+    #[test]
+    fn rain_cells_share_and_coarsen() {
+        let coords: Vec<(String, f64, f64)> = vec![("a".into(), 153.02, -27.47), ("b".into(), 153.03, -27.48), ("c".into(), 150.5, -23.37)];
+        let (cells, of) = rain_cells(&coords, 10);
+        assert_eq!(cells.len(), 2, "a and b share a cell");
+        assert_eq!(of["a"], of["b"]);
+        let many: Vec<(String, f64, f64)> = (0..400).map(|i| (format!("g{}", i), 140.0 + (i % 20) as f64 * 0.3, -30.0 + (i / 20) as f64 * 0.3)).collect();
+        let (cells, _) = rain_cells(&many, 100);
+        assert!(cells.len() <= 100, "{}", cells.len());
+    }
+
+    #[test]
+    fn rain_sums_from_now() {
+        let now = 1_800_000_000i64;
+        let hours: Vec<i64> = (-2..80).map(|h| now - now % 3600 + h * 3600).collect();
+        let http = |_: &str, ps: &[(String, String)]| -> R<Value> {
+            let n = ps.iter().find(|x| x.0 == "latitude").unwrap().1.split(',').count();
+            let one = json!({"hourly": {"time": hours, "precipitation": vec![1.0; 82]}});
+            Ok(if n == 1 { one } else { Value::Array(vec![one; n]) })
+        };
+        let mut errors = Vec::new();
+        let r = rain_forecast(&http, &[(-27.5, 153.0), (-23.4, 150.5)], now, &|| {}, &mut errors);
+        let (a, b) = r[0].unwrap();
+        assert!((24.0..=26.0).contains(&a), "{}", a);
+        assert!((72.0..=74.0).contains(&b), "{}", b);
+        assert!(r[1].is_some());
     }
 }

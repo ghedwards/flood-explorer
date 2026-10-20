@@ -242,7 +242,19 @@ pub fn run(out_dir: &str, http: HttpJson) -> R<String> {
     let mut sv: Vec<&String> = storage_st.iter().collect();
     lv.sort();
     sv.sort();
-    write_json(out.join("stations.json"), &json!({"level": lv, "storage": sv}))?;
+    // where the flood network's gauges are, for the broker's rain forecasts
+    let mut coords = Map::new();
+    for f in &gauges {
+        let pr = &f["properties"];
+        if !matches!(pr["kind"].as_str(), Some("forecast") | Some("information")) {
+            continue;
+        }
+        let (Some(st), Some(c)) = (pr["station"].as_str().filter(|s| !s.is_empty()), f.pointer("/geometry/coordinates")) else { continue };
+        if let (Some(x), Some(y)) = (c[0].as_f64(), c[1].as_f64()) {
+            coords.insert(st.to_string(), json!([round_to(x, 4), round_to(y, 4)]));
+        }
+    }
+    write_json(out.join("stations.json"), &json!({"level": lv, "storage": sv, "coords": Value::Object(coords)}))?;
     // about a metre is plenty for map points
     for f in gauges.iter_mut().chain(storages.iter_mut()) {
         if let Some(g) = f.get_mut("geometry") {
@@ -391,6 +403,7 @@ mod tests {
         let st = read_json(d.join("stations.json")).unwrap();
         assert!(st["level"].as_array().unwrap().contains(&json!("143001C")));
         assert_eq!(st["storage"], json!(["143001A"]));
+        assert_eq!(st["coords"]["540198"], json!([153.03, -27.47]), "flood network gauges have locations");
         let _ = std::fs::remove_dir_all(d);
     }
 

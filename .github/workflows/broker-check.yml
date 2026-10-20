@@ -38,7 +38,8 @@ jobs:
               print('fetched', d.get('fetched'), '| levels', len(lv), '| storages', len(d.get('storage', {})),
                     '| live Qld', sum(1 for v in lv.values() if v.get('latestKind') == 'realtime'),
                     '| with rise', sum(1 for v in lv.values() if 'rise3h' in v or 'rise24h' in v),
-                    '| watch', len(d.get('watch') or []), [(w['station'], w.get('rise3h'), w.get('rise24h')) for w in (d.get('watch') or [])[:5]],
+                    '| rain', len(d.get('rain') or {}), d.get('rainFetched'), '| sea', len(d.get('sea') or {}), d.get('seaFetched'),
+                    '| watch', len(d.get('watch') or []), [(w['station'], w.get('why')) for w in (d.get('watch') or [])[:4]],
                     '| errors', (d.get('errors') or [])[:3])
           else:
               print(json.dumps(d)[:400])

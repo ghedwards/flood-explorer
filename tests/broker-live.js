@@ -55,7 +55,10 @@ const OUT = process.env.OUT || "shots";
     r.readings = rd && rd.body ? {
       status: rd.status, cors: rd.cors, fetched: rd.body.fetched, levels: Object.keys(rd.body.level || {}).length,
       storages: Object.keys(rd.body.storage || {}).length, realtime: Object.values(rd.body.level || {}).filter((x) => x.latestKind === "realtime").length,
-      errors: (rd.body.errors || []).length,
+      errors: (rd.body.errors || []).length, errorList: (rd.body.errors || []).slice(0, 5),
+      rain: Object.keys(rd.body.rain || {}).length, rainCells: rd.body.rainCells, sea: Object.keys(rd.body.sea || {}).length,
+      withRise: Object.values(rd.body.level || {}).filter((x) => 'rise3h' in x || 'rise24h' in x).length,
+      watch: (rd.body.watch || []).slice(0, 8).map((w) => [w.kind, w.station, w.why]),
     } : rd;
     if (rd && rd.body) {
       const page2 = await browser.newPage({ viewport: { width: 1280, height: 860 } });

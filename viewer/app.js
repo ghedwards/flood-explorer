@@ -3912,6 +3912,18 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     radar.on('add', () => { loadRadar(); clearInterval(radarT); radarT = setInterval(loadRadar, 10 * 60 * 1000); });
     radar.on('remove', () => clearInterval(radarT));
     nat.layers['Rain radar, latest (RainViewer)'] = radar;
+    // Queensland's storm tide gauges, live from the broker: how far the sea
+    // is above or below the predicted tide (a storm surge shows as red)
+    const sea = nat.readings && nat.readings.sea;
+    if (sea && Object.keys(sea).length) {
+      const surgeColor = (r) => (!Number.isFinite(r) ? '#9aa0a6' : r >= 0.3 ? '#c62828' : r >= 0.15 ? '#ef6c00' : r <= -0.15 ? '#1565c0' : '#2e7d32');
+      nat.layers['Storm tide gauges, live (Qld)'] = L.layerGroup(Object.values(sea).filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon)).map((x) => {
+        const m = L.circleMarker([x.lat, x.lon], { renderer, radius: 7, color: '#ffffff', weight: 1.5, fillColor: surgeColor(x.residual), fillOpacity: 0.95 });
+        m.bindPopup(() => seaPopupHtml(x));
+        return m;
+      }));
+      status.sea = { sites: Object.keys(sea).length, fetched: nat.readings.seaFetched || null };
+    }
     const warned = nat.data.gauges.filter((f) => f.properties.kind !== 'river' && warningsFor(f.properties).length);
     status.warnedGauges = warned.length;
     if (warned.length) {
@@ -4087,6 +4099,24 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso || '';
     return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+
+  function seaPopupHtml(x) {
+    const res = Number.isFinite(x.residual) ? x.residual : null;
+    const surge = res == null ? '' : res >= 0.02 ? `${res.toFixed(2)} m above the predicted tide` : res <= -0.02 ? `${(-res).toFixed(2)} m below the predicted tide` : 'at the predicted tide';
+    const max = Number.isFinite(x.residualMax24h) && x.residualMax24h >= 0.1 ? `<br>Highest in the last 24 hours: ${x.residualMax24h.toFixed(2)} m above the tide.` : '';
+    return `<div class="sea-popup"><strong>${escapeHtml(x.name)}</strong> storm tide gauge<br>
+      Sea ${Number.isFinite(x.level) ? x.level.toFixed(2) : '?'} m, predicted ${Number.isFinite(x.predicted) ? x.predicted.toFixed(2) : '?'} m: <strong>${escapeHtml(surge)}</strong>${max}
+      ${x.series && x.series.length > 1 ? sparkline(x.series) : ''}
+      <span class="hint">${escapeHtml(fmtReadingTime(x.at))}. Heights on the gauge's own datum. Storm tide data &copy; State of Queensland, CC BY 4.0.</span></div>`;
+  }
+
+  // Rain forecast near a gauge (broker, from Open-Meteo, every 3 hours)
+  function rainHtml(p) {
+    const r = nat.readings && nat.readings.rain && nat.readings.rain[p.station];
+    if (!r) return '';
+    const heavy = r[0] >= 50 || r[1] >= 100;
+    return `<span class="rise${heavy ? ' rise-fast' : ''}">${heavy ? '<strong>Heavy rain forecast:</strong> ' : 'Rain forecast nearby: '}${Math.round(r[0])} mm in the next 24 hours, ${Math.round(r[1])} mm in 72 (Open-Meteo, CC BY 4.0)</span>`;
   }
 
   function sparkline(series) {
@@ -4316,6 +4346,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
             : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
             : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
           ${riseHtml(r)}
+          ${rainHtml(p)}
           ${r.series.length ? sparkline(r.series) : ''}</div>`;
     } else {
       html = '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
