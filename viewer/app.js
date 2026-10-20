@@ -297,7 +297,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   });
   document.getElementById('problemsCopy').addEventListener('click', async (e) => {
     const text = problemsReport(), btn = e.currentTarget;
-    let ok = false;
+    let ok;
     try { await navigator.clipboard.writeText(text); ok = true; } catch (err) {
       const ta = document.createElement('textarea');   // older browsers / no clipboard permission
       ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
