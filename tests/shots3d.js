@@ -97,6 +97,19 @@ process.on("unhandledRejection", (e) => { console.log(`::error::unhandled: ${Str
   await shot("3b-3d-exaggeration-5");
   await step("exaggeration-default", async () => { await setExag(1.5); });
   await page.waitForTimeout(1500);
+  // street level: imagery keeps refining past the terrain's z14
+  await step("zoom-street", async () => {
+    await page.mouse.move(box.x, box.y);
+    for (let i = 0; i < 7; i++) { await page.mouse.wheel(0, -400); await page.waitForTimeout(250); }
+  });
+  await page.waitForTimeout(20000);
+  await state3d("street");
+  await shot("3c-3d-street");
+  await step("zoom-back", async () => {
+    await page.mouse.move(box.x, box.y);
+    for (let i = 0; i < 7; i++) { await page.mouse.wheel(0, 400); await page.waitForTimeout(250); }
+  });
+  await page.waitForTimeout(5000);
   // MapControls: right-drag tilts (up) and turns (sideways); left-drag pans
   const drag = async (button, dx, dy, n = 12) => {
     await page.mouse.move(box.x, box.y);

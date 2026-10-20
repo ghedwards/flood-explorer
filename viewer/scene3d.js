@@ -20,6 +20,11 @@ const EXAG_DEFAULT = 1.5;
 const TERRARIUM_URL = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 const FETCH_CONCURRENCY = { terrarium: 6, demh: 3 };
 const MAX_Z = { terrarium: 14, demh: 12 };
+// imagery keeps refining past the terrain's finest level: tiles below it
+// borrow their heights from that level's raster (upsampled) and load their
+// own, sharper picture
+const IMG_MAX_Z = 18;
+const VIRTUAL_PER_SELECT = 24;    // upsampled tiles built per selection pass (cheap, but bounded)
 const CACHE_CAP = 300;            // built terrain tiles kept
 const RETRY_MS = 60000;           // don't refetch a failed tile for a minute
 const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
@@ -335,6 +340,25 @@ class Scene3d {
 
   maxZ() { return MAX_Z[this.source]; }
 
+  /* Deepest level the tile tree splits to: the terrain's, or with imagery
+   * on, the basemap's finest (capped) — deeper tiles reuse terrain heights. */
+  drawMaxZ() {
+    const tz = this.maxZ();
+    if (!this.imageryOn || !this.basemap) return tz;
+    return Math.max(tz, Math.min(IMG_MAX_Z, this.basemap.maxZoom || IMG_MAX_Z));
+  }
+
+  /* A tile below the terrain's finest level: same heights as its ancestor at
+   * that level (a sub-rectangle of its raster), its own mesh and imagery. */
+  buildVirtual(key, anc) {
+    const [z, x, y] = parseKey(key), d = z - anc.z, s = 1 / 2 ** d;
+    const raster = { data: anc.raster.data, n: anc.raster.n, sub: [(x - (anc.x << d)) * s, (y - (anc.y << d)) * s, s] };
+    const st = { key, z, x, y, state: 'loading', heights: null, mesh: null, last: this.frame, failAt: 0, virtual: true };
+    this.cache.set(key, st);
+    this.buildTile(st, raster);
+    this.needSelect = true;
+  }
+
   /* The view as selectTiles() wants it: camera, projection, frustum planes
    * and the horizon distance for this altitude. */
   selectionView() {
@@ -343,7 +367,7 @@ class Scene3d {
     const cam = this.camera.position.toArray();
     const alt = Math.max(200, cam[1] / this.exag);
     return {
-      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.maxZ(), cap: 360, thresholdPx: 384,
+      cam, proj: this.proj, exag: this.exag, minZ: MIN_Z, maxZ: this.drawMaxZ(), cap: 360, thresholdPx: 384,
       focalPx: window.innerHeight / (2 * Math.tan((this.camera.fov * Math.PI) / 360)),
       frustum: f.planes.map((p) => [p.normal.x, p.normal.y, p.normal.z, p.constant]),
       maxDist: Math.min(300000, Math.sqrt(2 * 6371000 * alt) + 60000),
@@ -368,10 +392,20 @@ class Scene3d {
     const draw = resolveDraw(wanted, (k) => this.isReady(k));
     const cam = view.cam, now = Date.now();
     const want = new Map();   // key -> fetch priority (bigger first)
+    const tz = this.maxZ();
+    let virtualBudget = VIRTUAL_PER_SELECT;
     const need = (key, pri) => {
       const st = this.cache.get(key);
       if (st && (st.state === 'loading' || st.state === 'ready')) return;
       if (st && st.state === 'failed' && now - st.failAt < RETRY_MS) return;
+      const [z, x, y] = parseKey(key);
+      if (z > tz) {
+        // below the terrain's finest level: built from that ancestor's raster
+        const d = z - tz, anc = this.cache.get(`${tz}/${x >> d}/${y >> d}`);
+        if (anc && anc.state === 'ready' && anc.raster) { if (virtualBudget-- > 0) this.buildVirtual(key, anc); }
+        else need(`${tz}/${x >> d}/${y >> d}`, pri);
+        return;
+      }
       if (!(want.get(key) >= pri)) want.set(key, pri);
     };
     for (const key of wanted) {
@@ -474,14 +508,17 @@ class Scene3d {
     const [w, n] = this.proj.fromScene(t.x0, t.z0), [e, s] = this.proj.fromScene(t.x1, t.z1);
     const box = [w, s, e, n];
     const areas = this.overrideAreas().filter((ar) => boxesOverlap(box, ar.bounds));
-    st.raster = this.knownBounds.some((b) => boxesOverlap(box, b)) ? raster : null;
+    // kept for rebuilds under modelled areas, and at the terrain's finest
+    // level for the upsampled tiles below it (those share it, no copy)
+    st.raster = raster.sub || st.z === this.maxZ() || this.knownBounds.some((b) => boxesOverlap(box, b)) ? raster : null;
     let segs = TILE_SEGS;
     if (areas.length) {
       const spacing = Math.max(25, ...areas.map((ar) => ar.a.cell || 0));
       segs = Math.max(TILE_SEGS, Math.min(MAX_SEGS, Math.ceil(t.size / spacing)));
     }
+    const sub = raster.sub;
     const heightAt = (u, v) => {
-      const h = sampleRaster(raster.data, raster.n, u, v);
+      const h = sub ? sampleRaster(raster.data, raster.n, sub[0] + u * sub[2], sub[1] + v * sub[2]) : sampleRaster(raster.data, raster.n, u, v);
       return areas.length ? overrideHeight(h, areas, w + u * (e - w), this.proj.fromScene(t.x0, t.z0 + v * (t.z1 - t.z0))[1]) : h;
     };
     st.heights = tileHeights(heightAt, segs);
