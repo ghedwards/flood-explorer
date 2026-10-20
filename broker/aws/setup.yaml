@@ -139,7 +139,15 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
+              # the main branch only; GitHub names the repository either as
+              # owner/repo or, with immutable IDs, owner@123/repo@456
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubRepo}:ref:refs/heads/main"
+                  - !Sub
+                    - "repo:${Owner}@*/${Name}@*:ref:refs/heads/main"
+                    - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                      Name: !Select [1, !Split ["/", !Ref GitHubRepo]]
       Policies:
         - PolicyName: deploy-flood-broker
           PolicyDocument:

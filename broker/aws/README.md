@@ -44,7 +44,11 @@ free. The only other charge is CloudWatch logs, which are kept for 30 days.
 
 2. **Tell GitHub where to deploy.** In the repository, open *Settings →
    Secrets and variables → Actions → Variables*. Add:
-   - `AWS_DEPLOY_ROLE_ARN`: the stack's `DeployRoleArn` output.
+   - `AWS_DEPLOY_ROLE_ARN`: the stack's `DeployRoleArn` output, which ends
+     in `:role/flood-broker-github-deploy`. Don't use the function's own role
+     (`…-exec`, or a `service-role/…` role the Lambda console made): only
+     Lambda can use those, and the deploy fails with "Not authorized to
+     perform sts:AssumeRoleWithWebIdentity".
    - `AWS_REGION`: the stack's `Region` output (`ap-southeast-2` is the
      default if you skip it).
    - Optional, `BROKER_MAX_CONCURRENCY`, e.g. `10`: a cap on how many
