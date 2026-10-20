@@ -33,9 +33,10 @@ Guard rails:
 - **Concurrency cap:** at most 5 copies of the function run at once
   (`BROKER_MAX_CONCURRENCY`), so a flood of requests can't run up a bill.
   New AWS accounts may not allow a cap; the deploy warns and carries on.
-- **Spend alert:** the stack can set up an AWS Budgets alert that emails you
-  if the month's spend heads past a limit (`BudgetEmail`,
-  `MonthlyBudgetUsd`, $5 by default). The alert itself is free.
+- **Spend alert:** this account already has a $10-a-month AWS budget, so
+  leave `BudgetEmail` empty. For an account without one, filling it in makes
+  the stack add an AWS Budgets alert (`MonthlyBudgetUsd`, $5 by default)
+  that emails you when the month's spend heads past it. The alert is free.
 - **Refresh interval:** `RefreshMinutes` can be 15 (default), 30 or 60. Most
   gauges report hourly, so 30 halves the refresh cost for at most 15 more
   minutes' delay. Set `BROKER_REFRESH_MINUTES` in GitHub to match.
