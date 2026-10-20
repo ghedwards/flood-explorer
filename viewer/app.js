@@ -6856,6 +6856,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       openReport(f, { select: false });
       if (isNew) { const r = reports.find((x) => x.id === id); if (r) claim(r.n); }   // places that were already here stay where they are
     }
+    renderPlaces();   // the last report was listed before it was claimed
     // models, one per tile
     summary.models = tiles.length - todo.length;   // already covered
     for (const [k, t] of todo.entries()) {
