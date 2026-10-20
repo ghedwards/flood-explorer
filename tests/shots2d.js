@@ -159,6 +159,22 @@ const OUT = process.env.OUT || "shots";
       report.studyMembersShown = await sp.evaluate(() => document.querySelectorAll(".study-members li.place").length);
     });
     await shot(sp, "12b-study-grouped");
+    // the problems log: an uncaught error is kept, badged on About, and copied
+    await run("problems-log", async () => {
+      await sp.evaluate(() => { setTimeout(() => { throw new Error("shots2d test problem"); }, 0); });
+      await settle(sp, 800);
+      report.problems = await sp.evaluate(() => ({
+        list: window.__floodProblems().map((p) => `${p.kind}: ${p.msg}`),
+        badge: document.getElementById("problemsBadge").hidden ? null : document.getElementById("problemsBadge").textContent,
+        report: window.__floodProblemsReport().slice(0, 600),
+      }));
+      await sp.click('.tool[data-open="panel-about"]');
+      await settle(sp, 600);
+      await sp.evaluate(() => { const d = document.getElementById("problemsBox"); d.open = true; d.scrollIntoView(); });
+      await settle(sp, 800);
+      report.problemsBadgeAfterOpen = await sp.evaluate(() => document.getElementById("problemsBadge").hidden);
+    });
+    await shot(sp, "13-problems-log");
     await sp.close();
     // phone
     const phone = await open({ width: 390, height: 844 });

@@ -14,6 +14,8 @@ export default defineConfig({
     target: "es2022",
   },
   worker: { format: "es" },
+  // the commit this site was built from, shown with logged problems
+  define: { "import.meta.env.VITE_BUILD": JSON.stringify((process.env.GITHUB_SHA || "dev").slice(0, 8)) },
   server: {
     host: "127.0.0.1",
     port: 8000,

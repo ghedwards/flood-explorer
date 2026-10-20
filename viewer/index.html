@@ -60,6 +60,7 @@
     <span class="badge" id="forecastBadge" hidden></span>
   </button>
   <button type="button" class="tool" data-open="panel-about" aria-pressed="false">
+    <span class="count problems-count" id="problemsBadge" hidden title="New problems in the log"></span>
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>
     About
   </button>
@@ -408,6 +409,11 @@
       and <a href="https://www.bom.gov.au/qld/warnings/" target="_blank" rel="noopener">Bureau of Meteorology warnings</a>.</p>
     <div class="sources" id="dataInfo"></div>
     <details class="sources" id="dataStatusBox"><summary>Data status</summary><div id="dataStatus"><p class="hint">Loading…</p></div></details>
+    <details class="sources" id="problemsBox"><summary>Problems log <span id="problemsCount"></span></summary>
+      <p class="hint">Errors and failures in this browser (kept here, not sent anywhere). Copy them to report a problem.</p>
+      <div class="link-row"><button type="button" class="btn small" id="problemsCopy">Copy for reporting</button> <button type="button" class="link-btn" id="problemsClear">Clear</button></div>
+      <ol class="problems" id="problemsList"></ol>
+    </details>
     <div class="downloads" id="downloads"></div>
     <fieldset>
       <legend class="label">Your own terrain</legend>

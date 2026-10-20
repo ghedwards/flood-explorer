@@ -102,51 +102,83 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     };
   }
 
-  /* Dam models (started from a dam report): the gauge is in the lake, and a
-   * river model would slope the lake's level down the river below the wall
-   * to the bay, flooding the valley under the dam even at normal levels.
-   * Instead the lake stays level out to the wall (found by following the
-   * flow path from the gauge to where the ground drops DAM_DROP_M below the
-   * lake's surface), and below the wall the river gets its normal depth plus
-   * whatever is spilling: the gauge level above the lake's normal level
-   * (the elevation data's water surface + 0.3 m, as the normal-level run).
-   * Below the wall the river surface follows its bed (bed + depth, never
-   * rising downstream, never below the bay): a straight slope from the
-   * wall's foot to the sea sat metres above the ground where the bed drops
-   * steeply below a dam and then flattens. */
-  const DAM_DROP_M = 4, DAM_SEARCH_M = 5000, RIVER_DEPTH_M = 0.3;
-  let damMemo = null;
+  /* The river below the gauge. A river model used to draw the water surface
+   * from the gauge to the sea (or the model's edge) as a straight line, which
+   * left inland rivers dry below the gauge (the line ran down to sea level at
+   * the edge, tens of metres under the bed) and floated metres above the bed
+   * where it drops and flattens (Maitland: 29 km² of floodplain counted as
+   * normal water). Now each cell of the river's path below the gauge gets
+   *   bed + normal depth + rise,
+   * where the bed is smoothed (the median over ~300 m, so a road embankment
+   * without its culvert or a deep hole in the data doesn't set the level)
+   * and held at the highest bed further downstream (water pools behind a
+   * riffle, so the surface never rises downstream); the rise is how far the
+   * gauge is set above its normal level (its river surface + 0.3 m), tapering
+   * to nothing at the sea when the path reaches it (estuaries fall to the
+   * bay level) and carried on unchanged to the model's edge inland. Never
+   * below the bay level, never above the gauge. Level points the user (or
+   * other gauges) set further down take over from the first one on.
+   *
+   * Dam models (started from a dam report): the gauge is in the lake. The lake
+   * stays level out to the wall (the flow path from the gauge to where the
+   * ground drops DAM_DROP_M below the lake's surface) and the river profile
+   * starts below the wall, the rise being what spills: the gauge level above
+   * the lake's normal level. */
+  const DAM_DROP_M = 4, DAM_SEARCH_M = 5000, RIVER_DEPTH_M = 0.3, BED_SMOOTH_M = 150;
+  let rbMemo = null;
   const isDamModel = (meta) => !!meta && /^storage:/.test(String(meta.reportId || ''));
-  function damOutlet(a, gauge, meta) {
-    if (!a || gauge == null || gauge < 0 || !isDamModel(meta) || !a.rec || !a.chain) return null;
-    if (damMemo && damMemo.a === a && damMemo.g === gauge) return damMemo.v;
-    const lake = a.dem[gauge];
-    let v = null, prev = gauge;
-    for (let c = a.rec[gauge]; c >= 0 && Math.abs(a.chain[gauge] - a.chain[c]) <= DAM_SEARCH_M; c = a.rec[c]) {
-      if (a.valid[c] && a.dem[c] < lake - DAM_DROP_M) { v = { crest: prev, below: c, lake }; break; }
-      prev = c;
+  function riverBelow(a, gauge, meta) {
+    if (!a || gauge == null || gauge < 0 || !a.rec || !a.chain) return null;
+    const dam0 = isDamModel(meta);
+    if (rbMemo && rbMemo.a === a && rbMemo.g === gauge && rbMemo.dam === dam0) return rbMemo.v;
+    let dam = null, start = a.rec[gauge];
+    if (dam0) {
+      const lake = a.dem[gauge];
+      let prev = gauge;
+      for (let c = a.rec[gauge]; c >= 0 && Math.abs(a.chain[gauge] - a.chain[c]) <= DAM_SEARCH_M; c = a.rec[c]) {
+        if (a.valid[c] && a.dem[c] < lake - DAM_DROP_M) { dam = { crest: prev, below: c, lake }; start = c; break; }
+        prev = c;
+      }
     }
-    if (v) {   // the river's path from the wall's foot to the sea or the model edge
-      v.path = [];
-      for (let c = v.below; c >= 0 && v.path.length < 20000; c = a.rec[c]) { if (a.ocean && a.ocean[c]) break; v.path.push(c); }
+    const path = [];
+    let end = 'edge';
+    for (let c = start; c >= 0 && path.length < 20000; c = a.rec[c]) {
+      if (a.ocean && a.ocean[c]) { end = 'sea'; break; }
+      if (a.valid[c]) path.push(c);
     }
-    damMemo = { a, g: gauge, v };
+    const n = path.length, R = Math.max(2, Math.round(BED_SMOOTH_M / a.cell));
+    const bed = path.map((c) => a.dem[c]);
+    const env = new Float64Array(n), taper = new Float64Array(n);
+    for (let k = n - 1, hi = -Infinity; k >= 0; k--) {
+      const w = bed.slice(Math.max(0, k - R), k + R + 1).sort((x, y) => x - y);
+      hi = Math.max(hi, w[w.length >> 1]);
+      env[k] = hi;
+    }
+    const c0 = n ? a.chain[path[0]] : 0, c1 = n ? a.chain[path[n - 1]] : 0;
+    for (let k = 0; k < n; k++) taper[k] = end === 'sea' && c0 > c1 ? Math.max(0, Math.min(1, (a.chain[path[k]] - c1) / (c0 - c1))) : 1;
+    const v = { dam, path, end, env, taper };
+    rbMemo = { a, g: gauge, dam: dam0, v };
     return v;
   }
-  function withDam(a, s, meta) {
-    const d = damOutlet(a, s.gauge, meta);
-    if (!d) return s;
-    const spill = Math.max(0, s.gaugeLevel - (d.lake + RIVER_DEPTH_M));
-    const ctrl = [{ cell: d.crest, level: s.gaugeLevel }];
-    let lv = s.gaugeLevel;
-    for (const c of d.path) {
-      if (!a.valid[c]) continue;
-      lv = Math.max(s.bayLevel, Math.min(lv, a.dem[c] + RIVER_DEPTH_M + spill));
-      ctrl.push({ cell: c, level: lv });
+  function withRiverBelow(a, s, meta) {
+    if (s.wse || s.gauge == null || s.gauge < 0) return s;
+    const pr = riverBelow(a, s.gauge, meta);
+    if (!pr || (!pr.path.length && !pr.dam)) return s;
+    const normal = (pr.dam ? pr.dam.lake : a.dem[s.gauge]) + RIVER_DEPTH_M;
+    const rise = pr.dam ? Math.max(0, s.gaugeLevel - normal) : s.gaugeLevel - normal;
+    const own = new Set((s.controls || []).map((c) => c.cell));
+    const ctrl = pr.dam ? [{ cell: pr.dam.crest, level: s.gaugeLevel }] : [];
+    for (let k = 0; k < pr.path.length; k++) {
+      const c = pr.path[k];
+      if (own.has(c)) break;   // a level point set further down takes over from here
+      ctrl.push({ cell: c, level: Math.min(s.gaugeLevel, Math.max(s.bayLevel, pr.env[k] + RIVER_DEPTH_M + rise * pr.taper[k])) });
     }
     return Object.assign({}, s, { controls: (s.controls || []).concat(ctrl) });
   }
-  window.__floodDam = () => { const d = state.a && damOutlet(state.a, state.gauge, state.areaMeta); return d ? { lake: d.lake, crest: cellLatLng(d.crest), below: cellLatLng(d.below), belowGround: state.a.dem[d.below], pathCells: d.path.length } : null; };
+  window.__floodDam = () => {
+    const pr = state.a && riverBelow(state.a, state.gauge, state.areaMeta), d = pr && pr.dam;
+    return d ? { lake: d.lake, crest: cellLatLng(d.crest), below: cellLatLng(d.below), belowGround: state.a.dem[d.below], pathCells: pr.path.length } : null;
+  };
 
   function syncOutputs() {
     $('gaugeLevelOut').textContent = fmt(ctl.gaugeLevel.value, 2) + ' m';
@@ -195,6 +227,86 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   const bwEl = $('backwater'); if (bwEl) bwEl.addEventListener('change', () => schedule());
 
   /* ------------------------------------------------------------- loading */
+
+  /* ---------- problems log
+   * Errors and failures are kept in this browser (localStorage, last 100) and
+   * listed under About > Problems log, with a badge on About for new ones,
+   * so they can be copied and reported. Nothing is sent anywhere. Share
+   * links carry places in the address (#s=…), so the address is kept
+   * without it. */
+  const APP_BUILD = (import.meta.env && import.meta.env.VITE_BUILD) || 'dev';
+  const PROBLEMS_KEY = 'floodExplorer.problems.v1', PROBLEMS_SEEN_KEY = 'floodExplorer.problemsSeen', PROBLEMS_MAX = 100;
+  const problems = (() => { try { const v = JSON.parse(localStorage.getItem(PROBLEMS_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } })();
+  let problemsSeen = (() => { try { return localStorage.getItem(PROBLEMS_SEEN_KEY) || ''; } catch (e) { return ''; } })();
+  let logging = false;
+  const clip = (v, n) => String(v == null ? '' : v).replace(/#s=[A-Za-z0-9_-]+/g, '#s=…').slice(0, n);
+  function logProblem(kind, message, detail) {
+    if (logging) return;   // never recurse through console.error
+    logging = true;
+    try {
+      const msg = clip(message, 500), last = problems[problems.length - 1];
+      if (last && last.msg === msg && last.kind === kind && Date.now() - Date.parse(last.t) < 10000) last.n = (last.n || 1) + 1;
+      else {
+        const area = typeof state !== 'undefined' && state.areaMeta ? state.areaMeta.name || state.areaMeta.id : null;
+        let zoom = null;
+        try { zoom = typeof state !== 'undefined' && state.lmap && !document.getElementById('lmap').hidden ? Math.round(state.lmap.getZoom() * 10) / 10 : null; } catch (e) { /* map not ready */ }
+        problems.push({ t: new Date().toISOString(), kind, msg, detail: clip(detail, 1500), build: APP_BUILD, page: location.pathname, area, zoom, view3d: document.body.classList.contains('in3d') });
+        while (problems.length > PROBLEMS_MAX) problems.shift();
+      }
+      try { localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems)); } catch (e) { /* storage full or blocked: this visit only */ }
+      renderProblems();
+    } catch (e) { /* logging must never break the app */ } finally { logging = false; }
+  }
+  const errText = (e) => (e && (e.stack || e.message)) || String(e);
+  window.addEventListener('error', (e) => logProblem('error', e.message || 'Script error', [errText(e.error), e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : ''].filter(Boolean).join('\n')));
+  window.addEventListener('unhandledrejection', (e) => logProblem('unhandled', (e.reason && e.reason.message) || String(e.reason), errText(e.reason)));
+  {
+    const orig = console.error.bind(console);
+    console.error = (...args) => { orig(...args); logProblem('console', args.map((x) => (x instanceof Error ? x.message : typeof x === 'object' ? (() => { try { return JSON.stringify(x); } catch (e) { return String(x); } })() : String(x))).join(' '), args.find((x) => x instanceof Error) ? errText(args.find((x) => x instanceof Error)) : ''); };
+  }
+  function renderProblems() {
+    const list = document.getElementById('problemsList');
+    if (!list) return;
+    const unseen = problems.filter((p) => p.t > problemsSeen).length;
+    const badge = document.getElementById('problemsBadge');
+    if (badge) { badge.hidden = !unseen; badge.textContent = unseen > 99 ? '99+' : String(unseen); }
+    document.getElementById('problemsCount').textContent = problems.length ? `(${problems.length})` : '(none)';
+    list.innerHTML = problems.length ? problems.slice().reverse().map((p) => `<li><span class="problem-when">${escapeHtml(p.t.slice(0, 19).replace('T', ' '))} · ${escapeHtml(p.kind)}${p.n > 1 ? ` · ×${p.n}` : ''}</span>
+        <span class="problem-msg">${escapeHtml(p.msg)}</span>${p.detail ? `<details><summary>Details</summary><pre>${escapeHtml(p.detail)}</pre></details>` : ''}</li>`).join('') : '<li class="hint">No problems logged.</li>';
+  }
+  function problemsReport() {
+    const ua = navigator.userAgent;
+    const head = `Flood Explorer problems log: build ${APP_BUILD}, ${ua}, copied ${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+    return [head, ...problems.map((p, k) => `${k + 1}. ${p.t.slice(0, 19).replace('T', ' ')} UTC · ${p.kind}${p.n > 1 ? ` ×${p.n}` : ''} · build ${p.build}${p.area ? ` · place: ${p.area}` : ''}${p.zoom != null ? ` · zoom ${p.zoom}` : ''}${p.view3d ? ' · 3D' : ''}
+   ${p.msg}${p.detail ? `\n   ${p.detail.split('\n').slice(0, 8).join('\n   ')}` : ''}`)].join('\n');
+  }
+  window.__floodProblems = () => problems.slice();
+  // opening the log marks what's in it as seen
+  document.getElementById('problemsBox').addEventListener('toggle', (e) => {
+    if (!e.target.open || !problems.length) return;
+    problemsSeen = problems[problems.length - 1].t;
+    try { localStorage.setItem(PROBLEMS_SEEN_KEY, problemsSeen); } catch (err) { /* this visit only */ }
+    renderProblems();
+  });
+  document.getElementById('problemsCopy').addEventListener('click', async (e) => {
+    const text = problemsReport(), btn = e.currentTarget;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (err) {
+      const ta = document.createElement('textarea');   // older browsers / no clipboard permission
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (err2) { ok = false; }
+      ta.remove();
+    }
+    btn.textContent = ok ? 'Copied' : 'Copy failed: select the list instead';
+    setTimeout(() => { btn.textContent = 'Copy for reporting'; }, 2500);
+  });
+  document.getElementById('problemsClear').addEventListener('click', () => {
+    problems.length = 0;
+    try { localStorage.removeItem(PROBLEMS_KEY); } catch (err) { /* nothing stored */ }
+    renderProblems();
+  });
+  renderProblems();
+  window.__floodProblemsReport = problemsReport;
 
   /* A button whose work takes a moment (fetching or calculating): while it
    * runs the button shows a spinner and what it's doing, can't be pressed
@@ -440,7 +552,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
             // stop using it (the main thread runs the same model) rather
             // than leaving jobs waiting for replies that never come
             status.worker = e.data.workerStatus;
-            if (e.data.workerStatus === 'error') { worker = false; say(`Model worker unavailable (${e.data.error || 'unknown error'}) — using the main thread.`); }
+            if (e.data.workerStatus === 'error') { worker = false; logProblem('worker', `Model worker unavailable: ${e.data.error || 'unknown error'} (using the main thread)`); say(`Model worker unavailable (${e.data.error || 'unknown error'}) — using the main thread.`); }
             return;
           }
           const job = workerJobs.get(e.data.id);
@@ -796,10 +908,10 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       const base = state.eventsApply || state.gauge < 0
         ? BASELINE
         : { gaugeLevel: a.dem[state.gauge] + 0.3, bayLevel: 0 };
-      state.base = F.inundate(a, withDam(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }), state.areaMeta), { slim: !wantWse });
+      state.base = F.inundate(a, withRiverBelow(a, Object.assign({}, s, base, { upstreamGradient: s.upstreamGradient }), state.areaMeta), { slim: !wantWse });
     }
     const mode = ctl.floodType.value;
-    state.riverRun = mode === 'flash' ? null : F.inundate(a, withDam(a, s, state.areaMeta), { slim: !wantWse });
+    state.riverRun = mode === 'flash' ? null : F.inundate(a, withRiverBelow(a, s, state.areaMeta), { slim: !wantWse });
     if (mode === 'river') { state.run = state.riverRun; state.flash = null; } else {
       const fl = F.flashFlood(a, Object.assign(storm(), { slim: 1 }));
       state.flash = fl.summary;
@@ -1179,7 +1291,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
             fineWaiting.delete(e.data.id);
             if (e.data.error) w.reject(new Error(e.data.error)); else w.resolve({ rgba: e.data.rgba, have: e.data.have, worker: true });
           };
-          fineWorker.onerror = () => {
+          fineWorker.onerror = (ev) => {
+            logProblem('worker', `5 m flood worker failed: ${(ev && ev.message) || 'unknown error'} (drawing on the main thread instead)`);
             fineWorkerOk = false; fineWorker = null;
             for (const w of fineWaiting.values()) w.reject(new Error('worker failed'));
             fineWaiting.clear();
@@ -1387,7 +1500,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
               upstreamGradient: parseFloat(c.grad) || 0,
               controls: ar.controls || [],
             };
-            const run = ar.gauge >= 0 ? F.inundate(a, withDam(a, s, ar.areaMeta), { slim: 1 }) : null;
+            const run = ar.gauge >= 0 ? F.inundate(a, withRiverBelow(a, s, ar.areaMeta), { slim: 1 }) : null;
             const terrain = terrainRGBA(a);
             // the scene's poll/refresh look at the entry itself; saveActive
             // frees it again the next time the user leaves this place
@@ -6998,7 +7111,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const a = state.a;
     if (state.gauge < 0 || ctl.floodType.value === 'flash') return null;
     const base = scenario(), lo0 = a.dem[state.gauge] + 0.3, hi0 = parseFloat(ctl.gaugeLevel.max) || lo0 + 10;
-    const wetAt = (L) => { const r = F.inundate(a, withDam(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
+    const wetAt = (L) => { const r = F.inundate(a, withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
     if (wetAt(lo0)) return { level: lo0, always: true };
     if (!wetAt(hi0)) return { above: hi0 };
     let lo = lo0, hi = hi0;
@@ -7206,6 +7319,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     r.hidden = !text;
     const bad = !!(opts && opts.error);
     r.classList.toggle('error', bad);
+    if (bad) logProblem('message', text);
     clearTimeout(sayT);
     if (!bad) sayT = setTimeout(() => { r.hidden = true; }, 6000);
   }

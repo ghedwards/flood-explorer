@@ -473,3 +473,11 @@ button.is-busy { cursor: progress; opacity: .85; }
 .study-more { grid-column: 1 / -1; padding: 0 0 6px 44px; }
 .study-toggle { font-size: 12.5px; }
 .places.study-members { grid-column: 1 / -1; margin: 0 6px 8px 22px; padding-left: 10px; border-left: 2px solid var(--line); }
+
+/* About > Problems log */
+.tool .count.problems-count { background: var(--alert); }
+ol.problems { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 8px; font-size: 12.5px; max-height: 320px; overflow: auto; }
+ol.problems li { overflow-wrap: anywhere; }
+.problem-when { display: block; color: var(--muted); font-size: 11.5px; }
+.problem-msg { display: block; }
+ol.problems pre { white-space: pre-wrap; font: 11px/1.35 var(--font-data); margin: 4px 0 0; color: var(--muted); }
