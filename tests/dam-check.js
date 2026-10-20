@@ -29,19 +29,19 @@ const SPOT = [-27.2758, 152.9585];   // the hollow below the dam wall (the user'
     await page.waitForFunction("window.__floodStatus && window.__floodStatus.local && window.__floodStatus.local.ok === true", null, { timeout: 180000 });
     await page.waitForTimeout(5000);
     report.at26 = await read();
-    await page.evaluate(([la, lo]) => window.__floodTapAt(la, lo), SPOT);
+    await page.evaluate(([la, lo]) => { window.__floodTapAt(la, lo); }, SPOT);
     await page.waitForTimeout(800);
     report.tap26 = await page.evaluate(() => document.getElementById("readout").textContent);
     await page.screenshot({ path: path.join(OUT, `${TAG}-26m.png`) });
     // the lake at its normal level (the elevation data's surface + 0.3 m)
-    await page.evaluate(() => { const g = window.__floodGaugeLatLng(); return g; });
     await page.evaluate(() => {
       const el = document.getElementById("gaugeLevel");
       window.__floodSetLevel(parseFloat(el.min));
     });
+    report.minLevel = await page.evaluate(() => document.getElementById("gaugeLevel").min);
     await page.waitForTimeout(3000);
     report.atMin = await read();
-    await page.evaluate(([la, lo]) => window.__floodTapAt(la, lo), SPOT);
+    await page.evaluate(([la, lo]) => { window.__floodTapAt(la, lo); }, SPOT);
     await page.waitForTimeout(800);
     report.tapMin = await page.evaluate(() => document.getElementById("readout").textContent);
     await page.screenshot({ path: path.join(OUT, `${TAG}-min.png`) });
