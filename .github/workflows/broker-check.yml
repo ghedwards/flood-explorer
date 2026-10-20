@@ -1,0 +1,45 @@
+name: Live data broker check
+# What the deployed broker answers: /health, /v1/readings and /v1/levels,
+# as notices on the run.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Broker URL (default: the FLOOD_BROKER_URL variable)"
+        required: false
+  schedule:
+    - cron: "37 */6 * * *"
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Ask the broker
+        env:
+          URL: ${{ inputs.url || vars.FLOOD_BROKER_URL }}
+        run: |
+          set +e
+          if [ -z "$URL" ]; then echo "::warning title=No broker URL::set FLOOD_BROKER_URL or pass url"; exit 0; fi
+          URL="${URL%/}"
+          for p in /health "/v1/readings" "/v1/levels?sites=143001C"; do
+            code=$(curl -s -m 60 -o out.json -w '%{http_code}' -H "Origin: https://ghedwards.github.io" -D h.txt "$URL$p")
+            size=$(wc -c < out.json)
+            age=$(grep -i '^x-readings-age' h.txt | tr -d '\r' | cut -d' ' -f2)
+            summary=$(python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('out.json'))
+          except Exception as e:
+              print(open('out.json', errors='replace').read()[:300].replace('\n', ' ')); raise SystemExit
+          if 'level' in d:
+              lv = d.get('level', {})
+              print('fetched', d.get('fetched'), '| levels', len(lv), '| storages', len(d.get('storage', {})),
+                    '| live Qld', sum(1 for v in lv.values() if v.get('latestKind') == 'realtime'), '| errors', (d.get('errors') or [])[:3])
+          else:
+              print(json.dumps(d)[:400])
+          PY
+          )
+            echo "::notice title=$p HTTP $code ($size bytes${age:+, age ${age}s})::$summary"
+          done
