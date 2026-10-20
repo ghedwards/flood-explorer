@@ -1009,6 +1009,119 @@ import './inertial-grid.js';
     return { img: waterImg, count: n };
   }
 
+  /* ---- 5 m flood edges from LiDAR (display only) ----
+   * Zoomed in (z15+) on a model with LiDAR, the flood in view is redrawn at
+   * 5 m: the model's water level (ground + depth of the flooded cells
+   * around each spot, distance-weighted) against GA's 5 m bare-earth LiDAR,
+   * so edges follow banks, kerbs and house pads instead of 30 m squares.
+   * Water only reaches spots next to a flooded model cell, and where there
+   * is no LiDAR the model's own cells show as before. The coarse layer is
+   * cut out (clip-path) under the 5 m patch. Statistics are unchanged. */
+  const FINE_Z = 15, FINE_M = 5, FINE_MAX_PX = 1800, FINE_SNAP = 0.004;   // snap boxes to ~400 m so pans reuse fetches
+  let fine = null, fineTimer = null, fineGen = 0;
+  const fineCache = new Map();   // box key -> Promise<raster | null>
+  function scheduleFine() { clearTimeout(fineTimer); fineTimer = setTimeout(() => { updateFine().catch((err) => { status.fine = { error: String(err) }; clearFine(); }); }, 300); }
+  function clearFine() {
+    if (!fine) return;
+    if (fine.ov) fine.ov.remove();
+    if (fine.coarse && fine.coarse.getElement()) fine.coarse.getElement().style.clipPath = '';
+    if (fine.url) setTimeout(() => URL.revokeObjectURL(fine.url), 2000);
+    fine = null;
+  }
+  function fineLidar(box, W, H) {
+    const key = `${box.map((v) => v.toFixed(5)).join(',')}:${W}x${H}`;
+    if (!fineCache.has(key)) {
+      fineCache.set(key, fetchLidarBox(box, W, H).catch(() => null));
+      while (fineCache.size > 16) fineCache.delete(fineCache.keys().next().value);
+    }
+    return fineCache.get(key);
+  }
+  async function updateFine() {
+    const m = state.lmap, a = state.a, run = state.run, g = state.geo, coarse = state.overlay;
+    const meta = state.areaMeta;
+    const on = m && a && run && g && coarse && useLidar() && m.getZoom() >= FINE_Z && colorMode() === 'depth'
+      && !$('showRelief').checked && meta && meta.lidarShare > 0;
+    if (!on) { clearFine(); status.fine = null; return; }
+    const vb = m.getBounds().pad(0.15);
+    const snapDn = (v) => Math.floor(v / FINE_SNAP) * FINE_SNAP, snapUp = (v) => Math.ceil(v / FINE_SNAP) * FINE_SNAP;
+    const box = [Math.max(g.west, snapDn(vb.getWest())), Math.max(g.south, snapDn(vb.getSouth())), Math.min(g.east, snapUp(vb.getEast())), Math.min(g.north, snapUp(vb.getNorth()))];
+    if (box[0] >= box[2] || box[1] >= box[3]) { clearFine(); return; }
+    const midLat = (box[1] + box[3]) / 2;
+    const W = Math.round(((box[2] - box[0]) * 111320 * Math.cos((midLat * Math.PI) / 180)) / FINE_M), H = Math.round(((box[3] - box[1]) * 110574) / FINE_M);
+    if (W < 2 || H < 2 || W > FINE_MAX_PX || H > FINE_MAX_PX) { clearFine(); return; }
+    const gen = ++fineGen, areaKey = state.areaKey, t0 = performance.now();
+    const r = await fineLidar(box, W, H);
+    if (gen !== fineGen || areaKey !== state.areaKey || run !== state.run) return;   // superseded
+    if (!r || r.iw !== W || r.ih !== H) { clearFine(); status.fine = { lidar: false }; return; }
+    // the coarse picture as drawn now: copied where there is no LiDAR
+    const coarseImg = composeWater().img.data;
+    const out = new ImageData(W, H), d = out.data;
+    const gw = g.east - g.west, gh = g.north - g.south;
+    let have = 0;
+    for (let py = 0; py < H; py++) {
+      const lat = box[3] - ((py + 0.5) / H) * (box[3] - box[1]);
+      const fy = ((g.north - lat) / gh) * a.H - 0.5;
+      for (let px = 0; px < W; px++) {
+        const lon = box[0] + ((px + 0.5) / W) * (box[2] - box[0]);
+        const fx = ((lon - g.west) / gw) * a.W - 0.5;
+        const cx = Math.min(a.W - 1, Math.max(0, Math.round(fx))), cy = Math.min(a.H - 1, Math.max(0, Math.round(fy)));
+        const ci = cy * a.W + cx, o = (py * W + px) * 4, h = r.data[py * W + px];
+        if (!(Number.isFinite(h) && h !== r.nd && h > -100 && h < 9000)) {   // no LiDAR: the model's own cell
+          const co = ci * 4;
+          d[o] = coarseImg[co]; d[o + 1] = coarseImg[co + 1]; d[o + 2] = coarseImg[co + 2]; d[o + 3] = coarseImg[co + 3];
+          continue;
+        }
+        have++;
+        // water level from flooded model cells around this spot
+        let ws = 0, wsum = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = cy + dy;
+          if (yy < 0 || yy >= a.H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = cx + dx;
+            if (xx < 0 || xx >= a.W) continue;
+            const k = yy * a.W + xx;
+            if (!a.valid[k] || !run.wet[k] || !isFlood(k)) continue;
+            const w = 1 / (0.25 + (xx - fx) ** 2 + (yy - fy) ** 2);
+            ws += w * (a.dem[k] + run.depth[k]); wsum += w;
+          }
+        }
+        const dep = wsum ? ws / wsum - h : 0;
+        if (dep > 0.02) {
+          const band = depthBand(dep), col = DEPTH_STOPS[band][1];
+          d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = band === 0 ? DEPTH_ALPHA[0] : 255;
+        } else if (!(run.wet[ci] && isFlood(ci))) {   // normal river tint etc. as the model draws it
+          const co = ci * 4;
+          d[o] = coarseImg[co]; d[o + 1] = coarseImg[co + 1]; d[o + 2] = coarseImg[co + 2]; d[o + 3] = coarseImg[co + 3];
+        }
+      }
+    }
+    if (have < 0.02 * W * H) { clearFine(); status.fine = { lidar: false }; return; }
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    c.getContext('2d').putImageData(out, 0, 0);
+    const blob = await new Promise((ok) => c.toBlob(ok, 'image/png'));
+    if (!blob || gen !== fineGen || areaKey !== state.areaKey) return;
+    const url = URL.createObjectURL(blob);
+    const bounds = window.L.latLngBounds([box[1], box[0]], [box[3], box[2]]);
+    if (fine && fine.coarse !== coarse) clearFine();
+    if (!fine) {
+      fine = { coarse, ov: subpixelImageOverlay(url, bounds, { opacity: parseFloat($('floodOpacity').value) / 100, interactive: false, className: 'flood-layer flood-fine', zIndex: 6 }).addTo(m), url };
+    } else {
+      const old = fine.url;
+      fine.ov.setUrl(url); fine.ov.setBounds(bounds); fine.url = url;
+      setTimeout(() => URL.revokeObjectURL(old), 2000);
+    }
+    // cut the coarse layer out under the 5 m patch (percentages of its box, in map projection)
+    const merc = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+    const yN = merc(g.north), yS = merc(g.south), pct = (v) => `${(v * 100).toFixed(4)}%`;
+    const x0 = pct((box[0] - g.west) / gw), x1 = pct((box[2] - g.west) / gw);
+    const y0 = pct((yN - merc(box[3])) / (yN - yS)), y1 = pct((yN - merc(box[1])) / (yN - yS));
+    const el = coarse.getElement();
+    if (el) el.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x0} ${y0}, ${x1} ${y0}, ${x1} ${y1}, ${x0} ${y1}, ${x0} ${y0})`;
+    status.fine = { W, H, lidar: +(have / (W * H)).toFixed(2), ms: Math.round(performance.now() - t0) };
+  }
+
   // What the flood colours show: depth, hazard class, or the change from a
   // pinned scenario. Hazard colours run light to dark (viridis), the
   // comparison uses orange and purple, so both read without colour vision.
@@ -1799,6 +1912,7 @@ import './inertial-grid.js';
       // rasters smoothly there so the shoreline is soft; crisp cells below
       const syncSmooth = () => m.getContainer().classList.toggle('flood-smooth', m.getZoom() >= 15);
       m.on('zoomend', syncSmooth); syncSmooth();
+      m.on('moveend', () => scheduleFine());
       m.on('zoomend', declutterPins);
       m.on('layeradd layerremove', syncLayerLists);
       window.__floodTestZoom = (lat, lng, z) => { m.setView([lat, lng], z, { animate: false }); };   // returns nothing: a Leaflet map can't be serialised by the test driver
@@ -2644,6 +2758,7 @@ import './inertial-grid.js';
       status.overlayUpdates++;
       if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
     }, 'image/png');
+    scheduleFine();
     if (state.gauge >= 0) {
       state.gaugeMarker.setLatLng(cellLatLng(state.gauge));
       declutterPins();
@@ -2708,6 +2823,7 @@ import './inertial-grid.js';
       a.overlay.setOpacity(parseFloat(e.target.value) / 100);
       if (a.relief) a.relief.setOpacity(parseFloat(e.target.value) / 100);
     }
+    if (fine && fine.ov) fine.ov.setOpacity(parseFloat(e.target.value) / 100);
     $('floodOpacityOut').textContent = e.target.value + '%';
   });
   $('showRelief').addEventListener('change', () => { if (state.geo) drawGeoMap(); });
@@ -6087,6 +6203,9 @@ import './inertial-grid.js';
     const midLat = (box[1] + box[3]) / 2;
     const W = Math.round((box[2] - box[0]) * 111320 * Math.cos((midLat * Math.PI) / 180) / cellL);
     const H = Math.round((box[3] - box[1]) * 110574 / cellL);
+    return fetchLidarBox(box, W, H);
+  }
+  async function fetchLidarBox(box, W, H) {
     // the request format GA's LiDAR service accepts (GDA94 works), found once per visit
     const variants = [['EPSG:4283', null], [null, null]];
     let r = null, lastErr = null;

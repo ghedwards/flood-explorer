@@ -59,6 +59,8 @@ const OUT = process.env.OUT || "shots";
       if (g) await page.evaluate(([la, lo]) => window.__floodTestZoom(la, lo, 16), [g.lat ?? g[0], g.lng ?? g[1]]);
       await settle(page, 4000);
     });
+    await settle(page, 4000);   // the 5 m LiDAR edges load after the move
+    report.fine_z16 = await page.evaluate(() => window.__floodStatus.fine);
     await shot(page, "04b-street-z16");
     await run("key-collapsed", async () => { await page.click("#legendToggle"); await settle(page, 1000); });
     await shot(page, "04c-key-collapsed");
@@ -72,6 +74,17 @@ const OUT = process.env.OUT || "shots";
       await settle(page, 5000);
     });
     await shot(page, "06-big-flood");
+    // a big flood's edges through town at street level: 5 m LiDAR edges
+    for (const [z, dx, name] of [[16, 0, "06b-big-flood-z16"], [15, -0.012, "06c-big-flood-z15"]]) {
+      await run(name, async () => {
+        const g = await page.evaluate(() => window.__floodGaugeLatLng && window.__floodGaugeLatLng());
+        if (g) await page.evaluate(([la, lo, zz]) => window.__floodTestZoom(la, lo, zz), [g.lat ?? g[0], (g.lng ?? g[1]) + dx, z]);
+        await settle(page, 9000);
+        report[`fine_${name}`] = await page.evaluate(() => window.__floodStatus.fine);
+      });
+      await shot(page, name);
+    }
+    await run("back-out", async () => { await page.evaluate(() => { const m = window.__floodMap; if (m) m.setZoom(12, { animate: false }); }); await settle(page, 3000); });
     await run("basemap-street", async () => { await page.evaluate(() => window.__floodSetBasemap && window.__floodSetBasemap("Streets")); await settle(page, 4000); });
     await shot(page, "07-street-basemap");
     await page.close();
