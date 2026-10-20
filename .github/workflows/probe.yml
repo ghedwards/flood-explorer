@@ -1,5 +1,5 @@
 name: Probe data sources
-# temporary: which Bureau FTP products carry gauges' flood class levels
+# temporary: do other states' real-time portals answer like Queensland's?
 on:
   push:
     branches: ["probe-*"]
@@ -9,30 +9,22 @@ jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Look for flood class levels in river products
+      - name: Hydstra web services (NSW, Victoria and others)
         run: |
           set +e
-          B=ftp://ftp.bom.gov.au/anon/gen/fwo
-          curl -sS -m 120 --list-only "$B/" -o list.txt
-          for st in Q N V S T W D; do
-            echo "::notice title=ID${st}6 products::$(grep -E "^ID${st}6[0-9]{4}" list.txt | sed 's/\..*//' | sort -u | head -40 | tr '\n' ' ')"
-          done
-          # river height bulletins and similar: which mention flood class levels?
-          for f in $(grep -E '^ID[QNV]6[0-9]{4}\.(txt|html)$' list.txt | head -40); do
-            curl -sS -m 30 "$B/$f" -o f.bin
-            hits=$(grep -ci 'minor\|moderate\|major\|flood class' f.bin)
-            title=$(grep -m1 -i 'bulletin\|river height\|flood' f.bin | tr -s ' ' | head -c 150)
-            echo "::notice title=$f ($(wc -c < f.bin) bytes, $hits class words)::$title"
-          done
-      - name: Sample one that has class levels
-        run: |
-          set +e
-          B=ftp://ftp.bom.gov.au/anon/gen/fwo
-          curl -sS -m 120 --list-only "$B/" -o list.txt
-          for f in $(grep -E '^IDQ6[0-9]{4}\.(txt|html)$' list.txt | head -60); do
-            curl -sS -m 30 "$B/$f" -o f.bin
-            if grep -qi 'moderate' f.bin && grep -qi 'major' f.bin; then
-              echo "::notice title=sample $f::$(head -c 2500 f.bin | tr '\n\r\t' '   ')"
-              break
-            fi
-          done
+          now=$(TZ=Australia/Brisbane date +%Y%m%d%H%M%S); from=$(TZ=Australia/Brisbane date -d '-30 hours' +%Y%m%d%H%M%S)
+          try() {  # host site
+            q='{"function":"get_ts_traces","version":"2","params":{"site_list":"'$2'","datasource":"A","varfrom":"100.00","varto":"100.00","start_time":"'$from'","end_time":"'$now'","data_type":"mean","interval":"hour","multiplier":"1"}}'
+            for ds in A AT CP PROV; do
+              qq=${q/\"datasource\":\"A\"/\"datasource\":\"$ds\"}
+              code=$(curl -sS -m 60 -o o.json -w '%{http_code}' -G "https://$1/cgi/webservice.exe" --data-urlencode "$qq")
+              echo "::notice title=$1 $2 $ds HTTP $code::$(head -c 500 o.json | tr '\n' ' ')"
+              grep -q '"trace"' o.json && grep -q '"v"' o.json && break
+            done
+            q2='{"function":"get_site_list","version":"1","params":{"site_list":"GROUP(OPEN_STATIONS)"}}'
+            curl -sS -m 60 -G "https://$1/cgi/webservice.exe" --data-urlencode "$q2" -o s.json
+            echo "::notice title=$1 site list::$(python3 -c "import json;d=json.load(open('s.json'));s=d.get('return',{}).get('sites',[]);print(len(s), s[:8])" 2>&1 | head -c 300)"
+          }
+          try realtimedata.waternsw.com.au 410001
+          try data.water.vic.gov.au 405200
+          try water.data.sa.gov.au A4260504
