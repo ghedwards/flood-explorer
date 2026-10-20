@@ -49,6 +49,20 @@ const assert = require('node:assert/strict');
     assert.equal(px(55, 40)[3], 0, 'the dry east half stays clear');
   });
 
+  test('low ground: depth against LiDAR from the water level, not the coarse ground', () => {
+    // the coarse model has a hole (ground -3 m) where LiDAR shows 1 m; the
+    // run counts only the 1 m above normal as depth but keeps the 2 m level
+    const lowDem = dem.slice(), lowDepth = depth.slice(), level = new Float32Array(N).fill(NaN);
+    for (let i = 0; i < N; i++) if (wet[i]) { lowDem[i] = -3; lowDepth[i] = 1; level[i] = 2; }
+    const p = params(full);
+    p.dem = lowDem; p.depth = lowDepth;
+    const without = fineRaster(p);
+    const px = (r, x, y) => Array.from(r.rgba.slice((y * W + x) * 4, (y * W + x) * 4 + 4));
+    assert.equal(px(without, 2, 40)[3], 0, 'ground + depth (-2 m) is below the LiDAR ground: dry, wrongly');
+    p.level = level;
+    assert.deepEqual(px(fineRaster(p), 2, 40), [3, 3, 3, 255], 'level 2 m on 1 m LiDAR ground: 1 m deep');
+  });
+
   test('hazard: 5 m depth with the speed around, AIDR 7-3 limits', () => {
     const hzCls = new Uint8Array(N), hzVel = new Float32Array(N);
     for (let i = 0; i < N; i++) if (wet[i]) { hzCls[i] = 3; hzVel[i] = 1.5; }

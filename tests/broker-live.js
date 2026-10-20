@@ -93,10 +93,19 @@ const OUT = process.env.OUT || "shots";
   } catch (e) {
     r.fatal = String(e && e.stack || e);
   } finally {
-    await browser.close();
+    // results first: a crashed browser must not lose them
+    fs.mkdirSync(OUT, { recursive: true });
+    fs.writeFileSync(path.join(OUT, "broker-live.json"), JSON.stringify(r, null, 1));
+    await browser.close().catch((e) => { r.closeError = String(e); });
   }
-  fs.mkdirSync(OUT, { recursive: true });
   fs.writeFileSync(path.join(OUT, "broker-live.json"), JSON.stringify(r, null, 1));
   console.log(JSON.stringify(r, null, 1));
+  // the gist as run notices (readable without the screenshots branch)
+  const note = (t, v) => console.log(`::notice title=${t}::${JSON.stringify(v).slice(0, 900)}`);
+  if (r.readings) note("broker readings", { ...r.readings, watch: undefined, seaSample: undefined });
+  if (r.readings && r.readings.watch) note("broker watch list", r.readings.watch);
+  if (r.watchPanel) note("map watch panel", r.watchPanel);
+  if (r.watchOpened) note("watch item opened", r.watchOpened);
+  if (r.fatal) note("broker-live fatal", r.fatal);
   if (r.fatal || !r.broker || r.broker.status !== 200 || !r.reportLive || !r.mapReadings || r.mapReadings.readingsSource !== "runtime") process.exitCode = 1;
 })();

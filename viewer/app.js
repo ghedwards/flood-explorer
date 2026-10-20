@@ -1349,7 +1349,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const base = state.base, win = fineWindow(box, g, a.W, a.H), crop = (arr, k) => cropGrid(arr, a.W, win, k);
     const p = {
       W, H, box, g: { west: g.west, east: g.east, north: g.north, south: g.south }, aW: a.W, aH: a.H, ...win,
-      dem: crop(a.dem), valid: crop(a.valid), ocean: crop(a.ocean), wet: crop(run.wet), depth: crop(run.depth),
+      dem: crop(a.dem), valid: crop(a.valid), ocean: crop(a.ocean), wet: crop(run.wet), depth: crop(run.depth), level: run.level ? crop(run.level) : null,
       baseWet: base && base.wet ? crop(base.wet) : null, baseDepth: base && base.wet && base.depth ? crop(base.depth) : null,
       hzCls: hz ? crop(hz.cls) : null, hzVel: hz ? crop(hz.vel) : null,
       coarse: crop(composeWater().img.data, 4),   // the model's own picture: shown where there's no LiDAR

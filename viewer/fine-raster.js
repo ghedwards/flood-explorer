@@ -9,8 +9,11 @@
  *   g               { west, east, north, south } of the model grid
  *   aW, aH          model grid size (cells)
  *   x0, y0, ww, wh  the window of model cells passed in (arrays are ww×wh)
- *   dem, valid, ocean, wet, depth, baseWet, baseDepth, hzCls, hzVel
- *                   model arrays for the window (baseDepth/hz* may be null)
+ *   dem, valid, ocean, wet, depth, level, baseWet, baseDepth, hzCls, hzVel
+ *                   model arrays for the window (level/baseDepth/hz* may be
+ *                   null). level is the water level itself: on low ground the
+ *                   model counts depth from the normal water surface, so
+ *                   ground + depth there understates the level
  *   coarse          the model's own RGBA picture for the window
  *   lidar, nd       W×H heights (metres) and the no-data value
  *   depthStops      [[upper limit, [r, g, b]], ...], depthAlpha0 (shallowest band's alpha)
@@ -58,7 +61,10 @@ export function fineRaster(p) {
           if (p.baseWet && p.baseWet[k]) nBase++;
           if (!p.valid[k] || p.ocean[k]) continue;
           const w = 1 / (0.25 + (xx - fx) ** 2 + (yy - fy) ** 2);
-          if (p.wet[k]) { ws += w * (p.dem[k] + p.depth[k]); wsum += w; }
+          if (p.wet[k]) {
+            const lv = p.level && Number.isFinite(p.level[k]) ? p.level[k] : p.dem[k] + p.depth[k];
+            ws += w * lv; wsum += w;
+          }
           if (hz && p.hzCls[k]) { vs += w * p.hzVel[k]; vsum += w; }
           if (p.baseDepth && p.baseWet[k]) { bs += w * (p.dem[k] + p.baseDepth[k]); bsum += w; }
         }
