@@ -82,11 +82,21 @@ const OUT = process.env.OUT || "shots";
     // what the impact count and the flooded-roads layer cost: load, the
     // per-scenario sweep and the drawing, at 9 m and again at 7 m
     await run("impact-roads", async () => {
+      // the user's path: Layers panel, tick the roads layer (no count yet)
+      await page.click('.tool[data-open="panel-layers"]');
+      await settle(page, 800);
       const t0 = Date.now();
-      report.impact = await page.evaluate(() => window.__floodCountImpact());
+      await page.click('#overlayList input[data-layer="Flooded (red) and cut-off (orange) roads"]');
+      await page.waitForTimeout(300);
+      report.layerStateStart = await page.evaluate(() => JSON.parse(JSON.stringify(window.__floodStatus.layerState || {})));
+      await page.waitForFunction(() => { const s = (window.__floodStatus.layerState || {})["Flooded (red) and cut-off (orange) roads"]; return s && s.kind !== "loading"; }, null, { timeout: 60000 });
       report.impactWallMs = Date.now() - t0;
-      await page.evaluate(() => window.__floodSetOverlay("Flooded (red) and cut-off (orange) roads", true));
-      await settle(page, 2000);
+      report.impact = await page.evaluate(() => window.__floodStatus.impact);
+      report.layerState9 = await page.evaluate(() => JSON.parse(JSON.stringify(window.__floodStatus.layerState || {})));
+      await settle(page, 1000);
+      await shot(page, "06f-layers-roads-on");
+      await page.click('.tool[data-open="panel-layers"]');
+      await settle(page, 500);
       report.impactTiming9 = await page.evaluate(() => window.__floodStatus.impactTiming);
       const t1 = Date.now();
       await page.evaluate(() => window.__floodSetLevel(7));

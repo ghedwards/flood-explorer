@@ -1938,7 +1938,8 @@ import './inertial-grid.js';
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
-      m.on('overlayadd', (e) => { if (e.layer === roadsLayer) renderImpact(); });
+      // the Layers checkboxes add layers directly (layeradd, not overlayadd)
+      m.on('layeradd', (e) => { if (e.layer === roadsLayer) roadsLayerOn(); });
       m.on('zoomend', syncLayerLists);
       // smooth raster scaling while any zoom motion runs (wheel gesture or
       // animated zoom), crisp pixelated cells at rest — see styles.css
@@ -2237,6 +2238,10 @@ import './inertial-grid.js';
         hint.addEventListener('click', () => m.setZoom(zn.min));
       }
       input.checked = m.hasLayer(overlays[name]);
+      const stEl = document.createElement('span');
+      stEl.className = 'layer-state'; stEl.dataset.for = name;
+      lab.appendChild(stEl);
+      trackLayer(name, overlays[name]);
       input.addEventListener('change', () => {
         overlays[name].userOn = input.checked;
         if (input.checked) overlays[name].addTo(m); else m.removeLayer(overlays[name]);
@@ -2246,6 +2251,86 @@ import './inertial-grid.js';
       ol.appendChild(lab);
       if (hint) ol.appendChild(hint);
     });
+  }
+
+  /* Per-layer feedback in the Layers list: loading, shown, nothing in view,
+   * or couldn't load — from the layer's own events (tiles, esri image and
+   * feature layers); layers drawn at once just show as on. */
+  const layerState = {};
+  function setLayerState(name, kind, text) {
+    if (kind) layerState[name] = { kind, text }; else delete layerState[name];
+    status.layerState = layerState;
+    renderLayerStates();
+  }
+  function renderLayerStates() {
+    document.querySelectorAll('#overlayList .layer-state').forEach((el) => {
+      const st = layerState[el.dataset.for];
+      const l = layerRegistry && layerRegistry.overlays[el.dataset.for];
+      const on = l && layerRegistry.m.hasLayer(l);
+      el.hidden = !(st && on);
+      if (st) { el.textContent = st.text; el.dataset.kind = st.kind; }
+    });
+  }
+  function trackLayer(name, layer) {
+    if (!layer || layer._fbWired) return;
+    layer._fbWired = true;
+    const L = window.L;
+    const async = (L.GridLayer && layer instanceof L.GridLayer) || typeof layer.setLayers === 'function' || typeof layer.query === 'function'
+      || (layer.getLayers && layer.getLayers().some((c) => L.GridLayer && c instanceof L.GridLayer));
+    let ok = 0, bad = 0, slowT = 0;
+    const loading = () => {
+      ok = 0; bad = 0;
+      setLayerState(name, 'loading', 'Loading…');
+      clearTimeout(slowT);
+      slowT = setTimeout(() => { if ((layerState[name] || {}).kind === 'loading') setLayerState(name, 'loading', 'Still loading (the service is slow)…'); }, 15000);
+    };
+    const done = () => {
+      clearTimeout(slowT);
+      const m = layerRegistry && layerRegistry.m;
+      if (m && layer.options && layer.options.minZoom && m.getZoom() < layer.options.minZoom) { setLayerState(name, null); return; }   // the zoom hint says it
+      if (bad && !ok) { setLayerState(name, 'error', "Couldn't load: the service may be down. Try again later."); return; }
+      if (typeof layer.eachFeature === 'function') {
+        let n = 0; layer.eachFeature(() => { n++; });
+        if (!n) { setLayerState(name, 'empty', 'Nothing mapped in this view'); return; }
+      }
+      setLayerState(name, 'done', bad ? 'Shown (some parts failed to load)' : 'Shown');
+    };
+    layer.on('loading', loading);
+    layer.on('load', done);
+    layer.on('tileload', () => { ok++; });
+    layer.on('tileerror requesterror', () => { bad++; });
+    layer.on('add', () => {
+      if (layer === roadsLayer) return;   // roadsLayerOn reports
+      if (async) loading();   // layers drawn at once need no note
+    });
+    layer.on('remove', () => { clearTimeout(slowT); setLayerState(name, null); });
+  }
+
+  // The flooded-roads lines need the impact count (buildings, roads, sites)
+  // for the active model: switching the layer on starts it, and the list says
+  // what it's doing and what it found.
+  const ROADS_NAME = 'Flooded (red) and cut-off (orange) roads';
+  function roadsLayerOn() {
+    const area = state.areaKey && areaReg.get(state.areaKey);
+    if (!area || !state.a) { setLayerState(ROADS_NAME, 'note', 'Needs a flood model: pick a river town or tap the map to model a place first.'); return; }
+    if (!area.impact) {
+      if (area.impactLoading) return;
+      area.impactLoading = true;
+      setLayerState(ROADS_NAME, 'loading', 'Fetching roads and buildings for this model…');
+      countImpact().finally(() => { area.impactLoading = false; roadsReport(); });
+      return;
+    }
+    renderImpact();
+    roadsReport();
+  }
+  function roadsReport() {
+    if (!roadsLayer || !state.lmap || !state.lmap.hasLayer(roadsLayer)) return;
+    const s = status.impact;
+    if (!s) { setLayerState(ROADS_NAME, 'note', 'Needs a flood model: pick a river town or tap the map to model a place first.'); return; }
+    if (s.loading) return;
+    if (s.error) { setLayerState(ROADS_NAME, 'error', `Couldn't fetch roads: ${s.error}`); return; }
+    const km = (v) => (v < 1 ? `${Math.round(v * 1000)} m` : `${v.toFixed(1)} km`);
+    setLayerState(ROADS_NAME, 'done', s.cutKm > 0 ? `${km(s.cutKm)} of road under water (red)${s.isolated ? `; ${s.isolated.toLocaleString('en-AU')} dry buildings cut off (orange)` : ''}` : 'No roads under water at this level');
   }
 
   function registerOverlay(name, layer) {
@@ -2269,6 +2354,7 @@ import './inertial-grid.js';
     document.querySelectorAll('#basemapList input').forEach((inp, i) => {
       inp.checked = Object.keys(layerRegistry.layers)[i] === status.basemap;
     });
+    renderLayerStates();
   }
 
   function leaveGeoMode() {
@@ -5303,7 +5389,11 @@ import './inertial-grid.js';
     const area = state.areaKey && areaReg.get(state.areaKey);
     if (!box || !area) return;
     const d = area.impact;
-    if (!d) { box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); impactDrawn = null; return; }
+    if (!d) {
+      box.innerHTML = ''; status.impact = null; if (impactLayer) impactLayer.clearLayers(); if (roadsLayer) roadsLayer.clearLayers(); impactDrawn = null;
+      if (roadsLayer && state.lmap && state.lmap.hasLayer(roadsLayer) && !area.impactLoading) setTimeout(roadsLayerOn, 0);   // the layer is on: count this model too
+      return;
+    }
     if (d.error) { box.innerHTML = `<p class="hint">Couldn't fetch what's here: ${escapeHtml(d.error)}.</p>`; return; }
     const r = computeImpact(d, true);
     if (!r) return;
@@ -5363,6 +5453,7 @@ import './inertial-grid.js';
       }
       impactShown = { areaKey: state.areaKey, run: state.run };
       if ($('impactStale')) $('impactStale').hidden = true;
+      roadsReport();
     }
   }
   async function countImpact() {
