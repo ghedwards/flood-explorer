@@ -1121,7 +1121,6 @@ import './inertial-grid.js';
   async function open3d() {
     const mod = await import('./scene3d.js');
     if (view3d) return;
-    document.body.classList.remove('in3d-scenario');
     // Terrain streams on demand as web-mercator tiles (v4); modelled places
     // contribute water surfaces.
     view3d = mod.openScene3d({
@@ -1150,10 +1149,8 @@ import './inertial-grid.js';
       },
       onScrub: (k) => { scheduleTimeStep(k); },
       onUnsupported: (text) => say(text),
-      onClose: () => { view3d = null; document.body.classList.remove('in3d-scenario'); syncPanels(); for (const ar of areaReg.values()) delete ar.__area3d; },
+      onClose: () => { view3d = null; for (const ar of areaReg.values()) delete ar.__area3d; },
     });
-    const st = document.querySelector('.tool[data-open="panel-scenario"]');
-    if (view3d && st) st.setAttribute('aria-pressed', 'false');   // its panel is hidden while in 3D
   }
   // the visible map box as [s, w, n, e]; null when the map isn't open
   function viewBounds3d() {
@@ -6725,17 +6722,6 @@ import './inertial-grid.js';
       else openPanel(id);
     });
   });
-  // in 3D the Scenario button shows/hides the scenario panel over the view
-  // (the left cards are hidden by CSS while body.in3d), without touching the
-  // panel's collapsed state
-  const scenarioTool = document.querySelector('.tool[data-open="panel-scenario"]');
-  if (scenarioTool) {
-    scenarioTool.addEventListener('click', (e) => {
-      if (!document.body.classList.contains('in3d')) return;
-      e.stopImmediatePropagation();
-      scenarioTool.setAttribute('aria-pressed', String(document.body.classList.toggle('in3d-scenario')));
-    }, true);
-  }
   document.querySelectorAll('[data-close]').forEach((b) => {
     b.addEventListener('click', () => closePanel(b.closest('[data-panel]').id));
   });
@@ -6762,10 +6748,9 @@ import './inertial-grid.js';
   }
   $('readout').addEventListener('click', () => { $('readout').hidden = true; });
 
-  $('legendToggle').addEventListener('click', (e) => {
-    const shown = e.target.getAttribute('aria-expanded') === 'true';
-    e.target.setAttribute('aria-expanded', String(!shown));
-    e.target.textContent = shown ? 'Show key' : 'Hide key';
+  $('legendToggle').addEventListener('click', () => {
+    const t = $('legendToggle'), shown = t.getAttribute('aria-expanded') === 'true';
+    t.setAttribute('aria-expanded', String(!shown));
     if (shown) $('overlayLegend').hidden = true; else renderOverlayLegend();
     renderModeLegend();
   });
@@ -6800,8 +6785,7 @@ import './inertial-grid.js';
     setPlacesCollapsed(isPhone());
     if (isPhone()) {
       $('panel-scenario').hidden = true;
-      const t = $('legendToggle');   // the key starts as a chip on phones
-      t.setAttribute('aria-expanded', 'false'); t.textContent = 'Show key';
+      $('legendToggle').setAttribute('aria-expanded', 'false');   // the key starts collapsed on phones
       renderModeLegend();
     }
     addSheetGrips();

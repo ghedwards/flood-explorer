@@ -421,8 +421,13 @@
   </div>
 </aside>
 
-<div class="legend-card float" id="legendCard">
-  <div class="summary" id="summaryLine"></div>
+<section class="legend-card float" id="legendCard" aria-label="Map key">
+  <button type="button" class="legend-head" id="legendToggle" aria-expanded="true" aria-controls="legendBody">
+    <span class="legend-title">Key</span>
+    <span class="summary" id="summaryLine"></span>
+    <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+  </button>
+  <div class="legend-body" id="legendBody">
   <label class="show-mode">Show <select id="colorMode" aria-label="What the flood colours show">
     <option value="depth" selected>water depth</option>
     <option value="hazard">hazard (H1–H6)</option>
@@ -447,8 +452,8 @@
     <span><i class="dot warn"></i>Flood warning</span>
   </div>
   <div class="legend" id="overlayLegend" hidden aria-label="Extra layers legend"></div>
-  <button type="button" class="legend-toggle" id="legendToggle" aria-expanded="true">Hide key</button>
-</div>
+  </div>
+</section>
 
 <div class="readout float" id="readout" role="status" aria-live="polite" hidden></div>
 <div class="study-hint float" id="studyHint" role="status" hidden>Drag a box over the area to study, or press Enter on the map to study the area in view. <button type="button" class="link-btn" id="studyCancel">Cancel</button></div>
