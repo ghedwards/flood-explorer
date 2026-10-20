@@ -9,11 +9,16 @@
 //!   CACHE_MINUTES     default 10
 //!   TRUST_PROXY       "1": the client address comes from X-Forwarded-For
 //!   WORKERS           default 16
+//!   READINGS_REFRESH_MINUTES  default 15 (0: don't serve /v1/readings fresh)
+//!   READINGS_BUCKET   S3 bucket for the shared readings file (Lambda)
+//!   STATIONS_URL      the site's stations.json (which gauges to fetch)
 //!
 //! On AWS Lambda (AWS_LAMBDA_RUNTIME_API set) it serves a function URL
 //! through the runtime API instead (see lambda.rs); built as `bootstrap`
 //! for the provided.al2023 runtime.
 
+use flood_broker::readings::{self, Readings, Store};
+use flood_broker::s3::Bucket;
 use flood_broker::{http_fetch, Broker, Config, Request, Response};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -98,10 +103,30 @@ fn main() {
         origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
         cache_ms: env("CACHE_MINUTES").and_then(|v| v.parse::<f64>().ok()).map_or(10 * 60_000, |m| (m * 60_000.0) as i64),
     };
+    // readings for the whole map: in S3 when a bucket is given (Lambda),
+    // otherwise in memory
+    let store = match env("READINGS_BUCKET") {
+        Some(name) => Store::S3(Bucket { name, region: env("AWS_REGION").unwrap_or_else(|| "ap-southeast-2".into()) }),
+        None => Store::Memory,
+    };
+    let in_memory = matches!(store, Store::Memory);
+    let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)));
     // on AWS Lambda (a function URL): the runtime API loop instead of a socket
     if let Some(api) = env("AWS_LAMBDA_RUNTIME_API") {
-        let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg);
+        let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg).with_readings(rd);
         flood_broker::lambda::run(&api, &broker);
+    }
+    // on a server: refresh in the background
+    let every = env("READINGS_REFRESH_MINUTES").and_then(|v| v.parse::<u64>().ok()).unwrap_or(15);
+    if in_memory && every > 0 {
+        let rd = rd.clone();
+        std::thread::spawn(move || loop {
+            match rd.refresh() {
+                Ok(s) => println!("readings refreshed: {}", s),
+                Err(e) => eprintln!("readings refresh failed: {}", e),
+            }
+            std::thread::sleep(Duration::from_secs(every * 60));
+        });
     }
     let trust_proxy = env("TRUST_PROXY").as_deref() == Some("1");
     let workers = env("WORKERS").and_then(|v| v.parse::<usize>().ok()).unwrap_or(16).clamp(1, 256);
@@ -110,7 +135,7 @@ fn main() {
         eprintln!("flood-broker: can't listen on {}: {}", addr, e);
         std::process::exit(1);
     });
-    let broker = Arc::new(Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg));
+    let broker = Arc::new(Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg).with_readings(rd));
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(workers * 16);
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..workers {

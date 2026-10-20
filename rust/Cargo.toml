@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["vendor/wbraster"]
-members = ["flood-core", "flood-wasm", "flood-node", "flood-pipeline", "flood-broker"]
+members = ["flood-core", "flood-wasm", "flood-node", "flood-pipeline", "flood-broker", "flood-feeds"]
 
 [profile.release]
 opt-level = 3

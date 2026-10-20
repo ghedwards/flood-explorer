@@ -1,12 +1,22 @@
 # Deploying the broker to AWS Lambda
 
+The broker does two jobs:
+
+- **Live readings for the whole map** (`/v1/readings`). A schedule refreshes
+  every river level and dam volume every 15 minutes, using the same code as
+  the site build: Water Data Online, plus Queensland's live levels. The file
+  is kept in a private S3 bucket.
+- **Live Queensland levels on request** (`/v1/levels`), for gauge reports.
+
 The broker (`rust/flood-broker`) runs on AWS Lambda behind a function URL:
 a public HTTPS address, with no server, proxy or certificate to look after.
 GitHub Actions builds it and deploys it to your account
 (`.github/workflows/broker-deploy.yml`). It signs in to AWS with GitHub's
 short-lived OpenID Connect token, so no AWS keys are stored in GitHub.
 
-**Cost:** an arm64 function with 128 MB is well inside Lambda's free tier
+**Cost:** the function is arm64 with 256 MB. The 15-minute refresh is
+about 3,000 runs a month of a minute or two each. With visits on top, that
+stays well inside Lambda's free tier
 (1 million requests and 400,000 GB-seconds a month), and function URLs are
 free. The only other charge is CloudWatch logs, which are kept for 30 days.
 
@@ -21,9 +31,12 @@ free. The only other charge is CloudWatch logs, which are kept for 30 days.
    Tick the box acknowledging that it creates IAM roles, then create.
 
    It makes:
+   - **A private S3 bucket** for the readings file.
+   - **A 15-minute schedule** that invokes the function to refresh the
+     readings.
    - **The GitHub sign-in provider**, unless you set it to `false`.
    - **`flood-broker-exec`**: the role the function runs as. It can only
-     write its own logs.
+     write its own logs and read and write the readings file.
    - **`flood-broker-github-deploy`**: a role that only this repository's
      `main` branch can use, and only to manage the one `flood-broker`
      function.
@@ -44,8 +57,22 @@ free. The only other charge is CloudWatch logs, which are kept for 30 days.
    `https://abc123.lambda-url.ap-southeast-2.on.aws`.
 
 4. **Point the map at it.** Add the repository variable `FLOOD_BROKER_URL`
-   with that URL. The next site build (on push, or the 3-hourly schedule)
-   uses it. Queensland gauge reports then show a green "live" level.
+   with that URL. The next site build (on push, or on its schedule) uses
+   it. Queensland gauge reports then show a green "live" level.
+
+5. **Choose where the readings come from.** Use the repository variable
+   `DATA_SOURCE`:
+   - `build` (or unset): readings come from the site build, every 3 hours,
+     as before.
+   - `runtime`: the map fetches readings from the broker, which refreshes
+     them every 15 minutes, and falls back to the build's copy if the broker
+     can't be reached. The 3-hourly build runs are then skipped. The nightly
+     build still refreshes everything else (gauge lists, recorded floods,
+     tides, Flood Hub forecasts).
+
+   For one visit, add `?data=build` or `?data=runtime` to the address. The
+   About notice says how old the readings are, and "(live)" when they came
+   from the broker.
 
 After that, every change to `rust/flood-broker` merged into `main`
 redeploys the function. The URL stays the same.

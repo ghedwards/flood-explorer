@@ -30,3 +30,4 @@ wbtools_oss = { git = "https://github.com/opengeos/whitebox-wasm", rev = "f0076c
 
 # Workspace sibling: flood-core's flood model is included in parity checks.
 flood-core = { path = "../flood-core" }
+flood-feeds = { path = "../flood-feeds" }

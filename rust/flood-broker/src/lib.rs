@@ -13,6 +13,8 @@
 //! it with a stand-in portal and clock; `main.rs` puts it on a socket.
 
 pub mod lambda;
+pub mod readings;
+pub mod s3;
 pub mod wmip;
 
 use serde_json::{json, Map, Value};
@@ -85,6 +87,7 @@ pub struct Broker {
     st: Mutex<State>,
     slots: Condvar,
     open_lock: Mutex<()>,
+    readings: Option<Arc<readings::Readings>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -94,7 +97,29 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Broker {
     pub fn new(fetch: Box<wmip::FetchJson>, now: Box<dyn Fn() -> i64 + Send + Sync>, cfg: Config) -> Self {
         let started = now();
-        Broker { fetch, now, cfg, started, st: Mutex::new(State::default()), slots: Condvar::new(), open_lock: Mutex::new(()) }
+        Broker { fetch, now, cfg, started, st: Mutex::new(State::default()), slots: Condvar::new(), open_lock: Mutex::new(()), readings: None }
+    }
+
+    /// Serve /v1/readings from these readings.
+    pub fn with_readings(mut self, r: Arc<readings::Readings>) -> Self {
+        self.readings = Some(r);
+        self
+    }
+
+    /// Fetch every reading again (the schedule's job): a short summary.
+    pub fn refresh_readings(&self) -> Value {
+        match &self.readings {
+            None => json!({"ok": false, "error": "readings are not set up"}),
+            Some(r) => match r.refresh() {
+                Ok(s) => json!({"ok": true, "summary": s}),
+                Err(e) => {
+                    let mut st = lock(&self.st);
+                    st.upstream_errors += 1;
+                    st.last_error = Some(((self.now)(), format!("readings refresh: {}", e)));
+                    json!({"ok": false, "error": e})
+                }
+            },
+        }
     }
 
     /// One portal call, at most UPSTREAM_AT_ONCE at a time.
@@ -238,6 +263,24 @@ impl Broker {
         Response { status, headers, body }
     }
 
+    fn reply_raw(&self, req: &Request, status: u16, body: Vec<u8>, extra: &[(&str, &str)]) -> Response {
+        let mut r = self.reply(req, status, &Value::Null, extra);
+        r.body = if req.method == "HEAD" { Vec::new() } else { body };
+        r
+    }
+
+    fn serve_readings(&self, req: &Request) -> Response {
+        let Some(rd) = &self.readings else { return self.reply(req, 404, &json!({"error": "not found"}), &[]) };
+        match rd.latest() {
+            Ok(Some(doc)) => {
+                let age = (((self.now)() - doc.fetched_ms) / 1000).max(0).to_string();
+                self.reply_raw(req, 200, doc.body.as_ref().clone(), &[("Cache-Control", "public, max-age=120"), ("X-Readings-Age", &age)])
+            }
+            Ok(None) => self.reply(req, 503, &json!({"error": "readings haven't been fetched yet"}), &[("Retry-After", "60"), ("Cache-Control", "no-store")]),
+            Err(e) => self.reply(req, 502, &json!({"error": format!("readings store: {}", e)}), &[("Cache-Control", "no-store")]),
+        }
+    }
+
     pub fn handle(&self, req: &Request) -> Response {
         lock(&self.st).requests += 1;
         let (path, query) = req.target.split_once('?').unwrap_or((req.target, ""));
@@ -257,11 +300,14 @@ impl Broker {
             drop(st);
             return self.reply(req, 200, &body, &[("Cache-Control", "no-store")]);
         }
-        if path != "/v1/levels" {
+        if path != "/v1/levels" && path != "/v1/readings" {
             return self.reply(req, 404, &json!({"error": "not found"}), &[]);
         }
         if !self.allowed(req.client) {
             return self.reply(req, 429, &json!({"error": "too many requests"}), &[("Retry-After", "30")]);
+        }
+        if path == "/v1/readings" {
+            return self.serve_readings(req);
         }
         let raw = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "sites").map(|(_, v)| wmip::decode(v)).unwrap_or_default();
         let mut ids: Vec<String> = Vec::new();
@@ -321,12 +367,12 @@ impl Broker {
     }
 }
 
-/// The real portal call: ureq with a 20-second budget per phase.
-pub fn http_fetch(url: &str) -> Result<Value, String> {
+/// A JSON GET with a budget (seconds) per phase.
+pub fn fetch_with_timeout(url: &str, secs: u64) -> Result<Value, String> {
     use std::io::Read;
-    let t = Some(Duration::from_secs(20));
+    let t = Some(Duration::from_secs(secs));
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(t)
+        .timeout_connect(Some(Duration::from_secs(secs.min(30))))
         .timeout_send_request(t)
         .timeout_recv_response(t)
         .timeout_recv_body(t)
@@ -340,11 +386,16 @@ pub fn http_fetch(url: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     let code = r.status().as_u16();
     let mut body = Vec::new();
-    r.body_mut().as_reader().take(20 << 20).read_to_end(&mut body).map_err(|e| e.to_string())?;
+    r.body_mut().as_reader().take(64 << 20).read_to_end(&mut body).map_err(|e| e.to_string())?;
     if code >= 400 {
         return Err(format!("HTTP {}", code));
     }
     serde_json::from_slice(&body).map_err(|e| format!("not JSON: {}", e))
+}
+
+/// The real portal call for /v1/levels: 20 seconds per phase.
+pub fn http_fetch(url: &str) -> Result<Value, String> {
+    fetch_with_timeout(url, 20)
 }
 
 #[cfg(test)]
@@ -478,6 +529,25 @@ mod tests {
         assert_eq!(ok.load(Ordering::SeqCst), 10);
         assert_eq!(p.count("get_ts_traces"), 1);
         assert_eq!(p.count("get_site_list"), 1);
+    }
+
+    #[test]
+    fn readings_route() {
+        let (_, _, b) = setup(0);
+        assert_eq!(get(&b, "/v1/readings", None).0, 404, "not set up");
+        let (_, _, b) = setup(0);
+        let b = Arc::try_unwrap(b).ok().unwrap();
+        let http = |u: &str, _: &[(String, String)]| -> Result<Value, String> {
+            if u.contains("stations") { Ok(json!({"level": ["540198"], "storage": []})) } else if u.contains("webservice") { Ok(json!({"error_num": 0, "return": {"sites": []}})) } else { Err("down".into()) }
+        };
+        let rd = Arc::new(readings::Readings::new(Box::new(http), readings::Store::Memory, "https://x/stations.json".into(), Box::new(|| 1_800_000_000_000)));
+        let b = b.with_readings(rd);
+        let (s, v, _) = get(&b, "/v1/readings", Some("https://ghedwards.github.io"));
+        assert_eq!(s, 503, "{}", v);
+        let r = b.refresh_readings();
+        assert_eq!(r["ok"], false, "nothing fetched is an error");
+        let (_, v, _) = get(&b, "/health", None);
+        assert!(v["lastError"]["message"].as_str().unwrap().contains("readings refresh"));
     }
 
     #[test]

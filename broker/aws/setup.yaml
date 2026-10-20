@@ -35,7 +35,26 @@ Resources:
         - 6938fd4d98bab03faadb97b34396831e3780aea1
         - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
 
-  # what the function runs as: write its own logs, nothing else
+  # the shared readings file, refreshed by the schedule below
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${FunctionName}-data-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+
+  # what the function runs as: its own logs and the readings file
   ExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -48,12 +67,61 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: readings-file
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "${DataBucket.Arn}/readings.json"
+              - Effect: Allow
+                Action: s3:ListBucket   # so a missing file is a 404, not a 403
+                Resource: !GetAtt DataBucket.Arn
 
   Logs:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${FunctionName}"
       RetentionInDays: 30
+
+  # every 15 minutes: refresh the readings (Bureau of Meteorology and
+  # Queensland), so the site build no longer has to
+  ScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: invoke-flood-broker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}:*"
+
+  RefreshSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${FunctionName}-refresh-readings"
+      Description: Refresh Flood Explorer's river and dam readings
+      ScheduleExpression: rate(15 minutes)
+      FlexibleTimeWindow: { Mode: "OFF" }
+      State: ENABLED
+      Target:
+        Arn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
+        RoleArn: !GetAtt ScheduleRole.Arn
+        Input: '{"flood_broker": "refresh"}'
+        RetryPolicy: { MaximumRetryAttempts: 0 }
 
   # what GitHub Actions on the main branch may do: manage this one function
   DeployRole:
@@ -101,6 +169,9 @@ Resources:
                     iam:PassedToService: lambda.amazonaws.com
 
 Outputs:
+  DataBucket:
+    Description: where the readings file lives (the deploy finds it by name)
+    Value: !Ref DataBucket
   DeployRoleArn:
     Description: set as the repository variable AWS_DEPLOY_ROLE_ARN
     Value: !GetAtt DeployRole.Arn

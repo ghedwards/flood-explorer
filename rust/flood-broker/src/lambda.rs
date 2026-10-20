@@ -41,6 +41,12 @@ pub fn to_lambda(r: &Response) -> Value {
 }
 
 pub fn handle_event(broker: &Broker, e: &Value) -> Value {
+    // the schedule's own event: refresh the readings (not an HTTP request)
+    if e.get("flood_broker").and_then(Value::as_str) == Some("refresh") {
+        let r = broker.refresh_readings();
+        println!("refresh {}", r);
+        return r;
+    }
     let ev = parse_event(e);
     let r = broker.handle(&Request { method: &ev.method, target: &ev.target, origin: ev.origin.as_deref(), client: &ev.client });
     to_lambda(&r)

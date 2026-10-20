@@ -524,7 +524,9 @@ dependencies = [
 name = "flood-broker"
 version = "0.1.0"
 dependencies = [
+ "flood-feeds",
  "httparse",
+ "ring",
  "serde_json",
  "ureq 3.4.2",
 ]
@@ -532,6 +534,13 @@ dependencies = [
 [[package]]
 name = "flood-core"
 version = "0.1.0"
+
+[[package]]
+name = "flood-feeds"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "flood-node"
@@ -545,6 +554,7 @@ name = "flood-pipeline"
 version = "0.1.0"
 dependencies = [
  "flood-core",
+ "flood-feeds",
  "miniz_oxide 0.9.1",
  "png 0.18.1",
  "regex",

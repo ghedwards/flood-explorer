@@ -19,6 +19,8 @@ export default defineConfig({
   define: {
     "import.meta.env.VITE_BUILD": JSON.stringify((process.env.GITHUB_SHA || "dev").slice(0, 8)),
     "import.meta.env.VITE_BROKER": JSON.stringify(process.env.FLOOD_BROKER_URL || ""),
+    // where the map's readings come from: "build" (default) or "runtime"
+    "import.meta.env.VITE_DATA_SOURCE": JSON.stringify(process.env.DATA_SOURCE || "build"),
   },
   server: {
     host: "127.0.0.1",

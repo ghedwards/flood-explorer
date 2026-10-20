@@ -44,6 +44,29 @@ const OUT = process.env.OUT || "shots";
       fs.mkdirSync(OUT, { recursive: true });
       await page.screenshot({ path: path.join(OUT, "14-live-level.png") });
     }
+    // readings for the whole map from the broker (it fetches them on start)
+    let rd = null;
+    for (let i = 0; i < 40; i++) {
+      const res2 = await fetch(`${BROKER}/v1/readings`, { headers: { origin: new URL(SITE).origin } });
+      if (res2.status === 200) { rd = { status: 200, cors: res2.headers.get("access-control-allow-origin"), body: await res2.json() }; break; }
+      rd = { status: res2.status };
+      await new Promise((ok) => setTimeout(ok, 10000));
+    }
+    r.readings = rd && rd.body ? {
+      status: rd.status, cors: rd.cors, fetched: rd.body.fetched, levels: Object.keys(rd.body.level || {}).length,
+      storages: Object.keys(rd.body.storage || {}).length, realtime: Object.values(rd.body.level || {}).filter((x) => x.latestKind === "realtime").length,
+      errors: (rd.body.errors || []).length,
+    } : rd;
+    if (rd && rd.body) {
+      const page2 = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+      await page2.goto(SITE, { waitUntil: "load", timeout: 90000 });
+      await page2.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
+      r.mapReadings = await page2.evaluate(() => { const n = window.__floodStatus.national; return { dataSource: n.dataSource, readingsSource: n.readingsSource, fetched: n.readingsFetched, levels: n.levelReadings }; });
+      const p3 = await browser.newPage();
+      await p3.goto(SITE + "?data=build", { waitUntil: "load", timeout: 90000 });
+      await p3.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
+      r.mapReadingsOverride = await p3.evaluate(() => window.__floodStatus.national.readingsSource);
+    }
     r.health = await (await fetch(`${BROKER}/health`)).json();
     r.errors = errors.slice(0, 5);
   } catch (e) {
@@ -54,5 +77,5 @@ const OUT = process.env.OUT || "shots";
   fs.mkdirSync(OUT, { recursive: true });
   fs.writeFileSync(path.join(OUT, "broker-live.json"), JSON.stringify(r, null, 1));
   console.log(JSON.stringify(r, null, 1));
-  if (r.fatal || !r.broker || r.broker.status !== 200 || !r.reportLive) process.exitCode = 1;
+  if (r.fatal || !r.broker || r.broker.status !== 200 || !r.reportLive || !r.mapReadings || r.mapReadings.readingsSource !== "runtime") process.exitCode = 1;
 })();

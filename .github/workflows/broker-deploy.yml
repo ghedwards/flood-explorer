@@ -4,7 +4,7 @@ name: Live data broker (AWS Lambda)
 # function URL. Other branches only check that it builds.
 on:
   push:
-    branches: [main, 2d-broker]
+    branches: [main, "2d-*"]
     paths:
       - "rust/flood-broker/**"
       - "rust/Cargo.lock"
@@ -57,15 +57,16 @@ jobs:
           set -euo pipefail
           account=$(aws sts get-caller-identity --query Account --output text)
           role="arn:aws:iam::${account}:role/${FUNCTION}-exec"
-          envjson=$(jq -nc --arg o "$ORIGINS" '{Variables: {ALLOWED_ORIGINS: $o, CACHE_MINUTES: "10"}}')
+          bucket="${FUNCTION}-data-${account}-${AWS_REGION}"
+          envjson=$(jq -nc --arg o "$ORIGINS" --arg b "$bucket" '{Variables: {ALLOWED_ORIGINS: $o, CACHE_MINUTES: "10", READINGS_BUCKET: $b}}')
           if aws lambda get-function --function-name "$FUNCTION" > /dev/null 2>&1; then
             aws lambda update-function-code --function-name "$FUNCTION" --zip-file fileb://lambda/flood-broker.zip --architectures arm64 > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION"
-            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 128 --timeout 30 --environment "$envjson" > /dev/null
+            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 256 --timeout 300 --environment "$envjson" > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION"
           else
             aws lambda create-function --function-name "$FUNCTION" --runtime provided.al2023 --architectures arm64 --handler bootstrap \
-              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 128 --timeout 30 --environment "$envjson" \
+              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 256 --timeout 300 --environment "$envjson" \
               --description "Flood Explorer live river levels (github.com/${GITHUB_REPOSITORY})" --tags project=flood-explorer > /dev/null
             aws lambda wait function-active-v2 --function-name "$FUNCTION"
           fi
@@ -90,6 +91,10 @@ jobs:
           fi
           url=$(aws lambda get-function-url-config --function-name "$FUNCTION" --query FunctionUrl --output text)
           url="${url%/}"
+          # first readings now rather than at the next quarter hour
+          aws lambda invoke --function-name "$FUNCTION" --cli-binary-format raw-in-base64-out --cli-read-timeout 320 \
+            --payload '{"flood_broker":"refresh"}' refresh.json > /dev/null || true
+          echo "::notice title=Readings refresh::$(head -c 400 refresh.json 2>/dev/null)"
           echo "URL=$url" >> "$GITHUB_ENV"
           echo "::notice title=Broker URL::$url (set the repository variable FLOOD_BROKER_URL to this)"
       - name: Smoke test
@@ -102,4 +107,7 @@ jobs:
           echo "levels: HTTP $code"; head -c 600 levels.json; echo
           grep -i '^access-control-allow-origin: https://ghedwards.github.io' h.txt
           test "$code" = 200
+          rcode=$(curl -s -o readings.json -w '%{http_code}' "$URL/v1/readings")
+          echo "readings: HTTP $rcode, $(wc -c < readings.json) bytes"
+          python3 -c "import json;d=json.load(open('readings.json'));print('fetched',d.get('fetched'),'levels',len(d.get('level',{})),'storages',len(d.get('storage',{})))" || true
           echo "::notice title=Broker live::$(head -c 300 levels.json)"

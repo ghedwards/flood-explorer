@@ -26,6 +26,10 @@ concurrency:
 
 jobs:
   build:
+    # with DATA_SOURCE=runtime the broker keeps readings fresh, so the
+    # 3-hourly runs (fresh readings and forecasts) are skipped; the nightly
+    # run still refreshes everything else
+    if: github.event_name != 'schedule' || github.event.schedule != '17 */3 * * *' || vars.DATA_SOURCE != 'runtime'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -105,6 +109,8 @@ jobs:
         env:
           # the live data broker (broker/README.md); a repository variable
           FLOOD_BROKER_URL: ${{ vars.FLOOD_BROKER_URL }}
+          # "runtime": the map takes readings from the broker (DATA_SOURCE)
+          DATA_SOURCE: ${{ vars.DATA_SOURCE }}
         run: |
           mkdir -p site/data
           npm run build

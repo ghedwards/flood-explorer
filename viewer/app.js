@@ -242,6 +242,18 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
    * links carry places in the address (#s=…), so the address is kept
    * without it. */
   const APP_BUILD = (import.meta.env && import.meta.env.VITE_BUILD) || 'dev';
+  // The live data broker (broker/, rust/flood-broker), and where readings
+  // come from: "build" (the site build's copy, refreshed every 3 hours) or
+  // "runtime" (the broker, refreshed every 15 minutes, with the build's copy
+  // as the fallback). Set at build time (DATA_SOURCE); ?data=build|runtime
+  // overrides it for one visit.
+  const BROKER = String((import.meta.env && import.meta.env.VITE_BROKER) || '').replace(/\/+$/, '');
+  const DATA_SOURCE = (() => {
+    let v = '';
+    try { v = new URLSearchParams(location.search).get('data') || ''; } catch (e) { /* no query */ }
+    v = (v || (import.meta.env && import.meta.env.VITE_DATA_SOURCE) || 'build').toLowerCase();
+    return v === 'runtime' && BROKER ? 'runtime' : 'build';
+  })();
   const PROBLEMS_KEY = 'floodExplorer.problems.v1', PROBLEMS_SEEN_KEY = 'floodExplorer.problemsSeen', PROBLEMS_MAX = 100;
   const problems = (() => { try { const v = JSON.parse(localStorage.getItem(PROBLEMS_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } })();
   let problemsSeen = (() => { try { return localStorage.getItem(PROBLEMS_SEEN_KEY) || ''; } catch (e) { return ''; } })();
@@ -3677,7 +3689,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       const nm = nat.data && nat.data.meta;
       html = '<strong>Australia-wide.</strong> Tap a flood gauge, tide gauge or dam for a report, or tap anywhere to model flooding there from the national elevation model. Gauges, dams and readings: Bureau of Meteorology'
         + (nm && nm.realtimeReadings ? `; live Queensland river levels © State of Queensland, CC BY 4.0` : '')
-        + (nm && nm.fetched ? `, updated ${escapeHtml(ago(nm.fetched))}` : '') + '. Not official warnings.';
+        + ((nat.readingsFetched || (nm && nm.fetched)) ? `, readings updated ${escapeHtml(ago(nat.readingsFetched || nm.fetched))}${nat.readingsSource === 'runtime' ? ' (live)' : ''}` : '') + '. Not official warnings.';
     } else if (m.local) {
       html = `<strong>Screening only.</strong> ${escapeHtml(m.source || '')} It includes buildings and trees in some places and misses levees and drains. Do not use for evacuation or property decisions.`;
     } else if (m.synthetic) {
@@ -3806,8 +3818,19 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       const gaugeFile = get('gauges-core.min.json').then(decodeCompact)
         .catch(() => { split = false; return get('gauges.min.json').then(decodeCompact); })
         .catch(() => { split = false; return get('gauges.geojson'); });
-      const [gauges, storages, readings, meta] = await Promise.all([
-        gaugeFile, get('storages.geojson'), get('readings.json'), get('meta.json')]);
+      // readings: the broker's when the switch says so, else (or if it fails) the build's
+      const live = DATA_SOURCE === 'runtime'
+        ? fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(8000) }).then((r) => {
+          if (r.status === 503) return null;   // just started: nothing fetched yet
+          if (!r.ok) throw new Error(`broker readings: HTTP ${r.status}`);
+          return r.json();
+        }).catch((err) => { logProblem('live', 'Live readings unavailable; using the site build\'s', String(err && err.message || err)); return null; })
+        : Promise.resolve(null);
+      const [gauges, storages, built, meta, fresh] = await Promise.all([
+        gaugeFile, get('storages.geojson'), get('readings.json').catch((err) => (DATA_SOURCE === 'runtime' ? null : Promise.reject(err))), get('meta.json'), live]);
+      const readings = fresh && fresh.level ? fresh : built || { level: {}, storage: {} };
+      nat.readingsSource = fresh && fresh.level ? 'runtime' : 'build';
+      nat.readingsFetched = (fresh && fresh.level && fresh.fetched) || (meta && meta.fetched) || null;
       nat.data = { gauges: gauges.features || [], storages: storages.features || [], meta };
       nat.readings = readings;
       if (split) setTimeout(() => ensureRiverGauges(), 1500); else riverP = Promise.resolve();
@@ -3823,6 +3846,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
       loaded: true, gauges: nat.data.gauges.length, storages: nat.data.storages.length,
       levelReadings: Object.keys(nat.readings.level || {}).length,
       storageReadings: Object.keys(nat.readings.storage || {}).length,
+      dataSource: DATA_SOURCE, readingsSource: nat.readingsSource || 'build', readingsFetched: nat.readingsFetched || null,
     };
     return nat.data;
   }
@@ -4287,14 +4311,13 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 
   // Live levels through the Flood Explorer broker (broker/server.mjs), for
   // the state portals a browser can't ask directly. Only Queensland so far.
-  const BROKER = String(import.meta.env.VITE_BROKER || '').replace(/\/+$/, '');
   const QLD_SITE = /^[0-9]{6}[A-Z]$/;
   const liveAsked = new Map();          // station -> time asked (ms)
   const LIVE_MS = 5 * 60e3;
   async function refreshLiveLevel(p, box) {
     const st = String(p.station || '');
     const qld = /^(QLD|QUEENSLAND)$/i.test(String(p.state || 'QLD'));
-    if (!BROKER || !box || !qld || !QLD_SITE.test(st)) return;
+    if (!BROKER || !box || !qld || !QLD_SITE.test(st) || nat.readingsSource === 'runtime') return;
     const asked = liveAsked.get(st);
     if (asked && Date.now() - asked < LIVE_MS) return;
     liveAsked.set(st, Date.now());

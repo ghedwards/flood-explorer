@@ -1,0 +1,10 @@
+[package]
+name = "flood-feeds"
+version = "0.1.0"
+edition = "2021"
+description = "Live feeds shared by Flood Explorer's data build and its live data broker: Water Data Online readings and Queensland's real-time river levels."
+license = "MIT"
+publish = false
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
