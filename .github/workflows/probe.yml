@@ -1,5 +1,5 @@
 name: Probe data sources
-# temporary: how to pick out flood warnings on the Bureau's FTP server
+# temporary: which Bureau FTP products carry gauges' flood class levels
 on:
   push:
     branches: ["probe-*"]
@@ -9,24 +9,30 @@ jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Index files and a CAP warning
+      - name: Look for flood class levels in river products
         run: |
           set +e
           B=ftp://ftp.bom.gov.au/anon/gen/fwo
-          for f in IDZ00107.xml IDZ00110.xml; do
-            curl -sS -m 60 "$B/$f" -o f.bin; echo "::notice title=$f::$(wc -c < f.bin) bytes: $(head -c 1500 f.bin | tr '\n\r\t' '   ')"
-          done
-          curl -sS -m 60 "$B/IDQ20860.cap.xml" -o c.xml; echo "::notice title=IDQ20860.cap.xml::$(wc -c < c.xml) bytes: $(head -c 2500 c.xml | tr '\n\r\t' '   ')"
-          curl -sS -m 60 "$B/IDQ20860.xml" -o x.xml
-          python3 - <<'PY'
-          import re
-          t = open('x.xml', errors='replace').read()
-          for tag in ['product-type', 'service', 'phenomenon', 'issue-time-utc', 'expiry-time', 'next-routine-issue-time-utc', 'status']:
-              m = re.search(r'<%s[^>]*>(.*?)</%s>' % (tag, tag), t, re.S)
-              print(f"::notice title=amoc {tag}::{m.group(1).strip()[:200] if m else None}")
-          print("::notice title=areas::" + " | ".join(re.findall(r'<area[^>]*description="([^"]+)"', t)[:12]))
-          print("::notice title=element types::" + " ".join(sorted(set(re.findall(r'<(?:element|text)[^>]*type="([^"]+)"', t)))[:40]))
-          print("::notice title=forecast-ish::" + " | ".join(re.findall(r'type="(?:forecast_[a-z_]+|river_height[a-z_]*)"[^>]*>([^<]{0,120})', t)[:8]))
-          PY
           curl -sS -m 120 --list-only "$B/" -o list.txt
-          echo "::notice title=amoc product types (sample of 40 ID?2/3 xml)::$(for f in $(grep -E '^ID[NQVSTWD][23][0-9]{4}\.xml$' list.txt | head -40); do curl -sS -m 20 "$B/$f" | grep -o '<product-type>[^<]*</product-type>\|<service>[^<]*</service>' | tr '\n' ' '; echo -n "$f; "; done)"
+          for st in Q N V S T W D; do
+            echo "::notice title=ID${st}6 products::$(grep -E "^ID${st}6[0-9]{4}" list.txt | sed 's/\..*//' | sort -u | head -40 | tr '\n' ' ')"
+          done
+          # river height bulletins and similar: which mention flood class levels?
+          for f in $(grep -E '^ID[QNV]6[0-9]{4}\.(txt|html)$' list.txt | head -40); do
+            curl -sS -m 30 "$B/$f" -o f.bin
+            hits=$(grep -ci 'minor\|moderate\|major\|flood class' f.bin)
+            title=$(grep -m1 -i 'bulletin\|river height\|flood' f.bin | tr -s ' ' | head -c 150)
+            echo "::notice title=$f ($(wc -c < f.bin) bytes, $hits class words)::$title"
+          done
+      - name: Sample one that has class levels
+        run: |
+          set +e
+          B=ftp://ftp.bom.gov.au/anon/gen/fwo
+          curl -sS -m 120 --list-only "$B/" -o list.txt
+          for f in $(grep -E '^IDQ6[0-9]{4}\.(txt|html)$' list.txt | head -60); do
+            curl -sS -m 30 "$B/$f" -o f.bin
+            if grep -qi 'moderate' f.bin && grep -qi 'major' f.bin; then
+              echo "::notice title=sample $f::$(head -c 2500 f.bin | tr '\n\r\t' '   ')"
+              break
+            fi
+          done
