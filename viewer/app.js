@@ -1050,7 +1050,9 @@ import './inertial-grid.js';
     if (!fineCache.has(key)) {
       // a failed fetch isn't kept, so a dropped request can be tried again
       fineCache.set(key, fetchLidarBox(box, W, H).catch(() => { fineCache.delete(key); return null; }));
-      while (fineCache.size > 16) fineCache.delete(fineCache.keys().next().value);
+      // a few recent views are enough for panning back (each can be ~7 MB);
+      // older ones come back from the offline cache, not the network
+      while (fineCache.size > 4) fineCache.delete(fineCache.keys().next().value);
     }
     return fineCache.get(key);
   }

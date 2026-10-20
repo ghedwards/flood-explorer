@@ -25,6 +25,10 @@ const MAX_Z = { terrarium: 14, demh: 12 };
 // own, sharper picture
 const IMG_MAX_Z = 18;
 const VIRTUAL_PER_SELECT = 24;    // upsampled tiles built per selection pass (cheap, but bounded)
+// height grids kept at the terrain's finest level for building the tiles
+// below it (~256 KB each); older ones are dropped and re-read from the
+// browser's cache when needed again (same data, so no loss of detail)
+const RASTER_KEEP = 32;
 const CACHE_CAP = 300;            // built terrain tiles kept
 const RETRY_MS = 60000;           // don't refetch a failed tile for a minute
 const MIN_Z = 6;                  // quadtree roots (~500 km tiles)
@@ -112,6 +116,7 @@ class Scene3d {
     this.needSelect = true;
     this.lastSelect = 0;
     this.knownBounds = [];        // [w, s, e, n] of every modelled area (tiles over them keep their raster)
+    this.rasterLru = new Map();   // finest-level tile key -> true, oldest first (see RASTER_KEEP)
     this.areaSig = '';
     this.imgQueue = new Map();    // tile key -> priority (imagery waiting to load)
     this.imgLoading = 0;
@@ -347,6 +352,14 @@ class Scene3d {
       open: !!document.getElementById('view3d'),
       source: this.source,
       tiles: { drawn: this.drawn.size, byZoom, pending: this.fetching + this.queue.size, cached, failed },
+      memory: (() => {   // height grids held (each distinct array once) and imagery textures
+        const seen = new Set(); let bytes = 0, tex = 0;
+        for (const st of this.cache.values()) {
+          if (st.raster && !seen.has(st.raster.data)) { seen.add(st.raster.data); bytes += st.raster.data.byteLength; }
+          if (st.tex) tex++;
+        }
+        return { heightGrids: seen.size, heightMB: +(bytes / 1048576).toFixed(1), textures: tex, textureMB: +(tex * 0.33).toFixed(0) };
+      })(),
       imagery: { on: this.imageryOn, loaded: this.imgLoaded, failed: this.imgFailed, pending: this.imgLoading + this.imgQueue.size },
       water: [...this.areaTiles.entries()].map(([key, t]) => ({ key, verts: t.water ? t.water.geometry.attributes.position.count : 0 })),
       cam: this.camera.position.toArray().map((v) => Math.round(v)),
@@ -381,6 +394,7 @@ class Scene3d {
     const raster = { data: anc.raster.data, n: anc.raster.n, sub: [(x - (anc.x << d)) * s, (y - (anc.y << d)) * s, s] };
     const st = { key, z, x, y, state: 'loading', heights: null, mesh: null, last: this.frame, failAt: 0, virtual: true };
     this.cache.set(key, st);
+    this.rasterLru.delete(anc.key); this.rasterLru.set(anc.key, true);   // recently used
     this.buildTile(st, raster);
     this.needSelect = true;
   }
@@ -429,6 +443,7 @@ class Scene3d {
         // below the terrain's finest level: built from that ancestor's raster
         const d = z - tz, anc = this.cache.get(`${tz}/${x >> d}/${y >> d}`);
         if (anc && anc.state === 'ready' && anc.raster) { if (virtualBudget-- > 0) this.buildVirtual(key, anc); }
+        else if (anc && anc.state === 'ready' && anc.rasterGone) this.reloadRaster(anc);
         else need(`${tz}/${x >> d}/${y >> d}`, pri);
         return;
       }
@@ -534,9 +549,15 @@ class Scene3d {
     const [w, n] = this.proj.fromScene(t.x0, t.z0), [e, s] = this.proj.fromScene(t.x1, t.z1);
     const box = [w, s, e, n];
     const areas = this.overrideAreas().filter((ar) => boxesOverlap(box, ar.bounds));
-    // kept for rebuilds under modelled areas, and at the terrain's finest
-    // level for the upsampled tiles below it (those share it, no copy)
-    st.raster = raster.sub || st.z === this.maxZ() || this.knownBounds.some((b) => boxesOverlap(box, b)) ? raster : null;
+    // kept for rebuilds under modelled areas, and (a bounded few, see
+    // RASTER_KEEP) at the terrain's finest level for the tiles below it.
+    // Tiles below that level only keep a reference to their ancestor's grid
+    // over a modelled area (to rebuild there); elsewhere they let it go
+    const overArea = this.knownBounds.some((b) => boxesOverlap(box, b));
+    st.overArea = overArea;
+    st.raster = overArea || (!raster.sub && st.z === this.maxZ()) ? raster : null;
+    st.rasterGone = false;
+    if (st.raster && !raster.sub && !overArea) { this.rasterLru.delete(st.key); this.rasterLru.set(st.key, true); this.trimRasters(); }
     let segs = TILE_SEGS;
     if (areas.length) {
       const spacing = Math.max(25, ...areas.map((ar) => ar.a.cell || 0));
@@ -575,6 +596,38 @@ class Scene3d {
     this.world.add(st.mesh);
   }
 
+  /* Drop the oldest kept height grids beyond RASTER_KEEP (not ones over a
+   * modelled area); reloadRaster brings one back when it's needed. */
+  trimRasters() {
+    for (const key of this.rasterLru.keys()) {
+      if (this.rasterLru.size <= RASTER_KEEP) break;
+      this.rasterLru.delete(key);
+      const st = this.cache.get(key);
+      if (st && st.raster && !st.overArea) { st.raster = null; st.rasterGone = true; }
+    }
+  }
+
+  /* Re-read a dropped height grid (the browser's cache answers, so no
+   * download); then optionally rebuild the tile with it. */
+  reloadRaster(st, rebuild) {
+    if (st.rasterLoading) return;
+    st.rasterLoading = true;
+    const source = this.source;
+    (source === 'terrarium' ? fetchTerrarium(st.z, st.x, st.y) : this.fetchDemhTile(st.z, st.x, st.y)).then((raster) => {
+      if (!this.controls || this.cache.get(st.key) !== st) return;
+      if (rebuild && st.mesh) {
+        const was = st.mesh, visible = was.visible;
+        this.world.remove(was); was.geometry.dispose(); was.material.dispose();
+        this.buildTile(st, raster);
+        st.mesh.visible = visible; st.imgFrom = null;
+      } else {
+        st.raster = raster; st.rasterGone = false;
+        this.rasterLru.delete(st.key); this.rasterLru.set(st.key, true); this.trimRasters();
+      }
+      this.needSelect = true; this.dirty = true;
+    }).catch(() => { /* stays dropped; tried again when next needed */ }).finally(() => { st.rasterLoading = false; });
+  }
+
   /* Rebuild the terrain under modelled areas when the set of areas (or
    * their grids) changes: swap geometry, keep the tile's imagery. */
   syncAreas() {
@@ -583,8 +636,21 @@ class Scene3d {
     const sig = areas.map((a) => (a.a && a.bounds ? `${a.key}:${a.a.W}x${a.a.H}:${a.bounds.join(',')}` : '')).join('|');
     if (sig === this.areaSig) return;
     this.areaSig = sig;
-    for (const st of this.cache.values()) {
-      if (st.state !== 'ready' || !st.raster) continue;
+    const tz = this.maxZ();
+    for (const st of [...this.cache.values()]) {
+      if (st.state !== 'ready') continue;
+      if (!st.raster) {
+        if (!this.knownBounds.length) continue;
+        const t = tileToScene(this.proj, st.z, st.x, st.y);
+        const [w, n] = this.proj.fromScene(t.x0, t.z0), [e, s2] = this.proj.fromScene(t.x1, t.z1);
+        if (!this.knownBounds.some((b) => boxesOverlap([w, s2, e, n], b))) continue;
+        // over a modelled area but its grid was let go: a tile below the
+        // terrain's finest level is rebuilt from its ancestor, a finest-level
+        // tile re-reads its grid
+        if (st.virtual) { this.disposeTile(st); this.cache.delete(st.key); this.rasterLru.delete(st.key); }
+        else if (st.z === tz && st.rasterGone) this.reloadRaster(st, true);
+        continue;
+      }
       const was = st.mesh, visible = was.visible;
       this.world.remove(was);
       was.geometry.dispose(); was.material.dispose();
@@ -607,6 +673,7 @@ class Scene3d {
       if (this.cache.size <= CACHE_CAP) break;
       this.disposeTile(st);
       this.cache.delete(st.key);
+      this.rasterLru.delete(st.key);
     }
   }
 
