@@ -1,5 +1,5 @@
 name: Probe data sources
-# temporary: what the storm tide and rain forecast services return (as notices)
+# temporary: what the Bureau's anonymous FTP server publishes for flood warnings
 on:
   push:
     branches: ["probe-*"]
@@ -9,40 +9,20 @@ jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Queensland storm tide and tide gauge datasets
+      - name: List the warnings folder
         run: |
           set +e
-          for id in coastal-data-system-near-real-time-storm-tide-data brisbane-bar-tide-gauge-near-real-time-data; do
-            curl -sS -m 60 "https://www.data.qld.gov.au/api/3/action/package_show?id=$id" -o p.json
-            python3 - "$id" <<'PY'
-          import json, sys
-          try:
-              d = json.load(open('p.json'))['result']
-          except Exception as e:
-              print(f"::notice title={sys.argv[1]}::{e} {open('p.json').read()[:300]}"); raise SystemExit
-          print(f"::notice title={sys.argv[1]} licence::{d.get('license_title')} | freq {d.get('update_freq') or d.get('frequency')} | {len(d['resources'])} resources")
-          for r in d['resources'][:12]:
-              print(f"::notice title=res {sys.argv[1][:20]}::{r.get('name')} | {r.get('format')} | {r.get('url')} | {r.get('last_modified')}")
-          PY
+          curl -sS -m 120 --list-only ftp://ftp.bom.gov.au/anon/gen/fwo/ -o list.txt
+          echo "::notice title=fwo files::$(wc -l < list.txt) files; $(head -c 300 list.txt | tr '\n' ' ')"
+          for st in Q N V S T W D; do
+            echo "::notice title=ID${st}2 (warnings?)::$(grep -E "^ID${st}2[0-9]{4}\." list.txt | sort | head -60 | tr '\n' ' ')"
           done
-      - name: Sample the storm tide files
+          echo "::notice title=IDZ::$(grep -E '^IDZ' list.txt | head -40 | tr '\n' ' ')"
+      - name: Sample Queensland flood warning files
         run: |
           set +e
-          curl -sS -m 60 "https://www.data.qld.gov.au/api/3/action/package_show?id=coastal-data-system-near-real-time-storm-tide-data" -o p.json
-          python3 -c "
-          import json
-          for r in json.load(open('p.json'))['result']['resources'][:3]: print(r['url'])" > urls.txt
-          while read u; do
-            curl -sS -m 60 -L "$u" -o f.bin; echo "::notice title=head $(basename "$u")::$(wc -c < f.bin) bytes: $(head -c 700 f.bin | tr '\n\r' '  ')"
-            echo "::notice title=tail $(basename "$u")::$(tail -c 400 f.bin | tr '\n\r' '  ')"
-          done < urls.txt
-      - name: Open-Meteo rain forecast (two places, one call)
-        run: |
-          set +e
-          curl -sS -m 60 -D h.txt "https://api.open-meteo.com/v1/forecast?latitude=-27.47,-23.38&longitude=153.03,150.51&hourly=precipitation&forecast_days=3&timezone=UTC" -o om.json
-          echo "::notice title=open-meteo headers::$(grep -i 'x-\|ratelimit\|content-length' h.txt | tr '\r\n' '  ')"
-          python3 -c "
-          import json
-          d=json.load(open('om.json'))
-          d = d if isinstance(d, list) else [d]
-          for x in d: print('::notice title=open-meteo point::', x.get('latitude'), x.get('longitude'), 'model', x.get('model') or x.get('generationtime_ms'), 'hours', len(x['hourly']['precipitation']), 'sum72', round(sum(v or 0 for v in x['hourly']['precipitation']),1))"
+          curl -sS -m 120 --list-only ftp://ftp.bom.gov.au/anon/gen/fwo/ -o list.txt
+          for f in $(grep -E '^IDQ20[0-9]{3}\.(xml|txt)$' list.txt | head -6); do
+            curl -sS -m 60 "ftp://ftp.bom.gov.au/anon/gen/fwo/$f" -o f.bin
+            echo "::notice title=$f::$(wc -c < f.bin) bytes: $(head -c 600 f.bin | tr '\n\r' '  ')"
+          done
