@@ -381,7 +381,7 @@ pub fn clean_nodata(g: &mut Grid, nodata: f64) {
     let mut valid = g.valid.take().unwrap_or_else(|| vec![1u8; n]);
     for (i, valid_cell) in valid.iter_mut().enumerate().take(n) {
         let v = g.dem[i] as f64;
-        if !v.is_finite() || v == nodata || v < -500.0 || v > 9000.0 {
+        if !v.is_finite() || v == nodata || !(-500.0..=9000.0).contains(&v) {
             *valid_cell = 0;
         }
     }

@@ -222,7 +222,9 @@ impl Readings {
         let prev = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
         // rain forecast near the flood network's gauges, every 3 hours
         if !st.coords.is_empty() {
-            match Self::carry(&prev, "rain", "rainFetched", started, RAIN_EVERY_MS) {
+            // reused for 3 hours, unless the last fetch left gauges out
+            let complete = prev.as_ref().is_none_or(|p| p["rainMissing"].as_u64().unwrap_or(0) == 0);
+            match Self::carry(&prev, "rain", "rainFetched", started, RAIN_EVERY_MS).filter(|_| complete) {
                 Some((rain, at)) => {
                     r["rain"] = rain;
                     r["rainFetched"] = at;
@@ -248,6 +250,8 @@ impl Readings {
                         r["rain"] = Value::Object(rain);
                         r["rainFetched"] = json!(crate::wmip::iso_utc((self.now)()));
                         r["rainCells"] = json!(cells.len());
+                        // cells that didn't arrive: try again next refresh, not in 3 hours
+                        r["rainMissing"] = json!(got.iter().filter(|x| x.is_none()).count());
                     } else if let Some((rain, at)) = Self::carry(&prev, "rain", "rainFetched", started, 12 * 3_600_000) {
                         r["rain"] = rain;
                         r["rainFetched"] = at;

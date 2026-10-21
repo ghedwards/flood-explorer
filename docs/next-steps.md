@@ -61,9 +61,9 @@ Shipped this round:
   `shots2d.yml`); fast-forward main only after it passes. Model changes need
   the downstream check (`tests/downstream-check.js`, ten preset towns:
   normal depth on the channel should be ~0.3 m, p90 low) before merging.
-- **The `shots-2d` branch holds only the latest run** (force-pushed). Two
-  branches' runs overwrite each other: run them one at a time and read the
-  results (`git archive origin/shots-2d | tar -x`) right after each finishes.
+- **The `shots-2d` branch holds only the latest run** (force-pushed); each
+  run is also pushed to `shots-2d--<branch>` (e.g. `shots-2d--2d-fixes`), so
+  read a branch's results there: `git archive origin/shots-2d--<branch> | tar -x`.
 - Job logs can't be downloaded from the agent sandbox; read check-run
   annotations (`gh api .../check-runs/<id>/annotations`, max 10 per step) and
   files the tests write to the shots branch (`broker-live.out`,

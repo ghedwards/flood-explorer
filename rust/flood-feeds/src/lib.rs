@@ -580,23 +580,45 @@ pub fn rain_cells(coords: &[(String, f64, f64)], max: usize) -> (Vec<(f64, f64)>
 /// batches of 100 locations, pausing between batches.
 pub fn rain_forecast(http: HttpJson, cells: &[(f64, f64)], now_s: i64, pause: &dyn Fn(), time_left: &dyn Fn() -> bool, errors: &mut Vec<String>) -> Vec<Option<(f64, f64)>> {
     let mut out = vec![None; cells.len()];
-    for (bi, chunk) in cells.chunks(100).enumerate() {
-        if bi > 0 {
+    let chunks: Vec<&[(f64, f64)]> = cells.chunks(100).collect();
+    // every batch once, then the ones that failed once more (a failed
+    // connection is usually momentary)
+    let mut order: Vec<usize> = (0..chunks.len()).collect();
+    let mut failed: Vec<usize> = Vec::new();
+    let mut retried = false;
+    let mut k = 0;
+    while k < order.len() {
+        let bi = order[k];
+        k += 1;
+        if k > 1 {
             pause();
         }
         if !time_left() {
-            errors.push(format!("rain forecast: out of time after {} of {} batches", bi, cells.len().div_ceil(100)));
+            errors.push(format!("rain forecast: out of time with {} of {} batches left", order.len() - k + 1 + failed.len(), chunks.len()));
             break;
         }
+        let chunk = chunks[bi];
         let lat = chunk.iter().map(|c| c.0.to_string()).collect::<Vec<_>>().join(",");
         let lon = chunk.iter().map(|c| c.1.to_string()).collect::<Vec<_>>().join(",");
         let res = match http(OPEN_METEO, &[p("latitude", lat), p("longitude", lon), p("hourly", "precipitation"), p("forecast_days", 4), p("timezone", "UTC"), p("timeformat", "unixtime")]) {
             Ok(r) => r,
             Err(e) => {
-                errors.push(format!("rain forecast batch {}: {}", bi, e));
+                if retried {
+                    errors.push(format!("rain forecast batch {} (second try): {}", bi, e));
+                } else {
+                    failed.push(bi);
+                }
+                if k == order.len() && !retried && !failed.is_empty() {
+                    order.append(&mut failed);
+                    retried = true;
+                }
                 continue;
             }
         };
+        if k == order.len() && !retried && !failed.is_empty() {
+            order.append(&mut failed);
+            retried = true;
+        }
         let list: Vec<Value> = match res {
             Value::Array(a) => a,
             one => vec![one],
@@ -735,6 +757,34 @@ mod tests {
         let many: Vec<(String, f64, f64)> = (0..400).map(|i| (format!("g{}", i), 140.0 + (i % 20) as f64 * 0.3, -30.0 + (i / 20) as f64 * 0.3)).collect();
         let (cells, _) = rain_cells(&many, 100);
         assert!(cells.len() <= 100, "{}", cells.len());
+    }
+
+    #[test]
+    fn a_failed_rain_batch_gets_a_second_try() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cells: Vec<(f64, f64)> = (0..150).map(|i| (-27.0 - i as f64 * 0.01, 153.0)).collect();
+        let reply = |n: usize| json!((0..n).map(|_| json!({"hourly": {"time": [0], "precipitation": [1.0]}})).collect::<Vec<_>>());
+        // the second batch fails once, then answers
+        let calls = AtomicUsize::new(0);
+        let http = |_: &str, ps: &[(String, String)]| -> Result<Value, String> {
+            let n = ps.iter().find(|x| x.0 == "latitude").map(|x| x.1.split(',').count()).unwrap_or(0);
+            let c = calls.fetch_add(1, Ordering::SeqCst);
+            if n == 50 && c == 1 { Err("timeout: connect".into()) } else { Ok(reply(n)) }
+        };
+        let mut errors = Vec::new();
+        let got = rain_forecast(&http, &cells, 0, &|| {}, &|| true, &mut errors);
+        assert!(got.iter().all(Option::is_some), "all 150 filled after the retry");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        // failing twice: reported once, the rest still filled
+        let always = |_: &str, ps: &[(String, String)]| -> Result<Value, String> {
+            let n = ps.iter().find(|x| x.0 == "latitude").map(|x| x.1.split(',').count()).unwrap_or(0);
+            if n == 50 { Err("timeout: connect".into()) } else { Ok(reply(n)) }
+        };
+        let mut errors = Vec::new();
+        let got = rain_forecast(&always, &cells, 0, &|| {}, &|| true, &mut errors);
+        assert_eq!(got.iter().filter(|x| x.is_some()).count(), 100);
+        assert_eq!(errors.len(), 1, "{errors:?}");
     }
 
     #[test]

@@ -148,3 +148,6 @@ jobs:
           git add -A
           git -c user.name="github-actions" -c user.email="github-actions@users.noreply.github.com" commit -qm "2D screenshots for ${GITHUB_REF_NAME} ${GITHUB_SHA::8}"
           git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" shots-2d
+          # and one per branch, so runs of two branches at once don't overwrite each other's results
+          own="shots-2d--$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "shots-2d:${own}" || echo "::warning::couldn't push ${own}"
