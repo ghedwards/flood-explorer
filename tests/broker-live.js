@@ -149,6 +149,11 @@ process.on("unhandledRejection", keep("unhandled rejection"));
         // once every 5 minutes: the button now waits
         return { button: true, refreshed: window.__floodStatus.liveRefresh || null, after: after ? { disabled: after.disabled, text: after.textContent } : null };
       }).catch((e) => String(e));
+      r.dataTimes = await page2.evaluate(async () => {
+        await window.__floodDataStatus();
+        const info = (document.getElementById("dataInfo") || {}).textContent || "";
+        return { info: info.replace(/\s+/g, " ").slice(0, 300), live: ((document.getElementById("dataStatus") || {}).innerText || "").replace(/\s+/g, " ").slice(0, 700) };
+      }).catch((e) => String(e));
       r.watchPanel = await page2.evaluate(() => window.__floodWatch && window.__floodWatch());
       if (r.watchPanel) r.watchPanel.list = r.watchPanel.list.slice(0, 6).map((w) => [w.kind, w.station, w.why]);
       await page2.screenshot({ path: path.join(OUT, "15-watch-list.png") });
@@ -203,6 +208,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
   if (r.versions) note("versions", r.versions);
   if (r.refreshNow) note("refresh now", r.refreshNow);
   if (r.secondVisit) note("second visit", r.secondVisit);
+  if (r.dataTimes) note("data times", r.dataTimes);
   if (r.history) note("hourly record", { report: r.history, api: r.historyApi });
   if (r.warningMap) note("warning on the map", r.warningMap);
   if (r.warningPeaks) note("warning peaks", r.warningPeaks);

@@ -3518,6 +3518,15 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     renderFloodHub();
   }
 
+  // "6 min ago (2:41 pm)": relative and the clock time (with the day when
+  // it isn't today), so a screenshot still says when
+  function when(iso) {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return '';
+    const d = new Date(t), today = new Date().toDateString() === d.toDateString();
+    const clock = d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    return `${ago(iso)} (${today ? clock : `${d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}, ${clock}`})`;
+  }
   function ago(iso) {
     const t = Date.parse(iso);
     if (!Number.isFinite(t)) return '';
@@ -3709,7 +3718,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       const nm = nat.data && nat.data.meta;
       html = '<strong>Australia-wide.</strong> Tap a flood gauge, tide gauge or dam for a report, or tap anywhere to model flooding there from the national elevation model. Gauges, dams and readings: Bureau of Meteorology'
         + (nm && nm.realtimeReadings ? `; live Queensland river levels © State of Queensland, CC BY 4.0` : '')
-        + ((nat.readingsFetched || (nm && nm.fetched)) ? `, readings updated ${escapeHtml(ago(nat.readingsFetched || nm.fetched))}${nat.readingsSource === 'runtime' ? ' (live)' : ''}` : '') + '. Not official warnings.';
+        + ((nat.readingsFetched || (nm && nm.fetched)) ? `, readings updated ${escapeHtml(when(nat.readingsFetched || nm.fetched))}${nat.readingsSource === 'runtime' ? ' (live)' : ''}` : '') + '. Not official warnings.';
     } else if (m.local) {
       html = `<strong>Screening only.</strong> ${escapeHtml(m.source || '')} It includes buildings and trees in some places and misses levees and drains. Do not use for evacuation or property decisions.`;
     } else if (m.synthetic) {
@@ -3728,7 +3737,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const lines = [];
     if (!a) {
       const nm = (nat.data && nat.data.meta) || {};
-      lines.push(`<span class="label">Data</span><br>${(nm.gauges || 0).toLocaleString('en-AU')} gauges and ${(nm.storages || 0).toLocaleString('en-AU')} dams from the Bureau of Meteorology${nm.fetched ? `, fetched ${escapeHtml(ago(nm.fetched))}` : ''}. On-demand terrain: Geoscience Australia DEM-H (about 30 m).`);
+      lines.push(`<span class="label">Data</span><br>${(nm.gauges || 0).toLocaleString('en-AU')} gauges and ${(nm.storages || 0).toLocaleString('en-AU')} dams from the Bureau of Meteorology${nat.readingsSource === 'runtime' && nat.readingsFetched
+        ? `; live readings fetched ${escapeHtml(when(nat.readingsFetched))}${nat.readingsSaved ? ' (saved from your last visit, checking for newer)' : ''} (the gauge list is from the site build, ${escapeHtml(when(nm.fetched))})`
+        : nm.fetched ? `, fetched ${escapeHtml(when(nm.fetched))} (the site build's copy)` : ''}. On-demand terrain: Geoscience Australia DEM-H (about 30 m).`);
       $('dataInfo').innerHTML = lines.join(' ');
       $('downloads').innerHTML = '';
       return;
@@ -5228,7 +5239,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && w.link ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
       ${typeof Notification !== 'undefined' ? `<p class="hint"><button type="button" class="btn" id="watchNotify">${(() => { try { return localStorage.getItem(WATCH_NOTIFY_KEY) === '1' && Notification.permission === 'granted'; } catch (e) { return false; } })() ? 'Stop notifications' : 'Notify me about new items near my places'}</button><br>While this map is open in a tab, it checks for new items every 15 minutes.</p>` : ''}
-      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))} ${(() => { const w = refreshWaitMs(); return w > 0 ? `<button type="button" class="link-btn" id="watchRefresh" disabled title="Once every 5 minutes">Refresh again in ${Math.ceil(w / 60e3)} min</button>` : '<button type="button" class="link-btn" id="watchRefresh">Refresh now</button>'; })()} (the broker fetches new readings every 15 minutes; the map checks for them every 15 minutes too). ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
+      <p class="hint">Updated ${escapeHtml(when(nat.readingsFetched))} ${(() => { const w = refreshWaitMs(); return w > 0 ? `<button type="button" class="link-btn" id="watchRefresh" disabled title="Once every 5 minutes">Refresh again in ${Math.ceil(w / 60e3)} min</button>` : '<button type="button" class="link-btn" id="watchRefresh">Refresh now</button>'; })()} (the broker fetches new readings every 15 minutes; the map checks for them every 15 minutes too). ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
     const nb = $('watchNotify');
     if (nb) nb.addEventListener('click', async () => {
       let on = false;
@@ -5329,6 +5340,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
       renderWarnings();
       renderWatch();
+      try { renderInfo(); } catch (e) { /* the panel isn't built yet */ }
       status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched, manual: !!manual };
       return 'new';
     } catch (e) { return 'error'; /* next time */ }
@@ -8065,7 +8077,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function renderVersions() {
     const box = $('versionInfo');
     if (!box) return null;
-    const app = `App ${commitLink(APP_BUILD)}${APP_BUILT_AT ? `, built ${escapeHtml(ago(APP_BUILT_AT))}` : ''}`;
+    const app = `App ${commitLink(APP_BUILD)}${APP_BUILT_AT ? `, built ${escapeHtml(when(APP_BUILT_AT))}` : ''}`;
     let brk;
     if (!BROKER) brk = 'no live data broker set for this build';
     else if (!brokerInfo) brk = 'Broker: checking…';
@@ -8073,7 +8085,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     else {
       const rd = brokerInfo.readings || {};
       const from = { 's3-gz': 'started from the stored zipped copy', s3: 'started from the stored copy (zipped again on start)', refresh: 'fetched them itself' }[rd.loadedFrom];
-      brk = `Broker ${commitLink(brokerInfo.version)}${rd.fetched ? `, readings fetched ${escapeHtml(ago(rd.fetched))}` : ''}${from ? ` (${escapeHtml(from)})` : ''}`;
+      brk = `Broker ${commitLink(brokerInfo.version)}${rd.fetched ? `, readings fetched ${escapeHtml(when(rd.fetched))}` : ''}${from ? ` (${escapeHtml(from)})` : ''}`;
     }
     box.innerHTML = `${app}. ${brk}. Readings on this map: ${escapeHtml((typeof nat !== 'undefined' && nat.readingsSource) === 'runtime' ? (nat.readingsSaved ? 'saved from your last visit, checking for newer' : 'live, from the broker') : "the site build's copy")}.`;
     status.versions = { app: APP_BUILD, builtAt: APP_BUILT_AT || null, broker: brokerInfo ? (brokerInfo.version || null) : null, brokerError: brokerInfo ? (brokerInfo.error || null) : null, loadedFrom: brokerInfo && brokerInfo.readings ? brokerInfo.readings.loadedFrom : null };
@@ -8082,6 +8094,32 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // once the page has settled (it also wakes the broker if it's asleep)
   setTimeout(() => { renderVersions(); checkBroker(); }, 4000);
   window.__floodVersions = async () => { await checkBroker(); return renderVersions(); };
+
+  // The live data, source by source: when the broker last fetched each part
+  // and the newest reading in it (recorded time), with the refresh's errors.
+  function liveSourcesHtml() {
+    const r = nat.readings;
+    if (!r || nat.readingsSource !== 'runtime') return '';
+    const newest = (kind) => {
+      let best = null;
+      for (const x of Object.values(r.level || {})) if (x && x.latestKind === kind && x.latest) { const t = Date.parse(x.latest[0]); if (Number.isFinite(t) && (!best || t > best.t)) best = { t, iso: x.latest[0] }; }
+      return best;
+    };
+    const count = (kind) => Object.values(r.level || {}).filter((x) => x && x.latestKind === kind).length;
+    const row = (name, fetched, extra) => `<li><strong>${escapeHtml(name)}</strong> <span class="hint">${fetched ? `fetched ${escapeHtml(when(fetched))}` : 'not fetched yet'}${extra ? ` · ${extra}` : ''}</span></li>`;
+    const nr = (kind) => { const b = newest(kind); return b ? `${count(kind).toLocaleString('en-AU')} gauges, newest reading ${escapeHtml(when(b.iso))}` : 'none'; };
+    const errs = (r.errors || []).slice(0, 4);
+    const rows = [
+      row('Bureau river levels (FTP, hourly)', r.floodclassFetched || r.fetched, nr('bureau')),
+      row('Queensland live levels', r.fetched, nr('realtime')),
+      row('Water Data Online levels', r.fetched, `${nr('hourly')}; daily: ${count('daily').toLocaleString('en-AU')} gauges`),
+      row('Flood warnings (Bureau)', r.warningsFetched, `${((r.warnings && r.warnings.warnings) || []).length} current`),
+      row('Flood classes (Bureau)', r.floodclassFetched, `${Object.keys(r.floodclass || {}).length.toLocaleString('en-AU')} gauges`),
+      row('Rain forecast (Open-Meteo)', r.rainFetched, `${Object.keys(r.rain || {}).length.toLocaleString('en-AU')} gauges`),
+      row('Storm tide (Qld)', r.seaFetched, `${Object.keys(r.sea || {}).length} gauges`),
+    ];
+    return `<p class="hint"><strong>Live data</strong> (the broker, every 15 minutes): last fetch ${escapeHtml(when(r.fetched))}.</p><ul class="data-status">${rows.join('')}</ul>${errs.length ? `<p class="hint">Problems in the last fetch: ${errs.map(escapeHtml).join('; ')}</p>` : ''}<p class="hint"><strong>Site build</strong></p>`;
+  }
 
   // What each data source returned in the latest build (data/status.json)
   async function renderDataStatus() {
@@ -8093,7 +8131,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const label = { ok: 'OK', cached: 'From an earlier build', problem: 'Problem', missing: 'Not available' };
     const when = (iso) => (iso ? new Date(iso).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
     const engine = F.engine === 'rust' ? 'Rust, compiled to WebAssembly' : (F.engine === 'error' ? 'WebAssembly failed to load (the flood model is unavailable)' : 'WebAssembly');
-    box.innerHTML = `<p class="hint">Built ${escapeHtml(when(st.built))}. Flood model running in ${engine}.</p><ul class="data-status">${st.sources.map((s) => `<li class="st-${escapeHtml(s.state)}">
+    box.innerHTML = `${liveSourcesHtml()}<p class="hint">Built ${escapeHtml(when(st.built))}. Flood model running in ${engine}.</p>${st.sources.map((s) => `<li class="st-${escapeHtml(s.state)}">
       <strong>${escapeHtml(s.name)}</strong> <span class="st-badge">${escapeHtml(label[s.state] || s.state)}</span><br>
       <span class="hint">${escapeHtml(s.summary)}${s.fetched ? ` · data from ${escapeHtml(when(s.fetched))}` : ''} · for ${escapeHtml(s.feeds)}</span></li>`).join('')}</ul>`;
     status.dataStatus = st.sources.map((s) => `${s.name}: ${s.state}`);
