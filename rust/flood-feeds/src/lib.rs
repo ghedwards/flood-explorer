@@ -926,6 +926,48 @@ pub fn parse_cap_flood(xml: &str, now_s: i64) -> Option<Value> {
     }))
 }
 
+/// The Bureau's flood warning catchments (National Flood Gauge Network).
+pub const WARNING_AREAS: &str = "https://hosting.wsapi.cloud.bom.gov.au/arcgis/rest/services/flood/National_Flood_Gauge_Network/FeatureServer/1/query";
+
+/// A Bureau area code as in a warning's geocodes, e.g. QLD_RC125.
+pub fn is_area_code(c: &str) -> bool {
+    let b = c.as_bytes();
+    let Some(u) = c.find('_') else { return false };
+    (2..=3).contains(&u) && b[..u].iter().all(u8::is_ascii_uppercase) && c.len() == u + 6 && b[u + 1..u + 3].iter().all(u8::is_ascii_uppercase) && b[u + 3..].iter().all(u8::is_ascii_digit)
+}
+
+/// A Bureau product ID, e.g. IDQ20855.
+pub fn is_product_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    b.len() == 8 && id.starts_with("ID") && b[2].is_ascii_uppercase() && b[3..].iter().all(u8::is_ascii_digit)
+}
+
+/// GeoJSON polygons as [lat, lon] rings, and the features' dist_name.
+pub fn geojson_rings(gj: &Value) -> (Vec<Vec<[f64; 2]>>, Vec<String>) {
+    let mut rings = Vec::new();
+    let mut names = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        if let Some(n) = f["properties"]["dist_name"].as_str() {
+            names.push(n.to_string());
+        }
+        let g = &f["geometry"];
+        let polys: Vec<&Value> = match g["type"].as_str() {
+            Some("Polygon") => vec![&g["coordinates"]],
+            Some("MultiPolygon") => g["coordinates"].as_array().map(|a| a.iter().collect()).unwrap_or_default(),
+            _ => vec![],
+        };
+        for poly in polys {
+            for ring in poly.as_array().into_iter().flatten() {
+                let r: Vec<[f64; 2]> = ring.as_array().into_iter().flatten().filter_map(|p| Some([p[1].as_f64()?, p[0].as_f64()?])).collect();
+                if r.len() >= 3 {
+                    rings.push(r);
+                }
+            }
+        }
+    }
+    (rings, names)
+}
+
 /// Every tag's text, in order (`tag` gives only the first).
 fn tags<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
     let (open, close) = (format!("<{}>", name), format!("</{}>", name));
@@ -1009,6 +1051,18 @@ pub fn flood_warnings(now_s: i64, iso_now: &str, errors: &mut Vec<String>) -> Va
 #[cfg(test)]
 mod warning_tests {
     use super::*;
+
+    #[test]
+    fn warning_catchments_from_the_map_service() {
+        assert!(is_area_code("QLD_RC125") && is_area_code("NSW_FL001") && !is_area_code("QLD_RC12") && !is_area_code("x'); DROP"));
+        assert!(is_product_id("IDQ20855") && !is_product_id("IDQ2085") && !is_product_id("IDQ2085'"));
+        let gj = json!({"features": [{"properties": {"dist_name": "Bulloo River to Quilpie"}, "geometry": {"type": "Polygon", "coordinates": [[[144.0, -26.0], [145.0, -26.0], [145.0, -27.0], [144.0, -26.0]]]}},
+            {"properties": {"dist_name": "B"}, "geometry": {"type": "MultiPolygon", "coordinates": [[[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]]]}}]});
+        let (r, n) = geojson_rings(&gj);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0][0], [-26.0, 144.0], "lat, lon");
+        assert_eq!(n, vec!["Bulloo River to Quilpie", "B"]);
+    }
 
     #[test]
     fn cap_areas_come_out_as_rings_and_codes() {

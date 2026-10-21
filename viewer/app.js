@@ -4979,45 +4979,10 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   }
   // where a warning is: its outline(s), or a hull around its gauges padded
   // by about 12 km (so one or two gauges still make an area)
-  // The Bureau's flood warning catchments (its National Flood Gauge
-  // Network map service): each warning's official area, found by the area
-  // codes in the warning (QLD_RC125) or its product ID. Fetched once per
-  // warning; the area around its gauges stands in meanwhile or if it fails.
-  const WARN_AREAS = 'https://hosting.wsapi.cloud.bom.gov.au/arcgis/rest/services/flood/National_Flood_Gauge_Network/FeatureServer/1/query';
-  nat.warnAreas = nat.warnAreas || new Map();
-  async function fetchWarningArea(w) {
-    const key = warnKey(w);
-    if (nat.warnAreas.has(key)) return nat.warnAreas.get(key);
-    nat.warnAreas.set(key, null);
-    const codes = (w.geocodes || []).filter((c) => /^[A-Z]{2,3}_[A-Z]{2}\d{3}$/.test(c));
-    const wheres = [];
-    if (codes.length) wheres.push(`aac IN (${codes.map((c) => `'${c}'`).join(',')})`);
-    if (/^ID[A-Z]\d{5}$/.test(w.id || '')) wheres.push(`product_id='${w.id}'`);
-    for (const where of wheres) {
-      try {
-        const u = `${WARN_AREAS}?${new URLSearchParams({ where, outFields: 'aac,dist_name', returnGeometry: 'true', outSR: '4326', maxAllowableOffset: '0.002', geometryPrecision: '4', f: 'geojson' })}`;
-        const r = await fetch(u, { signal: AbortSignal.timeout(15000) });
-        if (!r.ok) continue;
-        const gj = await r.json();
-        const rings = [];
-        for (const f of gj.features || []) {
-          const g = f.geometry || {};
-          const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
-          for (const poly of polys) for (const ring of poly) rings.push(ring.map(([lo, la]) => [la, lo]));
-        }
-        if (rings.length) {
-          const area = { rings, names: (gj.features || []).map((f) => f.properties && f.properties.dist_name).filter(Boolean) };
-          nat.warnAreas.set(key, area);
-          return area;
-        }
-      } catch (e) { /* the gauges' area stays */ }
-    }
-    return null;
-  }
   function warningShape(w) {
-    const area = nat.warnAreas && nat.warnAreas.get(warnKey(w));
-    if (area) return { rings: area.rings, from: 'bureau', names: area.names, gauges: warningGauges(w) };
-    if (Array.isArray(w.polygons) && w.polygons.length) return { rings: w.polygons, from: 'bureau', gauges: warningGauges(w) };
+    // the Bureau's flood warning catchments, which the broker adds (the
+    // service doesn't answer browsers); else the area around its gauges
+    if (Array.isArray(w.polygons) && w.polygons.length) return { rings: w.polygons, from: 'bureau', names: w.areaNames || [], gauges: warningGauges(w) };
     const gauges = warningGauges(w);
     if (!gauges.length) return { rings: [], from: 'none', gauges };
     const pts = [];
@@ -5057,8 +5022,6 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       drawn++; if (shape.from === 'bureau') outlines++;
     }
     status.warningAreas = { warnings: allWarnings().length, drawn, bureauOutlines: outlines };
-    const missing = allWarnings().filter((w) => !nat.warnAreas.has(warnKey(w)));
-    if (missing.length) Promise.all(missing.map(fetchWarningArea)).then((got) => { if (got.some(Boolean)) drawWarningAreas(); });
   }
   // Show a warning on the map: switch the layer on, fit its area, open it.
   function showWarning(w) {

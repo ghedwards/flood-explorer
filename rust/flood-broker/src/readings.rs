@@ -162,6 +162,54 @@ impl Readings {
         (now - at < every && !p[key].is_null()).then(|| (p[key].clone(), p[at_key].clone()))
     }
 
+    /// Each warning's area from the Bureau's flood warning catchments (its
+    /// National Flood Gauge Network map service), by the area codes in the
+    /// warning or its product ID, as "polygons" ([[lat, lon], ...] rings)
+    /// and "areaNames". The CAP files carry no outlines, and browsers can't
+    /// ask that service themselves (no CORS). A warning's areas are reused
+    /// from the last refresh while its codes are the same.
+    fn warning_areas(&self, warnings: &mut Value, prev: &Option<Value>, errors: &mut Vec<String>) {
+        let Some(list) = warnings["warnings"].as_array_mut() else { return };
+        let old: Vec<Value> = prev.as_ref().and_then(|p| p["warnings"]["warnings"].as_array().cloned()).unwrap_or_default();
+        for w in list.iter_mut().take(40) {
+            if w["polygons"].as_array().is_some_and(|a| !a.is_empty()) {
+                continue;
+            }
+            let id = w["id"].as_str().unwrap_or("").to_string();
+            let codes: Vec<String> = w["geocodes"].as_array().map(|a| a.iter().filter_map(|c| c.as_str()).filter(|c| feeds::is_area_code(c)).map(String::from).collect()).unwrap_or_default();
+            if let Some(o) = old.iter().find(|o| o["id"] == w["id"] && o["geocodes"] == w["geocodes"] && o["polygons"].as_array().is_some_and(|a| !a.is_empty())) {
+                w["polygons"] = o["polygons"].clone();
+                w["areaNames"] = o["areaNames"].clone();
+                continue;
+            }
+            let mut wheres = Vec::new();
+            if !codes.is_empty() {
+                wheres.push(format!("aac IN ({})", codes.iter().map(|c| format!("'{}'", c)).collect::<Vec<_>>().join(",")));
+            }
+            if feeds::is_product_id(&id) {
+                wheres.push(format!("product_id='{}'", id));
+            }
+            for wh in wheres {
+                let params: Vec<(String, String)> = [("where", wh.as_str()), ("outFields", "aac,dist_name"), ("returnGeometry", "true"), ("outSR", "4326"), ("maxAllowableOffset", "0.005"), ("geometryPrecision", "3"), ("f", "geojson")]
+                    .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                match (self.http)(feeds::WARNING_AREAS, &params) {
+                    Ok(gj) => {
+                        let (rings, names) = feeds::geojson_rings(&gj);
+                        if !rings.is_empty() {
+                            w["polygons"] = json!(rings);
+                            w["areaNames"] = json!(names);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("warning areas {}: {}", id, e));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// Fetch everything again and store it. Returns a short summary.
     pub fn refresh(&self) -> Result<Value, String> {
         let _one = self.refreshing.lock().unwrap_or_else(|e| e.into_inner());
@@ -245,6 +293,7 @@ impl Readings {
             if r["warnings"]["ok"] == json!(true) {
                 r["warningsFetched"] = r["warnings"]["fetched"].clone();
             }
+            self.warning_areas(&mut r["warnings"], &prev, &mut errors);
         }
         // flood class levels and the Bureau's current class at each gauge, hourly
         if let Some(cf) = &self.classes {

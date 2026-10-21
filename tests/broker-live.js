@@ -119,8 +119,6 @@ process.on("unhandledRejection", keep("unhandled rejection"));
       r.warningMap = await page2.evaluate(async () => {
         const n = ((window.__floodStatus.warnings) || {}).count || 0;
         if (!n) return { warnings: 0 };
-        // the Bureau's catchment outlines arrive a moment later
-        for (let i = 0; i < 20 && !((window.__floodStatus.warningAreas || {}).bureauOutlines > 0); i++) await new Promise((ok) => setTimeout(ok, 500));
         window.__floodShowWarning(0);
         await new Promise((ok) => setTimeout(ok, 1500));
         const pop = document.querySelector(".leaflet-popup-content");
