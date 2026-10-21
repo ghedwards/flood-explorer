@@ -38,7 +38,8 @@ process.on("unhandledRejection", keep("unhandled rejection"));
     const body = await res.json();
     r.broker = { status: res.status, ms: Date.now() - t0, cors: res.headers.get("access-control-allow-origin"), live: Object.keys(body.sites || {}).length, missing: (body.missing || []).length, stale: !!body.stale };
     const t1 = Date.now();
-    await fetch(`${BROKER}/v1/levels?sites=${stations.join(",")}`);
+    // read every body: an unread one can crash Node's fetch when the server closes the connection
+    await (await fetch(`${BROKER}/v1/levels?sites=${stations.join(",")}`)).arrayBuffer();
     r.brokerCachedMs = Date.now() - t1;
     const pick = Object.keys(body.sites || {})[0];
     if (pick) {
@@ -47,6 +48,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
       await page.waitForSelector(".report-card .live-tag", { timeout: 30000 }).then(() => { r.reportLive = true; }, () => { r.reportLive = false; });
       // the broker's hourly record for that gauge, drawn in the report
       await page.waitForSelector(".report-card .hist-svg", { timeout: 20000 }).catch(() => {});
+      r.historyApi = await (await fetch(`${BROKER}/v1/history?site=${encodeURIComponent(pick)}`)).json().then((h) => ({ points: (h.points || []).length, last: (h.points || []).slice(-1)[0] || null }), (e) => String(e));
       r.history = await page.evaluate((s) => ({ status: window.__floodStatus.history || null, points: (window.__floodHistory(s) || { points: [] }).points.length, chart: !!document.querySelector(".report-card .hist-svg"), caption: (document.querySelector(".report-card .hist .hint") || {}).textContent || null }), pick).catch((e) => String(e));
       r.reportText = await page.evaluate(() => {
         const c = [...document.querySelectorAll(".report-card")].pop();
@@ -63,6 +65,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
       const res2 = await fetch(`${BROKER}/v1/readings`, { headers: { origin: new URL(SITE).origin } });
       if (res2.status === 200) { rd = { status: 200, cors: res2.headers.get("access-control-allow-origin"), body: await res2.json() }; break; }
       rd = { status: res2.status };
+      await res2.arrayBuffer().catch(() => {});
       await new Promise((ok) => setTimeout(ok, 10000));
     }
     r.readings = rd && rd.body ? {
@@ -152,7 +155,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
   if (r.watchOpened) note("watch item opened", r.watchOpened);
   if (r.watchNear) note("watch near your places", r.watchNear);
   if (r.versions) note("versions", r.versions);
-  if (r.history) note("hourly record", r.history);
+  if (r.history) note("hourly record", { report: r.history, api: r.historyApi });
   if (r.warningMap) note("warning on the map", r.warningMap);
   if (r.warningPeaks) note("warning peaks", r.warningPeaks);
   if (r.warningModel) note("warning peak model", { model: r.warningModel, summary: r.warningModelSummary });
