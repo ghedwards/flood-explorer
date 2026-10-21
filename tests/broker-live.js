@@ -160,6 +160,22 @@ process.on("unhandledRejection", keep("unhandled rejection"));
         await page2.screenshot({ path: path.join(OUT, "17-watch-near.png") });
       }
     }
+    // a second visit starts from the readings saved by the first
+    if (rd && rd.body) {
+      try {
+        const page3 = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+        await page3.goto(SITE, { waitUntil: "load", timeout: 90000 });
+        await page3.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
+        await page3.waitForTimeout(800);
+        await page3.reload({ waitUntil: "load" });
+        const t0 = Date.now();
+        await page3.waitForFunction("window.__floodStatus && window.__floodStatus.national && window.__floodStatus.national.loaded", null, { timeout: 90000 });
+        r.secondVisit = { loadedMs: Date.now() - t0, ...(await page3.evaluate(() => ({ saved: window.__floodStatus.savedReadings || null, source: window.__floodStatus.national.readingsSource }))) };
+        await page3.waitForTimeout(4000);
+        r.secondVisit.then = await page3.evaluate(() => window.__floodStatus.savedThenFresh || null);
+        await page3.close();
+      } catch (e) { r.secondVisit = String(e); }
+    }
     r.health = await (await get(`${BROKER}/health`)).json();
     r.errors = errors.slice(0, 5);
   } catch (e) {
@@ -181,6 +197,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
   if (r.watchNear) note("watch near your places", r.watchNear);
   if (r.versions) note("versions", r.versions);
   if (r.refreshNow) note("refresh now", r.refreshNow);
+  if (r.secondVisit) note("second visit", r.secondVisit);
   if (r.history) note("hourly record", { report: r.history, api: r.historyApi });
   if (r.warningMap) note("warning on the map", r.warningMap);
   if (r.warningPeaks) note("warning peaks", r.warningPeaks);

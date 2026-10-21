@@ -3824,6 +3824,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     }
     return riverP;
   }
+  // The broker's readings as last saved in this browser (Cache API, written
+  // by the service worker), if under 12 hours old.
+  const SAVED_MAX_MS = 12 * 3600e3;
+  async function savedReadings() {
+    try {
+      if (!BROKER || typeof caches === 'undefined') return null;
+      const hit = await caches.match(`${BROKER}/v1/readings`, { ignoreVary: true });
+      if (!hit || !hit.ok) return null;
+      const j = await hit.json();
+      const t = j && j.fetched ? new Date(j.fetched).getTime() : NaN;
+      if (!j || !j.level || !(Date.now() - t < SAVED_MAX_MS)) return null;
+      status.savedReadings = { fetched: j.fetched };
+      return j;
+    } catch (e) { return null; }
+  }
   async function loadNationalData() {
     if (nat.data) return nat.data;
     const get = async (f) => {
@@ -3839,7 +3854,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         .catch(() => { split = false; return get('gauges.min.json').then(decodeCompact); })
         .catch(() => { split = false; return get('gauges.geojson'); });
       // readings: the broker's when the switch says so, else (or if it fails) the build's
-      const live = DATA_SOURCE === 'runtime'
+      // the copy saved by the last visit (the service worker keeps the
+      // broker's answers): draw from it at once and fetch newer readings
+      // in the background, instead of waiting on the broker
+      const saved = DATA_SOURCE === 'runtime' ? await savedReadings() : null;
+      const live = saved ? Promise.resolve(saved) : DATA_SOURCE === 'runtime'
         ? fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(8000) }).then((r) => {
           if (r.status === 503) return null;   // just started: nothing fetched yet
           if (!r.ok) throw new Error(`broker readings: HTTP ${r.status}`);
@@ -3850,6 +3869,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         gaugeFile, get('storages.geojson'), get('readings.json').catch((err) => (DATA_SOURCE === 'runtime' ? null : Promise.reject(err))), get('meta.json'), live]);
       const readings = fresh && fresh.level ? fresh : built || { level: {}, storage: {} };
       nat.readingsSource = fresh && fresh.level ? 'runtime' : 'build';
+      nat.readingsSaved = !!(saved && fresh === saved);
+      if (nat.readingsSaved) setTimeout(() => { refreshLiveReadings(true).then((got) => { nat.readingsSaved = false; status.savedThenFresh = got; renderVersions(); }); }, 1200);
       nat.readingsFetched = (fresh && fresh.level && fresh.fetched) || (meta && meta.fetched) || null;
       nat.data = { gauges: gauges.features || [], storages: storages.features || [], meta };
       nat.readings = readings;
@@ -8039,7 +8060,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       const from = { 's3-gz': 'started from the stored zipped copy', s3: 'started from the stored copy (zipped again on start)', refresh: 'fetched them itself' }[rd.loadedFrom];
       brk = `Broker ${commitLink(brokerInfo.version)}${rd.fetched ? `, readings fetched ${escapeHtml(ago(rd.fetched))}` : ''}${from ? ` (${escapeHtml(from)})` : ''}`;
     }
-    box.innerHTML = `${app}. ${brk}. Readings on this map: ${escapeHtml((typeof nat !== 'undefined' && nat.readingsSource) === 'runtime' ? 'live, from the broker' : "the site build's copy")}.`;
+    box.innerHTML = `${app}. ${brk}. Readings on this map: ${escapeHtml((typeof nat !== 'undefined' && nat.readingsSource) === 'runtime' ? (nat.readingsSaved ? 'saved from your last visit, checking for newer' : 'live, from the broker') : "the site build's copy")}.`;
     status.versions = { app: APP_BUILD, builtAt: APP_BUILT_AT || null, broker: brokerInfo ? (brokerInfo.version || null) : null, brokerError: brokerInfo ? (brokerInfo.error || null) : null, loadedFrom: brokerInfo && brokerInfo.readings ? brokerInfo.readings.loadedFrom : null };
     return status.versions;
   }
