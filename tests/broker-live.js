@@ -6,6 +6,27 @@ const pw = require("playwright");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const http = require("node:http");
+// plain node:http for the local broker: Node's fetch (undici) can crash with
+// assert(!this.paused) on a large body from a server that closes the connection
+function get(url, opts) {
+  const headers = (opts && opts.headers) || {};
+  return new Promise((ok, no) => {
+    const req = http.get(url, { headers, agent: false }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("error", no);
+      res.on("end", () => {
+        const body = Buffer.concat(chunks);
+        ok({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300, headers: { get: (k) => res.headers[k.toLowerCase()] ?? null },
+          json: async () => JSON.parse(body.toString("utf8")), arrayBuffer: async () => body });
+      });
+    });
+    req.on("error", no);
+    req.setTimeout(180000, () => req.destroy(new Error("timeout")));
+  });
+}
+
 const SITE = process.env.SITE_URL || "http://127.0.0.1:8000/";
 const BROKER = process.env.BROKER_URL || "http://127.0.0.1:8787";
 const OUT = process.env.OUT || "shots";
@@ -34,12 +55,12 @@ process.on("unhandledRejection", keep("unhandled rejection"));
     r.candidates = stations.length;
 
     const t0 = Date.now();
-    const res = await fetch(`${BROKER}/v1/levels?sites=${stations.join(",")}`, { headers: { origin: new URL(SITE).origin } });
+    const res = await get(`${BROKER}/v1/levels?sites=${stations.join(",")}`, { headers: { origin: new URL(SITE).origin } });
     const body = await res.json();
     r.broker = { status: res.status, ms: Date.now() - t0, cors: res.headers.get("access-control-allow-origin"), live: Object.keys(body.sites || {}).length, missing: (body.missing || []).length, stale: !!body.stale };
     const t1 = Date.now();
     // read every body: an unread one can crash Node's fetch when the server closes the connection
-    await (await fetch(`${BROKER}/v1/levels?sites=${stations.join(",")}`)).arrayBuffer();
+    await (await get(`${BROKER}/v1/levels?sites=${stations.join(",")}`)).arrayBuffer();
     r.brokerCachedMs = Date.now() - t1;
     const pick = Object.keys(body.sites || {})[0];
     if (pick) {
@@ -48,7 +69,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
       await page.waitForSelector(".report-card .live-tag", { timeout: 30000 }).then(() => { r.reportLive = true; }, () => { r.reportLive = false; });
       // the broker's hourly record for that gauge, drawn in the report
       await page.waitForSelector(".report-card .hist-svg", { timeout: 20000 }).catch(() => {});
-      r.historyApi = await (await fetch(`${BROKER}/v1/history?site=${encodeURIComponent(pick)}`)).json().then((h) => ({ points: (h.points || []).length, last: (h.points || []).slice(-1)[0] || null }), (e) => String(e));
+      r.historyApi = await (await get(`${BROKER}/v1/history?site=${encodeURIComponent(pick)}`)).json().then((h) => ({ points: (h.points || []).length, last: (h.points || []).slice(-1)[0] || null }), (e) => String(e));
       r.history = await page.evaluate((s) => ({ status: window.__floodStatus.history || null, points: (window.__floodHistory(s) || { points: [] }).points.length, chart: !!document.querySelector(".report-card .hist-svg"), caption: (document.querySelector(".report-card .hist .hint") || {}).textContent || null }), pick).catch((e) => String(e));
       r.reportText = await page.evaluate(() => {
         const c = [...document.querySelectorAll(".report-card")].pop();
@@ -62,7 +83,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
     // readings for the whole map from the broker (it fetches them on start)
     let rd = null;
     for (let i = 0; i < 40; i++) {
-      const res2 = await fetch(`${BROKER}/v1/readings`, { headers: { origin: new URL(SITE).origin } });
+      const res2 = await get(`${BROKER}/v1/readings`, { headers: { origin: new URL(SITE).origin } });
       if (res2.status === 200) { rd = { status: 200, cors: res2.headers.get("access-control-allow-origin"), body: await res2.json() }; break; }
       rd = { status: res2.status };
       await res2.arrayBuffer().catch(() => {});
@@ -108,7 +129,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
       await page2.screenshot({ path: path.join(OUT, "17-warning-map.png") });
       // the warnings' texts (to check the peak reader against) and the peaks found
       try {
-        const rd = await (await fetch(`${BROKER}/v1/readings`)).json();
+        const rd = await (await get(`${BROKER}/v1/readings`)).json();
         fs.mkdirSync(OUT, { recursive: true });
         fs.writeFileSync(path.join(OUT, "warnings-live.json"), JSON.stringify(rd.warnings || null, null, 1));
       } catch (e) { r.warningsSaveError = String(e); }
@@ -137,7 +158,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
         await page2.screenshot({ path: path.join(OUT, "17-watch-near.png") });
       }
     }
-    r.health = await (await fetch(`${BROKER}/health`)).json();
+    r.health = await (await get(`${BROKER}/health`)).json();
     r.errors = errors.slice(0, 5);
   } catch (e) {
     r.fatal = String(e && e.stack || e);
