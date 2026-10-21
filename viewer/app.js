@@ -5207,7 +5207,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && w.link ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
       ${typeof Notification !== 'undefined' ? `<p class="hint"><button type="button" class="btn" id="watchNotify">${(() => { try { return localStorage.getItem(WATCH_NOTIFY_KEY) === '1' && Notification.permission === 'granted'; } catch (e) { return false; } })() ? 'Stop notifications' : 'Notify me about new items near my places'}</button><br>While this map is open in a tab, it checks for new items every 15 minutes.</p>` : ''}
-      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))}. ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
+      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))} <button type="button" class="link-btn" id="watchRefresh">Refresh now</button> (the broker fetches new readings every 15 minutes; the map checks for them every 15 minutes too). ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
     const nb = $('watchNotify');
     if (nb) nb.addEventListener('click', async () => {
       let on = false;
@@ -5224,6 +5224,13 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       } else say('Notifications are blocked for this site in your browser settings.');
       renderWatch();
     });
+    const rb = $('watchRefresh');
+    if (rb) rb.addEventListener('click', (e) => withBusy(e.currentTarget, 'Checking…', async () => {
+      const got = await refreshLiveReadings(true);
+      say(got === 'new' ? `New readings loaded (fetched ${ago(nat.readingsFetched)}).`
+        : got === 'same' ? `Already up to date: these are the newest readings (fetched ${ago(nat.readingsFetched)}). The next fetch is due within 15 minutes of that.`
+          : 'The live data broker didn\'t answer; try again shortly.');
+    }));
     watchNotify(list);
     box.querySelectorAll('[data-watch]').forEach((b) => b.addEventListener('click', () => openWatchItem(shown[+b.dataset.watch])));
     const n = list.length;
@@ -5263,14 +5270,17 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // and warnings.
   // If the first try timed out (a broker waking up can be slow), the map
   // starts on the site build's readings and switches over when this works.
-  async function refreshLiveReadings() {
-    if (DATA_SOURCE !== 'runtime' || !nat.readings || document.hidden) return;
+  // manual: the "Refresh now" button (works in a background tab too, and
+  // asks past the browser's cache: an unchanged file is a cheap 304)
+  async function refreshLiveReadings(manual) {
+    if (DATA_SOURCE !== 'runtime' || !nat.readings || (document.hidden && !manual)) return 'off';
     const fallback = nat.readingsSource !== 'runtime';
     try {
-      const r = await fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(fallback ? 30000 : 15000) });
-      if (!r.ok) return;
+      const r = await fetch(`${BROKER}/v1/readings`, { cache: manual ? 'no-cache' : 'default', signal: AbortSignal.timeout(fallback || manual ? 30000 : 15000) });
+      if (!r.ok) return 'error';
       const fresh = await r.json();
-      if (!fresh || !fresh.level || (!fallback && fresh.fetched === nat.readingsFetched)) return;
+      if (!fresh || !fresh.level) return 'error';
+      if (!fallback && fresh.fetched === nat.readingsFetched) return 'same';
       nat.readings = fresh;
       nat.readingsFetched = fresh.fetched;
       if (fallback) {
@@ -5283,8 +5293,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
       renderWarnings();
       renderWatch();
-      status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched };
-    } catch (e) { /* next time */ }
+      status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched, manual: !!manual };
+      return 'new';
+    } catch (e) { return 'error'; /* next time */ }
   }
   setInterval(refreshLiveReadings, 15 * 60 * 1000);
   // after a slow first try: again shortly, not in 15 minutes
@@ -5294,7 +5305,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     refreshLiveReadings();
   }, 45 * 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLiveReadings(); });
-  window.__floodRefreshLive = refreshLiveReadings;
+  window.__floodRefreshLive = (manual) => refreshLiveReadings(manual);
   window.__floodOpenWatch = (i) => openWatchItem(((nat.readings && nat.readings.watch) || [])[i || 0]);
 
   function renderWarnings() {

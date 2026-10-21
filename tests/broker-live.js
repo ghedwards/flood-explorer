@@ -140,6 +140,10 @@ process.on("unhandledRejection", keep("unhandled rejection"));
         await page2.screenshot({ path: path.join(OUT, "18-warning-peak-model.png") });
       }
       await page2.evaluate(() => window.L && document.querySelector(".leaflet-popup-close-button") && document.querySelector(".leaflet-popup-close-button").click()).catch(() => {});
+      r.refreshNow = await page2.evaluate(async () => {
+        const b = document.getElementById("watchRefresh");
+        return { button: !!b, result: await window.__floodRefreshLive(true) };
+      }).catch((e) => String(e));
       r.watchPanel = await page2.evaluate(() => window.__floodWatch && window.__floodWatch());
       if (r.watchPanel) r.watchPanel.list = r.watchPanel.list.slice(0, 6).map((w) => [w.kind, w.station, w.why]);
       await page2.screenshot({ path: path.join(OUT, "15-watch-list.png") });
@@ -176,6 +180,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
   if (r.watchOpened) note("watch item opened", r.watchOpened);
   if (r.watchNear) note("watch near your places", r.watchNear);
   if (r.versions) note("versions", r.versions);
+  if (r.refreshNow) note("refresh now", r.refreshNow);
   if (r.history) note("hourly record", { report: r.history, api: r.historyApi });
   if (r.warningMap) note("warning on the map", r.warningMap);
   if (r.warningPeaks) note("warning peaks", r.warningPeaks);
