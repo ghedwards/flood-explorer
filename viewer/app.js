@@ -5053,8 +5053,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function boardToModel(p, board) {
     const c = classFor(p);
     if (c && c.zero != null) return { level: Math.round((c.zero + board) * 100) / 100, exact: true };
+    if (!state.a || state.gauge < 0) return null;
+    const normal = state.a.dem[state.gauge] + 0.3;
     const rt = gaugeRating();
-    if (rt && Number.isFinite(rt.hmed) && state.a && state.gauge >= 0) return { level: Math.round((state.a.dem[state.gauge] + 0.3 + (board - rt.hmed)) * 100) / 100, exact: false };
+    if (rt && Number.isFinite(rt.hmed)) return { level: Math.round((normal + (board - rt.hmed)) * 100) / 100, exact: false, how: "from the gauge's rating" };
+    // else from the lowest level the gauge recorded lately (taken as its
+    // normal level): the record and the daily averages, over 5 days or more
+    const r = nat.readings.level && nat.readings.level[p.station];
+    const h = nat.history && nat.history[String(p.station || '')];
+    const pts = [...((r && r.series) || []), ...((h && h.points) || []), ...(r && r.latest ? [r.latest] : [])]
+      .map((x) => [new Date(x[0]).getTime(), x[1]]).filter((x) => Number.isFinite(x[0]) && Number.isFinite(x[1]));
+    if (pts.length >= 3) {
+      const days = (Math.max(...pts.map((x) => x[0])) - Math.min(...pts.map((x) => x[0]))) / 86400e3;
+      const low = Math.min(...pts.map((x) => x[1]));
+      if (days >= 5 && board > low) return { level: Math.round((normal + (board - low)) * 100) / 100, exact: false, how: `as ${(board - low).toFixed(2)} m above the lowest level recorded in the last ${Math.round(days)} days (${low.toFixed(2)} m), taken as its normal level` };
+    }
     return null;
   }
   async function modelWarningPeak(w, i) {
@@ -5066,8 +5079,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const ok = await modelHere(la, lo, { kind: 'river', name: p.name, reportId: rep ? rep.id : null });
     if (!ok || !state.a || state.gauge < 0) return null;
     try { await ensureHistory(); } catch (e) { /* no ratings: gauge zero only */ }
+    if (rep) { try { await refreshHistory(p, document.createElement('div')); } catch (e) { /* daily averages only */ } }
     const conv = boardToModel(p, t.level);
-    status.warningModel = { warning: w.id, gauge: p.name, board: t.level, kind: t.kind, level: conv ? conv.level : null, exact: conv ? conv.exact : null };
+    status.warningModel = { warning: w.id, gauge: p.name, board: t.level, kind: t.kind, level: conv ? conv.level : null, exact: conv ? conv.exact : null, how: conv ? (conv.how || 'gauge zero') : null };
     if (!conv) {
       say(`Model ready, but ${p.name} has no published gauge zero or rating, so the warning's ${t.level.toFixed(2)} m (on the gauge board) can't be placed in it. Set the level in Scenario.`);
       return status.warningModel;
@@ -5081,7 +5095,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     syncOutputs();
     runScenario();
     renderLevelPoints();
-    say(`Modelling ${t.kind === 'peak' ? 'the forecast peak' : `the ${t.cls} flood level`} from the Bureau's warning: ${t.level.toFixed(2)} m on the gauge board at ${t.place}${conv.exact ? ` (${conv.level.toFixed(2)} m AHD)` : ', placed roughly from the gauge\'s rating, as it has no published gauge zero'}. A screening estimate, not the Bureau's flood map.`);
+    say(`Modelling ${t.kind === 'peak' ? 'the forecast peak' : `the ${t.cls} flood level`} from the Bureau's warning: ${t.level.toFixed(2)} m on the gauge board at ${t.place}${conv.exact ? ` (${conv.level.toFixed(2)} m AHD)` : `, placed roughly ${conv.how}, as no gauge zero is published for it`}. A screening estimate, not the Bureau's flood map.`);
     return status.warningModel;
   }
   window.__floodModelWarning = (i, j) => modelWarningPeak(allWarnings()[i || 0], j || 0);
