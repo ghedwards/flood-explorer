@@ -5228,7 +5228,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && w.link ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
       ${typeof Notification !== 'undefined' ? `<p class="hint"><button type="button" class="btn" id="watchNotify">${(() => { try { return localStorage.getItem(WATCH_NOTIFY_KEY) === '1' && Notification.permission === 'granted'; } catch (e) { return false; } })() ? 'Stop notifications' : 'Notify me about new items near my places'}</button><br>While this map is open in a tab, it checks for new items every 15 minutes.</p>` : ''}
-      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))} <button type="button" class="link-btn" id="watchRefresh">Refresh now</button> (the broker fetches new readings every 15 minutes; the map checks for them every 15 minutes too). ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
+      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))} ${(() => { const w = refreshWaitMs(); return w > 0 ? `<button type="button" class="link-btn" id="watchRefresh" disabled title="Once every 5 minutes">Refresh again in ${Math.ceil(w / 60e3)} min</button>` : '<button type="button" class="link-btn" id="watchRefresh">Refresh now</button>'; })()} (the broker fetches new readings every 15 minutes; the map checks for them every 15 minutes too). ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
     const nb = $('watchNotify');
     if (nb) nb.addEventListener('click', async () => {
       let on = false;
@@ -5247,11 +5247,18 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     });
     const rb = $('watchRefresh');
     if (rb) rb.addEventListener('click', (e) => withBusy(e.currentTarget, 'Checking…', async () => {
+      if (refreshWaitMs() > 0) return;
+      try { localStorage.setItem(REFRESH_KEY, String(Date.now())); } catch (err) { lastManualRefresh = Date.now(); }
       const got = await refreshLiveReadings(true);
       say(got === 'new' ? `New readings loaded (fetched ${ago(nat.readingsFetched)}).`
         : got === 'same' ? `Already up to date: these are the newest readings (fetched ${ago(nat.readingsFetched)}). The next fetch is due within 15 minutes of that.`
-          : 'The live data broker didn\'t answer; try again shortly.');
+          : 'The live data broker didn\'t answer; try again in a few minutes.');
+      renderWatch();
     }));
+    // the button comes back when the 5 minutes are up
+    clearTimeout(refreshT);
+    const wait = refreshWaitMs();
+    if (wait > 0) refreshT = setTimeout(renderWatch, Math.min(wait, 60e3) + 200);
     watchNotify(list);
     box.querySelectorAll('[data-watch]').forEach((b) => b.addEventListener('click', () => openWatchItem(shown[+b.dataset.watch])));
     const n = list.length;
@@ -5291,6 +5298,14 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // and warnings.
   // If the first try timed out (a broker waking up can be slow), the map
   // starts on the site build's readings and switches over when this works.
+  // "Refresh now" at most once every 5 minutes (remembered across reloads)
+  const REFRESH_EVERY_MS = 5 * 60e3, REFRESH_KEY = 'floodExplorer.lastRefresh';
+  let lastManualRefresh = 0, refreshT = 0;
+  function refreshWaitMs() {
+    let t = lastManualRefresh;
+    try { t = Math.max(t, parseInt(localStorage.getItem(REFRESH_KEY) || '0', 10) || 0); } catch (e) { /* this visit only */ }
+    return Math.max(0, t + REFRESH_EVERY_MS - Date.now());
+  }
   // manual: the "Refresh now" button (works in a background tab too, and
   // asks past the browser's cache: an unchanged file is a cheap 304)
   async function refreshLiveReadings(manual) {

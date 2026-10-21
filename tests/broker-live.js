@@ -142,7 +142,12 @@ process.on("unhandledRejection", keep("unhandled rejection"));
       await page2.evaluate(() => window.L && document.querySelector(".leaflet-popup-close-button") && document.querySelector(".leaflet-popup-close-button").click()).catch(() => {});
       r.refreshNow = await page2.evaluate(async () => {
         const b = document.getElementById("watchRefresh");
-        return { button: !!b, result: await window.__floodRefreshLive(true) };
+        if (!b) return { button: false };
+        b.click();
+        await new Promise((ok) => setTimeout(ok, 4000));
+        const after = document.getElementById("watchRefresh");
+        // once every 5 minutes: the button now waits
+        return { button: true, refreshed: window.__floodStatus.liveRefresh || null, after: after ? { disabled: after.disabled, text: after.textContent } : null };
       }).catch((e) => String(e));
       r.watchPanel = await page2.evaluate(() => window.__floodWatch && window.__floodWatch());
       if (r.watchPanel) r.watchPanel.list = r.watchPanel.list.slice(0, 6).map((w) => [w.kind, w.station, w.why]);
