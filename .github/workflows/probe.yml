@@ -1,5 +1,5 @@
 name: Probe data sources
-# temporary: do other states' real-time portals answer like Queensland's?
+# temporary: what cargo audit reports for main's Cargo.lock
 on:
   push:
     branches: ["probe-*"]
@@ -9,22 +9,23 @@ jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Hydstra web services (NSW, Victoria and others)
+      - uses: actions/checkout@v7
+        with: { ref: main }
+      - name: cargo audit
         run: |
           set +e
-          now=$(TZ=Australia/Brisbane date +%Y%m%d%H%M%S); from=$(TZ=Australia/Brisbane date -d '-30 hours' +%Y%m%d%H%M%S)
-          try() {  # host site
-            q='{"function":"get_ts_traces","version":"2","params":{"site_list":"'$2'","datasource":"A","varfrom":"100.00","varto":"100.00","start_time":"'$from'","end_time":"'$now'","data_type":"mean","interval":"hour","multiplier":"1"}}'
-            for ds in A AT CP PROV; do
-              qq=${q/\"datasource\":\"A\"/\"datasource\":\"$ds\"}
-              code=$(curl -sS -m 60 -o o.json -w '%{http_code}' -G "https://$1/cgi/webservice.exe" --data-urlencode "$qq")
-              echo "::notice title=$1 $2 $ds HTTP $code::$(head -c 500 o.json | tr '\n' ' ')"
-              grep -q '"trace"' o.json && grep -q '"v"' o.json && break
-            done
-            q2='{"function":"get_site_list","version":"1","params":{"site_list":"GROUP(OPEN_STATIONS)"}}'
-            curl -sS -m 60 -G "https://$1/cgi/webservice.exe" --data-urlencode "$q2" -o s.json
-            echo "::notice title=$1 site list::$(python3 -c "import json;d=json.load(open('s.json'));s=d.get('return',{}).get('sites',[]);print(len(s), s[:8])" 2>&1 | head -c 300)"
-          }
-          try realtimedata.waternsw.com.au 410001
-          try data.water.vic.gov.au 405200
-          try water.data.sa.gov.au A4260504
+          cargo install cargo-audit --locked --quiet 2>/dev/null
+          cargo audit --file rust/Cargo.lock --json > audit.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('audit.json'))
+          for v in d.get('vulnerabilities', {}).get('list', []):
+              a = v['advisory']; p = v['package']
+              print(f"::notice title={a['id']} {p['name']} {p['version']}::{a['title']} | patched: {v.get('versions', {}).get('patched')} | {a.get('url') or ''}")
+          for kind, lst in (d.get('warnings') or {}).items():
+              for w in lst[:10]:
+                  a = w.get('advisory') or {}; p = w.get('package') or {}
+                  print(f"::notice title=warning {kind} {p.get('name')} {p.get('version')}::{a.get('id')} {a.get('title')}")
+          print("::notice title=summary::vulnerabilities", d.get('vulnerabilities', {}).get('count'))
+          PY
+          cargo tree --manifest-path rust/Cargo.toml -i $(python3 -c "import json;d=json.load(open('audit.json'));l=d.get('vulnerabilities',{}).get('list',[]);print(l[0]['package']['name'] if l else 'serde')") --depth 4 2>/dev/null | head -30 | tr '\n' ' ' | sed 's/^/::notice title=who uses it::/'
