@@ -27,6 +27,8 @@ pub type Text = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
 const RAIN_EVERY_MS: i64 = 3 * 3_600_000; // the forecast models run every 6 hours
 const SEA_EVERY_MS: i64 = 30 * 60_000;
+/// Water Data Online (a day behind anyway): at most this often.
+const WDO_EVERY_MS: i64 = 60 * 60_000;
 /// Rain forecasts get this long; batches left over wait for the next refresh.
 const RAIN_DEADLINE_MS: i64 = 150_000;
 
@@ -276,7 +278,29 @@ impl Readings {
         let st = self.stations()?;
         let mut errors = Vec::new();
         let http = |u: &str, p: &[(String, String)]| (self.http)(u, p);
-        let mut r = feeds::readings(&http, &st.level, &st.storage, started / 1000, &mut errors);
+        // Water Data Online runs about a day behind and took ~95% of a
+        // refresh: ask it at most hourly and reuse its levels and dam
+        // volumes in between; Queensland's live levels (and the Bureau's FTP
+        // levels further down) still come every refresh
+        let prev0 = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
+        let reuse = prev0.as_ref().filter(|p| {
+            p["wdoFetched"].as_str().and_then(crate::wmip::epoch_ms).is_some_and(|t| started - t < WDO_EVERY_MS) && p["level"].is_object()
+        });
+        let mut r = match reuse {
+            Some(p) => {
+                let mut level = p["level"].as_object().cloned().unwrap_or_default();
+                let live = feeds::qld_realtime(&http, &st.level, started / 1000, &mut errors);
+                feeds::apply_live(&mut level, live, "m");
+                let mut r = json!({"level": Value::Object(level), "storage": p["storage"].clone(), "series": p["series"].clone(), "watchRule": p["watchRule"].clone()});
+                r["wdoFetched"] = p["wdoFetched"].clone();
+                r
+            }
+            None => {
+                let mut r = feeds::readings(&http, &st.level, &st.storage, started / 1000, &mut errors);
+                r["wdoFetched"] = json!(crate::wmip::iso_utc(started));
+                r
+            }
+        };
         let t_readings = (self.now)();
         let prev = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
         // rain forecast near the flood network's gauges, every 3 hours
@@ -630,6 +654,35 @@ mod tests {
                 Value::Array(out)
             }
         })
+    }
+
+    #[test]
+    fn water_data_online_at_most_hourly_live_levels_every_time() {
+        use std::sync::atomic::AtomicUsize;
+        static KIWIS: AtomicUsize = AtomicUsize::new(0);
+        static LIVE: AtomicUsize = AtomicUsize::new(0);
+        fn counting(url: &str, ps: &[(String, String)]) -> Result<Value, String> {
+            if url.contains("waterdata") { KIWIS.fetch_add(1, Ordering::SeqCst); }
+            if url.contains("webservice") || url.contains("water-monitoring") { LIVE.fetch_add(1, Ordering::SeqCst); }
+            fake(url, ps)
+        }
+        let t = Arc::new(AtomicI64::new(crate::wmip::epoch_ms("2026-10-20T08:00:00Z").unwrap()));
+        let t2 = t.clone();
+        let r = Readings::new(Box::new(counting), Store::Memory, STATIONS_URL.into(), Box::new(move || t2.load(Ordering::SeqCst)));
+        r.refresh().unwrap();
+        let (k1, l1) = (KIWIS.load(Ordering::SeqCst), LIVE.load(Ordering::SeqCst));
+        assert!(k1 > 0 && l1 > 0);
+        t.fetch_add(15 * 60_000, Ordering::SeqCst);
+        let s = r.refresh().unwrap();
+        assert_eq!(KIWIS.load(Ordering::SeqCst), k1, "Water Data Online reused within the hour");
+        assert!(LIVE.load(Ordering::SeqCst) > l1, "Queensland's live levels fetched again");
+        assert_eq!(s["levels"], 2, "levels carried");
+        let v: Value = serde_json::from_slice(&r.latest().unwrap().unwrap().body).unwrap();
+        assert_eq!(v["level"]["540198"]["latestKind"], "hourly");
+        assert_eq!(v["wdoFetched"], "2026-10-20T08:00:00Z");
+        t.fetch_add(50 * 60_000, Ordering::SeqCst);
+        r.refresh().unwrap();
+        assert!(KIWIS.load(Ordering::SeqCst) > k1, "and asked again after an hour");
     }
 
     #[test]

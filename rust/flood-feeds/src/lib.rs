@@ -323,7 +323,13 @@ pub fn readings_for(http: HttpJson, wanted: &HashSet<String>, parameter: &str, u
             out.insert(st, e);
         }
     }
-    // Queensland's own gauges: the portal's latest hour, when it's newer
+    apply_live(&mut out, live, unit);
+    Value::Object(out)
+}
+
+/// Queensland's own gauges: the portal's latest hour, where it's newer than
+/// what the readings have (or the gauge isn't in them).
+pub fn apply_live(out: &mut Map<String, Value>, live: HashMap<String, Vec<Value>>, unit: &str) {
     for (st, pts) in live {
         let last = pts[pts.len() - 1].clone();
         let at = |r: &Value| ts_epoch(r[0].as_str().unwrap_or(""));
@@ -342,7 +348,6 @@ pub fn readings_for(http: HttpJson, wanted: &HashSet<String>, parameter: &str, u
             }
         }
     }
-    Value::Object(out)
 }
 
 
