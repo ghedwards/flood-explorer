@@ -7120,10 +7120,11 @@ import { classifyDemGaps } from './dem-voids.js';
     return r;
   }
   // LiDAR where it has data, DEM-H (nearest cell) where it doesn't. A LiDAR
-  // cell far below DEM-H at the same spot is a gap in the LiDAR mosaic
-  // (inland rivers came through near 0 m: a 170 m trench at Wagga Wagga),
-  // not real ground, so DEM-H fills it too.
-  const LIDAR_DROP_MAX_M = 25;
+  // cell near sea level where DEM-H says the land is well above it is a gap
+  // in the LiDAR mosaic (inland rivers came through near 0 m: a 170 m trench
+  // at Wagga Wagga), not real ground, so DEM-H fills it too. Real LiDAR
+  // well below DEM-H (a gorge DEM-H smooths over, as at Launceston) is kept.
+  const LIDAR_DROP_MAX_M = 25, LIDAR_GAP_BELOW_M = 10;
   function mergeLidar(grid, r) {
     const { iw, ih, data, nd } = r;
     const N = iw * ih, dem = new Float32Array(N), valid = new Uint8Array(N);
@@ -7135,7 +7136,7 @@ import { classifyDemGaps } from './dem-voids.js';
         const xd = Math.min(grid.W - 1, Math.floor(((x + 0.5) / iw) * grid.W));
         const d = grid.dem[yd * grid.W + xd];
         const ok = Number.isFinite(v) && v !== nd && v > -100 && v < 9000;
-        if (ok && !(d > 0 && v < d - LIDAR_DROP_MAX_M)) { dem[k] = v; have++; } else {
+        if (ok && !(v < LIDAR_GAP_BELOW_M && v < d - LIDAR_DROP_MAX_M)) { dem[k] = v; have++; } else {
           if (ok) dropped++;
           dem[k] = d;
         }
