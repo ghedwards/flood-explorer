@@ -18,6 +18,8 @@ const KEY: &str = "readings.json";
 /// The same, gzipped: what a cold start loads (unzipping is quick; zipping
 /// 2 MB again on a small Lambda took long enough for browsers to give up).
 const KEY_GZ: &str = "readings.json.gz";
+/// The rolling hourly record of every gauge (history.rs).
+const KEY_HIST: &str = "readings-history.json.gz";
 const S3_CHECK_MS: i64 = 60_000; // how often a copy looks for a newer file
 
 pub type Http = Box<dyn Fn(&str, &[(String, String)]) -> Result<Value, String> + Send + Sync>;
@@ -91,7 +93,11 @@ pub struct Readings {
     rain_http: Option<Http>,
     warnings: Option<Warnings>,
     classes: Option<Classes>,
+    history: Mutex<Option<HistoryCopy>>,
 }
+
+/// The hourly record as this copy last read it: (checked at, record, S3 ETag).
+type HistoryCopy = (i64, Arc<crate::history::History>, Option<String>);
 
 /// Fetches flood class levels and current classes: errors -> {station: ...}.
 pub type Classes = Box<dyn Fn(&mut Vec<String>) -> Value + Send + Sync>;
@@ -102,7 +108,7 @@ pub type Warnings = Box<dyn Fn(i64, &str, &mut Vec<String>) -> Value + Send + Sy
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, history: Mutex::new(None) }
     }
 
     /// Fetch plain-text files (the storm tide CSV) with this.
@@ -302,12 +308,72 @@ impl Readings {
             }
         }
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(doc)));
+        let hist = self.update_history(&r["level"], fetched);
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
-            "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "gzStored": gz_stored, "version": crate::VERSION, "seconds": (fetched - started) / 1000,
+            "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "gzStored": gz_stored, "version": crate::VERSION, "history": hist, "seconds": (fetched - started) / 1000,
             "warnings": r["warnings"]["warnings"].as_array().map(|a| a.len()),
             "floodClasses": r["floodclass"].as_object().map(|o| o.len()),
             "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000, "warnings": (t_warn - t_sea) / 1000}}))
+    }
+
+    /// The stored hourly record (S3: re-read when it has changed, checked at
+    /// most once a minute; a server keeps it in memory).
+    fn load_history(&self, now: i64) -> Result<Arc<crate::history::History>, String> {
+        use crate::history::{gunzip, History};
+        let cur = self.history.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Store::S3(b) = &self.store else {
+            return Ok(cur.map(|c| c.1).unwrap_or_default());
+        };
+        if let Some((checked, h, _)) = &cur {
+            if now - checked < S3_CHECK_MS {
+                return Ok(h.clone());
+            }
+        }
+        let have = cur.as_ref().and_then(|c| c.2.clone());
+        let got = match b.get(KEY_HIST, have.as_deref(), now) {
+            Ok(crate::s3::Got::Unchanged) => cur.as_ref().map(|c| (c.1.clone(), c.2.clone())),
+            Ok(crate::s3::Got::Body(z, etag)) => {
+                let v: Value = serde_json::from_slice(&gunzip(&z)?).map_err(|e| e.to_string())?;
+                Some((Arc::new(History::from_json(&v)), etag))
+            }
+            Ok(_) => Some((Arc::new(History::default()), None)),
+            Err(e) => return cur.map(|c| c.1).ok_or(e),
+        };
+        let (h, etag) = got.unwrap_or_default();
+        *self.history.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, h.clone(), etag));
+        Ok(h)
+    }
+
+    /// Adds this refresh's levels to the record and stores it (best effort:
+    /// a failure here never fails the refresh).
+    fn update_history(&self, level: &Value, now: i64) -> Value {
+        let mut h = match self.load_history(now) {
+            Ok(h) => (*h).clone(),
+            Err(e) => return json!({"error": e}),
+        };
+        let added = h.add(level, now);
+        let sites = h.sites.len();
+        let hours: usize = h.sites.values().map(|p| p.len()).sum();
+        let mut stored = None;
+        if let Store::S3(b) = &self.store {
+            let z = crate::history::gzip(&serde_json::to_vec(&h.to_json()).unwrap_or_default());
+            stored = Some(match b.put(KEY_HIST, &z, "application/gzip", now) {
+                Ok(()) => json!(z.len()),
+                Err(e) => {
+                    eprintln!("{} not stored: {}", KEY_HIST, e);
+                    json!(false)
+                }
+            });
+        }
+        // the next read fetches what was just stored (its ETag is new)
+        *self.history.lock().unwrap_or_else(|e| e.into_inner()) = Some((if stored.is_some() { 0 } else { now }, Arc::new(h), None));
+        json!({"added": added, "sites": sites, "hours": hours, "storedBytes": stored})
+    }
+
+    /// One gauge's hourly record for the last week.
+    pub fn history_site(&self, st: &str) -> Result<Option<Value>, String> {
+        Ok(self.load_history((self.now)())?.site(st))
     }
 
     /// The latest readings, if there are any yet.
@@ -467,6 +533,9 @@ mod tests {
         let v: Value = serde_json::from_slice(&doc.body).unwrap();
         assert_eq!(v["level"]["143001C"]["latestKind"], "realtime");
         assert_eq!(v["level"]["143001C"]["latest"][1], 3.5);
+        assert!(s["history"]["sites"].as_u64().unwrap() >= 1, "the hourly record starts: {}", s["history"]);
+        let h = r.history_site("143001C").unwrap().expect("a live gauge has a record");
+        assert_eq!(h.as_array().unwrap().last().unwrap()[1], 3.5);
         assert_eq!(v["level"]["540198"]["latestKind"], "hourly");
         assert_eq!(v["storage"]["143001A"]["latest"][1], 900000.0);
         assert_eq!(v["fetched"], "2026-10-20T08:00:00Z");

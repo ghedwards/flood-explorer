@@ -4410,6 +4410,12 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   }
 
   // A gauge's level reading and flood class, redrawn when a live level arrives.
+  // the hourly week where the broker has one, else the daily averages
+  function histOrSpark(p, r) {
+    const h = nat.history && nat.history[String(p.station || '')];
+    if (h && h.points && h.points.length >= 3) return historyChart(h.points, classFor(p));
+    return r && r.series && r.series.length ? sparkline(r.series) : '';
+  }
   function levelReadingHtml(p) {
     const r = nat.readings.level && nat.readings.level[p.station];
     let html;
@@ -4421,16 +4427,16 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           <span class="hint">${live ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from <a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland's water monitoring network</a> (© State of Queensland, CC BY 4.0)`
             : bureau ? `Reading at ${escapeHtml(fmtReadingTime(r.latest[0]))}, from the Bureau's river height pages (checked hourly)`
             : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
-            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
+            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length && !(nat.history && nat.history[String(p.station || '')] && nat.history[String(p.station || '')].points.length >= 3) ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
           ${riseHtml(r)}
           ${rainHtml(p)}
-          ${r.series.length ? sparkline(r.series) : ''}</div>`;
+          ${histOrSpark(p, r)}</div>`;
     } else {
       const c = classFor(p);
       html = c && Number.isFinite(c.level) && c.at
         ? `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}</span>
           <div class="big">${c.level.toFixed(2)}<small>m</small></div>
-          <span class="hint">From the Bureau's river height pages, ${escapeHtml(c.at.replace('T', ' ').slice(0, 16))} (local time)${c.tendency ? `, ${escapeHtml(c.tendency)}` : ''}, on the gauge's own datum. No recent reading is published for it on Water Data Online.</span></div>`
+          <span class="hint">From the Bureau's river height pages, ${escapeHtml(c.at.replace('T', ' ').slice(0, 16))} (local time)${c.tendency ? `, ${escapeHtml(c.tendency)}` : ''}, on the gauge's own datum. No recent reading is published for it on Water Data Online.</span>${histOrSpark(p, null)}</div>`
         : '<p class="hint">No recent reading is published for this gauge on Water Data Online.</p>';
     }
     return html + classHtml(p, r);
@@ -4467,6 +4473,52 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     nat.readings.level[st] = { unit: 'm', series: old ? old.series : [], ...(old || {}), latest: got.latest, latestKind: 'realtime' };
     if (box.isConnected) box.innerHTML = levelReadingHtml(p);
     status.live = { station: st, at: got.latest[0], level: got.latest[1] };
+  }
+
+  // The broker's hourly record of a gauge for the last 7 days (it keeps
+  // every gauge's level from each refresh, so Bureau-only gauges get a trend
+  // too): fetched when the report opens, kept 10 minutes.
+  const HIST_MS = 10 * 60e3;
+  nat.history = nat.history || {};
+  async function refreshHistory(p, box) {
+    const st = String(p.station || '');
+    if (!BROKER || !box || !st || DATA_SOURCE !== 'runtime') return;
+    const had = nat.history[st];
+    if (had && Date.now() - had.asked < HIST_MS) return;
+    nat.history[st] = { asked: Date.now(), points: had ? had.points : [] };
+    try {
+      const r = await fetch(`${BROKER}/v1/history?site=${encodeURIComponent(st)}`, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) return;
+      const h = await r.json();
+      nat.history[st].points = (h.points || []).filter((x) => Array.isArray(x) && Number.isFinite(x[1]));
+    } catch (e) { return; /* the daily series still shows */ }
+    status.history = { station: st, points: nat.history[st].points.length };
+    if (box.isConnected && nat.history[st].points.length >= 3) box.innerHTML = levelReadingHtml(p);
+  }
+  // a week of hourly levels: the line, the day ticks, and its low and high
+  function historyChart(points, c) {
+    const pts = points.map((x) => [new Date(x[0]).getTime(), x[1]]).filter((x) => Number.isFinite(x[0]));
+    if (pts.length < 3) return '';
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0], span = Math.max(1, t1 - t0);
+    let lo = Math.min(...pts.map((x) => x[1])), hi = Math.max(...pts.map((x) => x[1]));
+    // flood class lines when they're near the range shown
+    const lines = c ? ['minor', 'moderate', 'major'].filter((k) => c[k] != null && c[k] <= hi + Math.max(0.5, (hi - lo) * 0.5) && c[k] >= lo - 0.5).map((k) => [k, c[k]]) : [];
+    for (const [, v] of lines) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    const pad = (hi - lo) * 0.08 || 0.1, y0 = lo - pad, y1 = hi + pad;
+    const X = (t) => ((t - t0) / span) * 100, Y = (v) => 52 - ((v - y0) / (y1 - y0)) * 48;
+    // break the line where an hour or more is missing (a refresh that failed)
+    let d = '', prev = null;
+    for (const [t, v] of pts) { d += `${prev != null && t - prev > 3 * 3600e3 ? 'M' : (d ? 'L' : 'M')}${X(t).toFixed(2)},${Y(v).toFixed(2)}`; prev = t; }
+    const days = [];
+    for (let t = new Date(t0).setHours(24, 0, 0, 0); t < t1; t += 86400e3) days.push(t);
+    const last = pts[pts.length - 1];
+    const lineCol = { minor: '#f9a825', moderate: '#e65100', major: '#b71c1c' };
+    return `<div class="hist"><svg class="hist-svg" viewBox="0 0 100 56" preserveAspectRatio="none" role="img" aria-label="River level, last ${Math.round(span / 86400e3) || 1} days, hourly">
+      ${days.map((t) => `<line x1="${X(t).toFixed(2)}" x2="${X(t).toFixed(2)}" y1="2" y2="54" class="hist-day" vector-effect="non-scaling-stroke"/>`).join('')}
+      ${lines.map(([k, v]) => `<line x1="0" x2="100" y1="${Y(v).toFixed(2)}" y2="${Y(v).toFixed(2)}" stroke="${lineCol[k]}" stroke-dasharray="2 2" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('')}
+      <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.8" vector-effect="non-scaling-stroke"/>
+      <circle cx="${X(last[0]).toFixed(2)}" cy="${Y(last[1]).toFixed(2)}" r="1.6" fill="var(--accent)"/></svg>
+      <span class="hint">Hourly, ${escapeHtml(new Date(t0).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' }))} to now · low ${Math.min(...pts.map((x) => x[1])).toFixed(2)} m, high ${Math.max(...pts.map((x) => x[1])).toFixed(2)} m${lines.length ? ` · dashed: ${lines.map(([k]) => k).join(', ')} flood level` : ''} (the broker's record)</span></div>`;
   }
 
   function openReport(f, opts) {
@@ -4566,7 +4618,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       }
     });
     if (p.kind === 'storage') addWaterHistory(p.id, q('.js-history'));
-    else refreshLiveLevel(p, q('.js-reading'));
+    else { refreshLiveLevel(p, q('.js-reading')); refreshHistory(p, q('.js-reading')); }
     const link = document.createElement('div');
     link.className = 'js-link';
     q('.actions').before(link);
@@ -5033,6 +5085,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     return status.warningModel;
   }
   window.__floodModelWarning = (i, j) => modelWarningPeak(allWarnings()[i || 0], j || 0);
+  window.__floodHistory = (st) => (nat.history && nat.history[st]) || null;
   window.__floodWarningPeaks = () => allWarnings().map((w) => ({ id: w.id, peaks: warningPeaks(w).map((pk) => ({ place: pk.t.place, river: pk.t.river, level: pk.t.level, kind: pk.t.kind, gauge: pk.f.properties.name })), targets: warningTargets(w.description || '').length }));
   function onWarnModel(b) {
     const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnKey || warnKey(x) === b.dataset.warnModel);

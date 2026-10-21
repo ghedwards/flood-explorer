@@ -334,6 +334,9 @@ body.in3d #legendCard { display: none; }
 .rise-fast { color: #b3261e; }
 .live-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #1e7d4f; color: #fff; font-size: .72em; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
 .spark { width: 100%; height: 46px; display: block; }
+.hist { margin-top: 6px; }
+.hist-svg { width: 100%; height: 72px; display: block; background: color-mix(in srgb, var(--line) 25%, transparent); border-radius: 6px; }
+.hist-day { stroke: var(--line); stroke-width: 1; }
 .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--accent); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -35,6 +35,9 @@ const OUT = process.env.OUT || "shots";
       r.sample = { station: pick, latest: body.sites[pick].latest, points: body.sites[pick].series.length };
       await page.evaluate((s) => window.__floodOpenGauge(s), pick);
       await page.waitForSelector(".report-card .live-tag", { timeout: 30000 }).then(() => { r.reportLive = true; }, () => { r.reportLive = false; });
+      // the broker's hourly record for that gauge, drawn in the report
+      await page.waitForSelector(".report-card .hist-svg", { timeout: 20000 }).catch(() => {});
+      r.history = await page.evaluate((s) => ({ status: window.__floodStatus.history || null, points: (window.__floodHistory(s) || { points: [] }).points.length, chart: !!document.querySelector(".report-card .hist-svg"), caption: (document.querySelector(".report-card .hist .hint") || {}).textContent || null }), pick).catch((e) => String(e));
       r.reportText = await page.evaluate(() => {
         const c = [...document.querySelectorAll(".report-card")].pop();
         const rd = c && c.querySelector(".js-reading");
@@ -139,6 +142,7 @@ const OUT = process.env.OUT || "shots";
   if (r.watchOpened) note("watch item opened", r.watchOpened);
   if (r.watchNear) note("watch near your places", r.watchNear);
   if (r.versions) note("versions", r.versions);
+  if (r.history) note("hourly record", r.history);
   if (r.warningMap) note("warning on the map", r.warningMap);
   if (r.warningPeaks) note("warning peaks", r.warningPeaks);
   if (r.warningModel) note("warning peak model", { model: r.warningModel, summary: r.warningModelSummary });

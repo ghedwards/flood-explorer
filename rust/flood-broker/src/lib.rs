@@ -12,6 +12,7 @@
 //! [`Broker::handle`] is the whole service minus the socket, so tests drive
 //! it with a stand-in portal and clock; `main.rs` puts it on a socket.
 
+pub mod history;
 pub mod lambda;
 pub mod readings;
 pub mod s3;
@@ -311,6 +312,22 @@ impl Broker {
         }
     }
 
+    /// One gauge's hourly levels for the last week: {site, points: [[time, m]]}.
+    fn serve_history(&self, req: &Request, query: &str) -> Response {
+        let Some(rd) = &self.readings else { return self.reply(req, 404, &json!({"error": "not found"}), &[]) };
+        let site = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "site").map(|(_, v)| wmip::decode(v).trim().to_string()).unwrap_or_default();
+        if site.is_empty() || site.len() > 40 || !site.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            return self.reply(req, 400, &json!({"error": "site= is required, e.g. ?site=423940A"}), &[]);
+        }
+        let period = self.cfg.refresh_ms.max(60_000);
+        let cc = format!("public, max-age={}, stale-while-revalidate=600", (period / 1000).clamp(60, 900));
+        match rd.history_site(&site) {
+            Ok(Some(points)) => self.reply(req, 200, &json!({"site": site, "step": "hour", "days": crate::history::KEEP_HOURS / 24, "points": points}), &[("Cache-Control", &cc)]),
+            Ok(None) => self.reply(req, 200, &json!({"site": site, "step": "hour", "days": crate::history::KEEP_HOURS / 24, "points": []}), &[("Cache-Control", &cc)]),
+            Err(e) => self.reply(req, 502, &json!({"error": format!("history store: {}", e)}), &[("Cache-Control", "no-store")]),
+        }
+    }
+
     pub fn handle(&self, req: &Request) -> Response {
         lock(&self.st).requests += 1;
         let (path, query) = req.target.split_once('?').unwrap_or((req.target, ""));
@@ -337,7 +354,7 @@ impl Broker {
             drop(st);
             return self.reply(req, 200, &body, &[("Cache-Control", "no-store")]);
         }
-        if path != "/v1/levels" && path != "/v1/readings" {
+        if path != "/v1/levels" && path != "/v1/readings" && path != "/v1/history" {
             return self.reply(req, 404, &json!({"error": "not found"}), &[]);
         }
         if !self.allowed(req.client) {
@@ -345,6 +362,9 @@ impl Broker {
         }
         if path == "/v1/readings" {
             return self.serve_readings(req);
+        }
+        if path == "/v1/history" {
+            return self.serve_history(req, query);
         }
         let raw = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "sites").map(|(_, v)| wmip::decode(v)).unwrap_or_default();
         let mut ids: Vec<String> = Vec::new();
@@ -638,6 +658,12 @@ mod tests {
         let rd = Arc::new(readings::Readings::new(Box::new(http), readings::Store::Memory, "https://x/stations.json".into(), Box::new(move || t2.load(std::sync::atomic::Ordering::SeqCst))));
         let b = b.with_readings(rd);
         assert_eq!(b.refresh_readings()["ok"], true);
+        let hist = |t: &str| b.handle(&Request { method: "GET", target: t, origin: Some("https://ghedwards.github.io"), client: "9.9.9.8", gzip: false, if_none_match: None });
+        let hv: Value = serde_json::from_slice(&hist("/v1/history?site=540198").body).unwrap();
+        assert_eq!(hv["site"], "540198");
+        assert_eq!(hv["points"][0][1], 1.5, "the hourly record serves one gauge");
+        assert_eq!(hist("/v1/history").status, 400);
+        assert_eq!(hist("/v1/history?site=../x").status, 400);
         let get = |gzip: bool, inm: Option<&str>| b.handle(&Request { method: "GET", target: "/v1/readings", origin: Some("https://ghedwards.github.io"), client: "9.9.9.9", gzip, if_none_match: inm });
         let plain = get(false, None);
         let zipped = get(true, None);
