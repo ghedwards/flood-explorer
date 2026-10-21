@@ -50,12 +50,17 @@ jobs:
           import json, sys
           d = sys.argv[1]
           st = json.load(open(f"{d}/stations.json"))
+          g = json.load(open(f"{d}/g.json"))
           if not st.get("coords"):
-              g = json.load(open(f"{d}/g.json"))
               st["coords"] = {f["properties"]["station"]: f["geometry"]["coordinates"][:2] for f in g["features"]
                               if f["properties"].get("kind") in ("forecast", "information") and f["properties"].get("station")}
-              json.dump(st, open(f"{d}/stations.json", "w"))
-          print("stations", len(st["level"]), "with locations", len(st.get("coords", {})))
+          if not st.get("bom"):
+              st["bom"] = {str(f["properties"]["bom"]).lstrip("0"): f["properties"]["station"] for f in g["features"]
+                           if f["properties"].get("bom") is not None and f["properties"].get("station")}
+              st["state"] = {f["properties"]["station"]: f["properties"].get("state") for f in g["features"]
+                             if f["properties"].get("station") and f["properties"].get("state")}
+          json.dump(st, open(f"{d}/stations.json", "w"))
+          print("stations", len(st["level"]), "with locations", len(st.get("coords", {})), "Bureau numbers", len(st.get("bom", {})))
           PY
           (cd "$RUNNER_TEMP/st" && python3 -m http.server 8790 > /dev/null 2>&1 &)
           ALLOWED_ORIGINS=http://127.0.0.1:8000 STATIONS_URL=http://127.0.0.1:8790/stations.json rust/target/release/flood-broker > broker.log 2>&1 &
