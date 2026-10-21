@@ -3838,10 +3838,19 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // The broker's readings as last saved in this browser (Cache API, written
   // by the service worker), if under 12 hours old.
   const SAVED_MAX_MS = 12 * 3600e3;
+  // the page keeps its own copy (not only the service worker's, which
+  // isn't in charge on a first visit)
+  const SAVED_CACHE = 'flood-saved-v1';
+  function saveReadings(res) {
+    try {
+      if (typeof caches === 'undefined' || !res || !res.ok) return;
+      caches.open(SAVED_CACHE).then((c) => c.put(`${BROKER}/v1/now`, res)).catch(() => {});
+    } catch (e) { /* no Cache API here */ }
+  }
   async function savedReadings() {
     try {
       if (!BROKER || typeof caches === 'undefined') return null;
-      const hit = await caches.match(`${BROKER}/v1/now`, { ignoreVary: true });
+      const hit = await (await caches.open(SAVED_CACHE)).match(`${BROKER}/v1/now`) || await caches.match(`${BROKER}/v1/now`, { ignoreVary: true });
       if (!hit || !hit.ok) return null;
       const j = await hit.json();
       const t = j && j.fetched ? new Date(j.fetched).getTime() : NaN;
@@ -3873,6 +3882,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         ? fetch(`${BROKER}/v1/now`, { signal: AbortSignal.timeout(8000) }).then((r) => {
           if (r.status === 503) return null;   // just started: nothing fetched yet
           if (!r.ok) throw new Error(`broker readings: HTTP ${r.status}`);
+          saveReadings(r.clone());
           return r.json();
         }).catch((err) => { logProblem('live', 'Live readings unavailable; using the site build\'s', String(err && err.message || err)); return null; })
         : Promise.resolve(null);
@@ -5350,9 +5360,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     try {
       const r = await fetch(`${BROKER}/v1/now`, { cache: manual ? 'no-cache' : 'default', signal: AbortSignal.timeout(fallback || manual ? 30000 : 15000) });
       if (!r.ok) return 'error';
+      const copy = r.clone();
       const fresh = await r.json();
       if (!fresh || !fresh.level) return 'error';
       if (!fallback && fresh.fetched === nat.readingsFetched) return 'same';
+      saveReadings(copy);
       nat.readings = fresh;
       nat.readingsFetched = fresh.fetched;
       if (fallback) {
