@@ -82,63 +82,191 @@ Shipped this round:
 
 ## Open items
 
-### 1. Official road closures (recommended next)
+### How to check a new endpoint (read first)
 
-Show roads closed now, next to the model's "roads cut".
+The agent sandbox can't reach most hosts (bom.gov.au, government APIs,
+github.io, the Lambda URL); WebFetch only summarises and can't show raw
+responses. To see a real response:
 
-- Sources: Queensland **QLDTraffic** open data (GeoJSON events incl. flooding;
-  check its current API terms and whether a key is required), NSW **Live
-  Traffic** (Transport for NSW Open Data, free API key: store it as a Lambda
-  env var set from a repo secret in `broker-deploy.yml`, never in the repo),
-  Victoria **VicTraffic** / VicRoads open data (check what's published).
-- Broker: a new refresh stage (every 15 min, time-boxed like rain) in
-  `readings.rs`, parsers in `flood-feeds` with fixture tests; output
-  `r["roads"] = [{id, state, road, desc, kind: "flooding"|"closed",
-  lat, lon, line?: [[lat,lon]...], updated, link}]`, flood-related only.
-  Add closures near a gauge in flood to the watch list (`watch_list`).
-- App: a layer "Road closures, flooding (official)" (on by default when any),
-  popups with the agency's text and link; in a model's impact section, list
-  official closures inside the model next to the modelled cut roads ("the
-  model cuts X; officially closed: Y"). Keep the 15-minute refresh path.
-- Check: add to `tests/broker-live.js` notices (count by state).
+- Add a URL to the broker's probe (`Broker::probe` in `flood-broker/src/lib.rs`)
+  and invoke it: `{"flood_broker":"probe"}` runs after each deploy on main
+  (the deploy workflow's probe step prints a notice).
+- Or add a throwaway step to `shots2d.yml` on a `2d-*` branch that `curl`s
+  the URL and writes the first few KB to `$OUT/probe-*.txt`, which lands on
+  the `shots-2d` branch. Remove it before merging.
+- Save a real response as a test fixture before writing the parser.
 
-### 2. State emergency warnings (Australian Warning System)
+All new feeds follow the same pattern, so one recipe:
 
-Bureau warnings say how high; state services say what to do (Advice /
-Watch and Act / Emergency Warning, evacuation orders) for named towns.
+1. **flood-feeds**: `pub fn parse_<feed>(body: &Value) -> Vec<Value>` (pure,
+   fixture-tested) and `pub fn <feed>(http, errors) -> Value` (fetch with a
+   timeout; errors pushed, never panics).
+2. **broker refresh** (`readings.rs`): a stage after warnings, time-boxed
+   (like rain: a deadline, carry the previous value up to N hours with
+   `Self::carry`), its seconds in `stageSeconds`, a count in the summary.
+3. **watch list** (`feeds::watch_list`): add a kind where it matters, scored
+   against the existing kinds (warning, flood, river, sea).
+4. **app**: a layer in `buildNationalLayers` (persistent `L.layerGroup`,
+   redrawn when `refreshLiveReadings` brings new readings, like
+   `drawWarningAreas`), popups with the source's text and link, attribution,
+   `status.<feed>` and a `window.__flood<Feed>()` hook for tests.
+5. **tests**: Rust fixtures; a notice in `tests/broker-live.js` (counts, one
+   sample); a screenshot.
+6. **size**: readings.json is ~2 MB raw (~170 KB gzipped). Keep new feeds
+   small: simplify geometry (≈100 m), drop unneeded fields, cap counts.
 
-- Sources: Victoria (`emergency.vic.gov.au` public events GeoJSON), NSW SES
-  (Hazard Watch feeds), Queensland (Qld Fire and Emergency / disaster
-  dashboard feeds); confirm each feed's terms, format and CORS. Fetch in the
-  broker, keep flood-related items only.
-- Output `r["emergency"] = [{id, state, level, title, area polygon or point,
-  updated, link, text}]`; draw on the map coloured by AWS level (yellow /
-  orange / red), list above Bureau warnings in the Forecast panel, top of the
-  watch list for "Emergency Warning".
-- Same shape as item 1 (a refresh stage, flood-feeds parsers, tests, layer).
+### 1. Official road closures (recommended next; ~1 day)
 
-### 3. Observed rainfall
+Why: the model says which roads a flood would cut; the agencies say which
+are closed now. Side by side they show the situation and check the model.
 
-Rain that has fallen (since 9 am, last 24 h) at Bureau rain gauges: often the
-first sign. The flood gauge network's rain gauge locations are layer 4 of
-`hosting.wsapi.cloud.bom.gov.au/.../National_Flood_Gauge_Network/FeatureServer`;
-find the observations on the FTP server (look for rainfall tables beside the
-river height pages under `anon/gen/fwo/`) or KiWIS (rainfall timeseries).
-Show totals on the gauge layer and in reports; add heavy totals to the watch
-list.
+Sources (verify each with a probe first):
 
-### 4. Gauge zeros
+- **Queensland, QLDTraffic GeoJSON API** (Department of Transport and Main
+  Roads). Feeds include Hazards, Crashes, Congestion, **Flooding**,
+  Roadworks, Special Events, Web cameras. Specification:
+  https://qldtraffic.qld.gov.au/more/Developers-and-Data/ (PDF "QLDTraffic
+  website API specification", v1.10). The API is `https://api.qldtraffic.qld.gov.au/v2/events`
+  with an `apikey` query parameter; the specification has historically
+  published a public key for open use. **Verify** the base URL, the
+  flooding filter (`event_type`/`event_subtype`) and the key from the current
+  PDF. Terms: provided "as is"; attribution "© The State of Queensland
+  (Department of Transport and Main Roads)".
+- **NSW, Live Traffic NSW hazards** (Transport for NSW, CC BY). GeoJSON
+  FeatureCollections at `https://api.transport.nsw.gov.au/v1/live/hazards/`:
+  `flood-open.json` (current), `flood.json` (open and closed). Properties:
+  `headline`, `displayName`, `roads[]` (road name, suburb, ...), `isMajor`,
+  `created` and `lastUpdated` (ms since 1970), `mainCategory`/`subCategoryA`
+  (documented as unstable: don't rely on them). Needs a free Open Data Hub
+  API key (https://opendata.transport.nsw.gov.au/), sent as the header
+  `Authorization: apikey <key>`. Developer guide v1.9 (Oct 2023) on the hub.
+  Store the key as a repo secret, pass it to the Lambda env in
+  `broker-deploy.yml` (like `ALLOWED_ORIGINS`), never commit it.
+- **Victoria**: no public traffic hazards feed confirmed; check the
+  Department of Transport and Planning open data (VicTraffic) before
+  building anything for Victoria. Skip if none.
 
-The flood class buttons (Minor/Moderate/Major) in Scenario and exact
-placement of a warning's forecast peak need the gauge zero (AHD), which only
-the Bureau's flood class web pages publish (now 403 to the build; the FTP
-river height pages have no zero; the ArcGIS gauge layers and KiWIS station
-fields checked so far have none; KiWIS `custom_attributes` is unchecked).
-Ideas: KiWIS `getStationList ... returnfields=custom_attributes` for a few
-known gauges; state agencies' gauge metadata (Qld WMIP, WaterNSW, Vic
-Water Measurement); a small hand-checked table for the preset towns' gauges.
-Until then `boardToModel` places a peak from the gauge's rating or from the
-lowest level recorded in the last 5+ days (approximate, and it says so).
+Data shape in readings.json:
+
+```json
+"roads": {"fetched": "...", "sources": {"QLD": "ok", "NSW": "ok"},
+  "items": [{"id": "qld:123", "state": "QLD", "road": "Warrego Hwy",
+    "where": "Mitchell to Morven", "desc": "Closed due to flooding",
+    "closed": true, "major": false, "updated": "2026-10-21T04:00:00Z",
+    "lat": -26.5, "lon": 147.9, "line": [[-26.5, 147.9], ...],
+    "link": "https://qldtraffic.qld.gov.au/"}]}
+```
+
+Flood-related only (type flooding, or text matching flood/water over
+road). `closed` true when the agency says closed; otherwise "caution".
+
+App:
+
+- Layer "Road closures, flooding (official)", on by default when any: red
+  lines (closed) or orange (caution) where geometry is a line, else a
+  marker; popup with road, place, agency text, updated time and source link.
+- Model impact section (`renderImpact`/roads cut): list official closures
+  inside the model's box next to the modelled cut roads: "The model cuts 12
+  roads; officially closed now: Warrego Hwy (Mitchell–Morven)". Don't try to
+  match road names automatically at first.
+- Watch list: a closure of a major road, or several near a gauge in flood.
+
+Risks: feeds change without notice (keep parsers tolerant; a failed source
+is reported in `sources` and the last list carried for 2 h); the NSW key
+needs the user to register.
+
+### 2. State emergency warnings (Australian Warning System; ~1-2 days)
+
+Why: the Bureau says how high the river goes; the state emergency services
+say what to do: Advice (yellow), Watch and Act (orange), Emergency Warning
+(red), including "evacuate now" for named towns. Those are the warnings
+people act on.
+
+Sources (all need verifying; none confirmed reachable yet):
+
+- **NSW SES, Hazard Watch** (data.gov.au "Hazard Watch", CC BY 3.0 AU,
+  publisher NSW State Emergency Service). The dataset page lists no feed URL;
+  the public site hazardwatch.gov.au serves its map from a feed: find it
+  (browser dev tools by the user, or a probe) and confirm terms with NSW SES
+  (datansw@customerservice.nsw.gov.au) if unclear.
+- **Queensland, "Storm, flood and cyclone warnings" (CAP-AU XML)** by the
+  Queensland Fire Department (data.qld.gov.au dataset
+  `storm-flood-and-cyclone-warnings-capau-xml`): CAP-AU with warning areas,
+  plus a point layer updated every 30 minutes. Find the file URL on
+  data.qld.gov.au. CAP parsing exists already (`parse_cap_flood`; extend it
+  for `<parameter>` AWS level fields and `<polygon>` areas, which
+  `cap_polygons` already reads).
+- **Victoria, VicEmergency**: the support article (2019) says the data feed
+  isn't public (register interest). The VicEmergency site's own map uses a
+  public events JSON that community tools read; using it needs the terms
+  checked with Emergency Management Victoria first. Treat Victoria as
+  optional.
+- Other states later (Emergency WA, SA SES, Tas SES, NT).
+
+Data shape: `"emergency": {"items": [{"id", "state", "level":
+"advice"|"watch_and_act"|"emergency", "hazard": "flood", "title",
+"action" ("Evacuate now", "Prepare to evacuate", ...), "areas": [rings],
+"point": [lat, lon], "updated", "link"}]}`; flood (and storm/cyclone where
+it says flooding) only.
+
+App: a layer coloured by level (the standard AWS colours: yellow, orange,
+red), drawn above the Bureau warning areas; a section above "Current flood
+warnings (BoM)" in the Forecast panel; Emergency Warnings at the top of the
+watch list; on a model, "Inside an Emergency Warning area: evacuate now"
+in the impact section. Wording must quote the agency, never paraphrase an
+instruction.
+
+Risks: availability and terms (do this only with feeds that are clearly
+public); these are life-safety messages, so show them verbatim with the
+time issued, link to the source, and never show a stale one as current
+(drop items past their expiry; label carried items "as of <time>").
+
+### 3. Observed rainfall (~0.5-1 day)
+
+Rain that has fallen (since 9 am, last 24 h) at the Bureau's flood-network
+rain gauges: often the first sign of a flood.
+
+- Locations: layer 4 "Rain gauge locations" of
+  `https://hosting.wsapi.cloud.bom.gov.au/arcgis/rest/services/flood/National_Flood_Gauge_Network/FeatureServer`
+  (`bom_stn_num`, `name`, `lat`, `long`, `state`, `basin`); fetch from the
+  build or broker (no CORS), once a day is plenty.
+- Observations: the Bureau's "Rainfall & River Conditions" products. The
+  river height pages we already parse (`IDx653xx.html` on the FTP server)
+  have sibling rainfall pages/tables: list `anon/gen/fwo/` with the broker's
+  FTP client (`ftp::Session::list`) and look for the rainfall products
+  (probe first). Alternative: KiWIS rainfall timeseries (Water Data Online,
+  daily totals, a day behind; less useful).
+- Output `r["rainObs"] = {station: [since9am, last24h, at]}` for gauges with
+  rain; app: colour the rain gauge dots by 24 h total, show totals in
+  reports, and put heavy totals (e.g. > 100 mm/24 h) near a river gauge on
+  the watch list alongside the forecast rain.
+
+### 4. Gauge zeros (open research)
+
+Needed for exact placement of a warning's forecast peak and for the
+Minor/Moderate/Major buttons in Scenario (currently off wherever the zero is
+unknown, which is now most gauges). Known: only the Bureau's flood class web
+pages published it, and they refuse the build (403); `reg.bom.gov.au`
+disallows robots; the FTP river height pages, the ArcGIS gauge layers and
+the KiWIS station fields checked so far have none.
+
+Leads, in order:
+
+1. KiWIS `getStationList` with `returnfields=station_no,custom_attributes`
+   (and `getTimeseriesList` with `returnfields=...,ts_unitname,coverage,
+   ca_ts`) for a few known gauges (e.g. 423204A Cunnamulla, 130005A): look
+   for a datum/zero attribute.
+2. State agencies' metadata: Queensland WMIP (the broker already talks to it:
+   check its site metadata call for a datum/elevation), WaterNSW, Victorian
+   Water Measurement Information System. Many state gauges report AHD
+   directly or publish the gauge datum.
+3. A small checked table (`viewer/gauge-zeros.json`, with source and date
+   for each) for the preset towns' gauges, filled from councils' flood
+   studies; better than nothing.
+
+Until then `boardToModel` (app.js) places a peak from the gauge's rating
+(`gaugeRating`, median height) or from the lowest level recorded in the last
+5+ days; the message says which.
 
 ### 5. Smaller items
 
