@@ -268,7 +268,79 @@ Until then `boardToModel` (app.js) places a peak from the gauge's rating
 (`gaugeRating`, median height) or from the lowest level recorded in the last
 5+ days; the message says which.
 
-### 5. Smaller items
+### 5. Fetching improvements (do 5a and 5b first)
+
+Measured on a refresh (21 Oct): 196 s in all, of which Water Data Online
+(KiWIS) 189 s; recurring errors are KiWIS `HTTP 504` on value batches and
+Open-Meteo `timeout: connect` on rain batches. The Bureau's FTP pages now
+give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
+(about a day behind). Stage timings are in the refresh summary
+(`stageSeconds`) and the deploy's probe notice.
+
+**5a. Ask Water Data Online less often (biggest win).**
+- In `readings.rs`, split the readings stage: Bureau FTP levels and Qld
+  live levels every refresh; KiWIS hourly values every hour and daily
+  series every 3 hours, carrying the previous values in between
+  (`Self::carry`, like rain and sea).
+- Skip KiWIS value requests for stations whose FTP Bureau level is newer
+  than KiWIS can be (they're replaced by `bureau_levels` anyway); still
+  fetch their daily series on the slow cycle for the sparkline.
+- Expect most refreshes under ~30 s (Lambda cost down ~4x at 128 MB), and
+  far fewer 504s. Check: `stageSeconds.readings` in the summary; levels
+  count and kinds unchanged in `tests/broker-live.js` notices.
+
+**5b. FTP: only changed files, one connection.**
+- `flood_warnings` and `flood_classes` each open a session and download
+  every file. Use one `ftp::Session` per refresh for both; `LIST` gives
+  sizes and modification times: keep `{name: (size, mtime, parsed)}` from
+  the last refresh (in the stored readings, or a small
+  `readings-ftp-index.json` in S3, key must start with `readings`) and
+  download only files that changed or are new; drop entries for files
+  that disappeared (expired warnings).
+- Add a test with a fake session (list twice, second time one changed
+  file: one download).
+
+**5c. Split what the app downloads.**
+- Today the app fetches all of readings.json (~2 MB raw, ~170 KB gzipped)
+  whenever it changes, mostly the per-gauge daily series.
+- Serve a small "now" document (`/v1/now`: latest level per gauge with
+  kind/time/rise, warnings with outlines, watch list, flood classes, sea,
+  rain totals; target 20-40 KB gzipped) that the page polls, and per-gauge
+  series on demand (`/v1/series?site=`, like `/v1/history`), fetched when a
+  report opens. Keep `/v1/readings` for the build/tests and older clients.
+- App: `loadNationalData` and `refreshLiveReadings` read `/v1/now`;
+  `levelReadingHtml` asks for series lazily (cache per station, 10 min),
+  falling back to the daily sparkline only when present. The service
+  worker's `BROKER_PATH` must include the new paths.
+- Check on a phone-sized viewport in `shots2d` (bytes on the wire in the
+  broker check: `curl --compressed -w '%{size_download}'`).
+
+**5d. Steadier rain forecasts.**
+- Open-Meteo batches fail to connect (one try per batch, 150 s budget, so
+  a failed batch waits 3 h). Fewer, larger requests (check its limits on
+  locations per request), a short pause between batches, and on the next
+  refresh fetch only the batches that failed (remember them with the
+  carried rain) instead of waiting for the 3-hour cycle.
+
+**5e. The site build shouldn't fetch live data twice.**
+- With `DATA_SOURCE=runtime` the 3-hourly cron is already skipped, but a
+  build triggered by a push still fetches national readings, warnings and
+  flood info. In runtime mode, build only the static data (stations,
+  gauges, storages, terrain) and refresh the fallback copy of readings at
+  most daily (e.g. reuse the previous Pages copy or the broker's S3 copy
+  via the public URL). Watch `build.yml` step outcomes and the
+  "Data status" panel (it reads `data/status.json`).
+
+**5f. Health per source.**
+- Record per source the last success time, last error and a short error
+  count: Water Data Online, Qld WMIP, FTP warnings, FTP classes/levels,
+  map service (warning areas), Open-Meteo, storm tide CSV. Put it in the
+  refresh summary and readings (`r["sources"]`), expose it in `/health`,
+  and show it in the app's Data status panel ("Water Data Online: last
+  good 12 min ago") next to the build's sources. Makes the next "live
+  readings unavailable" report diagnosable from a screenshot.
+
+### 6. Smaller items
 
 - **Bureau links**: the user saw some fail; which ones is unknown. The
   warning link is `https://www.bom.gov.au/products/<ID>.shtml`; the Bureau's
