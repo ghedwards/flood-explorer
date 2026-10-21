@@ -1,0 +1,11 @@
+# cargo audit settings (the Lint and dependency security workflow runs
+# `cargo audit --file rust/Cargo.lock` from the repository root).
+[advisories]
+ignore = [
+  # RUSTSEC-2026-0381 (distrusted emSign intermediates in webpki-roots):
+  # flagged for webpki-roots 0.26.11, which ureq 2 uses, but 0.26.11 holds
+  # no certificates of its own. It re-exports webpki-roots 1, which the lock
+  # pins at 1.0.10, the fixed release (checked 2026-10-21). Remove this when
+  # ureq 2 (flood-pipeline's WebDAV client and wbtools_oss) is gone.
+  "RUSTSEC-2026-0381",
+]
