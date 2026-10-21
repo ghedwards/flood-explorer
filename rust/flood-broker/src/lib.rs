@@ -452,37 +452,37 @@ pub fn fetch_with_timeout(url: &str, secs: u64) -> Result<Value, String> {
 
 /// Can the broker reach the Bureau pages the site build is blocked from?
 /// Each URL with our own User-Agent and a browser's: status, size, start.
+/// Reachability of the sources the broker relies on, as the broker
+/// (its own User-Agent only: nothing here poses as a browser). Extra URLs to
+/// check (a new feed, before writing a parser) come from PROBE_URLS,
+/// comma-separated; the first 2 KB of each answer are returned.
 pub fn probe() -> Value {
     use std::io::Read;
-    const URLS: [&str; 4] = [
-        "https://www.bom.gov.au/qld/flood/floodclass.shtml",
-        "https://www.bom.gov.au/fwo/IDZ00056.warnings_qld.xml",
-        "https://www.bom.gov.au/nsw/flood/floodclass.shtml",
-        // control: Water Data Online, which works
-        "https://www.bom.gov.au/waterdata/services?service=kisters&type=QueryServices&format=json&request=getrequestinfo",
+    let mut urls: Vec<String> = vec![
+        "https://www.bom.gov.au/waterdata/services?service=kisters&type=QueryServices&format=json&request=getrequestinfo".into(),
+        format!("{}?where=1%3D1&returnCountOnly=true&f=json", flood_feeds::WARNING_AREAS),
     ];
-    const UAS: [(&str, &str); 2] = [
-        ("broker", "flood-explorer-broker (+https://github.com/ghedwards/flood-explorer)"),
-        ("browser", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"),
-    ];
+    urls.extend(std::env::var("PROBE_URLS").unwrap_or_default().split(',').map(str::trim).filter(|u| u.starts_with("https://")).map(String::from));
     let t = Some(Duration::from_secs(20));
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(t).timeout_recv_response(t).timeout_recv_body(t).http_status_as_error(false).build().into();
     let mut out = Vec::new();
-    for url in URLS {
-        for (name, ua) in UAS {
-            let r = agent.get(url).header("User-Agent", ua).header("Accept", "text/html,application/xml,application/json;q=0.9,*/*;q=0.8").call();
-            out.push(match r {
-                Ok(mut r) => {
-                    let code = r.status().as_u16();
-                    let mut b = Vec::new();
-                    let _ = r.body_mut().as_reader().take(4 << 20).read_to_end(&mut b);
-                    let text = String::from_utf8_lossy(&b);
-                    json!({"url": url, "ua": name, "status": code, "bytes": b.len(), "start": text.chars().filter(|c| !c.is_control()).take(120).collect::<String>()})
-                }
-                Err(e) => json!({"url": url, "ua": name, "error": e.to_string()}),
-            });
-        }
+    for url in urls.iter().take(10) {
+        let r = agent.get(url).header("User-Agent", "flood-explorer-broker (+https://github.com/ghedwards/flood-explorer)").call();
+        out.push(match r {
+            Ok(mut r) => {
+                let code = r.status().as_u16();
+                let mut b = Vec::new();
+                let _ = r.body_mut().as_reader().take(2048).read_to_end(&mut b);
+                json!({"url": url, "status": code, "start": String::from_utf8_lossy(&b).chars().filter(|c| !c.is_control()).collect::<String>()})
+            }
+            Err(e) => json!({"url": url, "error": e.to_string()}),
+        });
     }
+    // and the FTP server the warnings, classes and levels come from
+    out.push(match flood_feeds::ftp::Session::open(flood_feeds::BOM_FTP_HOST, 20).and_then(|mut s| s.list(flood_feeds::BOM_FTP_DIR)) {
+        Ok(names) => json!({"ftp": flood_feeds::BOM_FTP_DIR, "files": names.len(), "cap": names.iter().filter(|n| n.ends_with(".cap.xml")).count()}),
+        Err(e) => json!({"ftp": flood_feeds::BOM_FTP_DIR, "error": e}),
+    });
     json!({"probe": out})
 }
 

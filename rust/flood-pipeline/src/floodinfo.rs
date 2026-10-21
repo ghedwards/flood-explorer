@@ -16,27 +16,6 @@ use regex::Regex;
 use serde_json::{Map, Value};
 use std::path::Path;
 
-const PAGES: [&str; 8] = [
-    "https://www.bom.gov.au/vic/flood/floodclass_north.shtml",
-    "https://www.bom.gov.au/vic/flood/floodclass_south.shtml",
-    "https://www.bom.gov.au/nsw/flood/floodclass.shtml",
-    "https://www.bom.gov.au/qld/flood/floodclass.shtml",
-    "https://www.bom.gov.au/sa/flood/floodclass.shtml",
-    "https://www.bom.gov.au/wa/flood/floodclass.shtml",
-    "https://www.bom.gov.au/tas/flood/floodclass.shtml",
-    "https://www.bom.gov.au/nt/flood/floodclass.shtml",
-];
-const FTP_FWO: &str = "ftp://ftp.bom.gov.au/anon/gen/fwo/";
-const FEEDS: [(&str, &str); 7] = [
-    ("NSW", "https://www.bom.gov.au/fwo/IDZ00054.warnings_nsw.xml"),
-    ("NT", "https://www.bom.gov.au/fwo/IDZ00055.warnings_nt.xml"),
-    ("QLD", "https://www.bom.gov.au/fwo/IDZ00056.warnings_qld.xml"),
-    ("SA", "https://www.bom.gov.au/fwo/IDZ00057.warnings_sa.xml"),
-    ("TAS", "https://www.bom.gov.au/fwo/IDZ00058.warnings_tas.xml"),
-    ("VIC", "https://www.bom.gov.au/fwo/IDZ00059.warnings_vic.xml"),
-    ("WA", "https://www.bom.gov.au/fwo/IDZ00060.warnings_wa.xml"),
-];
-
 pub type HttpText<'a> = &'a dyn Fn(&str) -> R<String>;
 
 /// Fetch text; refusals (4xx) are not retried, FTP once.
@@ -181,75 +160,39 @@ pub type CapWarnings<'a> = &'a dyn Fn(i64, &str, &mut Vec<String>) -> Value;
 /// Flood class levels from the FTP server's river height map pages.
 pub type FtpClasses<'a> = &'a dyn Fn(&mut Vec<String>) -> Value;
 
-pub fn run(out_dir: &str, http: HttpText, cap: Option<CapWarnings>, ftp_classes: Option<FtpClasses>) -> R<String> {
+/// Flood class levels and warnings from the Bureau's FTP server: the river
+/// height pages (classes, current class and level) and the CAP warning
+/// files. The website's flood class pages and RSS feeds refuse automated
+/// clients (403), so they aren't asked; nothing here poses as a browser.
+pub fn run(out_dir: &str, cap: Option<CapWarnings>, ftp_classes: Option<FtpClasses>) -> R<String> {
     let out = Path::new(out_dir);
     std::fs::create_dir_all(out).map_err(err)?;
     let mut classes = Map::new();
     let mut notes = Vec::new();
-    for url in PAGES {
-        let parts: Vec<&str> = url.split('/').collect();
-        let label = format!("{}:{}", parts[3], url.rsplit('/').next().unwrap());
-        match http(url) {
-            Ok(html) => {
-                let got = parse_floodclass(&html, url);
-                notes.push(format!("{}={}", label, got.len()));
-                classes.extend(got);
-            }
-            Err(e) => notes.push(format!("{}=none ({})", label, tail(&e, 60))),
+    if let Some(fc) = ftp_classes {
+        let mut e = Vec::new();
+        if let Value::Object(m) = fc(&mut e) {
+            notes.push(format!("ftp={}", m.len()));
+            classes.extend(m);
         }
-    }
-    let (mut warnings, mut werr, mut via) = (Vec::new(), Vec::new(), Vec::new());
-    for (st, url) in FEEDS {
-        let ftp = format!("{}{}", FTP_FWO, url.rsplit('/').next().unwrap());
-        let mut last = String::new();
-        let mut ok = false;
-        for src in [url, ftp.as_str()] {
-            match http(src) {
-                Ok(t) => {
-                    warnings.extend(parse_rss(&t, st));
-                    via.push(format!("'{}': '{}'", st, if src.starts_with("ftp") { "ftp" } else { "web" }));
-                    ok = true;
-                    break;
-                }
-                Err(e) => last = format!("{}: {}", st, e),
-            }
-        }
-        if !ok {
-            werr.push(last);
-        }
-    }
-    // the website's pages failed: the river height map pages on the FTP server
-    if classes.is_empty() {
-        if let Some(fc) = ftp_classes {
-            let mut e = Vec::new();
-            if let Value::Object(m) = fc(&mut e) {
-                notes.push(format!("ftp={}", m.len()));
-                classes.extend(m);
-            }
-        }
+        notes.extend(e.into_iter().take(2));
     }
     if !classes.is_empty() {
         write_json(out.join("floodclass.json"), &Value::Object(classes.clone()))?;
     }
-    // the feeds failed: the same warnings from the FTP server's CAP files
-    if werr.len() == FEEDS.len() {
-        if let Some(cap) = cap {
-            let mut e = Vec::new();
-            let w = cap(now_s() as i64, &now_iso(), &mut e);
-            if w["ok"] == Value::Bool(true) {
-                warnings = w["warnings"].as_array().cloned().unwrap_or_default();
-                via.push("'all': 'ftp cap'".to_string());
-                werr.clear();
-            } else {
-                werr.extend(e);
-            }
+    let (mut warnings, mut werr) = (Vec::new(), Vec::new());
+    let mut ok = false;
+    if let Some(cap) = cap {
+        let w = cap(now_s() as i64, &now_iso(), &mut werr);
+        if w["ok"] == Value::Bool(true) {
+            warnings = w["warnings"].as_array().cloned().unwrap_or_default();
+            ok = true;
         }
     }
-    write_json(out.join("warnings.json"), &obj! {"fetched" => now_iso(), "ok" => werr.len() < FEEDS.len(), "errors" => werr.clone(), "warnings" => warnings.clone()})?;
-    let via_txt = if via.is_empty() { "none".to_string() } else { format!("{{{}}}", via.join(", ")) };
+    write_json(out.join("warnings.json"), &obj! {"fetched" => now_iso(), "ok" => ok, "source" => "ftp cap", "errors" => werr.clone(), "warnings" => warnings.clone()})?;
     let mut msg = format!(
-        "Flood info: {} gauges with flood class levels ({}); {} current flood warnings; {} feed errors; feeds via {}",
-        classes.len(), notes.join(", "), warnings.len(), werr.len(), via_txt
+        "Flood info: {} gauges with flood class levels ({}); {} current flood warnings; {} errors; from the Bureau's FTP server",
+        classes.len(), if notes.is_empty() { "none".to_string() } else { notes.join(", ") }, warnings.len(), werr.len()
     );
     for e in werr.iter().take(2) {
         msg.push_str(&format!("\nwarning: {}", e));
@@ -296,23 +239,20 @@ mod tests {
     }
 
     #[test]
-    fn writes_files_and_survives_failures() {
+    fn writes_files_from_the_ftp_sources() {
         let d = std::env::temp_dir().join(format!("fi-{}", std::process::id()));
-        let fake = |url: &str| -> R<String> {
-            if url.contains("floodclass_north") {
-                Ok(VIC.into())
-            } else if url.contains("IDZ00056") {
-                Ok(RSS.into())
-            } else {
-                Err("unreachable".into())
-            }
-        };
-        run(d.to_str().unwrap(), &fake, None, None).unwrap();
+        let cap = |_: i64, iso: &str, _: &mut Vec<String>| -> Value { serde_json::json!({"ok": true, "fetched": iso, "warnings": [{"id": "IDQ20855", "title": "Minor Flood Warning"}]}) };
+        let fc = |_: &mut Vec<String>| -> Value { serde_json::json!({"82106": {"station": "82106", "minor": 4.2}}) };
+        run(d.to_str().unwrap(), Some(&cap), Some(&fc)).unwrap();
         let classes = read_json(d.join("floodclass.json")).unwrap();
         let warn = read_json(d.join("warnings.json")).unwrap();
         assert!(classes.get("82106").is_some());
-        assert_eq!(warn["warnings"].as_array().unwrap().len(), 2);
+        assert_eq!(warn["warnings"].as_array().unwrap().len(), 1);
         assert_eq!(warn["ok"], true);
+        // nothing reachable: still writes warnings.json, marked not ok
+        let none = |_: i64, iso: &str, e: &mut Vec<String>| -> Value { e.push("ftp down".into()); serde_json::json!({"ok": false, "fetched": iso, "warnings": []}) };
+        run(d.to_str().unwrap(), Some(&none), None).unwrap();
+        assert_eq!(read_json(d.join("warnings.json")).unwrap()["ok"], false);
         let _ = std::fs::remove_dir_all(d);
     }
 }
