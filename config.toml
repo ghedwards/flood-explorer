@@ -1,0 +1,10 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/opengeos/whitebox-wasm?rev=f0076c2383ebd9248454b32f13cd002fa27f21b0"]
+git = "https://github.com/opengeos/whitebox-wasm"
+rev = "f0076c2383ebd9248454b32f13cd002fa27f21b0"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "crates"
