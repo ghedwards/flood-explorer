@@ -159,7 +159,10 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       // of "normal" water for 12 km behind 1 m of floodplain)
       const w = bed.slice(Math.max(0, k - R), k + R + 1).sort((x, y) => x - y);
       hi = Math.max(hi, w[Math.floor((w.length - 1) * BED_PCT)]);
-      env[k] = hi;
+      // the hold comes from downstream's lower quarter; here, the water is
+      // still at least normal depth over this stretch's own middle bed, so
+      // a rough bed doesn't leave the channel dry
+      env[k] = Math.max(hi, w[w.length >> 1]);
     }
     // to the sea: the same fall as before (by flow distance to the outlet,
     // which runs on across the sea to the model edge), so coastal rivers keep
