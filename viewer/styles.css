@@ -314,6 +314,7 @@ body.in3d #legendCard { display: none; }
 .watch-item { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
 .watch-item:hover { background: var(--surface-2); }
 .watch-item small { display: block; color: var(--muted); }
+.watch-near { color: #b3261e !important; font-weight: 600; }
 .watch-icon { width: 1.2em; text-align: center; font-weight: 700; }
 .watch-warning { border-left-color: #b71c1c; }
 .watch-flood { border-left-color: #e65100; }

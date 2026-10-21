@@ -4888,10 +4888,70 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (w.kind === 'sea') return `${w.name || w.station} (storm tide gauge)`;
     return w.name || w.station;
   }
+  // Where a watch item is, and which of your places (gauge reports, flood
+  // models, study areas) it's near: within 50 km, or inside or beside an area.
+  const NEAR_KM = 50;
+  function watchPoint(w) {
+    if (w.kind === 'sea') { const x = nat.readings.sea && nat.readings.sea[w.station]; return x ? [x.lat, x.lon] : null; }
+    const gs = (nat.data && nat.data.gauges) || [];
+    const f = w.kind === 'flood' ? gs.find((g) => String(g.properties.bom) === String(w.station))
+      : w.kind === 'river' ? gs.find((g) => g.properties.station === w.station) : null;
+    if (f) return [f.geometry.coordinates[1], f.geometry.coordinates[0]];
+    const c = w.kind === 'flood' && nat.floodclass && nat.floodclass[w.station];
+    return c && Number.isFinite(c.lat) && Number.isFinite(c.lon) ? [c.lat, c.lon] : null;
+  }
+  function myPlaces() {
+    const out = [];
+    for (const r of reports) if (Number.isFinite(r.lat)) out.push({ name: `${r.n}. ${r.name}`, lat: r.lat, lon: r.lon });
+    for (const a of areaReg.values()) if (a.outline) { const b = a.outline.getBounds(); out.push({ name: `${a.n}. ${a.name}`, box: [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()] }); }
+    try { for (const st of studies) if (Array.isArray(st.bounds)) out.push({ name: `Study area ${st.letter}`, box: st.bounds }); } catch (e) { /* not set up yet */ }
+    return out;
+  }
+  function kmBetween(a, b) {
+    const R = 6371, dLat = (b[0] - a[0]) * Math.PI / 180, dLon = (b[1] - a[1]) * Math.PI / 180;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function nearMyPlace(w, places) {
+    if (w.kind === 'warning') {
+      // warnings have no location: near if they name a river one of your gauge reports is on
+      for (const r of reports) {
+        const f = nat.data && nat.data.gauges.find((g) => `${g.properties.kind}:${g.properties.id}` === r.id);
+        if (f && warningsFor(f.properties).some((x) => x.id === w.station || x.title === w.name)) return `${r.n}. ${r.name}`;
+      }
+      return null;
+    }
+    const pt = watchPoint(w);
+    if (!pt) return null;
+    for (const p of places) {
+      if (p.box) {
+        const [s, wst, n, e] = p.box, pad = 0.3;
+        if (pt[0] >= s - pad && pt[0] <= n + pad && pt[1] >= wst - pad && pt[1] <= e + pad) return p.name;
+      } else if (kmBetween(pt, [p.lat, p.lon]) <= NEAR_KM) return p.name;
+    }
+    return null;
+  }
+  const WATCH_SEEN_KEY = 'floodExplorer.watchSeen.v1', WATCH_NOTIFY_KEY = 'floodExplorer.watchNotify';
+  const watchKey = (w) => `${w.kind}:${w.station}:${(w.why || [])[0] || ''}`;
+  function watchNotify(list) {
+    let on = false;
+    try { on = localStorage.getItem(WATCH_NOTIFY_KEY) === '1'; } catch (e) { /* no storage */ }
+    if (!on || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(WATCH_SEEN_KEY) || '[]'); } catch (e) { seen = []; }
+    const fresh = list.filter((w) => w.near && !seen.includes(watchKey(w)));
+    for (const w of fresh.slice(0, 3)) {
+      try { new Notification(`Flood Explorer: ${watchName(w)}`, { body: `${(w.why || []).join('; ')}. Near ${w.near}.`, tag: watchKey(w) }); } catch (e) { /* not allowed here */ }
+    }
+    try { localStorage.setItem(WATCH_SEEN_KEY, JSON.stringify([...new Set([...seen, ...list.filter((w) => w.near).map(watchKey)])].slice(-300))); } catch (e) { /* this visit only */ }
+  }
   function renderWatch() {
     const box = $('watchBox');
     if (!box) return;
-    const list = (nat.readings && nat.readings.watch) || [];
+    const places = myPlaces();
+    const list = ((nat.readings && nat.readings.watch) || []).map((w) => Object.assign({}, w, { near: places.length ? nearMyPlace(w, places) : null }));
+    // near your places first, otherwise as the broker ranked them
+    list.sort((a, b) => (b.near ? 1 : 0) - (a.near ? 1 : 0));
     status.watch = { count: list.length, kinds: list.reduce((m, w) => (m[w.kind] = (m[w.kind] || 0) + 1, m), {}) };
     if (nat.readingsSource !== 'runtime') { box.hidden = true; return; }
     box.hidden = false;
@@ -4899,9 +4959,27 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     box.innerHTML = `<h3 class="places-sub">Watch list${list.length ? ` (${list.length})` : ''}</h3>
       ${list.length ? `<ul class="watch-list">${shown.map((w, i) => `<li><button type="button" class="watch-item watch-${escapeHtml(w.kind)}" data-watch="${i}">
         <span class="watch-icon" aria-hidden="true">${WATCH_ICON[w.kind] || '•'}</span>
-        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small></span></button></li>`).join('')}</ul>`
+        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button></li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
-      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))}. ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} A pointer to look closer, not a warning; follow official warnings.</p>`;
+      ${typeof Notification !== 'undefined' ? `<p class="hint"><button type="button" class="btn" id="watchNotify">${(() => { try { return localStorage.getItem(WATCH_NOTIFY_KEY) === '1' && Notification.permission === 'granted'; } catch (e) { return false; } })() ? 'Stop notifications' : 'Notify me about new items near my places'}</button><br>While this map is open in a tab, it checks for new items every 15 minutes.</p>` : ''}
+      <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))}. ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
+    const nb = $('watchNotify');
+    if (nb) nb.addEventListener('click', async () => {
+      let on = false;
+      try { on = localStorage.getItem(WATCH_NOTIFY_KEY) === '1'; } catch (e) { /* no storage */ }
+      if (on) { try { localStorage.removeItem(WATCH_NOTIFY_KEY); } catch (e) { /* no storage */ } renderWatch(); return; }
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        try {
+          localStorage.setItem(WATCH_NOTIFY_KEY, '1');
+          // what's on the list now counts as seen: notify about what's new from here
+          localStorage.setItem(WATCH_SEEN_KEY, JSON.stringify(list.filter((w) => w.near).map(watchKey)));
+        } catch (e) { /* this visit only */ }
+        say('You\'ll be notified about new items near your places while the map is open.');
+      } else say('Notifications are blocked for this site in your browser settings.');
+      renderWatch();
+    });
+    watchNotify(list);
     box.querySelectorAll('[data-watch]').forEach((b) => b.addEventListener('click', () => openWatchItem(shown[+b.dataset.watch])));
     const n = list.length;
     const badge = $('forecastBadge');
@@ -4928,7 +5006,31 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     if (state.lmap) state.lmap.setView([la, lo], Math.max(state.lmap.getZoom(), 11));
     openReport(f);
   }
-  window.__floodWatch = () => ({ list: (nat.readings && nat.readings.watch) || [], shown: !$('watchBox').hidden, items: document.querySelectorAll('#watchBox [data-watch]').length });
+  window.__floodWatch = () => ({ list: (nat.readings && nat.readings.watch) || [], shown: !$('watchBox').hidden, items: document.querySelectorAll('#watchBox [data-watch]').length,
+    near: [...document.querySelectorAll('#watchBox .watch-near')].map((x) => x.textContent) });
+
+  // While the map is open, fetch the broker's readings again every 15
+  // minutes (cheap: an unchanged file is a 304) and update the watch list
+  // and warnings.
+  async function refreshLiveReadings() {
+    if (DATA_SOURCE !== 'runtime' || nat.readingsSource !== 'runtime' || document.hidden) return;
+    try {
+      const r = await fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) return;
+      const fresh = await r.json();
+      if (!fresh || !fresh.level || fresh.fetched === nat.readingsFetched) return;
+      nat.readings = fresh;
+      nat.readingsFetched = fresh.fetched;
+      if (fresh.warnings && fresh.warnings.ok) nat.warnings = fresh.warnings;
+      if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
+      renderWarnings();
+      renderWatch();
+      status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched };
+    } catch (e) { /* next time */ }
+  }
+  setInterval(refreshLiveReadings, 15 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLiveReadings(); });
+  window.__floodRefreshLive = refreshLiveReadings;
   window.__floodOpenWatch = (i) => openWatchItem(((nat.readings && nat.readings.watch) || [])[i || 0]);
 
   function renderWarnings() {
@@ -7629,6 +7731,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
   $('dataStatusBox').addEventListener('toggle', () => { if ($('dataStatusBox').open) renderDataStatus(); });
   window.__floodDataStatus = renderDataStatus;
   function openPanel(id) {
+    if (id === 'panel-forecast' && typeof renderWatch === 'function' && nat.readings) renderWatch();   // your places may have changed
     const target = $(id);
     if (!target) return;
     if (id === 'panel-scenario') target.classList.remove('collapsed');

@@ -87,6 +87,11 @@ const OUT = process.env.OUT || "shots";
         await page2.waitForTimeout(2500);
         r.watchOpened = await page2.evaluate(() => { const c = [...document.querySelectorAll('.report-card')].pop(); return c ? c.innerText.replace(/\s+/g, ' ').slice(0, 400) : null; });
         await page2.screenshot({ path: path.join(OUT, "16-watch-gauge.png") });
+        // that gauge report is now one of your places: its item is near it
+        await page2.click('.tool[data-open="panel-forecast"]').catch(() => {});
+        await page2.waitForTimeout(800);
+        r.watchNear = await page2.evaluate(() => window.__floodWatch().near.slice(0, 5));
+        await page2.screenshot({ path: path.join(OUT, "17-watch-near.png") });
       }
     }
     r.health = await (await fetch(`${BROKER}/health`)).json();
@@ -107,6 +112,7 @@ const OUT = process.env.OUT || "shots";
   if (r.readings && r.readings.watch) note("broker watch list", r.readings.watch);
   if (r.watchPanel) note("map watch panel", r.watchPanel);
   if (r.watchOpened) note("watch item opened", r.watchOpened);
+  if (r.watchNear) note("watch near your places", r.watchNear);
   if (r.fatal) note("broker-live fatal", r.fatal);
   if (r.fatal || !r.broker || r.broker.status !== 200 || !r.reportLive || !r.mapReadings || r.mapReadings.readingsSource !== "runtime") process.exitCode = 1;
 })();
