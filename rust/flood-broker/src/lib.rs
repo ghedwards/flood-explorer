@@ -280,10 +280,43 @@ impl Broker {
         r
     }
 
+    /// One gauge's (or dam's) series from the latest readings:
+    /// /v1/series?site=423940A[&kind=storage].
+    fn serve_series(&self, req: &Request, query: &str) -> Response {
+        let Some(rd) = &self.readings else { return self.reply(req, 404, &json!({"error": "not found"}), &[]) };
+        let q = |k: &str| query.split('&').filter_map(|kv| kv.split_once('=')).find(|(a, _)| *a == k).map(|(_, v)| wmip::decode(v).trim().to_string()).unwrap_or_default();
+        let (site, kind) = (q("site"), q("kind"));
+        let kind = if kind == "storage" { "storage" } else { "level" };
+        if site.is_empty() || site.len() > 40 || !site.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            return self.reply(req, 400, &json!({"error": "site= is required, e.g. ?site=423940A"}), &[]);
+        }
+        match rd.latest() {
+            Ok(Some(doc)) => {
+                let period = self.cfg.refresh_ms.max(60_000);
+                let cc = format!("public, max-age={}, stale-while-revalidate=600", (period / 1000).clamp(60, 900));
+                let series = doc.series_of(kind, &site).unwrap_or(json!([]));
+                self.reply(req, 200, &json!({"site": site, "kind": kind, "fetched": wmip::iso_utc(doc.fetched_ms), "series": series}), &[("Cache-Control", &cc)])
+            }
+            Ok(None) => self.reply(req, 503, &json!({"error": "readings haven't been fetched yet"}), &[("Retry-After", "60"), ("Cache-Control", "no-store")]),
+            Err(e) => self.reply(req, 502, &json!({"error": format!("readings store: {}", e)}), &[("Cache-Control", "no-store")]),
+        }
+    }
+
     fn serve_readings(&self, req: &Request) -> Response {
+        self.serve_doc(req, false)
+    }
+
+    /// /v1/readings (everything) or /v1/now (without the series).
+    fn serve_doc(&self, req: &Request, now: bool) -> Response {
         let Some(rd) = &self.readings else { return self.reply(req, 404, &json!({"error": "not found"}), &[]) };
         match rd.latest() {
             Ok(Some(doc)) => {
+                let (body, gz, etag) = if now {
+                    let p = doc.now_part();
+                    (p.body.clone(), p.gz.clone(), p.etag.clone())
+                } else {
+                    (doc.body.clone(), doc.gz.clone(), doc.etag.clone())
+                };
                 let now = (self.now)();
                 let age = ((now - doc.fetched_ms) / 1000).max(0).to_string();
                 // browsers keep it until the next refresh is due (plus the
@@ -292,19 +325,19 @@ impl Broker {
                 let due = doc.fetched_ms + period + 180_000;
                 let max_age = ((due - now) / 1000).clamp(60, period / 1000);
                 let cc = format!("public, max-age={}, stale-while-revalidate=600", max_age);
-                let base: [(&str, &str); 3] = [("Cache-Control", &cc), ("ETag", &doc.etag), ("X-Readings-Age", &age)];
-                if req.if_none_match.is_some_and(|m| m.split(',').any(|t| t.trim().trim_start_matches("W/") == doc.etag)) {
+                let base: [(&str, &str); 3] = [("Cache-Control", &cc), ("ETag", &etag), ("X-Readings-Age", &age)];
+                if req.if_none_match.is_some_and(|m| m.split(',').any(|t| t.trim().trim_start_matches("W/") == etag)) {
                     let mut r = self.reply_raw(req, 304, Vec::new(), &base);
                     r.headers.retain(|(k, _)| k != "Content-Type");
                     return r;
                 }
                 let mut extra = base.to_vec();
                 extra.push(("Vary", "Accept-Encoding"));
-                if req.gzip && !doc.gz.is_empty() {
+                if req.gzip && !gz.is_empty() {
                     extra.push(("Content-Encoding", "gzip"));
-                    self.reply_raw(req, 200, doc.gz.as_ref().clone(), &extra)
+                    self.reply_raw(req, 200, gz.as_ref().clone(), &extra)
                 } else {
-                    self.reply_raw(req, 200, doc.body.as_ref().clone(), &extra)
+                    self.reply_raw(req, 200, body.as_ref().clone(), &extra)
                 }
             }
             Ok(None) => self.reply(req, 503, &json!({"error": "readings haven't been fetched yet"}), &[("Retry-After", "60"), ("Cache-Control", "no-store")]),
@@ -354,7 +387,7 @@ impl Broker {
             drop(st);
             return self.reply(req, 200, &body, &[("Cache-Control", "no-store")]);
         }
-        if path != "/v1/levels" && path != "/v1/readings" && path != "/v1/history" {
+        if !matches!(path, "/v1/levels" | "/v1/readings" | "/v1/now" | "/v1/series" | "/v1/history") {
             return self.reply(req, 404, &json!({"error": "not found"}), &[]);
         }
         if !self.allowed(req.client) {
@@ -365,6 +398,12 @@ impl Broker {
         }
         if path == "/v1/history" {
             return self.serve_history(req, query);
+        }
+        if path == "/v1/now" {
+            return self.serve_doc(req, true);
+        }
+        if path == "/v1/series" {
+            return self.serve_series(req, query);
         }
         let raw = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "sites").map(|(_, v)| wmip::decode(v)).unwrap_or_default();
         let mut ids: Vec<String> = Vec::new();
@@ -663,6 +702,15 @@ mod tests {
         assert_eq!(hv["site"], "540198");
         assert_eq!(hv["points"][0][1], 1.5, "the hourly record serves one gauge");
         assert_eq!(hist("/v1/history").status, 400);
+        // the small document: no series; the series on request
+        let now: Value = serde_json::from_slice(&hist("/v1/now").body).unwrap();
+        assert!(now["level"]["540198"]["latest"].is_array());
+        assert!(now["level"]["540198"].get("series").is_none(), "no series in /v1/now");
+        assert_eq!(now["seriesOnDemand"], true);
+        let full: Value = serde_json::from_slice(&hist("/v1/readings").body).unwrap();
+        let sv: Value = serde_json::from_slice(&hist("/v1/series?site=540198").body).unwrap();
+        assert_eq!(sv["series"], full["level"]["540198"]["series"], "same series as in the full readings");
+        assert_eq!(hist("/v1/series").status, 400);
         assert_eq!(hist("/v1/history?site=../x").status, 400);
         let get = |gzip: bool, inm: Option<&str>| b.handle(&Request { method: "GET", target: "/v1/readings", origin: Some("https://ghedwards.github.io"), client: "9.9.9.9", gzip, if_none_match: inm });
         let plain = get(false, None);

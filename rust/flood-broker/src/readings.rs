@@ -55,6 +55,65 @@ pub struct Doc {
     pub s3_etag: Option<String>,
     /// where this copy came from: "refresh", "s3-gz" (the zipped copy) or "s3"
     pub source: &'static str,
+    /// the same without each gauge's series (what the map polls), and the
+    /// series by gauge: both made on first use
+    pub now: std::sync::OnceLock<Part>,
+    pub series: std::sync::OnceLock<std::collections::HashMap<String, Value>>,
+}
+
+/// One served form of a document: as is, gzipped, and its ETag.
+pub struct Part {
+    pub body: Arc<Vec<u8>>,
+    pub gz: Arc<Vec<u8>>,
+    pub etag: String,
+}
+
+fn gzip6(b: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(b.len() / 6), flate2::Compression::new(6));
+    enc.write_all(b).and_then(|_| enc.finish()).unwrap_or_default()
+}
+
+impl Doc {
+    /// readings.json without the per-gauge "series" of levels and storages
+    /// (most of its size): what the map loads and polls (/v1/now).
+    pub fn now_part(&self) -> &Part {
+        self.now.get_or_init(|| {
+            let mut v: Value = serde_json::from_slice(&self.body).unwrap_or(Value::Null);
+            for k in ["level", "storage"] {
+                if let Some(o) = v[k].as_object_mut() {
+                    for e in o.values_mut() {
+                        if let Some(m) = e.as_object_mut() {
+                            m.remove("series");
+                        }
+                    }
+                }
+            }
+            v["seriesOnDemand"] = json!(true);
+            let body = serde_json::to_vec(&v).unwrap_or_default();
+            let etag = format!("\"n{}\"", &crate::s3::sha256_hex(&body)[..19]);
+            Part { gz: Arc::new(gzip6(&body)), body: Arc::new(body), etag }
+        })
+    }
+
+    /// One gauge's or dam's series ("level" or "storage").
+    pub fn series_of(&self, kind: &str, site: &str) -> Option<Value> {
+        let m = self.series.get_or_init(|| {
+            let v: Value = serde_json::from_slice(&self.body).unwrap_or(Value::Null);
+            let mut m = std::collections::HashMap::new();
+            for k in ["level", "storage"] {
+                if let Some(o) = v[k].as_object() {
+                    for (st, e) in o {
+                        if let Some(sr) = e.get("series") {
+                            m.insert(format!("{}:{}", k, st), sr.clone());
+                        }
+                    }
+                }
+            }
+            m
+        });
+        m.get(&format!("{}:{}", kind, site)).cloned()
+    }
 }
 
 impl Doc {
@@ -63,7 +122,7 @@ impl Doc {
         let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 6), flate2::Compression::new(6));
         let gz = enc.write_all(&body).and_then(|_| enc.finish()).unwrap_or_default();
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
-        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "refresh" }
+        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "refresh", now: Default::default(), series: Default::default() }
     }
 
     /// From the stored gzipped copy: unzip it, keep the zipped bytes to send.
@@ -73,7 +132,7 @@ impl Doc {
         flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut body).map_err(|e| format!("readings.json.gz: {e}"))?;
         let fetched_ms = fetched_ms.or_else(|| doc_fetched(&body)).unwrap_or(0);
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
-        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "s3-gz" })
+        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "s3-gz", now: Default::default(), series: Default::default() })
     }
 }
 
