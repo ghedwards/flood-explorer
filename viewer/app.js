@@ -4423,7 +4423,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // the hourly week where the broker has one, else the daily averages
   function histOrSpark(p, r) {
     const h = nat.history && nat.history[String(p.station || '')];
-    if (h && h.points && h.points.length >= 3) return historyChart(h.points, classFor(p));
+    if (h && h.points && h.points.length >= 3) return hourlyChart(h.points, classFor(p));
     return r && r.series && r.series.length ? sparkline(r.series) : '';
   }
   function levelReadingHtml(p) {
@@ -4506,7 +4506,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (box.isConnected && nat.history[st].points.length >= 3) box.innerHTML = levelReadingHtml(p);
   }
   // a week of hourly levels: the line, the day ticks, and its low and high
-  function historyChart(points, c) {
+  function hourlyChart(points, c) {
     const pts = points.map((x) => [new Date(x[0]).getTime(), x[1]]).filter((x) => Number.isFinite(x[0]));
     if (pts.length < 3) return '';
     const t0 = pts[0][0], t1 = pts[pts.length - 1][0], span = Math.max(1, t1 - t0);
