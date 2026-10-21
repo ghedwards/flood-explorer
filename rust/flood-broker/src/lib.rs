@@ -32,6 +32,9 @@ const UPSTREAM_AT_ONCE: usize = 2;
 const RATE_PER_MIN: f64 = 60.0;
 const RATE_BURST: f64 = 30.0;
 
+/// The commit this broker was built from (set by the deploy workflow).
+pub const VERSION: &str = match option_env!("FLOOD_BROKER_VERSION") { Some(v) => v, None => "dev" };
+
 pub struct Config {
     pub origins: HashSet<String>,
     pub cache_ms: i64,
@@ -317,9 +320,16 @@ impl Broker {
             _ => return self.reply(req, 405, &json!({"error": "GET only"}), &[("Allow", "GET, HEAD, OPTIONS")]),
         }
         if path == "/health" {
+            // which readings this copy of the broker serves, and from where
+            // (loads them if it hasn't yet: one S3 request)
+            let readings = self.readings.as_ref().map(|r| match r.latest() {
+                Ok(Some(d)) => json!({"fetched": wmip::iso_utc(d.fetched_ms), "loadedFrom": d.source, "bytes": d.body.len(), "gzBytes": d.gz.len()}),
+                Ok(None) => json!({"loadedFrom": null}),
+                Err(e) => json!({"error": e}),
+            });
             let st = lock(&self.st);
             let body = json!({
-                "ok": true, "uptimeS": ((self.now)() - self.started) / 1000, "cachedSites": st.cache.len(),
+                "ok": true, "version": VERSION, "readings": readings, "uptimeS": ((self.now)() - self.started) / 1000, "cachedSites": st.cache.len(),
                 "openStations": st.open.as_ref().map(|(_, s)| s.len()),
                 "requests": st.requests, "upstreamCalls": st.upstream_calls, "upstreamErrors": st.upstream_errors,
                 "lastError": st.last_error.as_ref().map(|(at, m)| json!({"at": wmip::iso_utc(*at), "message": m})),

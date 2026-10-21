@@ -30,6 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Cross-compile for Lambda (arm64, glibc 2.34)
+        env:
+          FLOOD_BROKER_VERSION: ${{ github.sha }}
         run: |
           rustup target add "$TARGET"
           pip install --quiet ziglang cargo-zigbuild

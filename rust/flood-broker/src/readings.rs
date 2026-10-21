@@ -51,6 +51,8 @@ pub struct Doc {
     pub fetched_ms: i64,
     /// S3's ETag for the stored copy (for cheap "unchanged?" checks)
     pub s3_etag: Option<String>,
+    /// where this copy came from: "refresh", "s3-gz" (the zipped copy) or "s3"
+    pub source: &'static str,
 }
 
 impl Doc {
@@ -59,7 +61,7 @@ impl Doc {
         let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 6), flate2::Compression::new(6));
         let gz = enc.write_all(&body).and_then(|_| enc.finish()).unwrap_or_default();
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
-        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag }
+        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "refresh" }
     }
 
     /// From the stored gzipped copy: unzip it, keep the zipped bytes to send.
@@ -69,7 +71,7 @@ impl Doc {
         flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut body).map_err(|e| format!("readings.json.gz: {e}"))?;
         let fetched_ms = fetched_ms.or_else(|| doc_fetched(&body)).unwrap_or(0);
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
-        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag })
+        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "s3-gz" })
     }
 }
 
@@ -285,19 +287,24 @@ impl Readings {
         r["attribution"] = json!(format!("© Commonwealth of Australia (Bureau of Meteorology); Queensland live levels {}; {}; {}", feeds::WMIP_ATTRIBUTION, feeds::STORM_TIDE_ATTRIBUTION, feeds::RAIN_ATTRIBUTION));
         let body = serde_json::to_vec(&r).map_err(|e| e.to_string())?;
         let doc = Doc::new(body, fetched, None);
+        let mut gz_stored: Option<bool> = None;   // None: no S3 (a server keeps it in memory)
         if let Store::S3(b) = &self.store {
             b.put(KEY, &doc.body, "application/json", fetched)?;
             // best effort: a stack set up before this allows only readings.json
             if !doc.gz.is_empty() {
-                if let Err(e) = b.put(KEY_GZ, &doc.gz, "application/gzip", fetched) {
-                    eprintln!("readings.json.gz not stored ({e}); cold starts zip readings.json instead");
+                match b.put(KEY_GZ, &doc.gz, "application/gzip", fetched) {
+                    Ok(()) => gz_stored = Some(true),
+                    Err(e) => {
+                        eprintln!("readings.json.gz not stored ({e}); cold starts zip readings.json instead");
+                        gz_stored = Some(false);
+                    }
                 }
             }
         }
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(doc)));
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
-            "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "seconds": (fetched - started) / 1000,
+            "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "gzStored": gz_stored, "version": crate::VERSION, "seconds": (fetched - started) / 1000,
             "warnings": r["warnings"]["warnings"].as_array().map(|a| a.len()),
             "floodClasses": r["floodclass"].as_object().map(|o| o.len()),
             "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000, "warnings": (t_warn - t_sea) / 1000}}))
@@ -341,7 +348,9 @@ impl Readings {
                     }
                     Ok(crate::s3::Got::Body(body, s3_etag)) => {
                         let fetched_ms = doc_fetched(&body).unwrap_or(now);
-                        let doc = Arc::new(Doc::new(body, fetched_ms, s3_etag));
+                        let mut doc = Doc::new(body, fetched_ms, s3_etag);
+                        doc.source = "s3";
+                        let doc = Arc::new(doc);
                         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
                         Ok(Some(doc))
                     }
