@@ -72,7 +72,7 @@ function usable(req, res) {
 // fresh when online (within a few seconds), the cached copy otherwise
 async function networkFirst(req, name, waitMs) {
   const c = await caches.open(name);
-  const net = fetch(req).then((res) => {
+  const net = fetchWithin(req, Math.max(NET_TIMEOUT_MS, waitMs * 4)).then((res) => {
     if (res && (res.ok || res.type === 'opaque')) c.put(req, res.clone()).then(() => trim(name)).catch(() => {});
     return res;
   });
@@ -87,11 +87,22 @@ async function networkFirst(req, name, waitMs) {
   }
 }
 
+// a network request that hangs would never fail, so the page could neither
+// get the tile nor switch basemap: give up after this long
+const NET_TIMEOUT_MS = 20000;
+function fetchWithin(req, ms) {
+  if (typeof AbortController === 'undefined' || typeof setTimeout !== 'function') return fetch(req);
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  const done = () => { if (typeof clearTimeout === 'function') clearTimeout(t); };
+  return fetch(req, { signal: ac.signal }).then((r) => { done(); return r; }, (e) => { done(); throw e; });
+}
+
 async function cacheFirst(req, name) {
   const c = await caches.open(name);
   const hit = await c.match(req, { ignoreVary: true });
   if (usable(req, hit)) return hit;
-  const res = await fetch(req);
+  const res = await fetchWithin(req, NET_TIMEOUT_MS);
   if (res && (res.ok || res.type === 'opaque')) c.put(req, res.clone()).then(() => trim(name)).catch(() => {});
   return res;
 }
