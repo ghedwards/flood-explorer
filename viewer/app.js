@@ -1,6 +1,7 @@
 import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { classifyDemGaps } from './dem-voids.js';
+import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -4934,7 +4935,7 @@ import { classifyDemGaps } from './dem-voids.js';
       <small>${escapeHtml(w.state || '')}${w.severity && w.severity !== 'Unknown' ? ` · ${escapeHtml(w.severity)}` : ''}${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small>
       ${w.description ? `<div class="warn-body">${escapeHtml(w.description)}</div>` : ''}
       ${g.length ? `<small>Gauges on ${shape && shape.from === 'bureau' ? 'this warning' : 'the warned rivers (the area drawn around them)'}: ${names}${g.length > 8 ? ` and ${g.length - 8} more` : ''}</small>` : '<small>No gauges on the map match this warning, so it has no area here.</small>'}
-      ${w.link ? `<div class="warn-actions"><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</div>`;
+      <div class="warn-actions">${peakBtns(w)}${w.link ? `<a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   }
   function drawWarningAreas() {
     const L = window.L, lyr = nat.warnLayer;
@@ -4950,6 +4951,7 @@ import { classifyDemGaps } from './dem-voids.js';
       const poly = L.polygon(shape.rings, { color: c, weight: 2, fillColor: c, fillOpacity: shape.from === 'bureau' ? 0.18 : 0.1, dashArray: shape.from === 'bureau' ? null : '6 5' });
       poly.bindTooltip(w.title, { sticky: true });
       poly.bindPopup(() => warningPopupHtml(w, shape), { maxWidth: 360 });
+      poly.on('popupopen', (e) => wirePopupButtons(e.popup.getElement()));
       poly.addTo(lyr);
       shape.layer = poly;
       drawn++; if (shape.from === 'bureau') outlines++;
@@ -4967,7 +4969,8 @@ import { classifyDemGaps } from './dem-voids.js';
       m.fitBounds(shape.layer.getBounds(), { padding: [30, 30], maxZoom: 10 });
       shape.layer.openPopup(shape.layer.getBounds().getCenter());
     } else {
-      window.L.popup({ maxWidth: 360 }).setLatLng(m.getCenter()).setContent(warningPopupHtml(w, shape)).openOn(m);
+      const pop = window.L.popup({ maxWidth: 360 }).setLatLng(m.getCenter()).setContent(warningPopupHtml(w, shape)).openOn(m);
+      wirePopupButtons(pop.getElement());
     }
     status.shownWarning = { id: w.id, from: shape ? shape.from : 'none' };
   }
@@ -4980,8 +4983,69 @@ import { classifyDemGaps } from './dem-voids.js';
     const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnKey);
     if (w) showWarning(w);
   });
+  // The heights a warning predicts ("may peak near 2.60 metres at
+  // Blackall"), each with its gauge: a button models that peak.
+  function warningPeaks(w) {
+    const gs = (nat.data && nat.data.gauges) || [];
+    if (!w.__peaks || w.__peaksN !== gs.length) {
+      w.__peaksN = gs.length;
+      w.__peaks = warningTargets(w.description || '').map((t) => ({ t, f: gaugeForTarget(t, gs, w.state) })).filter((x) => x.f);
+    }
+    return w.__peaks;
+  }
+  const peakLabel = (t) => `Model ${t.kind === 'peak' ? 'the forecast peak' : `the ${t.cls} flood level`}: ${t.level.toFixed(2)} m at ${t.place}`;
+  const peakBtns = (w) => warningPeaks(w).map((pk, i) => `<button type="button" class="btn small primary" data-warn-model="${escapeHtml(warnKey(w))}" data-peak="${i}">${escapeHtml(peakLabel(pk.t))}</button>`).join('');
+  // a height on the gauge board, as a level in the model: exactly with the
+  // gauge zero, else roughly from the gauge's rating (its usual height sits
+  // at the model's normal water surface)
+  function boardToModel(p, board) {
+    const c = classFor(p);
+    if (c && c.zero != null) return { level: Math.round((c.zero + board) * 100) / 100, exact: true };
+    const rt = gaugeRating();
+    if (rt && Number.isFinite(rt.hmed) && state.a && state.gauge >= 0) return { level: Math.round((state.a.dem[state.gauge] + 0.3 + (board - rt.hmed)) * 100) / 100, exact: false };
+    return null;
+  }
+  async function modelWarningPeak(w, i) {
+    const pk = warningPeaks(w)[i];
+    if (!pk) return null;
+    const f = pk.f, p = f.properties, [lo, la] = f.geometry.coordinates, t = pk.t;
+    if (state.lmap) state.lmap.closePopup();
+    const rep = openReport(f, { select: false });
+    const ok = await modelHere(la, lo, { kind: 'river', name: p.name, reportId: rep ? rep.id : null });
+    if (!ok || !state.a || state.gauge < 0) return null;
+    try { await ensureHistory(); } catch (e) { /* no ratings: gauge zero only */ }
+    const conv = boardToModel(p, t.level);
+    status.warningModel = { warning: w.id, gauge: p.name, board: t.level, kind: t.kind, level: conv ? conv.level : null, exact: conv ? conv.exact : null };
+    if (!conv) {
+      say(`Model ready, but ${p.name} has no published gauge zero or rating, so the warning's ${t.level.toFixed(2)} m (on the gauge board) can't be placed in it. Set the level in Scenario.`);
+      return status.warningModel;
+    }
+    ctl.floodType.value = 'river';
+    ctl.gaugeLevel.min = Math.min(parseFloat(ctl.gaugeLevel.min), Math.floor(conv.level - 2));
+    ctl.gaugeLevel.max = Math.max(parseFloat(ctl.gaugeLevel.max), Math.ceil(conv.level + 3));
+    ctl.gaugeLevel.value = conv.level;
+    ctl.extra.value = 0;
+    state.base = null;
+    syncOutputs();
+    runScenario();
+    renderLevelPoints();
+    say(`Modelling ${t.kind === 'peak' ? 'the forecast peak' : `the ${t.cls} flood level`} from the Bureau's warning: ${t.level.toFixed(2)} m on the gauge board at ${t.place}${conv.exact ? ` (${conv.level.toFixed(2)} m AHD)` : ', placed roughly from the gauge\'s rating, as it has no published gauge zero'}. A screening estimate, not the Bureau's flood map.`);
+    return status.warningModel;
+  }
+  window.__floodModelWarning = (i, j) => modelWarningPeak(allWarnings()[i || 0], j || 0);
+  window.__floodWarningPeaks = () => allWarnings().map((w) => ({ id: w.id, peaks: warningPeaks(w).map((pk) => ({ place: pk.t.place, river: pk.t.river, level: pk.t.level, kind: pk.t.kind, gauge: pk.f.properties.name })), targets: warningTargets(w.description || '').length }));
+  function onWarnModel(b) {
+    const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnKey || warnKey(x) === b.dataset.warnModel);
+    if (w) withBusy(b, 'Building the flood model…', () => modelWarningPeak(w, +b.dataset.peak || 0));
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-warn-model]');
+    if (b) { e.preventDefault(); onWarnModel(b); }
+  });
+  // Leaflet keeps clicks inside a popup to itself: wire those directly
+  const wirePopupButtons = (el) => el && el.querySelectorAll('[data-warn-model]').forEach((b) => b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onWarnModel(b); }));
   const warnItemHtml = (x, meta) => `<div class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${meta}</small>
-    <div class="warn-actions"><button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${x.link ? `<a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
+    <div class="warn-actions">${peakBtns(x)}<button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${x.link ? `<a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.

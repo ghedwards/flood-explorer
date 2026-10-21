@@ -88,6 +88,20 @@ const OUT = process.env.OUT || "shots";
         return { areas: window.__floodStatus.warningAreas, shown: window.__floodStatus.shownWarning, popup: pop ? pop.innerText.replace(/\s+/g, " ").slice(0, 300) : null };
       }).catch((e) => String(e));
       await page2.screenshot({ path: path.join(OUT, "17-warning-map.png") });
+      // the warnings' texts (to check the peak reader against) and the peaks found
+      try {
+        const rd = await (await fetch(`${BROKER}/v1/readings`)).json();
+        fs.mkdirSync(OUT, { recursive: true });
+        fs.writeFileSync(path.join(OUT, "warnings-live.json"), JSON.stringify(rd.warnings || null, null, 1));
+      } catch (e) { r.warningsSaveError = String(e); }
+      r.warningPeaks = await page2.evaluate(() => window.__floodWarningPeaks && window.__floodWarningPeaks()).catch((e) => String(e));
+      const pi = Array.isArray(r.warningPeaks) ? r.warningPeaks.findIndex((w) => w.peaks.length) : -1;
+      if (pi >= 0) {
+        r.warningModel = await page2.evaluate((i) => Promise.race([window.__floodModelWarning(i, 0), new Promise((ok) => setTimeout(() => ok("timed out"), 180000))]), pi).catch((e) => String(e));
+        await page2.waitForTimeout(3000);
+        r.warningModelSummary = await page2.evaluate(() => (document.getElementById("summaryLine") || {}).textContent || null).catch(() => null);
+        await page2.screenshot({ path: path.join(OUT, "18-warning-peak-model.png") });
+      }
       await page2.evaluate(() => window.L && document.querySelector(".leaflet-popup-close-button") && document.querySelector(".leaflet-popup-close-button").click()).catch(() => {});
       r.watchPanel = await page2.evaluate(() => window.__floodWatch && window.__floodWatch());
       if (r.watchPanel) r.watchPanel.list = r.watchPanel.list.slice(0, 6).map((w) => [w.kind, w.station, w.why]);
@@ -126,6 +140,8 @@ const OUT = process.env.OUT || "shots";
   if (r.watchNear) note("watch near your places", r.watchNear);
   if (r.versions) note("versions", r.versions);
   if (r.warningMap) note("warning on the map", r.warningMap);
+  if (r.warningPeaks) note("warning peaks", r.warningPeaks);
+  if (r.warningModel) note("warning peak model", { model: r.warningModel, summary: r.warningModelSummary });
   if (r.fatal) note("broker-live fatal", r.fatal);
   if (r.fatal || !r.broker || r.broker.status !== 200 || !r.reportLive || !r.mapReadings || r.mapReadings.readingsSource !== "runtime") process.exitCode = 1;
 })();
