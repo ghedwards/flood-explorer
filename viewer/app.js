@@ -3844,20 +3844,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function saveReadings(res) {
     try {
       if (typeof caches === 'undefined' || !res || !res.ok) return;
-      caches.open(SAVED_CACHE).then((c) => c.put(`${BROKER}/v1/now`, res)).catch(() => {});
+      caches.open(SAVED_CACHE).then((c) => c.put(`${BROKER}/v1/now`, res)).then(() => { status.savedPut = 'ok'; }, (e) => { status.savedPut = String(e && e.message || e); });
     } catch (e) { /* no Cache API here */ }
   }
   async function savedReadings() {
     try {
       if (!BROKER || typeof caches === 'undefined') return null;
-      const hit = await (await caches.open(SAVED_CACHE)).match(`${BROKER}/v1/now`) || await caches.match(`${BROKER}/v1/now`, { ignoreVary: true });
-      if (!hit || !hit.ok) return null;
+      const own = await (await caches.open(SAVED_CACHE)).match(`${BROKER}/v1/now`);
+      const hit = own || await caches.match(`${BROKER}/v1/now`, { ignoreVary: true });
+      if (!hit || !hit.ok) { status.savedCheck = { found: !!hit, own: !!own }; return null; }
       const j = await hit.json();
       const t = j && j.fetched ? new Date(j.fetched).getTime() : NaN;
-      if (!j || !j.level || !(Date.now() - t < SAVED_MAX_MS)) return null;
-      status.savedReadings = { fetched: j.fetched };
+      if (!j || !j.level || !(Date.now() - t < SAVED_MAX_MS)) { status.savedCheck = { found: true, own: !!own, fetched: j && j.fetched, level: !!(j && j.level) }; return null; }
+      status.savedReadings = { fetched: j.fetched, own: !!own };
       return j;
-    } catch (e) { return null; }
+    } catch (e) { status.savedCheck = { error: String(e && e.message || e) }; return null; }
   }
   async function loadNationalData() {
     if (nat.data) return nat.data;
