@@ -243,6 +243,8 @@ import { classifyDemGaps } from './dem-voids.js';
    * links carry places in the address (#s=…), so the address is kept
    * without it. */
   const APP_BUILD = (import.meta.env && import.meta.env.VITE_BUILD) || 'dev';
+  const APP_BUILT_AT = (import.meta.env && import.meta.env.VITE_BUILT_AT) || '';
+  let brokerInfo = null;   // the broker's /health answer (see checkBroker)
   // The live data broker (broker/, rust/flood-broker), and where readings
   // come from: "build" (the site build's copy, refreshed every 3 hours) or
   // "runtime" (the broker, refreshed every 15 minutes, with the build's copy
@@ -296,7 +298,9 @@ import { classifyDemGaps } from './dem-voids.js';
   }
   function problemsReport() {
     const ua = navigator.userAgent;
-    const head = `Flood Explorer problems log: build ${APP_BUILD}, ${ua}, copied ${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+    const b = brokerInfo;
+    const brk = !BROKER ? 'no broker' : b && b.version ? `broker ${String(b.version).slice(0, 8)}${b.readings && b.readings.fetched ? `, readings ${b.readings.fetched}` : ''}${b.readings && b.readings.loadedFrom ? ` (${b.readings.loadedFrom})` : ''}` : `broker ${b && b.error ? `unreachable: ${b.error}` : 'not checked'}`;
+    const head = `Flood Explorer problems log: build ${APP_BUILD}${APP_BUILT_AT ? ` (${APP_BUILT_AT.slice(0, 16).replace('T', ' ')} UTC)` : ''}, ${brk}, readings from ${typeof nat !== 'undefined' && nat.readingsSource || DATA_SOURCE}, ${ua}, copied ${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC`;
     return [head, ...problems.map((p, k) => `${k + 1}. ${p.t.slice(0, 19).replace('T', ' ')} UTC · ${p.kind}${p.n > 1 ? ` ×${p.n}` : ''} · build ${p.build}${p.area ? ` · place: ${p.area}` : ''}${p.zoom != null ? ` · zoom ${p.zoom}` : ''}${p.view3d ? ' · 3D' : ''}
    ${p.msg}${p.detail ? `\n   ${p.detail.split('\n').slice(0, 8).join('\n   ')}` : ''}`)].join('\n');
   }
@@ -5028,6 +5032,7 @@ import { classifyDemGaps } from './dem-voids.js';
         nat.readingsSource = 'runtime';
         if (status.national) Object.assign(status.national, { readingsSource: 'runtime', readingsFetched: fresh.fetched, levelReadings: Object.keys(fresh.level || {}).length });
         say('Live readings are in now (they were slow to arrive).');
+        renderVersions();
       }
       if (fresh.warnings && fresh.warnings.ok) nat.warnings = fresh.warnings;
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
@@ -7749,6 +7754,41 @@ import { classifyDemGaps } from './dem-voids.js';
     return status.property;
   }
   window.__floodCheckProperty = checkProperty;
+
+  // Versions: this app's build, and the broker's (its /health page): which
+  // commit each runs, so a report says what it was seen on.
+  const REPO = 'https://github.com/ghedwards/flood-explorer';
+  const commitLink = (sha) => (/^[0-9a-f]{7,40}$/.test(String(sha)) ? `<a href="${REPO}/commit/${escapeHtml(sha)}" target="_blank" rel="noopener">${escapeHtml(String(sha).slice(0, 8))}</a>` : escapeHtml(String(sha || 'dev')));
+  async function checkBroker() {
+    if (!BROKER) return null;
+    try {
+      const r = await fetch(`${BROKER}/health`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+      brokerInfo = r.ok ? await r.json() : { error: `HTTP ${r.status}` };
+    } catch (err) { brokerInfo = { error: err && err.name === 'TimeoutError' ? 'timed out' : String(err && err.message || err) }; }
+    brokerInfo.checkedAt = new Date().toISOString();
+    renderVersions();
+    return brokerInfo;
+  }
+  function renderVersions() {
+    const box = $('versionInfo');
+    if (!box) return null;
+    const app = `App ${commitLink(APP_BUILD)}${APP_BUILT_AT ? `, built ${escapeHtml(ago(APP_BUILT_AT))}` : ''}`;
+    let brk;
+    if (!BROKER) brk = 'no live data broker set for this build';
+    else if (!brokerInfo) brk = 'Broker: checking…';
+    else if (brokerInfo.error) brk = `Broker: not answering (${escapeHtml(brokerInfo.error)})`;
+    else {
+      const rd = brokerInfo.readings || {};
+      const from = { 's3-gz': 'started from the stored zipped copy', s3: 'started from the stored copy (zipped again on start)', refresh: 'fetched them itself' }[rd.loadedFrom];
+      brk = `Broker ${commitLink(brokerInfo.version)}${rd.fetched ? `, readings fetched ${escapeHtml(ago(rd.fetched))}` : ''}${from ? ` (${escapeHtml(from)})` : ''}`;
+    }
+    box.innerHTML = `${app}. ${brk}. Readings on this map: ${escapeHtml((typeof nat !== 'undefined' && nat.readingsSource) === 'runtime' ? 'live, from the broker' : "the site build's copy")}.`;
+    status.versions = { app: APP_BUILD, builtAt: APP_BUILT_AT || null, broker: brokerInfo ? (brokerInfo.version || null) : null, brokerError: brokerInfo ? (brokerInfo.error || null) : null, loadedFrom: brokerInfo && brokerInfo.readings ? brokerInfo.readings.loadedFrom : null };
+    return status.versions;
+  }
+  // once the page has settled (it also wakes the broker if it's asleep)
+  setTimeout(() => { renderVersions(); checkBroker(); }, 4000);
+  window.__floodVersions = async () => { await checkBroker(); return renderVersions(); };
 
   // What each data source returned in the latest build (data/status.json)
   async function renderDataStatus() {

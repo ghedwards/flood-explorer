@@ -78,6 +78,7 @@ const OUT = process.env.OUT || "shots";
       // the watch list on the map, and opening its first gauge
       await page2.click('.tool[data-open="panel-forecast"]').catch(() => {});
       await page2.waitForTimeout(800);
+      r.versions = await page2.evaluate(async () => { await window.__floodVersions(); return { status: window.__floodStatus.versions, text: document.getElementById("versionInfo").textContent }; }).catch((e) => String(e));
       r.watchPanel = await page2.evaluate(() => window.__floodWatch && window.__floodWatch());
       if (r.watchPanel) r.watchPanel.list = r.watchPanel.list.slice(0, 6).map((w) => [w.kind, w.station, w.why]);
       await page2.screenshot({ path: path.join(OUT, "15-watch-list.png") });
@@ -113,6 +114,7 @@ const OUT = process.env.OUT || "shots";
   if (r.watchPanel) note("map watch panel", r.watchPanel);
   if (r.watchOpened) note("watch item opened", r.watchOpened);
   if (r.watchNear) note("watch near your places", r.watchNear);
+  if (r.versions) note("versions", r.versions);
   if (r.fatal) note("broker-live fatal", r.fatal);
   if (r.fatal || !r.broker || r.broker.status !== 200 || !r.reportLive || !r.mapReadings || r.mapReadings.readingsSource !== "runtime") process.exitCode = 1;
 })();

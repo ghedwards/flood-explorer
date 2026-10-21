@@ -18,6 +18,7 @@ export default defineConfig({
   // and the live data broker's address (broker/; none: build data only)
   define: {
     "import.meta.env.VITE_BUILD": JSON.stringify((process.env.GITHUB_SHA || "dev").slice(0, 8)),
+    "import.meta.env.VITE_BUILT_AT": JSON.stringify(process.env.GITHUB_SHA ? new Date().toISOString() : ""),
     "import.meta.env.VITE_BROKER": JSON.stringify(process.env.FLOOD_BROKER_URL || ""),
     // where the map's readings come from: "build" (default) or "runtime"
     "import.meta.env.VITE_DATA_SOURCE": JSON.stringify(process.env.DATA_SOURCE || "build"),
