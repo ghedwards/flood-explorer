@@ -920,8 +920,48 @@ pub fn parse_cap_flood(xml: &str, now_s: i64) -> Option<Value> {
         "id": id, "state": product_state(&id), "title": get("headline"), "severity": get("severity"), "event": event,
         "description": get("description"), "published": get("sent"), "expires": expires,
         "area": get("areaDesc"),
+        "polygons": cap_polygons(xml),
+        "geocodes": cap_geocodes(xml),
         "link": if id.is_empty() { "https://www.bom.gov.au/australia/warnings/".to_string() } else { format!("https://www.bom.gov.au/products/{}.shtml", id) },
     }))
+}
+
+/// Every tag's text, in order (`tag` gives only the first).
+fn tags<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
+    let (open, close) = (format!("<{}>", name), format!("</{}>", name));
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(a) = rest.find(&open) {
+        let from = a + open.len();
+        let Some(b) = rest[from..].find(&close) else { break };
+        out.push(&rest[from..from + b]);
+        rest = &rest[from + b + close.len()..];
+    }
+    out
+}
+
+/// A CAP warning's areas as rings of [lat, lon] ("lat,lon lat,lon ..."),
+/// for drawing on the map. Bad pairs are skipped; rings of under 3 dropped.
+pub fn cap_polygons(xml: &str) -> Vec<Vec<[f64; 2]>> {
+    tags(xml, "polygon")
+        .into_iter()
+        .map(|t| {
+            t.split_whitespace()
+                .filter_map(|p| {
+                    let (a, b) = p.split_once(',')?;
+                    let (lat, lon) = (a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?);
+                    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then_some([(lat * 1e4).round() / 1e4, (lon * 1e4).round() / 1e4])
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|r| r.len() >= 3)
+        .collect()
+}
+
+/// A CAP warning's area codes (<geocode><value>), e.g. the Bureau's
+/// forecast district or river basin codes.
+pub fn cap_geocodes(xml: &str) -> Vec<String> {
+    tags(xml, "geocode").into_iter().filter_map(|g| tag(g, "value")).map(|v| xml_unescape(v.trim())).filter(|v| !v.is_empty()).collect()
 }
 
 /// Every current flood warning on the Bureau's FTP server, as the map's
@@ -970,6 +1010,13 @@ pub fn flood_warnings(now_s: i64, iso_now: &str, errors: &mut Vec<String>) -> Va
 mod warning_tests {
     use super::*;
 
+    #[test]
+    fn cap_areas_come_out_as_rings_and_codes() {
+        let xml = "<info><area><areaDesc>x</areaDesc><polygon>-24.1,145.2 -24.5,145.9 -25.0,145.1 -24.1,145.2</polygon><polygon>bad</polygon><geocode><valueName>AMOC-AreaCode</valueName><value>QLD_RV038</value></geocode><geocode><valueName>b</valueName><value>QLD_PW013</value></geocode></area></info>";
+        assert_eq!(cap_polygons(xml), vec![vec![[-24.1, 145.2], [-24.5, 145.9], [-25.0, 145.1], [-24.1, 145.2]]]);
+        assert_eq!(cap_geocodes(xml), vec!["QLD_RV038".to_string(), "QLD_PW013".to_string()]);
+    }
+
     const CAP: &str = r#"<?xml version="1.0" encoding="UTF-8"?><alert xmlns="urn:oasis:names:tc:emergency:cap:1.2"><identifier>AusBoM-IDQ20860-2026-10-20T01:33:24+00:00</identifier><sent>2026-10-20T01:33:24+00:00</sent><info><event>Riverine Flood</event><severity>Minor</severity><expires>2026-10-23T04:33:24+00:00</expires><headline>Minor Flood Warning for Barcoo River to Isisford and Barcoo River at Blackall</headline><description>The Barcoo River at Blackall may peak above the minor flood level (2.00 m) from Tuesday into Wednesday &amp; more.</description><area><areaDesc>Queensland: Barcoo River to Isisford and Barcoo River at Blackall</areaDesc></area></info></alert>"#;
 
     #[test]
@@ -977,6 +1024,7 @@ mod warning_tests {
         let now = ts_epoch("2026-10-21T00:00:00Z").unwrap();
         let w = parse_cap_flood(CAP, now).unwrap();
         assert_eq!(w["id"], "IDQ20860");
+        assert_eq!(w["polygons"], json!([]), "no area outline in this one");
         assert_eq!(w["state"], "QLD");
         assert_eq!(w["severity"], "Minor");
         assert!(w["title"].as_str().unwrap().starts_with("Minor Flood Warning for Barcoo River"));

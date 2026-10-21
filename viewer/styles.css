@@ -271,6 +271,12 @@ body.in3d #legendCard { display: none; }
 .class-btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
 .warn-item { display: block; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); margin-bottom: 6px; font-size: 13px; text-decoration: none; }
 .warn-item small { display: block; opacity: .8; }
+button.warn-item { width: 100%; text-align: left; border: 0; font: inherit; font-size: 13px; cursor: pointer; }
+button.warn-item:hover .warn-show, button.warn-item:focus-visible .warn-show { text-decoration: underline; }
+.warn-show { font-weight: 600; }
+.warn-pop strong { display: block; margin-bottom: 2px; }
+.warn-pop small { display: block; opacity: .85; margin-top: 4px; }
+.warn-body { max-height: 180px; overflow-y: auto; margin: 6px 0; font-size: 12.5px; line-height: 1.4; white-space: pre-line; }
 .classes { font-size: 13px; }
 .classes table { border-collapse: collapse; width: 100%; margin-top: 4px; }
 .classes td, .classes th { padding: 3px 6px; border-bottom: 1px solid var(--line); text-align: left; font-variant-numeric: tabular-nums; }

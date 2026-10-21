@@ -3998,6 +3998,12 @@ import { classifyDemGaps } from './dem-voids.js';
         return L.circleMarker([la, lo], { renderer, radius: 10, color: '#c62828', weight: 2.5, fill: false, interactive: false });
       }));
     }
+    // warning areas: the Bureau's own outline where its warning has one,
+    // otherwise around the gauges on the warned rivers (redrawn when the
+    // warnings update)
+    if (!nat.warnLayer) nat.warnLayer = L.layerGroup();
+    nat.layers['Flood warning areas (BoM)'] = nat.warnLayer;
+    drawWarningAreas();
     if (nat.data.storages.length) {
       nat.layers['Dams and water storages (BoM)'] = L.geoJSON({ type: 'FeatureCollection', features: nat.data.storages }, {
         attribution: BOM_ATTR,
@@ -4017,7 +4023,7 @@ import { classifyDemGaps } from './dem-voids.js';
   function addNationalLayers(m) {
     const L = window.L;
     buildNationalLayers(L, m);
-    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)'];
+    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)'];
     for (const [name, layer] of Object.entries(nat.layers)) {
       registerOverlay(name, layer);
       if (nat.defaultsApplied) continue;   // respect what the viewer has switched since
@@ -4879,12 +4885,102 @@ import { classifyDemGaps } from './dem-voids.js';
   function warningsHtml(p) {
     const ws = warningsFor(p);
     if (!ws.length) return '';
-    return `<div>${ws.map((w) => `<a class="warn-item${w.severity ? ` sev-${escapeHtml(w.severity.toLowerCase())}` : ''}" href="${escapeHtml(w.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(w.title)}</strong>${w.description ? `<span class="warn-text">${escapeHtml(w.description)}</span>` : ''}<small>${w.severity && w.severity !== 'Unknown' ? `${escapeHtml(w.severity)} · ` : ''}Current Bureau of Meteorology warning${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small></a>`).join('')}</div>`;
+    return `<div>${ws.map((w) => warnItemHtml(w, `${w.severity && w.severity !== 'Unknown' ? `${escapeHtml(w.severity)} · ` : ''}Current Bureau of Meteorology warning${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}`)).join('')}</div>`;
   }
   function fmtWarnTime(t) {
     const d = new Date(t);
     return Number.isNaN(d.getTime()) ? t : `issued ${d.toLocaleString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`;
   }
+  // Warnings on the map. The Bureau's CAP files sometimes carry the warned
+  // area's outline; otherwise the area is drawn around the gauges on the
+  // rivers the warning names (the same match a gauge report uses).
+  const WARN_COLOR = { extreme: '#b71c1c', major: '#b71c1c', severe: '#e65100', moderate: '#e65100', minor: '#f9a825' };
+  const warnColor = (w) => WARN_COLOR[String(w.severity || '').toLowerCase()] || (/watch/i.test(w.title || '') ? '#6a1b9a' : '#c62828');
+  const allWarnings = () => (nat.warnings && nat.warnings.warnings) || [];
+  const warnKey = (w) => w.id || w.title;
+  function warningGauges(w) {
+    const gs = (nat.data && nat.data.gauges) || [];
+    const hit = (f) => warningsFor(f.properties).some((x) => warnKey(x) === warnKey(w));
+    const main = gs.filter((f) => f.properties.kind !== 'river' && hit(f));
+    return main.length ? main : gs.filter(hit).slice(0, 60);
+  }
+  // convex hull (monotone chain) of [lat, lon] points
+  function hull(pts) {
+    const p = [...pts].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a[1] - o[1]) * (b[0] - o[0]) - (a[0] - o[0]) * (b[1] - o[1]);
+    const lo = [], up = [];
+    for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+    for (const q of p.slice().reverse()) { while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+    return lo.slice(0, -1).concat(up.slice(0, -1));
+  }
+  // where a warning is: its outline(s), or a hull around its gauges padded
+  // by about 12 km (so one or two gauges still make an area)
+  function warningShape(w) {
+    if (Array.isArray(w.polygons) && w.polygons.length) return { rings: w.polygons, from: 'bureau', gauges: warningGauges(w) };
+    const gauges = warningGauges(w);
+    if (!gauges.length) return { rings: [], from: 'none', gauges };
+    const pts = [];
+    for (const f of gauges) {
+      const [lo, la] = f.geometry.coordinates, d = 0.11, dl = d / Math.cos((la * Math.PI) / 180);
+      for (let k = 0; k < 12; k++) { const a = (k / 12) * 2 * Math.PI; pts.push([la + d * Math.sin(a), lo + dl * Math.cos(a)]); }
+    }
+    return { rings: [hull(pts)], from: 'gauges', gauges };
+  }
+  function warningPopupHtml(w, shape) {
+    const g = shape ? shape.gauges : warningGauges(w);
+    const names = g.slice(0, 8).map((f) => escapeHtml(f.properties.name)).join(', ');
+    return `<div class="warn-pop"><strong>${escapeHtml(w.title)}</strong>
+      <small>${escapeHtml(w.state || '')}${w.severity && w.severity !== 'Unknown' ? ` · ${escapeHtml(w.severity)}` : ''}${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small>
+      ${w.description ? `<div class="warn-body">${escapeHtml(w.description)}</div>` : ''}
+      ${g.length ? `<small>Gauges on ${shape && shape.from === 'bureau' ? 'this warning' : 'the warned rivers (the area drawn around them)'}: ${names}${g.length > 8 ? ` and ${g.length - 8} more` : ''}</small>` : '<small>No gauges on the map match this warning, so it has no area here.</small>'}
+      ${w.link ? `<small><a href="${escapeHtml(w.link)}" target="_blank" rel="noopener">This warning on the Bureau's website</a></small>` : ''}</div>`;
+  }
+  function drawWarningAreas() {
+    const L = window.L, lyr = nat.warnLayer;
+    if (!L || !lyr || !nat.data) return;
+    lyr.clearLayers();
+    nat.warnShapes = new Map();
+    let drawn = 0, outlines = 0;
+    for (const w of allWarnings()) {
+      const shape = warningShape(w);
+      nat.warnShapes.set(warnKey(w), shape);
+      if (!shape.rings.length) continue;
+      const c = warnColor(w);
+      const poly = L.polygon(shape.rings, { color: c, weight: 2, fillColor: c, fillOpacity: shape.from === 'bureau' ? 0.18 : 0.1, dashArray: shape.from === 'bureau' ? null : '6 5' });
+      poly.bindTooltip(w.title, { sticky: true });
+      poly.bindPopup(() => warningPopupHtml(w, shape), { maxWidth: 360 });
+      poly.addTo(lyr);
+      shape.layer = poly;
+      drawn++; if (shape.from === 'bureau') outlines++;
+    }
+    status.warningAreas = { warnings: allWarnings().length, drawn, bureauOutlines: outlines };
+  }
+  // Show a warning on the map: switch the layer on, fit its area, open it.
+  function showWarning(w) {
+    if (!w || !state.lmap) return;
+    if (!nat.warnShapes || !nat.warnShapes.has(warnKey(w))) drawWarningAreas();
+    const shape = nat.warnShapes && nat.warnShapes.get(warnKey(w));
+    const m = state.lmap, lyr = nat.warnLayer;
+    if (lyr && !m.hasLayer(lyr)) { lyr.userOn = true; lyr.addTo(m); syncLayerLists(); }
+    if (shape && shape.layer) {
+      m.fitBounds(shape.layer.getBounds(), { padding: [30, 30], maxZoom: 10 });
+      shape.layer.openPopup(shape.layer.getBounds().getCenter());
+    } else {
+      window.L.popup({ maxWidth: 360 }).setLatLng(m.getCenter()).setContent(warningPopupHtml(w, shape)).openOn(m);
+    }
+    status.shownWarning = { id: w.id, from: shape ? shape.from : 'none' };
+  }
+  window.__floodShowWarning = (i) => showWarning(allWarnings()[i || 0]);
+  // warning items anywhere (panel, gauge reports): show on the map
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-warn-key]');
+    if (!b) return;
+    e.preventDefault();
+    const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnKey);
+    if (w) showWarning(w);
+  });
+  const warnItemHtml = (x, meta) => `<button type="button" class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}" data-warn-key="${escapeHtml(warnKey(x))}"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${meta} · <span class="warn-show">Show on map</span></small></button>`;
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.
@@ -4991,7 +5087,11 @@ import { classifyDemGaps } from './dem-voids.js';
   }
   async function openWatchItem(w) {
     if (!w) return;
-    if (w.kind === 'warning') { if (w.link) window.open(w.link, '_blank', 'noopener'); return; }
+    if (w.kind === 'warning') {
+      const x = allWarnings().find((y) => y.id === w.station || y.title === w.name);
+      if (x) showWarning(x); else if (w.link) window.open(w.link, '_blank', 'noopener');
+      return;
+    }
     if (w.kind === 'sea') {
       const x = nat.readings.sea && nat.readings.sea[w.station];
       if (x && state.lmap) {
@@ -5060,11 +5160,12 @@ import { classifyDemGaps } from './dem-voids.js';
     if (!w) { box.innerHTML = '<p class="hint">Current flood warnings could not be loaded.</p>'; return; }
     const list = w.warnings || [];
     box.innerHTML = `<h3 class="places-sub">Current flood warnings (BoM)</h3>${list.length
-      ? list.map((x) => `<a class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}" href="${escapeHtml(x.link)}" target="_blank" rel="noopener"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${escapeHtml(x.state)}${x.severity && x.severity !== 'Unknown' ? ` · ${escapeHtml(x.severity)}` : ''}${x.published ? ` · ${escapeHtml(fmtWarnTime(x.published))}` : ''}</small></a>`).join('')
+      ? list.map((x) => warnItemHtml(x, `${escapeHtml(x.state)}${x.severity && x.severity !== 'Unknown' ? ` · ${escapeHtml(x.severity)}` : ''}${x.published ? ` · ${escapeHtml(fmtWarnTime(x.published))}` : ''}`)).join('')
       : `<p class="hint">${w.ok ? 'No flood warnings or watches are current.' : 'The warning feeds could not be reached at the last update.'}</p>`}
       <p class="hint">Checked ${escapeHtml(ago(w.fetched))}. Always follow official warnings at <a href="https://www.bom.gov.au/australia/warnings/" target="_blank" rel="noopener">bom.gov.au</a>.</p>`;
     nat.warningCount = list.length;
     if (list.length) $('forecastBadge').hidden = false;
+    drawWarningAreas();
   }
 
   // Gauges inside the active model: their flood classes (where the gauge
