@@ -1,5 +1,6 @@
 import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
+import { classifyDemGaps } from './dem-voids.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -7062,13 +7063,20 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     const W = Math.round((2 * halfKm * 1000) / cellM), H = W;
     const { iw, ih, data, nd, tiffBounds } = await fetchRaster(DEMH_WCS, [w, s, e, n], W, H);
     const dem = new Float32Array(iw * ih), valid = new Uint8Array(iw * ih);
-    let land = 0;
+    let land = 0, gaps = 0;
     for (let i = 0; i < iw * ih; i++) {
-      let v = data[i];
-      // DEM-H marks the sea as no data; treat it as water just below sea level
-      if (!Number.isFinite(v) || v === nd || v < -1000 || v > 9000) v = -1.5; // sea or no data
-      else land++;
-      dem[i] = v; valid[i] = 1;
+      const v = data[i];
+      if (!Number.isFinite(v) || v === nd || v < -1000 || v > 9000) { dem[i] = NaN; gaps++; }
+      else { dem[i] = v; land++; }
+      valid[i] = 1;
+    }
+    // DEM-H marks the sea as no data, but it has gaps inland too: sea stays
+    // water just below sea level, inland gaps are filled from the land
+    // around them (not left as pits for the model to fill as "normal water")
+    if (gaps) {
+      const g = classifyDemGaps(dem, iw, ih);
+      for (let i = 0; i < iw * ih; i++) if (g.sea[i]) dem[i] = -1.5;
+      land += g.filledCells;
     }
     // sea-only windows are fine for the 3D terrain stream (flat sea planes);
     // a flood model needs land to be interesting
