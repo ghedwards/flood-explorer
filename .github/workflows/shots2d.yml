@@ -127,8 +127,16 @@ jobs:
           BROKER_URL: http://127.0.0.1:8787
           OUT: ${{ runner.temp }}/shots
         run: |
-          node tests/broker-live.js
+          mkdir -p "$OUT"
+          # keep the script's own output and the broker's log whatever happens
+          set +e
+          node tests/broker-live.js > "$OUT/broker-live.out" 2>&1
+          code=$?
+          set -e
+          grep '^::' "$OUT/broker-live.out" || true
+          [ "$code" = 0 ] || echo "::warning title=broker-live exit $code::$(grep -v '^::' "$OUT/broker-live.out" | tail -c 800 | tr '\n' ' ')"
           cp broker.log "$OUT/broker.log" || true
+          exit $code
       - name: Push to the shots-2d branch
         if: always()
         env:

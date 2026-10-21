@@ -10,8 +10,18 @@ const SITE = process.env.SITE_URL || "http://127.0.0.1:8000/";
 const BROKER = process.env.BROKER_URL || "http://127.0.0.1:8787";
 const OUT = process.env.OUT || "shots";
 
+const r = {};
+// whatever ends the run, keep what it found
+const keep = (why) => (e) => {
+  r.fatal = r.fatal || `${why}: ${String(e && e.stack || e)}`;
+  try { fs.mkdirSync(OUT, { recursive: true }); fs.writeFileSync(path.join(OUT, "broker-live.json"), JSON.stringify(r, null, 1)); } catch (e2) { /* nothing more to do */ }
+  console.log(`::error title=broker-live ${why}::${String(e && e.message || e).slice(0, 500)}`);
+  process.exit(1);
+};
+process.on("uncaughtException", keep("uncaught"));
+process.on("unhandledRejection", keep("unhandled rejection"));
+
 (async () => {
-  const r = {};
   const browser = await pw.chromium.launch();
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
