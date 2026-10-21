@@ -1644,7 +1644,11 @@ import { classifyDemGaps } from './dem-voids.js';
     let offChannel = 0, channel = 0;
     for (let i = 0; i < a.N; i++) { if (!base.wet[i] || a.ocean[i]) continue; if (a.stream[i]) channel++; else offChannel++; }
     const cellKm2 = (a.cell * a.cell) / 1e6;
+    const ground = [];
+    for (let c2 = a.rec[g]; c2 >= 0 && !a.ocean[c2]; c2 = a.rec[c2]) if (a.valid[c2]) ground.push(a.dem[c2]);
     return {
+      lidarShare: state.areaMeta && state.areaMeta.lidarShare != null ? +(+state.areaMeta.lidarShare).toFixed(2) : null, lidarDropped: status.lidarDropped ?? null,
+      pathGround: ground.length ? { min: +Math.min(...ground).toFixed(1), max: +Math.max(...ground).toFixed(1) } : null,
       gaugeGround: +a.dem[g].toFixed(1), cell: Math.round(a.cell), end, pathKm: km(depths.length),
       normalDepthOnChannel: sorted.length ? { median: +sorted[Math.floor(sorted.length / 2)].toFixed(2), p90: +sorted[Math.floor(sorted.length * 0.9)].toFixed(2), max: +sorted[sorted.length - 1].toFixed(2) } : null,
       kmDeeperThan2m: km(fin.filter((d) => d > 2).length), kmDeeperThan5m: km(fin.filter((d) => d > 5).length), kmDry: km(fin.filter((d) => d <= 0).length + depths.filter((d) => !Number.isFinite(d)).length),
@@ -7115,26 +7119,34 @@ import { classifyDemGaps } from './dem-voids.js';
     if (!r) throw lastErr || new Error('no LiDAR');
     return r;
   }
-  // LiDAR where it has data, DEM-H (nearest cell) where it doesn't.
+  // LiDAR where it has data, DEM-H (nearest cell) where it doesn't. A LiDAR
+  // cell far below DEM-H at the same spot is a gap in the LiDAR mosaic
+  // (inland rivers came through near 0 m: a 170 m trench at Wagga Wagga),
+  // not real ground, so DEM-H fills it too.
+  const LIDAR_DROP_MAX_M = 25;
   function mergeLidar(grid, r) {
     const { iw, ih, data, nd } = r;
     const N = iw * ih, dem = new Float32Array(N), valid = new Uint8Array(N);
-    let have = 0;
+    let have = 0, dropped = 0;
     for (let y = 0; y < ih; y++) {
       const yd = Math.min(grid.H - 1, Math.floor(((y + 0.5) / ih) * grid.H));
       for (let x = 0; x < iw; x++) {
         const k = y * iw + x, v = data[k];
-        if (Number.isFinite(v) && v !== nd && v > -100 && v < 9000) { dem[k] = v; have++; } else {
-          const xd = Math.min(grid.W - 1, Math.floor(((x + 0.5) / iw) * grid.W));
-          dem[k] = grid.dem[yd * grid.W + xd];
+        const xd = Math.min(grid.W - 1, Math.floor(((x + 0.5) / iw) * grid.W));
+        const d = grid.dem[yd * grid.W + xd];
+        const ok = Number.isFinite(v) && v !== nd && v > -100 && v < 9000;
+        if (ok && !(d > 0 && v < d - LIDAR_DROP_MAX_M)) { dem[k] = v; have++; } else {
+          if (ok) dropped++;
+          dem[k] = d;
         }
         valid[k] = 1;
       }
     }
     const share = have / N;
-    if (share < 0.2) return { grid, share };
+    status.lidarDropped = dropped;
+    if (share < 0.2) return { grid, share, dropped };
     const cell = grid.cell * grid.W / iw;
-    return { grid: { W: iw, H: ih, cell, dem, valid }, share };
+    return { grid: { W: iw, H: ih, cell, dem, valid }, share, dropped };
   }
 
 
