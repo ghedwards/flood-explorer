@@ -8163,9 +8163,18 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   async function renderDataStatus() {
     const box = $('dataStatus');
     if (!box) return null;
-    let st;
-    try { const r = await fetch('data/status.json', { cache: 'no-cache' }); st = r.ok ? await r.json() : null; } catch (err) { st = null; }
-    if (!st || !st.sources) { box.innerHTML = '<p class="hint">No status from the build yet.</p>'; return null; }
+    // the live part needs no network: show it at once, then the build's
+    // status file (at most 8 s: a stalled request mustn't leave "Loading…")
+    let live = '';
+    try { live = liveSourcesHtml(); } catch (e) { live = `<p class="hint">Live data: couldn't list it (${escapeHtml(String(e && e.message || e))}).</p>`; }
+    box.innerHTML = `${live}<p class="hint">Loading the site build's status…</p>`;
+    let st, why = '';
+    try {
+      const r = await fetch('data/status.json', { cache: 'no-cache', signal: AbortSignal.timeout(8000) });
+      st = r.ok ? await r.json() : null;
+      if (!r.ok) why = `HTTP ${r.status}`;
+    } catch (err) { st = null; why = err && err.name === 'TimeoutError' ? 'it took too long; try again' : String(err && err.message || err); }
+    if (!st || !st.sources) { box.innerHTML = `${live}<p class="hint">The site build's status couldn't be loaded${why ? ` (${escapeHtml(why)})` : ''}.</p>`; return null; }
     const label = { ok: 'OK', cached: 'From an earlier build', problem: 'Problem', missing: 'Not available' };
     const when = (iso) => (iso ? new Date(iso).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
     const engine = F.engine === 'rust' ? 'Rust, compiled to WebAssembly' : (F.engine === 'error' ? 'WebAssembly failed to load (the flood model is unavailable)' : 'WebAssembly');
