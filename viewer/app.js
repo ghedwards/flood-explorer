@@ -112,7 +112,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
    * normal water). Now each cell of the river's path below the gauge gets
    *   bed + normal depth + rise,
    * (with the bay level in place of bed + depth where that's higher), where
-   * the bed is smoothed (the median over ~300 m, so a road embankment
+   * the bed is smoothed (the lower quarter over ~300 m, so a road embankment
    * without its culvert or a deep hole in the data doesn't set the level)
    * and held at the highest bed further downstream (water pools behind a
    * riffle, so the surface never rises downstream); the rise is how far the
@@ -127,7 +127,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
    * ground drops DAM_DROP_M below the lake's surface) and the river profile
    * starts below the wall, the rise being what spills: the gauge level above
    * the lake's normal level. */
-  const DAM_DROP_M = 4, DAM_SEARCH_M = 5000, RIVER_DEPTH_M = 0.3, BED_SMOOTH_M = 150;
+  const DAM_DROP_M = 4, DAM_SEARCH_M = 5000, RIVER_DEPTH_M = 0.3, BED_SMOOTH_M = 150, BED_PCT = 0.25;
   let rbMemo = null;
   const isDamModel = (meta) => !!meta && /^storage:/.test(String(meta.reportId || ''));
   function riverBelow(a, gauge, meta) {
@@ -153,8 +153,12 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const bed = path.map((c) => a.dem[c]);
     const env = new Float64Array(n), taper = new Float64Array(n);
     for (let k = n - 1, hi = -Infinity; k >= 0; k--) {
+      // the lower quarter of the bed around here, not the middle: a flow
+      // path that cuts across a meander neck or a bank for a couple of
+      // hundred metres doesn't hold the river above it up (Maitland: 2.7 m
+      // of "normal" water for 12 km behind 1 m of floodplain)
       const w = bed.slice(Math.max(0, k - R), k + R + 1).sort((x, y) => x - y);
-      hi = Math.max(hi, w[w.length >> 1]);
+      hi = Math.max(hi, w[Math.floor((w.length - 1) * BED_PCT)]);
       env[k] = hi;
     }
     // to the sea: the same fall as before (by flow distance to the outlet,
@@ -1651,9 +1655,12 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const cellKm2 = (a.cell * a.cell) / 1e6;
     const ground = [];
     for (let c2 = a.rec[g]; c2 >= 0 && !a.ocean[c2]; c2 = a.rec[c2]) if (a.valid[c2]) ground.push(a.dem[c2]);
+    const rb = riverBelow(a, g, state.areaMeta);
+    const held = rb && rb.path.length ? [...rb.path.keys()].map((k) => rb.env[k] - a.dem[rb.path[k]]).sort((x, y) => x - y) : [];
     return {
       lidarShare: state.areaMeta && state.areaMeta.lidarShare != null ? +(+state.areaMeta.lidarShare).toFixed(2) : null, lidarDropped: status.lidarDropped ?? null,
       pathGround: ground.length ? { min: +Math.min(...ground).toFixed(1), max: +Math.max(...ground).toFixed(1) } : null,
+      bedHeldAbove: held.length ? { median: +held[held.length >> 1].toFixed(2), p90: +held[Math.floor(held.length * 0.9)].toFixed(2) } : null,
       gaugeGround: +a.dem[g].toFixed(1), cell: Math.round(a.cell), end, pathKm: km(depths.length),
       normalDepthOnChannel: sorted.length ? { median: +sorted[Math.floor(sorted.length / 2)].toFixed(2), p90: +sorted[Math.floor(sorted.length * 0.9)].toFixed(2), max: +sorted[sorted.length - 1].toFixed(2) } : null,
       kmDeeperThan2m: km(fin.filter((d) => d > 2).length), kmDeeperThan5m: km(fin.filter((d) => d > 5).length), kmDry: km(fin.filter((d) => d <= 0).length + depths.filter((d) => !Number.isFinite(d)).length),
