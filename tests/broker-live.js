@@ -186,6 +186,11 @@ process.on("unhandledRejection", keep("unhandled rejection"));
         await page3.close();
       } catch (e) { r.secondVisit = String(e); }
     }
+    // bytes on the wire: everything vs what the map polls
+    try {
+      const size = async (u) => (await (await get(`${BROKER}${u}`, { headers: { "accept-encoding": "gzip" } })).arrayBuffer()).length;
+      r.sizes = { readingsGz: await size("/v1/readings"), nowGz: await size("/v1/now"), seriesOne: r.sample ? await size(`/v1/series?site=${r.sample.station}`) : null };
+    } catch (e) { r.sizes = String(e); }
     r.health = await (await get(`${BROKER}/health`)).json();
     r.errors = errors.slice(0, 5);
   } catch (e) {
@@ -209,6 +214,7 @@ process.on("unhandledRejection", keep("unhandled rejection"));
   if (r.refreshNow) note("refresh now", r.refreshNow);
   if (r.secondVisit) note("second visit", r.secondVisit);
   if (r.dataTimes) note("data times", r.dataTimes);
+  if (r.sizes) note("download sizes", r.sizes);
   if (r.history) note("hourly record", { report: r.history, api: r.historyApi });
   if (r.warningMap) note("warning on the map", r.warningMap);
   if (r.warningPeaks) note("warning peaks", r.warningPeaks);

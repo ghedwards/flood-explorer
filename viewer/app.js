@@ -3841,7 +3841,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   async function savedReadings() {
     try {
       if (!BROKER || typeof caches === 'undefined') return null;
-      const hit = await caches.match(`${BROKER}/v1/readings`, { ignoreVary: true });
+      const hit = await caches.match(`${BROKER}/v1/now`, { ignoreVary: true });
       if (!hit || !hit.ok) return null;
       const j = await hit.json();
       const t = j && j.fetched ? new Date(j.fetched).getTime() : NaN;
@@ -3870,7 +3870,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       // in the background, instead of waiting on the broker
       const saved = DATA_SOURCE === 'runtime' ? await savedReadings() : null;
       const live = saved ? Promise.resolve(saved) : DATA_SOURCE === 'runtime'
-        ? fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(8000) }).then((r) => {
+        ? fetch(`${BROKER}/v1/now`, { signal: AbortSignal.timeout(8000) }).then((r) => {
           if (r.status === 503) return null;   // just started: nothing fetched yet
           if (!r.ok) throw new Error(`broker readings: HTTP ${r.status}`);
           return r.json();
@@ -4469,7 +4469,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           <span class="hint">${live ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from <a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland's water monitoring network</a> (© State of Queensland, CC BY 4.0)`
             : bureau ? `Reading at ${escapeHtml(fmtReadingTime(r.latest[0]))}, from the Bureau's river height pages (checked hourly)`
             : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
-            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length && !(nat.history && nat.history[String(p.station || '')] && nat.history[String(p.station || '')].points.length >= 3) ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
+            : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${(r.series || []).length && !(nat.history && nat.history[String(p.station || '')] && nat.history[String(p.station || '')].points.length >= 3) ? ` Daily averages, last ${(r.series || []).length} days:` : ''}</span>
           ${riseHtml(r)}
           ${rainHtml(p)}
           ${histOrSpark(p, r)}</div>`;
@@ -4524,6 +4524,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   nat.history = nat.history || {};
   async function refreshHistory(p, box) {
     const st = String(p.station || '');
+    if (box && st && nat.readings.level && nat.readings.level[st] && !nat.readings.level[st].series) {
+      ensureSeries('level', st).then((ser) => { if (ser && ser.length && box.isConnected) box.innerHTML = levelReadingHtml(p); });
+    }
     if (!BROKER || !box || !st || DATA_SOURCE !== 'runtime') return;
     const had = nat.history[st];
     if (had && Date.now() - had.asked < HIST_MS) return;
@@ -4563,6 +4566,23 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       <span class="hint">Hourly, ${escapeHtml(new Date(t0).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' }))} to now · low ${Math.min(...pts.map((x) => x[1])).toFixed(2)} m, high ${Math.max(...pts.map((x) => x[1])).toFixed(2)} m${lines.length ? ` · dashed: ${lines.map(([k]) => k).join(', ')} flood level` : ''} (the broker's record)</span></div>`;
   }
 
+  // A gauge's (or dam's) daily series: the map polls /v1/now, which leaves
+  // the series out (most of the readings' size); a report asks for its own.
+  async function ensureSeries(kind, st) {
+    const box = nat.readings && nat.readings[kind];
+    const r = box && box[st];
+    if (!r || r.series || !BROKER || DATA_SOURCE !== 'runtime' || nat.readingsSource !== 'runtime') return r ? r.series || null : null;
+    try {
+      const res = await fetch(`${BROKER}/v1/series?site=${encodeURIComponent(st)}${kind === 'storage' ? '&kind=storage' : ''}`, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) return null;
+      const j = await res.json();
+      // the readings may have been replaced meanwhile: set it on the current entry
+      const cur = nat.readings[kind] && nat.readings[kind][st];
+      if (cur && !cur.series) cur.series = Array.isArray(j.series) ? j.series : [];
+      return cur ? cur.series : null;
+    } catch (e) { return null; }
+  }
+
   function openReport(f, opts) {
     const select = !opts || opts.select !== false;
     nat.picked = f;
@@ -4598,7 +4618,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           <div class="big">${fill != null ? Math.round(fill * 100) + '<small>% full</small>' : Math.round(r.latest[1]).toLocaleString('en-AU') + '<small>ML</small>'}</div>
           ${fill != null ? `<div class="bar"><span style="width:${Math.min(100, fill * 100)}%;background:${storageColor(p)}"></span></div>` : ''}
           <span class="hint">${Math.round(r.latest[1]).toLocaleString('en-AU')} ML, daily average for ${escapeHtml(fmtDate(r.latest[0]))}</span>
-          ${sparkline(r.series)}</div>`;
+          <span class="js-storage-spark">${r.series ? sparkline(r.series) : ''}</span></div>`;
         if (fill != null && fill >= 1) html += '<p class="hint"><strong>At or above full supply.</strong> Dams at full supply may be releasing or spilling water downstream.</p>';
       } else {
         html += '<p class="hint">No recent storage reading is published for this dam.</p>';
@@ -4659,7 +4679,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         syncLayerLists(); renderOverlayLegend();
       }
     });
-    if (p.kind === 'storage') addWaterHistory(p.id, q('.js-history'));
+    if (p.kind === 'storage') {
+      addWaterHistory(p.id, q('.js-history'));
+      const sp = q('.js-storage-spark');
+      if (sp && !sp.innerHTML) ensureSeries('storage', p.station).then((ser) => { if (ser && ser.length && sp.isConnected) sp.innerHTML = sparkline(ser); });
+    }
     else { refreshLiveLevel(p, q('.js-reading')); refreshHistory(p, q('.js-reading')); }
     const link = document.createElement('div');
     link.className = 'js-link';
@@ -5125,6 +5149,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!ok || !state.a || state.gauge < 0) return null;
     try { await ensureHistory(); } catch (e) { /* no ratings: gauge zero only */ }
     if (rep) { try { await refreshHistory(p, document.createElement('div')); } catch (e) { /* daily averages only */ } }
+    try { await ensureSeries('level', String(p.station || '')); } catch (e) { /* the hourly record only */ }
     const conv = boardToModel(p, t.level);
     status.warningModel = { warning: w.id, gauge: p.name, board: t.level, kind: t.kind, level: conv ? conv.level : null, exact: conv ? conv.exact : null, how: conv ? (conv.how || 'gauge zero') : null };
     if (!conv) {
@@ -5323,7 +5348,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (DATA_SOURCE !== 'runtime' || !nat.readings || (document.hidden && !manual)) return 'off';
     const fallback = nat.readingsSource !== 'runtime';
     try {
-      const r = await fetch(`${BROKER}/v1/readings`, { cache: manual ? 'no-cache' : 'default', signal: AbortSignal.timeout(fallback || manual ? 30000 : 15000) });
+      const r = await fetch(`${BROKER}/v1/now`, { cache: manual ? 'no-cache' : 'default', signal: AbortSignal.timeout(fallback || manual ? 30000 : 15000) });
       if (!r.ok) return 'error';
       const fresh = await r.json();
       if (!fresh || !fresh.level) return 'error';

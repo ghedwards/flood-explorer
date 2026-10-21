@@ -18,7 +18,7 @@ const APP = `app-${VERSION}`;
 const TILES = 'tiles-v2', TERRAIN = 'terrain-v1', ELEV = 'elev-v1', API = 'api-v1', LIVE = 'live-v1';
 const LIMITS = { [TILES]: 4000, [TERRAIN]: 120, [ELEV]: 800, [API]: 400, [LIVE]: 40 };
 // the live data broker (rust/flood-broker): Lambda function URLs, or any host serving its paths
-const BROKER_PATH = /^\/v1\/(readings|levels|history)$/;
+const BROKER_PATH = /^\/v1\/(readings|now|series|levels|history)$/;
 
 // Vite replaces this list with every emitted chunk, worker, font and WASM asset.
 const BUILD_ASSETS = [];
