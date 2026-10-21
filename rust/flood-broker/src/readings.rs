@@ -15,6 +15,9 @@ use std::sync::{Arc, Mutex};
 
 pub const STATIONS_URL: &str = "https://ghedwards.github.io/flood-explorer/data/national/stations.json";
 const KEY: &str = "readings.json";
+/// The same, gzipped: what a cold start loads (unzipping is quick; zipping
+/// 2 MB again on a small Lambda took long enough for browsers to give up).
+const KEY_GZ: &str = "readings.json.gz";
 const S3_CHECK_MS: i64 = 60_000; // how often a copy looks for a newer file
 
 pub type Http = Box<dyn Fn(&str, &[(String, String)]) -> Result<Value, String> + Send + Sync>;
@@ -58,6 +61,20 @@ impl Doc {
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
         Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag }
     }
+
+    /// From the stored gzipped copy: unzip it, keep the zipped bytes to send.
+    pub fn from_gz(gz: Vec<u8>, fetched_ms: Option<i64>, s3_etag: Option<String>) -> Result<Doc, String> {
+        use std::io::Read;
+        let mut body = Vec::with_capacity(gz.len() * 10);
+        flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut body).map_err(|e| format!("readings.json.gz: {e}"))?;
+        let fetched_ms = fetched_ms.or_else(|| doc_fetched(&body)).unwrap_or(0);
+        let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
+        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag })
+    }
+}
+
+fn doc_fetched(body: &[u8]) -> Option<i64> {
+    serde_json::from_slice::<Value>(body).ok().and_then(|v| v["fetched"].as_str().and_then(crate::wmip::epoch_ms))
 }
 
 pub struct Readings {
@@ -267,10 +284,17 @@ impl Readings {
         r["errors"] = json!(errors.iter().take(20).collect::<Vec<_>>());
         r["attribution"] = json!(format!("© Commonwealth of Australia (Bureau of Meteorology); Queensland live levels {}; {}; {}", feeds::WMIP_ATTRIBUTION, feeds::STORM_TIDE_ATTRIBUTION, feeds::RAIN_ATTRIBUTION));
         let body = serde_json::to_vec(&r).map_err(|e| e.to_string())?;
+        let doc = Doc::new(body, fetched, None);
         if let Store::S3(b) = &self.store {
-            b.put(KEY, &body, "application/json", fetched)?;
+            b.put(KEY, &doc.body, "application/json", fetched)?;
+            // best effort: a stack set up before this allows only readings.json
+            if !doc.gz.is_empty() {
+                if let Err(e) = b.put(KEY_GZ, &doc.gz, "application/gzip", fetched) {
+                    eprintln!("readings.json.gz not stored ({e}); cold starts zip readings.json instead");
+                }
+            }
         }
-        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(Doc::new(body, fetched, None))));
+        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(doc)));
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
             "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "seconds": (fetched - started) / 1000,
@@ -293,6 +317,22 @@ impl Readings {
                 }
                 // only download it again when it has changed
                 let have = cur.as_ref().and_then(|c| c.1.s3_etag.clone());
+                // the gzipped copy first (older stores have only the plain one)
+                match b.get(KEY_GZ, have.as_deref(), now) {
+                    Ok(crate::s3::Got::Unchanged) if cur.is_some() => {
+                        let doc = cur.unwrap().1;
+                        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
+                        return Ok(Some(doc));
+                    }
+                    Ok(crate::s3::Got::Body(gz, s3_etag)) => {
+                        if let Ok(doc) = Doc::from_gz(gz, None, s3_etag) {
+                            let doc = Arc::new(doc);
+                            *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
+                            return Ok(Some(doc));
+                        }
+                    }
+                    _ => {}
+                }
                 match b.get(KEY, have.as_deref(), now) {
                     Ok(crate::s3::Got::Unchanged) if cur.is_some() => {
                         let doc = cur.unwrap().1;
@@ -300,7 +340,7 @@ impl Readings {
                         Ok(Some(doc))
                     }
                     Ok(crate::s3::Got::Body(body, s3_etag)) => {
-                        let fetched_ms = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["fetched"].as_str().and_then(crate::wmip::epoch_ms)).unwrap_or(now);
+                        let fetched_ms = doc_fetched(&body).unwrap_or(now);
                         let doc = Arc::new(Doc::new(body, fetched_ms, s3_etag));
                         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
                         Ok(Some(doc))
@@ -357,6 +397,17 @@ pub fn http_json(url: &str, params: &[(String, String)]) -> Result<Value, String
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stored_gzipped_copy_loads_as_the_same_document() {
+        let body = br#"{"fetched":"2026-10-21T01:24:04Z","level":{"1":{"latest":["x",1.5]}}}"#.to_vec();
+        let a = super::Doc::new(body.clone(), 0, None);
+        let b = super::Doc::from_gz(a.gz.as_ref().clone(), None, Some("e".into())).unwrap();
+        assert_eq!(*b.body, body);
+        assert_eq!(b.etag, a.etag, "same ETag for browsers either way");
+        assert_eq!(b.fetched_ms, crate::wmip::epoch_ms("2026-10-21T01:24:04Z").unwrap());
+        assert!(super::Doc::from_gz(b"not gzip".to_vec(), None, None).is_err());
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicI64, Ordering};
 

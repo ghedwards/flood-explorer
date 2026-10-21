@@ -45,4 +45,14 @@ const assert = require('node:assert/strict');
       assert.ok(v > 125 && v < 185, `x=${x}: ${v}`);
     }
   });
+
+  test('a very large gap fills in one pass (well under a second)', () => {
+    const W = 1000, H = 1000, dem = new Float32Array(W * H).fill(300);
+    for (let y = 0; y < 900; y++) for (let x = 0; x < 900; x++) dem[y * W + x] = NaN;
+    const t0 = Date.now();
+    const r = classifyDemGaps(dem, W, H);
+    assert.equal(r.filledCells, 810000);
+    assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
+    assert.ok(Math.abs(dem[0] - 300) < 1e-3);
+  });
 })();

@@ -5012,15 +5012,23 @@ import { classifyDemGaps } from './dem-voids.js';
   // While the map is open, fetch the broker's readings again every 15
   // minutes (cheap: an unchanged file is a 304) and update the watch list
   // and warnings.
+  // If the first try timed out (a broker waking up can be slow), the map
+  // starts on the site build's readings and switches over when this works.
   async function refreshLiveReadings() {
-    if (DATA_SOURCE !== 'runtime' || nat.readingsSource !== 'runtime' || document.hidden) return;
+    if (DATA_SOURCE !== 'runtime' || !nat.readings || document.hidden) return;
+    const fallback = nat.readingsSource !== 'runtime';
     try {
-      const r = await fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(15000) });
+      const r = await fetch(`${BROKER}/v1/readings`, { signal: AbortSignal.timeout(fallback ? 30000 : 15000) });
       if (!r.ok) return;
       const fresh = await r.json();
-      if (!fresh || !fresh.level || fresh.fetched === nat.readingsFetched) return;
+      if (!fresh || !fresh.level || (!fallback && fresh.fetched === nat.readingsFetched)) return;
       nat.readings = fresh;
       nat.readingsFetched = fresh.fetched;
+      if (fallback) {
+        nat.readingsSource = 'runtime';
+        if (status.national) Object.assign(status.national, { readingsSource: 'runtime', readingsFetched: fresh.fetched, levelReadings: Object.keys(fresh.level || {}).length });
+        say('Live readings are in now (they were slow to arrive).');
+      }
       if (fresh.warnings && fresh.warnings.ok) nat.warnings = fresh.warnings;
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
       renderWarnings();
@@ -5029,6 +5037,12 @@ import { classifyDemGaps } from './dem-voids.js';
     } catch (e) { /* next time */ }
   }
   setInterval(refreshLiveReadings, 15 * 60 * 1000);
+  // after a slow first try: again shortly, not in 15 minutes
+  const liveRetry = setInterval(() => {
+    if (!nat.readings) return;
+    if (DATA_SOURCE !== 'runtime' || nat.readingsSource === 'runtime') { clearInterval(liveRetry); return; }
+    refreshLiveReadings();
+  }, 45 * 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLiveReadings(); });
   window.__floodRefreshLive = refreshLiveReadings;
   window.__floodOpenWatch = (i) => openWatchItem(((nat.readings && nat.readings.watch) || [])[i || 0]);
@@ -7031,6 +7045,9 @@ import { classifyDemGaps } from './dem-voids.js';
     return `${base}?service=WCS&version=1.0.0&request=GetCoverage&coverage=1&crs=${crs || 'EPSG:4326'}`
       + `&bbox=${w.toFixed(6)},${s.toFixed(6)},${e.toFixed(6)},${n.toFixed(6)}&width=${W}&height=${H}&format=${fmt || 'GeoTIFF'}`;
   };
+  // one try at GA's elevation services gives up after this (a stalled
+  // request otherwise leaves "Downloading elevation…" up for good)
+  const RASTER_TIMEOUT_MS = 45000;
   async function fetchRaster(base, box, W, H, url0) {
     const url = url0 || wcsUrl(base, box, W, H);
     // GA's service occasionally drops a request (its error replies carry no
@@ -7038,7 +7055,7 @@ import { classifyDemGaps } from './dem-voids.js';
     let r = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await new Promise((ok) => setTimeout(ok, 1500 * attempt));
-      try { r = await fetch(url); } catch (err) { r = null; if (attempt === 2) throw new Error('the elevation service could not be reached; try again shortly', { cause: err }); continue; }
+      try { r = await fetch(url, { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw new Error(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', { cause: err }); continue; }
       if (r.ok || r.status < 500) break;
     }
     if (!r.ok) throw new Error(`the elevation service returned ${r.status}`);
@@ -7177,7 +7194,12 @@ import { classifyDemGaps } from './dem-voids.js';
       let { grid } = got;
       const { bounds } = got;
       let lidarShare = 0;
-      const lid = await lidarP;
+      // the 5 m LiDAR comes from a separate, slower service: wait a little
+      // longer for it, then go ahead with DEM-H
+      setBusy(true, 'Downloading LiDAR elevation for this area…');
+      let lidLate = false;
+      const lid = await Promise.race([lidarP, new Promise((ok) => setTimeout(() => { lidLate = true; ok(null); }, 20000))]);
+      if (lidLate) say('The LiDAR elevation service is slow right now, so this model uses the 30 m elevation (DEM-H).');
       if (lid) {
         const l = mergeLidar(grid, lid);
         lidarShare = l.share;

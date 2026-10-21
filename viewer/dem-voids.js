@@ -56,20 +56,27 @@ export function classifyDemGaps(dem, W, H, shoreMax = SEA_SHORE_MAX_M) {
       filledCells += cells.length;
     }
   }
-  // fill each inland gap ring by ring: a cell takes the mean of its
-  // neighbours that already have heights
-  for (const cells of fill) {
-    let todo = cells;
-    while (todo.length) {
-      const next = [], set = [];
-      for (const i of todo) {
-        let sum = 0, n = 0;
-        nbrs(i, (j) => { if (!Number.isNaN(dem[j]) && !sea[j]) { sum += dem[j]; n++; } });
-        if (n) set.push([i, sum / n]); else next.push(i);
-      }
-      if (!set.length) { for (const i of next) dem[i] = 0; break; }   // nothing to fill from (can't happen for a gap with a shore)
-      for (const [i, v] of set) dem[i] = v;
-      todo = next;
+  // fill each inland gap ring by ring from its edge: a breadth-first walk
+  // from the land gives each cell its ring, and in that order each cell
+  // takes the mean of its neighbours in earlier rings (or land). One pass,
+  // however big the gap.
+  if (fill.length) {
+    const ring = new Int32Array(N).fill(-1);
+    let head = 0, tail = 0;
+    for (const cells of fill) for (const i of cells) {
+      let shore = false;
+      nbrs(i, (j) => { if (!Number.isNaN(dem[j])) shore = true; });
+      if (shore) { ring[i] = 0; queue[tail++] = i; }
+    }
+    while (head < tail) {
+      const i = queue[head++];
+      nbrs(i, (j) => { if (ring[j] < 0 && Number.isNaN(dem[j]) && !sea[j]) { ring[j] = ring[i] + 1; queue[tail++] = j; } });
+    }
+    for (let q = 0; q < tail; q++) {
+      const i = queue[q], ri = ring[i];
+      let sum = 0, n = 0;
+      nbrs(i, (j) => { if (!sea[j] && (ring[j] < 0 ? !Number.isNaN(dem[j]) : ring[j] < ri)) { sum += dem[j]; n++; } });
+      dem[i] = n ? sum / n : 0;
     }
   }
   return { sea, seaCells, filledCells, gaps };

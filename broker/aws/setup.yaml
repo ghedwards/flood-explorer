@@ -94,7 +94,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [s3:GetObject, s3:PutObject]
-                Resource: !Sub "${DataBucket.Arn}/readings.json"
+                Resource: !Sub "${DataBucket.Arn}/readings.json*"   # readings.json and readings.json.gz
               - Effect: Allow
                 Action: s3:ListBucket   # so a missing file is a 404, not a 403
                 Resource: !GetAtt DataBucket.Arn
