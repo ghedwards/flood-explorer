@@ -271,9 +271,9 @@ body.in3d #legendCard { display: none; }
 .class-btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
 .warn-item { display: block; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); margin-bottom: 6px; font-size: 13px; text-decoration: none; }
 .warn-item small { display: block; opacity: .8; }
-button.warn-item { width: 100%; text-align: left; border: 0; font: inherit; font-size: 13px; cursor: pointer; }
-button.warn-item:hover .warn-show, button.warn-item:focus-visible .warn-show { text-decoration: underline; }
-.warn-show { font-weight: 600; }
+.warn-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.warn-actions .btn { text-decoration: none; }
+.watch-actions { margin: 2px 0 6px 34px; }
 .warn-pop strong { display: block; margin-bottom: 2px; }
 .warn-pop small { display: block; opacity: .85; margin-top: 4px; }
 .warn-body { max-height: 180px; overflow-y: auto; margin: 6px 0; font-size: 12.5px; line-height: 1.4; white-space: pre-line; }

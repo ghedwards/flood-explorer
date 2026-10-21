@@ -4934,7 +4934,7 @@ import { classifyDemGaps } from './dem-voids.js';
       <small>${escapeHtml(w.state || '')}${w.severity && w.severity !== 'Unknown' ? ` · ${escapeHtml(w.severity)}` : ''}${w.published ? ` · ${escapeHtml(fmtWarnTime(w.published))}` : ''}</small>
       ${w.description ? `<div class="warn-body">${escapeHtml(w.description)}</div>` : ''}
       ${g.length ? `<small>Gauges on ${shape && shape.from === 'bureau' ? 'this warning' : 'the warned rivers (the area drawn around them)'}: ${names}${g.length > 8 ? ` and ${g.length - 8} more` : ''}</small>` : '<small>No gauges on the map match this warning, so it has no area here.</small>'}
-      ${w.link ? `<small><a href="${escapeHtml(w.link)}" target="_blank" rel="noopener">This warning on the Bureau's website</a></small>` : ''}</div>`;
+      ${w.link ? `<div class="warn-actions"><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</div>`;
   }
   function drawWarningAreas() {
     const L = window.L, lyr = nat.warnLayer;
@@ -4980,7 +4980,8 @@ import { classifyDemGaps } from './dem-voids.js';
     const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnKey);
     if (w) showWarning(w);
   });
-  const warnItemHtml = (x, meta) => `<button type="button" class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}" data-warn-key="${escapeHtml(warnKey(x))}"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${meta} · <span class="warn-show">Show on map</span></small></button>`;
+  const warnItemHtml = (x, meta) => `<div class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${meta}</small>
+    <div class="warn-actions"><button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${x.link ? `<a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.
@@ -5059,7 +5060,7 @@ import { classifyDemGaps } from './dem-voids.js';
     box.innerHTML = `<h3 class="places-sub">Watch list${list.length ? ` (${list.length})` : ''}</h3>
       ${list.length ? `<ul class="watch-list">${shown.map((w, i) => `<li><button type="button" class="watch-item watch-${escapeHtml(w.kind)}" data-watch="${i}">
         <span class="watch-icon" aria-hidden="true">${WATCH_ICON[w.kind] || '•'}</span>
-        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button></li>`).join('')}</ul>`
+        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && w.link ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
       ${typeof Notification !== 'undefined' ? `<p class="hint"><button type="button" class="btn" id="watchNotify">${(() => { try { return localStorage.getItem(WATCH_NOTIFY_KEY) === '1' && Notification.permission === 'granted'; } catch (e) { return false; } })() ? 'Stop notifications' : 'Notify me about new items near my places'}</button><br>While this map is open in a tab, it checks for new items every 15 minutes.</p>` : ''}
       <p class="hint">Updated ${escapeHtml(ago(nat.readingsFetched))}. ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
