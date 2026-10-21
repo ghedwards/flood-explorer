@@ -254,7 +254,26 @@ pub fn run(out_dir: &str, http: HttpJson) -> R<String> {
             coords.insert(st.to_string(), json!([round_to(x, 4), round_to(y, 4)]));
         }
     }
-    write_json(out.join("stations.json"), &json!({"level": lv, "storage": sv, "coords": Value::Object(coords)}))?;
+    // Bureau station numbers and states, so the broker can match the Bureau's
+    // river height pages (keyed by Bureau number, in state local time)
+    let (mut bom, mut state) = (Map::new(), Map::new());
+    for f in &gauges {
+        let pr = &f["properties"];
+        let Some(st) = pr["station"].as_str().filter(|s| !s.is_empty()) else { continue };
+        let b = match &pr["bom"] {
+            Value::Number(n) => n.to_string(),
+            Value::String(x) => x.trim().trim_start_matches('0').to_string(),
+            _ => continue,
+        };
+        if b.is_empty() {
+            continue;
+        }
+        bom.insert(b, json!(st));
+        if let Some(sname) = pr["state"].as_str() {
+            state.insert(st.to_string(), json!(sname));
+        }
+    }
+    write_json(out.join("stations.json"), &json!({"level": lv, "storage": sv, "coords": Value::Object(coords), "bom": Value::Object(bom), "state": Value::Object(state)}))?;
     // about a metre is plenty for map points
     for f in gauges.iter_mut().chain(storages.iter_mut()) {
         if let Some(g) = f.get_mut("geometry") {
@@ -404,6 +423,7 @@ mod tests {
         assert!(st["level"].as_array().unwrap().contains(&json!("143001C")));
         assert_eq!(st["storage"], json!(["143001A"]));
         assert_eq!(st["coords"]["540198"], json!([153.03, -27.47]), "flood network gauges have locations");
+        assert_eq!(st["bom"]["540100"], "143001C", "Bureau number to station");
         let _ = std::fs::remove_dir_all(d);
     }
 

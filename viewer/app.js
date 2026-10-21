@@ -4399,9 +4399,11 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     let html;
     if (r) {
       const live = r.latestKind === 'realtime';
-      html = `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}${live ? ' <span class="live-tag">live</span>' : ''}</span>
+      const bureau = r.latestKind === 'bureau';
+      html = `<div class="reading"><span class="label">${p.kind === 'tide' ? 'Water level' : 'River level'}${live || bureau ? ' <span class="live-tag">live</span>' : ''}</span>
           <div class="big">${r.latest[1].toFixed(2)}<small>m</small></div>
           <span class="hint">${live ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))}, from <a href="https://water-monitoring.information.qld.gov.au/" target="_blank" rel="noopener">Queensland's water monitoring network</a> (© State of Queensland, CC BY 4.0)`
+            : bureau ? `Reading at ${escapeHtml(fmtReadingTime(r.latest[0]))}, from the Bureau's river height pages (checked hourly)`
             : r.latestKind === 'hourly' ? `Hourly average to ${escapeHtml(fmtReadingTime(r.latest[0]))} (Water Data Online runs about a day behind)`
             : `Daily average for ${escapeHtml(fmtDate(r.latest[0]))} (Water Data Online runs about a day behind)`}, on the gauge's own datum.${r.series.length ? ` Daily averages, last ${r.series.length} days:` : ''}</span>
           ${riseHtml(r)}

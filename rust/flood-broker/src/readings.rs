@@ -29,6 +29,9 @@ struct Stations {
     level: HashSet<String>,
     storage: HashSet<String>,
     coords: Vec<(String, f64, f64)>,
+    /// Bureau number -> station, and station -> state
+    bom: std::collections::HashMap<String, String>,
+    state: std::collections::HashMap<String, String>,
 }
 
 pub enum Store {
@@ -123,7 +126,8 @@ impl Readings {
         }
         let mut coords: Vec<(String, f64, f64)> = v["coords"].as_object().map(|o| o.iter().filter_map(|(k, c)| Some((k.clone(), c[0].as_f64()?, c[1].as_f64()?))).collect()).unwrap_or_default();
         coords.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(Stations { level, storage, coords })
+        let map = |k: &str| -> std::collections::HashMap<String, String> { v[k].as_object().map(|o| o.iter().filter_map(|(a, b)| Some((a.clone(), b.as_str()?.to_string()))).collect()).unwrap_or_default() };
+        Ok(Stations { level, storage, coords, bom: map("bom"), state: map("state") })
     }
 
     /// The previous readings' rain or sea part, if it is recent enough.
@@ -243,6 +247,12 @@ impl Readings {
                     }
                 }
             }
+        }
+        // the Bureau's river height levels as the level now where they're newer
+        if !st.bom.is_empty() && r["floodclass"].is_object() {
+            let fc = r["floodclass"].clone();
+            let n = feeds::bureau_levels(&mut r["level"], &fc, &st.bom, &st.state);
+            r["bureauLevels"] = json!(n);
         }
         let t_warn = (self.now)();
         r["watch"] = feeds::watch_list(&r);

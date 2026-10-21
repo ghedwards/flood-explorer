@@ -1104,3 +1104,106 @@ mod class_tests {
         assert_eq!(class_rank("Below Flood Level"), 0);
     }
 }
+
+/* ------------------------------- the Bureau's levels as the level now */
+
+/// UTC offset (seconds) of an Australian state's local time on a date:
+/// daylight saving from the first Sunday in October to the first Sunday in
+/// April in NSW, the ACT, Victoria, Tasmania and South Australia.
+pub fn state_offset_s(state: &str, y: i64, m: i64, d: i64) -> i64 {
+    let st = state.trim().to_uppercase();
+    let st = match st.as_str() {
+        "QUEENSLAND" => "QLD",
+        "NEW SOUTH WALES" => "NSW",
+        "VICTORIA" => "VIC",
+        "TASMANIA" => "TAS",
+        "SOUTH AUSTRALIA" => "SA",
+        "WESTERN AUSTRALIA" => "WA",
+        "NORTHERN TERRITORY" => "NT",
+        "AUSTRALIAN CAPITAL TERRITORY" => "ACT",
+        x => x,
+    };
+    let base = match st {
+        "WA" => 8 * 3600,
+        "NT" | "SA" => 9 * 3600 + 1800,
+        _ => 10 * 3600,
+    };
+    let dst_state = matches!(st, "NSW" | "ACT" | "VIC" | "TAS" | "SA");
+    if !dst_state {
+        return base;
+    }
+    // the first Sunday of a month (1 = Monday ... 7 = Sunday, by Zeller-ish day count)
+    let weekday = |y: i64, m: i64, d: i64| -> i64 {
+        let days = ts_epoch(&format!("{:04}-{:02}-{:02}T00:00:00Z", y, m, d)).unwrap_or(0) / 86400;
+        (days + 3).rem_euclid(7) + 1 // 1970-01-01 was a Thursday (4)
+    };
+    let first_sunday = |y: i64, m: i64| (1..=7).find(|&d| weekday(y, m, d) == 7).unwrap_or(1);
+    let in_dst = (m > 10 || (m == 10 && d >= first_sunday(y, 10))) || (m < 4 || (m == 4 && d < first_sunday(y, 4)));
+    base + if in_dst { 3600 } else { 0 }
+}
+
+/// The Bureau's river height levels (flood_classes) as the level now where
+/// they're newer than the readings': stations maps Bureau number -> station,
+/// states station -> state (for the local time). Returns how many it set.
+pub fn bureau_levels(level: &mut Value, classes: &Value, stations: &HashMap<String, String>, states: &HashMap<String, String>) -> usize {
+    let (Some(lv), Some(fc)) = (level.as_object_mut(), classes.as_object()) else { return 0 };
+    let mut n = 0;
+    for (bom, g) in fc {
+        let (Some(st), Some(v), Some(at)) = (stations.get(bom), g["level"].as_f64(), g["at"].as_str().filter(|a| a.len() >= 16)) else { continue };
+        let (Ok(y), Ok(m), Ok(d)) = (at[0..4].parse::<i64>(), at[5..7].parse::<i64>(), at[8..10].parse::<i64>()) else { continue };
+        let off = state_offset_s(states.get(st).map(String::as_str).unwrap_or("QLD"), y, m, d);
+        let iso = format!("{}{}{:02}:{:02}", &at[..19.min(at.len())], if off < 0 { '-' } else { '+' }, off.abs() / 3600, off.abs() % 3600 / 60);
+        let Some(t) = ts_epoch(&iso) else { continue };
+        match lv.get_mut(st) {
+            Some(e) => {
+                let older = e["latest"][0].as_str().and_then(ts_epoch).is_none_or(|t0| t > t0);
+                if older {
+                    e["latest"] = json!([iso, v]);
+                    e["latestKind"] = json!("bureau");
+                    n += 1;
+                }
+            }
+            None => {
+                lv.insert(st.clone(), json!({"unit": "m", "series": [], "latest": [iso, v], "latestKind": "bureau"}));
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[cfg(test)]
+mod bureau_level_tests {
+    use super::*;
+
+    #[test]
+    fn local_times() {
+        assert_eq!(state_offset_s("QLD", 2026, 10, 21), 36000);
+        assert_eq!(state_offset_s("NSW", 2026, 10, 21), 39600, "daylight saving from 4 October 2026");
+        assert_eq!(state_offset_s("NSW", 2026, 10, 3), 36000, "not yet");
+        assert_eq!(state_offset_s("SA", 2026, 1, 15), 37800);
+        assert_eq!(state_offset_s("Western Australia", 2026, 1, 15), 28800);
+        assert_eq!(state_offset_s("NT", 2026, 1, 15), 34200);
+        assert_eq!(state_offset_s("VIC", 2026, 4, 6), 36000, "ended 5 April 2026");
+    }
+
+    #[test]
+    fn newer_bureau_levels_win() {
+        let mut level = json!({
+            "A": {"latest": ["2026-10-20T00:00:00.000+10:00", 1.0], "latestKind": "daily"},
+            "B": {"latest": ["2026-10-21T09:00:00+10:00", 2.0], "latestKind": "realtime"},
+        });
+        let classes = json!({
+            "100": {"level": 1.5, "at": "2026-10-21T08:00:00"},
+            "200": {"level": 2.1, "at": "2026-10-21T08:00:00"},
+            "300": {"level": 0.4, "at": "2026-10-21T08:00:00"},
+        });
+        let stations: HashMap<String, String> = [("100", "A"), ("200", "B"), ("300", "C")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let states: HashMap<String, String> = [("A", "NSW"), ("B", "QLD"), ("C", "QLD")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        assert_eq!(bureau_levels(&mut level, &classes, &stations, &states), 2);
+        assert_eq!(level["A"]["latest"], json!(["2026-10-21T08:00:00+11:00", 1.5]), "NSW daylight time");
+        assert_eq!(level["A"]["latestKind"], "bureau");
+        assert_eq!(level["B"]["latestKind"], "realtime", "the live Queensland hour is newer");
+        assert_eq!(level["C"]["latest"][1], 0.4, "a gauge with no reading gets one");
+    }
+}
