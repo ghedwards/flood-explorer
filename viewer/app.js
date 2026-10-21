@@ -4907,11 +4907,6 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
     try { for (const st of studies) if (Array.isArray(st.bounds)) out.push({ name: `Study area ${st.letter}`, box: st.bounds }); } catch (e) { /* not set up yet */ }
     return out;
   }
-  function kmBetween(a, b) {
-    const R = 6371, dLat = (b[0] - a[0]) * Math.PI / 180, dLon = (b[1] - a[1]) * Math.PI / 180;
-    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
   function nearMyPlace(w, places) {
     if (w.kind === 'warning') {
       // warnings have no location: near if they name a river one of your gauge reports is on
