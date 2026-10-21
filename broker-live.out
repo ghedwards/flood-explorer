@@ -1,0 +1,417 @@
+{
+ "candidates": 60,
+ "broker": {
+  "status": 200,
+  "ms": 2793,
+  "cors": "http://127.0.0.1:8000",
+  "live": 4,
+  "missing": 56,
+  "stale": false
+ },
+ "brokerCachedMs": 2,
+ "sample": {
+  "station": "130302A",
+  "latest": [
+   "2026-10-21T16:26:47+10:00",
+   0.711
+  ],
+  "points": 29
+ },
+ "reportLive": true,
+ "historyApi": {
+  "points": 0,
+  "last": null
+ },
+ "history": {
+  "status": {
+   "station": "130302A",
+   "points": 0
+  },
+  "points": 0,
+  "chart": false,
+  "caption": null
+ },
+ "reportText": "RIVER LEVEL LIVE 0.71m Hourly average to 21 Oct, 6:26 am (2 h ago), from Queensland's water monitoring network (© State of Queensland, CC BY 4.0), on the gauge's own datum. Daily averages, last 8 days: steady in 3 hours, steady in 24 hours FLOOD CLASSES (BOM) · now below minor Bureau: below flood le",
+ "status": {
+  "station": "130302A",
+  "at": "2026-10-21T16:26:47+10:00",
+  "level": 0.711
+ },
+ "readings": {
+  "status": 200,
+  "cors": "http://127.0.0.1:8000",
+  "fetched": "2026-10-21T08:33:26Z",
+  "levels": 2112,
+  "storages": 260,
+  "realtime": 19,
+  "errors": 0,
+  "errorList": [],
+  "rain": 1316,
+  "rainCells": 458,
+  "sea": 56,
+  "withRise": 1346,
+  "tidal": 15,
+  "floodClasses": 1733,
+  "bureauLevels": 1493,
+  "kinds": {
+   "bureau": 1493,
+   "hourly": 600,
+   "realtime": 19
+  },
+  "inFlood": [
+   [
+    "Nive River at Biddenham",
+    "Moderate",
+    "rising"
+   ],
+   [
+    "Ward River at Binnowee",
+    "Minor",
+    "steady"
+   ],
+   [
+    "Warrego River at The 27 Mile Garden",
+    "Minor",
+    "rising"
+   ],
+   [
+    "Barcoo River at Blackall",
+    "Minor",
+    "steady"
+   ],
+   [
+    "Langlo River at Warilda",
+    "Moderate",
+    "steady"
+   ]
+  ],
+  "warnings": {
+   "ok": true,
+   "capFiles": 13,
+   "list": [
+    [
+     "IDQ20855",
+     "Minor",
+     "Minor Flood Warning for Bulloo River to Quilpie and Bulloo River at Quilpie"
+    ],
+    [
+     "IDQ20860",
+     "Minor",
+     "Minor Flood Warning for Barcoo River to Isisford and Barcoo River at Blackall"
+    ],
+    [
+     "IDQ20845",
+     "Unknown",
+     "Flood Warning for Warrego River to Charleville and Warrego River at Charleville"
+    ]
+   ]
+  },
+  "watch": [
+   [
+    "flood",
+    "44200",
+    [
+     "Moderate flooding now, rising (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "544058",
+    [
+     "Moderate flooding now, steady (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "44230",
+    [
+     "Minor flooding now, steady (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "44232",
+    [
+     "Minor flooding now, rising (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "536003",
+    [
+     "Minor flooding now, steady (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "warning",
+    "IDQ20855",
+    [
+     "Minor flood warning (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "warning",
+    "IDQ20860",
+    [
+     "Minor flood warning (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "warning",
+    "IDQ20845",
+    [
+     "Flood warning (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "river",
+    "422401D",
+    [
+     "up 0.70 m in 3 hours"
+    ]
+   ],
+   [
+    "river",
+    "422326A",
+    [
+     "up 0.70 m in 3 hours"
+    ]
+   ]
+  ],
+  "seaSample": [
+   [
+    "abellpoint",
+    0.164,
+    0.133,
+    0.031
+   ],
+   [
+    "bananabank",
+    0.102,
+    0.008,
+    0.094
+   ],
+   [
+    "birkdale",
+    0.037,
+    -0.021,
+    0.058
+   ],
+   [
+    "boigu",
+    -0.14,
+    -0.104,
+    -0.036
+   ]
+  ]
+ },
+ "mapReadings": {
+  "dataSource": "runtime",
+  "readingsSource": "runtime",
+  "fetched": "2026-10-21T08:33:26Z",
+  "levels": 2112,
+  "warnings": {
+   "ok": true,
+   "count": 3
+  },
+  "sea": {
+   "sites": 56,
+   "fetched": "2026-10-21T08:31:44Z"
+  }
+ },
+ "mapReadingsOverride": "build",
+ "versions": {
+  "status": {
+   "app": "c5f30fcb",
+   "builtAt": "2026-10-21T08:18:28.556Z",
+   "broker": "dev",
+   "brokerError": null,
+   "loadedFrom": "refresh"
+  },
+  "text": "App c5f30fcb, built 15 min ago (8:18 am). Broker dev, readings fetched 1 min ago (8:33 am) (fetched them itself). Readings on this map: live, from the broker."
+ },
+ "warningMap": {
+  "areas": {
+   "warnings": 3,
+   "drawn": 3,
+   "bureauOutlines": 3
+  },
+  "shown": {
+   "id": "IDQ20855",
+   "from": "bureau"
+  },
+  "popup": "Minor Flood Warning for Bulloo River to Quilpie and Bulloo River at Quilpie QLD · Minor · issued Tue, 20 Oct, 11:39 pm Minor flooding is likely along the Bulloo River at Quilpie The Bulloo River at Quilpie is currently at 2.79 m and rising, below the minor flood level. The Bulloo River at Quilpie is"
+ },
+ "warningPeaks": [
+  {
+   "id": "IDQ20855",
+   "peaks": [
+    {
+     "place": "Quilpie",
+     "river": "Bulloo River",
+     "level": 3.4,
+     "kind": "peak",
+     "gauge": "Quilpie (Bulloo River)"
+    }
+   ],
+   "targets": 1
+  },
+  {
+   "id": "IDQ20860",
+   "peaks": [
+    {
+     "place": "Blackall",
+     "river": "Barcoo River",
+     "level": 2.4,
+     "kind": "peak",
+     "gauge": "Blackall (Barcoo River)"
+    }
+   ],
+   "targets": 1
+  },
+  {
+   "id": "IDQ20845",
+   "peaks": [
+    {
+     "place": "Charleville",
+     "river": "Warrego River",
+     "level": 3.7,
+     "kind": "peak",
+     "gauge": "Charleville (Warrego River)"
+    }
+   ],
+   "targets": 1
+  }
+ ],
+ "warningModel": {
+  "warning": "IDQ20855",
+  "gauge": "Quilpie (Bulloo River)",
+  "board": 3.4,
+  "kind": "peak",
+  "level": 197.04,
+  "exact": false,
+  "how": "as 2.37 m above the lowest level recorded in the last 10 days (1.03 m), taken as its normal level"
+ },
+ "warningModelSummary": "Gauge 197.04 m · 38.5 km² newly flooded",
+ "refreshNow": {
+  "button": true,
+  "refreshed": null,
+  "after": {
+   "disabled": true,
+   "text": "Refresh again in 5 min"
+  }
+ },
+ "dataTimes": {
+  "info": "Terrain667 × 667 cells at 30 m. Terrain: Geoscience Australia 1-second (about 30 m) hydrologically enforced elevation model (DEM-H), CC BY 4.0, read live from GA. No LiDAR covers this area.",
+  "live": "Live data (the broker, every 15 minutes): last fetch 1 min ago (8:33 am).Bureau river levels (FTP, hourly) fetched 1 min ago (8:33 am) · 1,493 gauges, newest reading 19 min ago (8:15 am)Queensland live levels fetched 1 min ago (8:33 am) · 19 gauges, newest reading 1 h ago (7:18 am)Water Data Online levels fetched 1 min ago (8:33 am) · 600 gauges, newest reading 24 h ago (Tue, 20 Oct, 9:00 am); daily: 0 gaugesFlood warnings (Bureau) fetched 2 min ago (8:31 am) · 3 currentFlood classes (Bureau) fetched 1 min ago (8:33 am) · 1,733 gaugesRain forecast (Open-Meteo) fetched 2 min ago (8:31 am) · 1,316 gaugesStorm tide (Qld) fetched 2 min ago (8:31 am) · 56 gaugesSite buildBuilt 21 Oct 2026, 7:59 a"
+ },
+ "watchPanel": {
+  "list": [
+   [
+    "flood",
+    "44200",
+    [
+     "Moderate flooding now, rising (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "544058",
+    [
+     "Moderate flooding now, steady (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "44230",
+    [
+     "Minor flooding now, steady (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "44232",
+    [
+     "Minor flooding now, rising (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "flood",
+    "536003",
+    [
+     "Minor flooding now, steady (Bureau of Meteorology)"
+    ]
+   ],
+   [
+    "warning",
+    "IDQ20855",
+    [
+     "Minor flood warning (Bureau of Meteorology)"
+    ]
+   ]
+  ],
+  "shown": true,
+  "items": 32,
+  "near": [
+   "Near 1. Quilpie (Bulloo River)"
+  ]
+ },
+ "watchOpened": "1Flood forecast gaugeQuilpie (Bulloo River)×BasinBulloo RiverStation011203AOperated byDepartment of Regional Development, Manufacturing and WaterStateQLDLocation-26.6167, 144.2833River level live 2.97m Reading at 21 Oct, 7:00 am (2 h ago), from the Bureau's river height pages (checked hourly), on the gauge's own datum. Daily averages, last 8 days: up 0.07 m in 3 hours, up 0.58 m in 24 hours Rain f",
+ "watchNear": [
+  "Near 1. Quilpie (Bulloo River)"
+ ],
+ "secondVisit": {
+  "loadedMs": 366,
+  "put": "ok",
+  "saved": {
+   "fetched": "2026-10-21T08:33:26Z",
+   "own": true
+  },
+  "check": null,
+  "source": "runtime",
+  "then": "same"
+ },
+ "sizes": {
+  "readingsGz": 176025,
+  "nowGz": 125674,
+  "seriesOne": 396
+ },
+ "health": {
+  "ok": true,
+  "version": "dev",
+  "readings": {
+   "fetched": "2026-10-21T08:33:26Z",
+   "loadedFrom": "refresh",
+   "bytes": 1369516,
+   "gzBytes": 176025
+  },
+  "uptimeS": 934,
+  "cachedSites": 4,
+  "openStations": 399,
+  "requests": 166,
+  "upstreamCalls": 2,
+  "upstreamErrors": 0,
+  "lastError": null
+ },
+ "errors": [
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+ ]
+}
+::notice title=broker readings::{"status":200,"cors":"http://127.0.0.1:8000","fetched":"2026-10-21T08:33:26Z","levels":2112,"storages":260,"realtime":19,"errors":0,"errorList":[],"rain":1316,"rainCells":458,"sea":56,"withRise":1346,"tidal":15,"floodClasses":1733,"bureauLevels":1493,"kinds":{"bureau":1493,"hourly":600,"realtime":19},"inFlood":[["Nive River at Biddenham","Moderate","rising"],["Ward River at Binnowee","Minor","steady"],["Warrego River at The 27 Mile Garden","Minor","rising"],["Barcoo River at Blackall","Minor","steady"],["Langlo River at Warilda","Moderate","steady"]],"warnings":{"ok":true,"capFiles":13,"list":[["IDQ20855","Minor","Minor Flood Warning for Bulloo River to Quilpie and Bulloo River at Quilpie"],["IDQ20860","Minor","Minor Flood Warning for Barcoo River to Isisford and Barcoo River at Blackall"],["IDQ20845","Unknown","Flood Warning for Warrego River to Charleville and Warrego River at Charlevi
+::notice title=broker watch list::[["flood","44200",["Moderate flooding now, rising (Bureau of Meteorology)"]],["flood","544058",["Moderate flooding now, steady (Bureau of Meteorology)"]],["flood","44230",["Minor flooding now, steady (Bureau of Meteorology)"]],["flood","44232",["Minor flooding now, rising (Bureau of Meteorology)"]],["flood","536003",["Minor flooding now, steady (Bureau of Meteorology)"]],["warning","IDQ20855",["Minor flood warning (Bureau of Meteorology)"]],["warning","IDQ20860",["Minor flood warning (Bureau of Meteorology)"]],["warning","IDQ20845",["Flood warning (Bureau of Meteorology)"]],["river","422401D",["up 0.70 m in 3 hours"]],["river","422326A",["up 0.70 m in 3 hours"]]]
+::notice title=map watch panel::{"list":[["flood","44200",["Moderate flooding now, rising (Bureau of Meteorology)"]],["flood","544058",["Moderate flooding now, steady (Bureau of Meteorology)"]],["flood","44230",["Minor flooding now, steady (Bureau of Meteorology)"]],["flood","44232",["Minor flooding now, rising (Bureau of Meteorology)"]],["flood","536003",["Minor flooding now, steady (Bureau of Meteorology)"]],["warning","IDQ20855",["Minor flood warning (Bureau of Meteorology)"]]],"shown":true,"items":32,"near":["Near 1. Quilpie (Bulloo River)"]}
+::notice title=watch item opened::"1Flood forecast gaugeQuilpie (Bulloo River)×BasinBulloo RiverStation011203AOperated byDepartment of Regional Development, Manufacturing and WaterStateQLDLocation-26.6167, 144.2833River level live 2.97m Reading at 21 Oct, 7:00 am (2 h ago), from the Bureau's river height pages (checked hourly), on the gauge's own datum. Daily averages, last 8 days: up 0.07 m in 3 hours, up 0.58 m in 24 hours Rain f"
+::notice title=watch near your places::["Near 1. Quilpie (Bulloo River)"]
+::notice title=versions::{"status":{"app":"c5f30fcb","builtAt":"2026-10-21T08:18:28.556Z","broker":"dev","brokerError":null,"loadedFrom":"refresh"},"text":"App c5f30fcb, built 15 min ago (8:18 am). Broker dev, readings fetched 1 min ago (8:33 am) (fetched them itself). Readings on this map: live, from the broker."}
+::notice title=refresh now::{"button":true,"refreshed":null,"after":{"disabled":true,"text":"Refresh again in 5 min"}}
+::notice title=second visit::{"loadedMs":366,"put":"ok","saved":{"fetched":"2026-10-21T08:33:26Z","own":true},"check":null,"source":"runtime","then":"same"}
+::notice title=data times::{"info":"Terrain667 × 667 cells at 30 m. Terrain: Geoscience Australia 1-second (about 30 m) hydrologically enforced elevation model (DEM-H), CC BY 4.0, read live from GA. No LiDAR covers this area.","live":"Live data (the broker, every 15 minutes): last fetch 1 min ago (8:33 am).Bureau river levels (FTP, hourly) fetched 1 min ago (8:33 am) · 1,493 gauges, newest reading 19 min ago (8:15 am)Queensland live levels fetched 1 min ago (8:33 am) · 19 gauges, newest reading 1 h ago (7:18 am)Water Data Online levels fetched 1 min ago (8:33 am) · 600 gauges, newest reading 24 h ago (Tue, 20 Oct, 9:00 am); daily: 0 gaugesFlood warnings (Bureau) fetched 2 min ago (8:31 am) · 3 currentFlood classes (Bureau) fetched 1 min ago (8:33 am) · 1,733 gaugesRain forecast (Open-Meteo) fetched 2 min ago (8:31 am) · 1,316 gaugesStorm tide (Qld) fetched 2 min ago (8:31 am) · 56 gaugesSite buildBuilt 21 Oct 2026
+::notice title=download sizes::{"readingsGz":176025,"nowGz":125674,"seriesOne":396}
+::notice title=hourly record::{"report":{"status":{"station":"130302A","points":0},"points":0,"chart":false,"caption":null},"api":{"points":0,"last":null}}
+::notice title=warning on the map::{"areas":{"warnings":3,"drawn":3,"bureauOutlines":3},"shown":{"id":"IDQ20855","from":"bureau"},"popup":"Minor Flood Warning for Bulloo River to Quilpie and Bulloo River at Quilpie QLD · Minor · issued Tue, 20 Oct, 11:39 pm Minor flooding is likely along the Bulloo River at Quilpie The Bulloo River at Quilpie is currently at 2.79 m and rising, below the minor flood level. The Bulloo River at Quilpie is"}
+::notice title=warning peaks::[{"id":"IDQ20855","peaks":[{"place":"Quilpie","river":"Bulloo River","level":3.4,"kind":"peak","gauge":"Quilpie (Bulloo River)"}],"targets":1},{"id":"IDQ20860","peaks":[{"place":"Blackall","river":"Barcoo River","level":2.4,"kind":"peak","gauge":"Blackall (Barcoo River)"}],"targets":1},{"id":"IDQ20845","peaks":[{"place":"Charleville","river":"Warrego River","level":3.7,"kind":"peak","gauge":"Charleville (Warrego River)"}],"targets":1}]
+::notice title=warning peak model::{"model":{"warning":"IDQ20855","gauge":"Quilpie (Bulloo River)","board":3.4,"kind":"peak","level":197.04,"exact":false,"how":"as 2.37 m above the lowest level recorded in the last 10 days (1.03 m), taken as its normal level"},"summary":"Gauge 197.04 m · 38.5 km² newly flooded"}

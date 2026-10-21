@@ -1,0 +1,2 @@
+flood-broker listening on http://127.0.0.1:8787 (16 workers, origins http://127.0.0.1:8000)
+readings refreshed: {"levels":2112,"storages":260,"liveQueensland":19,"rainGauges":1316,"seaGauges":56,"watch":29,"errors":0,"gzStored":null,"version":"dev","history":{"added":5166,"sites":2112,"hours":5166,"storedBytes":null},"seconds":906,"warnings":3,"floodClasses":1733,"stageSeconds":{"readings":705,"rain":87,"sea":10,"warnings":101}}

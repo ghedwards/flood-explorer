@@ -1,0 +1,28 @@
+[
+ {
+  "browser": "chromium",
+  "before": {
+   "total": 30,
+   "loaded": 30
+  },
+  "poisoned": 30,
+  "after": {
+   "total": 30,
+   "loaded": 30
+  },
+  "ok": true
+ },
+ {
+  "browser": "firefox",
+  "before": {
+   "total": 30,
+   "loaded": 30
+  },
+  "poisoned": 30,
+  "after": {
+   "total": 30,
+   "loaded": 30
+  },
+  "ok": true
+ }
+]

@@ -1,0 +1,312 @@
+{
+ "gympie": {
+  "summary": "Gauge 40.00 m · 1.2 km² newly flooded",
+  "lidarShare": 0.98,
+  "lidarDropped": 6336,
+  "pathGround": {
+   "min": 32.6,
+   "max": 40.6
+  },
+  "bedHeldAbove": {
+   "median": 0.38,
+   "p90": 1.97
+  },
+  "gaugeGround": 37,
+  "cell": 20,
+  "end": "edge",
+  "pathKm": 11.6,
+  "normalDepthOnChannel": {
+   "median": 0.15,
+   "p90": 2.2,
+   "max": 3.82
+  },
+  "kmDeeperThan2m": 1.5,
+  "kmDeeperThan5m": 0,
+  "kmDry": 5.5,
+  "floodMaxOnChannel": 6.54,
+  "normalWetKm2": {
+   "channel": 0.05,
+   "offChannel": 0.12
+  },
+  "sec": 10
+ },
+ "lismore": {
+  "summary": "Gauge 4.45 m · 9.2 km² newly flooded",
+  "lidarShare": 0.96,
+  "lidarDropped": 42825,
+  "pathGround": {
+   "min": -0.2,
+   "max": 2.7
+  },
+  "bedHeldAbove": {
+   "median": 0.75,
+   "p90": 1.81
+  },
+  "gaugeGround": 1.5,
+  "cell": 20,
+  "end": "edge",
+  "pathKm": 15,
+  "normalDepthOnChannel": {
+   "median": 0.57,
+   "p90": 1.62,
+   "max": 1.94
+  },
+  "kmDeeperThan2m": 0,
+  "kmDeeperThan5m": 0,
+  "kmDry": 3.8,
+  "floodMaxOnChannel": 4.63,
+  "normalWetKm2": {
+   "channel": 0.35,
+   "offChannel": 1.13
+  },
+  "sec": 6
+ },
+ "grantham": {
+  "summary": "Gauge 90.55 m · 0.2 km² newly flooded",
+  "lidarShare": 0.93,
+  "lidarDropped": 40584,
+  "pathGround": {
+   "min": 84.8,
+   "max": 88.2
+  },
+  "bedHeldAbove": {
+   "median": 0,
+   "p90": 0.43
+  },
+  "gaugeGround": 87.5,
+  "cell": 20,
+  "end": "edge",
+  "pathKm": 3.1,
+  "normalDepthOnChannel": {
+   "median": 0.3,
+   "p90": 0.73,
+   "max": 1.16
+  },
+  "kmDeeperThan2m": 0,
+  "kmDeeperThan5m": 0,
+  "kmDry": 0.9,
+  "floodMaxOnChannel": 3.88,
+  "normalWetKm2": {
+   "channel": 0.01,
+   "offChannel": 0
+  },
+  "sec": 6
+ },
+ "ipswich": {
+  "summary": "Gauge 2.80 m · 2.2 km² newly flooded",
+  "lidarShare": 1,
+  "lidarDropped": 3703,
+  "pathGround": {
+   "min": -0.9,
+   "max": 1.4
+  },
+  "bedHeldAbove": {
+   "median": 0.29,
+   "p90": 0.85
+  },
+  "gaugeGround": -0.2,
+  "cell": 20,
+  "end": "sea",
+  "pathKm": 14.5,
+  "normalDepthOnChannel": {
+   "median": -0.19,
+   "p90": 0.84,
+   "max": 0.98
+  },
+  "kmDeeperThan2m": 0,
+  "kmDeeperThan5m": 0,
+  "kmDry": 8.8,
+  "floodMaxOnChannel": 3.06,
+  "normalWetKm2": {
+   "channel": 0.33,
+   "offChannel": 1.22
+  },
+  "sec": 6
+ },
+ "maitland": {
+  "summary": "Gauge 7.20 m · 34.8 km² newly flooded",
+  "lidarShare": 0.14,
+  "lidarDropped": 2763,
+  "pathGround": {
+   "min": -1.4,
+   "max": 6.5
+  },
+  "bedHeldAbove": {
+   "median": 0,
+   "p90": 0
+  },
+  "gaugeGround": 4.2,
+  "cell": 30,
+  "end": "sea",
+  "pathKm": 12.2,
+  "normalDepthOnChannel": {
+   "median": 1.42,
+   "p90": 1.42,
+   "max": 2.24
+  },
+  "kmDeeperThan2m": 0.1,
+  "kmDeeperThan5m": 0,
+  "kmDry": 1.4,
+  "floodMaxOnChannel": 4.63,
+  "normalWetKm2": {
+   "channel": 0.74,
+   "offChannel": 4.94
+  },
+  "sec": 5
+ },
+ "rockhampton": {
+  "summary": "Gauge 3.05 m · 48.9 km² newly flooded",
+  "lidarShare": 1,
+  "lidarDropped": 0,
+  "pathGround": {
+   "min": 0,
+   "max": 0.2
+  },
+  "bedHeldAbove": {
+   "median": 0.06,
+   "p90": 0.11
+  },
+  "gaugeGround": 0,
+  "cell": 20,
+  "end": "sea",
+  "pathKm": 6.4,
+  "normalDepthOnChannel": {
+   "median": 0.27,
+   "p90": 0.32,
+   "max": 0.33
+  },
+  "kmDeeperThan2m": 0,
+  "kmDeeperThan5m": 0,
+  "kmDry": 0,
+  "floodMaxOnChannel": 3.02,
+  "normalWetKm2": {
+   "channel": 0.43,
+   "offChannel": 3.81
+  },
+  "sec": 6
+ },
+ "launceston": {
+  "summary": "Gauge 105.40 m · 13.0 km² newly flooded",
+  "lidarShare": 0.71,
+  "lidarDropped": 154776,
+  "pathGround": {
+   "min": -1.4,
+   "max": 101.5
+  },
+  "bedHeldAbove": {
+   "median": 0,
+   "p90": 0.08
+  },
+  "gaugeGround": 102.4,
+  "cell": 20,
+  "end": "sea",
+  "pathKm": 5.7,
+  "normalDepthOnChannel": {
+   "median": 0.3,
+   "p90": 0.45,
+   "max": 2.79
+  },
+  "kmDeeperThan2m": 0,
+  "kmDeeperThan5m": 0,
+  "kmDry": 0.2,
+  "floodMaxOnChannel": 4.68,
+  "normalWetKm2": {
+   "channel": 0.09,
+   "offChannel": 0.58
+  },
+  "sec": 6
+ },
+ "wagga": {
+  "summary": "Gauge 174.40 m · 3.5 km² newly flooded",
+  "lidarShare": 0.8,
+  "lidarDropped": 106940,
+  "pathGround": {
+   "min": 166.7,
+   "max": 173.7
+  },
+  "bedHeldAbove": {
+   "median": 0.78,
+   "p90": 2.18
+  },
+  "gaugeGround": 171.4,
+  "cell": 20,
+  "end": "edge",
+  "pathKm": 21.9,
+  "normalDepthOnChannel": {
+   "median": 0.78,
+   "p90": 2.17,
+   "max": 3.1
+  },
+  "kmDeeperThan2m": 2.9,
+  "kmDeeperThan5m": 0,
+  "kmDry": 6.9,
+  "floodMaxOnChannel": 5.8,
+  "normalWetKm2": {
+   "channel": 0.4,
+   "offChannel": 1.48
+  },
+  "sec": 6
+ },
+ "gundagai": {
+  "summary": "Gauge 215.90 m · 8.6 km² newly flooded",
+  "lidarShare": 0.4,
+  "lidarDropped": 188192,
+  "pathGround": {
+   "min": 204.2,
+   "max": 213
+  },
+  "bedHeldAbove": {
+   "median": 0.1,
+   "p90": 1.26
+  },
+  "gaugeGround": 212.9,
+  "cell": 20,
+  "end": "edge",
+  "pathKm": 11.5,
+  "normalDepthOnChannel": {
+   "median": 0.4,
+   "p90": 1.56,
+   "max": 2.69
+  },
+  "kmDeeperThan2m": 0.3,
+  "kmDeeperThan5m": 0,
+  "kmDry": 2.4,
+  "floodMaxOnChannel": 5.41,
+  "normalWetKm2": {
+   "channel": 0.48,
+   "offChannel": 1.64
+  },
+  "sec": 6
+ },
+ "katherine": {
+  "summary": "Gauge 99.75 m · 3.7 km² newly flooded",
+  "lidarShare": 0,
+  "lidarDropped": 0,
+  "pathGround": {
+   "min": 90.2,
+   "max": 96.8
+  },
+  "bedHeldAbove": {
+   "median": 0,
+   "p90": 0
+  },
+  "gaugeGround": 96.8,
+  "cell": 30,
+  "end": "edge",
+  "pathKm": 13.5,
+  "normalDepthOnChannel": {
+   "median": 0.3,
+   "p90": 0.3,
+   "max": 0.32
+  },
+  "kmDeeperThan2m": 0,
+  "kmDeeperThan5m": 0,
+  "kmDry": 0,
+  "floodMaxOnChannel": 3.01,
+  "normalWetKm2": {
+   "channel": 0.16,
+   "offChannel": 0.03
+  },
+  "sec": 5
+ }
+}

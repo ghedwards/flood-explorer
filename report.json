@@ -1,0 +1,312 @@
+{
+ "url": "http://127.0.0.1:8000/",
+ "place": "rockhampton",
+ "steps": [
+  {
+   "name": "zoom-se-qld-6",
+   "ok": true,
+   "ms": 3015
+  },
+  {
+   "name": "zoom-qld",
+   "ok": true,
+   "ms": 5014
+  },
+  {
+   "name": "model",
+   "ok": true,
+   "ms": 9053
+  },
+  {
+   "name": "places-help-fold",
+   "ok": true,
+   "ms": 541
+  },
+  {
+   "name": "zoom-in",
+   "ok": true,
+   "ms": 5016
+  },
+  {
+   "name": "zoom-16",
+   "ok": true,
+   "ms": 4023
+  },
+  {
+   "name": "key-collapsed",
+   "ok": true,
+   "ms": 1017
+  },
+  {
+   "name": "key-expanded",
+   "ok": true,
+   "ms": 29
+  },
+  {
+   "name": "hazard",
+   "ok": true,
+   "ms": 2540
+  },
+  {
+   "name": "depth-back",
+   "ok": true,
+   "ms": 13
+  },
+  {
+   "name": "high-flood",
+   "ok": true,
+   "ms": 5097
+  },
+  {
+   "name": "impact-roads",
+   "ok": true,
+   "ms": 9807
+  },
+  {
+   "name": "busy-button",
+   "ok": true,
+   "ms": 854
+  },
+  {
+   "name": "roads-off",
+   "ok": true,
+   "ms": 2548
+  },
+  {
+   "name": "06b-big-flood-z16",
+   "ok": true,
+   "ms": 9014
+  },
+  {
+   "name": "06c-big-flood-z15",
+   "ok": true,
+   "ms": 9026
+  },
+  {
+   "name": "big-flood-hazard-z15",
+   "ok": true,
+   "ms": 6055
+  },
+  {
+   "name": "depth-again",
+   "ok": true,
+   "ms": 21
+  },
+  {
+   "name": "back-out",
+   "ok": true,
+   "ms": 3013
+  },
+  {
+   "name": "basemap-street",
+   "ok": true,
+   "ms": 4020
+  },
+  {
+   "name": "study",
+   "ok": true,
+   "ms": 9217
+  },
+  {
+   "name": "problems-log",
+   "ok": true,
+   "ms": 2241
+  },
+  {
+   "name": "phone-model",
+   "ok": true,
+   "ms": 7765
+  },
+  {
+   "name": "phone-map",
+   "ok": true,
+   "ms": 1539
+  },
+  {
+   "name": "phone-sheet",
+   "ok": true,
+   "ms": 2541
+  }
+ ],
+ "errors": [
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  "Error: shots2d test problem",
+  "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+ ],
+ "http": [
+  "503 http://127.0.0.1:8787/v1/now",
+  "503 http://127.0.0.1:8787/v1/now",
+  "503 http://127.0.0.1:8787/v1/now",
+  "503 http://127.0.0.1:8787/v1/now",
+  "503 http://127.0.0.1:8787/v1/now"
+ ],
+ "dotClusters": 103,
+ "dotClusters6": 167,
+ "fine_z16": {
+  "W": 899,
+  "H": 619,
+  "lidar": 1,
+  "ms": 419,
+  "worker": true,
+  "fetchMs": 352,
+  "prepMs": 15,
+  "computeMs": 49,
+  "drawMs": 2
+ },
+ "layerStateStart": {
+  "Flooded (red) and cut-off (orange) roads": {
+   "kind": "loading",
+   "text": "Fetching roads and buildings for this model…"
+  }
+ },
+ "impactWallMs": 4713,
+ "impact": {
+  "buildings": 4741,
+  "bWet": 892,
+  "overFloor": 842,
+  "workWet": 40,
+  "workers": 8221,
+  "isolated": 1757,
+  "damage": 207958597,
+  "people": 8380,
+  "peopleIsolated": 8172,
+  "cutKm": 173.7,
+  "sites": 97,
+  "sitesHit": 11,
+  "source": "copy:rockhampton"
+ },
+ "layerState9": {
+  "Flooded (red) and cut-off (orange) roads": {
+   "kind": "done",
+   "text": "173.7 km of road under water (red); 1,757 dry buildings cut off (orange)"
+  }
+ },
+ "impactTiming9": {
+  "loadMs": 4600,
+  "sweepMs": 87,
+  "buildings": 4741,
+  "roads": 3430,
+  "drawMs": 10.1,
+  "cutSegs": 3820,
+  "islandSegs": 3196
+ },
+ "levelChangeWallMs": 2548,
+ "impactTiming7": {
+  "loadMs": 4600,
+  "sweepMs": 109,
+  "buildings": 4741,
+  "roads": 3430,
+  "drawMs": 5.7,
+  "cutSegs": 2156,
+  "islandSegs": 4029
+ },
+ "impact7": {
+  "buildings": 4741,
+  "bWet": 317,
+  "overFloor": 303,
+  "workWet": 1,
+  "workers": 829,
+  "isolated": 2181,
+  "damage": 66582310,
+  "people": 3148,
+  "peopleIsolated": 9475,
+  "cutKm": 109.7,
+  "sites": 97,
+  "sitesHit": 2,
+  "source": "copy:rockhampton"
+ },
+ "busyDuring": {
+  "busy": "true",
+  "disabled": true,
+  "text": "Searching recorded floods…"
+ },
+ "busyAfter": {
+  "busy": null,
+  "disabled": false,
+  "text": "Find recorded floods here"
+ },
+ "fine_06b-big-flood-z16": {
+  "W": 899,
+  "H": 619,
+  "lidar": 1,
+  "ms": 77,
+  "worker": true,
+  "fetchMs": 0,
+  "prepMs": 13,
+  "computeMs": 62,
+  "drawMs": 2
+ },
+ "fine_06c-big-flood-z15": {
+  "W": 1635,
+  "H": 1062,
+  "lidar": 1,
+  "ms": 943,
+  "worker": true,
+  "fetchMs": 779,
+  "prepMs": 20,
+  "computeMs": 139,
+  "drawMs": 5
+ },
+ "fine_hazard": {
+  "W": 1635,
+  "H": 1062,
+  "lidar": 1,
+  "ms": 170,
+  "worker": true,
+  "fetchMs": 0,
+  "prepMs": 11,
+  "computeMs": 159,
+  "drawMs": 1
+ },
+ "studyProgress": "Study area A: building flood model 1 of 4 (20 km)…",
+ "study": {
+  "ok": true,
+  "km": 20,
+  "tiles": 4,
+  "models": 1,
+  "reports": 13,
+  "gauges": 13,
+  "dams": 0,
+  "layers": [
+   "NSW flood planning areas (state)"
+  ],
+  "stopped": true
+ },
+ "studies": [
+  {
+   "letter": "A",
+   "name": "Around Browns Ck Pump Station (Lismore) (Browns Creek)",
+   "bounds": [
+    -28.95,
+    153.1,
+    -28.65,
+    153.45
+   ],
+   "loaded": true,
+   "summary": {
+    "gauges": 13,
+    "dams": 0,
+    "models": 1,
+    "km": 20,
+    "stopped": true
+   }
+  }
+ ],
+ "studyPlaces": {
+  "topRows": 1,
+  "studyRows": 1,
+  "toggle": "Show its 13 places"
+ },
+ "studyMembersShown": 13,
+ "problems": {
+  "list": [
+   "error: Uncaught Error: shots2d test problem"
+  ],
+  "badge": "1",
+  "report": "Flood Explorer problems log: build c5f30fcb (2026-10-21 08:18 UTC), broker dev, readings from build, Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.8078.4 Safari/537.36, copied 2026-10-21 08:20:36 UTC\n1. 2026-10-21 08:20:35 UTC · error · build c5f30fcb · place: Lismore (Wilsons River) · zoom 12.6\n   Uncaught Error: shots2d test problem\n   Error: shots2d test problem\n       at eval (eval at evaluate (:370:30), <anonymous>:1:34)"
+ },
+ "problemsBadgeAfterOpen": true
+}

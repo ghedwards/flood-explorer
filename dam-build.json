@@ -1,0 +1,41 @@
+{
+ "url": "http://127.0.0.1:8000/",
+ "steps": [],
+ "at26": {
+  "summary": "Gauge 26.00 m · 34.1 km² newly flooded",
+  "level": "26",
+  "dam": {
+   "lake": 20.35243797302246,
+   "crest": [
+    -27.257904829,
+    152.953151705
+   ],
+   "below": [
+    -27.257904829,
+    152.953353775
+   ],
+   "belowGround": 14.128484725952148,
+   "pathCells": 459
+  }
+ },
+ "tap26": "Ground 5.8 m · dry",
+ "minLevel": "18",
+ "atMin": {
+  "summary": "Gauge 18.00 m · 19.0 km² newly flooded",
+  "level": "18",
+  "dam": {
+   "lake": 20.35243797302246,
+   "crest": [
+    -27.257904829,
+    152.953151705
+   ],
+   "below": [
+    -27.257904829,
+    152.953353775
+   ],
+   "belowGround": 14.128484725952148,
+   "pathCells": 459
+  }
+ },
+ "tapMin": "Ground 5.8 m · dry"
+}

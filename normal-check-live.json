@@ -1,0 +1,174 @@
+{
+ "portOfficeGauge": {
+  "agency": "Brisbane City Council",
+  "basin": "Brisbane River",
+  "bom": 540684,
+  "id": "540684",
+  "kind": "tide",
+  "name": "Brisbane Port Office (Brisbane River)",
+  "state": "QLD",
+  "station": "143712A",
+  "types": "water level gauge;tide gauge;"
+ },
+ "port-office": {
+  "summary": "Gauge 0.50 m · 31.2 km² newly flooded",
+  "area": "local",
+  "cell": 20,
+  "gauge": {
+   "ground": 0,
+   "normalLevel": 0.3
+  },
+  "km2": {
+   "channel": 0.24,
+   "seenOften": 1.78,
+   "seenSometimes": 0.34,
+   "rarely": 0.4,
+   "never": 0,
+   "noData": 0.11
+  },
+  "neverSeenDeeperThan1m": 0,
+  "lowGroundKm2": 12.46,
+  "satellite": "used",
+  "drainageLinesKm": {
+   "drawn": 4.3,
+   "notDrawn": 168.5
+  },
+  "streamThr": 63,
+  "bay": 1.5,
+  "normalWater": {
+   "satellite": "loaded",
+   "lowGroundKm2": 12.46
+  },
+  "atNormal": "Gauge 0.30 m · 25.8 km² newly flooded"
+ },
+ "areaOptions": [
+  [
+   "brisbane",
+   "Lower Brisbane River"
+  ]
+ ],
+ "brisbane-area": {
+  "summary": "Australia · tap a gauge, dam or tide gauge, or tap anywhere to model flooding",
+  "area": "brisbane",
+  "cell": 40,
+  "gauge": {
+   "ground": 22.93,
+   "normalLevel": 0.5
+  },
+  "km2": {
+   "channel": 1.24,
+   "seenOften": 3.19,
+   "seenSometimes": 0.62,
+   "rarely": 0.51,
+   "never": 0,
+   "noData": 0.17
+  },
+  "neverSeenDeeperThan1m": 0,
+  "lowGroundKm2": 14.72,
+  "satellite": "used",
+  "drainageLinesKm": {
+   "drawn": 63.8,
+   "notDrawn": 607.6
+  },
+  "streamThr": 57,
+  "bay": 1,
+  "normalWater": {
+   "satellite": "loaded",
+   "lowGroundKm2": 14.72
+  },
+  "atNormal": "Gauge 0.50 m · 1.0 km² newly flooded"
+ },
+ "maitland": {
+  "summary": "Gauge 7.20 m · 34.8 km² newly flooded",
+  "area": "local",
+  "cell": 30,
+  "gauge": {
+   "ground": 4.21,
+   "normalLevel": 4.51
+  },
+  "km2": {
+   "channel": 0.74,
+   "seenOften": 2.31,
+   "seenSometimes": 0.86,
+   "rarely": 1.77,
+   "never": 0,
+   "noData": 0
+  },
+  "neverSeenDeeperThan1m": 0,
+  "lowGroundKm2": 8.02,
+  "satellite": "used",
+  "drainageLinesKm": {
+   "drawn": 22.6,
+   "notDrawn": 155.3
+  },
+  "streamThr": 63,
+  "bay": 1,
+  "normalWater": {
+   "satellite": "loaded",
+   "lowGroundKm2": 8.02
+  },
+  "atNormal": "Gauge 4.51 m · 18.5 km² newly flooded"
+ },
+ "rockhampton": {
+  "summary": "Gauge 3.05 m · 48.9 km² newly flooded",
+  "area": "local",
+  "cell": 20,
+  "gauge": {
+   "ground": 0.03,
+   "normalLevel": 0.33
+  },
+  "km2": {
+   "channel": 0.43,
+   "seenOften": 2.79,
+   "seenSometimes": 0.48,
+   "rarely": 0.54,
+   "never": 0,
+   "noData": 0
+  },
+  "neverSeenDeeperThan1m": 0,
+  "lowGroundKm2": 3.42,
+  "satellite": "used",
+  "drainageLinesKm": {
+   "drawn": 58.1,
+   "notDrawn": 141.8
+  },
+  "streamThr": 63,
+  "bay": 1,
+  "normalWater": {
+   "satellite": "loaded",
+   "lowGroundKm2": 3.42
+  },
+  "atNormal": "Gauge 0.33 m · 1.3 km² newly flooded"
+ },
+ "lismore": {
+  "summary": "Gauge 4.45 m · 9.2 km² newly flooded",
+  "area": "local",
+  "cell": 20,
+  "gauge": {
+   "ground": 1.46,
+   "normalLevel": 1.76
+  },
+  "km2": {
+   "channel": 0.35,
+   "seenOften": 0.73,
+   "seenSometimes": 0.19,
+   "rarely": 0.21,
+   "never": 0,
+   "noData": 0
+  },
+  "neverSeenDeeperThan1m": 0,
+  "lowGroundKm2": 2.96,
+  "satellite": "used",
+  "drainageLinesKm": {
+   "drawn": 9.6,
+   "notDrawn": 208.6
+  },
+  "streamThr": 63,
+  "bay": 1,
+  "normalWater": {
+   "satellite": "loaded",
+   "lowGroundKm2": 2.96
+  },
+  "atNormal": "Gauge 1.76 m · 0.0 km² newly flooded"
+ }
+}
