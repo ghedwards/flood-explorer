@@ -4,7 +4,7 @@ Where Flood Explorer stands, how the live-data side fits together, the
 conventions and traps learned the hard way, and designs for the next pieces
 of work. Written so another agent can pick any item up cold.
 
-## State of play (main at `c5f30fcb`)
+## State of play (main at `7a5d87c0`)
 
 Live at https://ghedwards.github.io/flood-explorer/ with `DATA_SOURCE=runtime`:
 the map's readings come from the broker (Rust, AWS Lambda, Sydney), with the
@@ -53,6 +53,19 @@ Shipped this round:
   use `LIST` sizes and mtimes cached in memory and S3
   (`readings-ftp-index.json.gz`), download only changed or new files, and
   drop entries for files that disappeared.
+- **Observed rainfall** (item 3): `parse_rain_popups` reads the Bureau's
+  `PopupRain` entries off `IDx653xx.html` (1/6/24 h totals per station);
+  `r["rainObs"]`, a "Rain gauges, observed 24h (BoM)" layer coloured by the
+  24 h total, totals in gauge reports, and heavy totals (≥ 100 mm/24 h) on
+  the watch list.
+- **Official road closures** (item 1): `parse_qld_roads` (QLDTraffic events
+  API, flooding) and `parse_nsw_roads` (Live Traffic NSW) fetched every
+  30 minutes by the broker; `r["roads"]`, a "Road closures, flooding
+  (official)" layer with popups, and major/closed closures on the watch
+  list. NSW needs a `NSW_TRAFFIC_API_KEY`.
+- **Build without refetching** (5e): in runtime mode the site build reuses
+  cached readings and warnings as the fallback instead of fetching Water
+  Data Online and the Bureau on every push.
 - **Service worker**: network requests give up after 20 s instead of hanging.
 - **Bureau access**: the broker reads the Bureau only through its FTP server
   and ArcGIS map service, never posing as a browser.
@@ -142,10 +155,19 @@ All new feeds follow the same pattern, so one recipe:
 6. **size**: readings.json is ~2 MB raw (~170 KB gzipped). Keep new feeds
    small: simplify geometry (≈100 m), drop unneeded fields, cap counts.
 
-### 1. Official road closures (recommended next; ~1 day)
+### 1. Official road closures — DONE
 
 Why: the model says which roads a flood would cut; the agencies say which
 are closed now. Side by side they show the situation and check the model.
+
+Shipped (commit `48fcbb23`): `parse_qld_roads` (QLDTraffic events API v2,
+flooding events, the specification's public key unless `QLD_TRAFFIC_API_KEY`
+overrides it) and `parse_nsw_roads` (Live Traffic NSW; needs a
+`NSW_TRAFFIC_API_KEY`, otherwise that state is skipped) fetched by the broker
+every 30 minutes (`ROADS_EVERY_MS`) and carried up to 2 h when a fetch fails.
+The viewer has a "Road closures, flooding (official)" layer — polylines where
+the closure has a geometry, a dot where it only has a point — with popups
+(`roadClosurePopupHtml`), and major/closed closures appear on the watch list.
 
 Sources (verify each with a probe first):
 
@@ -248,10 +270,20 @@ public); these are life-safety messages, so show them verbatim with the
 time issued, link to the source, and never show a stale one as current
 (drop items past their expiry; label carried items "as of <time>").
 
-### 3. Observed rainfall (~0.5-1 day)
+### 3. Observed rainfall — DONE
 
 Rain that has fallen (since 9 am, last 24 h) at the Bureau's flood-network
 rain gauges: often the first sign of a flood.
+
+Shipped (commit `48fcbb23`): `parse_rain_popups` reads the `PopupRain(...)`
+entries on the Bureau's `IDx653xx.html` FTP rainfall pages (name, station,
+lat/lon, and the 1 h / 6 h / 24 h totals as reported), returned by
+`flood_ftp_all` alongside the flood classes and merged through the same
+single FTP session. `r["rainObs"]` keys station → totals; the viewer draws a
+"Rain gauges, observed 24h (BoM)" layer coloured by the 24 h total (blue ×
+50 mm × 100 mm), the gauge report shows the observed totals next to the
+forecast rain, and the watch list flags heavy totals
+(`RAIN_OBS_24H_MM = 100.0`).
 
 - Locations: layer 4 "Rain gauge locations" of
   `https://hosting.wsapi.cloud.bom.gov.au/arcgis/rest/services/flood/National_Flood_Gauge_Network/FeatureServer`
@@ -295,7 +327,7 @@ Until then `boardToModel` (app.js) places a peak from the gauge's rating
 (`gaugeRating`, median height) or from the lowest level recorded in the last
 5+ days; the message says which.
 
-### 5. Fetching improvements (5a, 5b, 5c, 5d and 5f are done; 5e remains)
+### 5. Fetching improvements (5a-5f are done)
 
 Measured on a refresh (21 Oct): 196 s in all, of which Water Data Online
 (KiWIS) 189 s; recurring errors are KiWIS `HTTP 504` on value batches and
@@ -349,14 +381,13 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   refresh fetch only the batches that failed (remember them with the
   carried rain) instead of waiting for the 3-hour cycle.
 
-**5e. The site build shouldn't fetch live data twice.**
-- With `DATA_SOURCE=runtime` the 3-hourly cron is already skipped, but a
-  build triggered by a push still fetches national readings, warnings and
-  flood info. In runtime mode, build only the static data (stations,
-  gauges, storages, terrain) and refresh the fallback copy of readings at
-  most daily (e.g. reuse the previous Pages copy or the broker's S3 copy
-  via the public URL). Watch `build.yml` step outcomes and the
-  "Data status" panel (it reads `data/status.json`).
+**5e. The site build shouldn't fetch live data twice — DONE.**
+- Commit `149e738c`: in runtime mode `build.yml` reuses `cache/readings.json`
+  as the published fallback (`NATIONAL_SKIP_READINGS=1` makes
+  `flood national` keep the existing copy instead of fetching Water Data
+  Online), reuses `cache/floodinfo.json` for the warnings fallback, and
+  stores both in a monthly `readings-fallback-*` cache. The static gauge,
+  storage and station data is still rebuilt every push.
 
 **5f. Health per source — DONE.**
 - Shipped: readings record when each source was fetched and recorded
@@ -380,3 +411,42 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   `deps-webpki` and `probe-*` branches were removed. Remaining remote branches:
   `2d-downstream`, `2d-roadtime`, `3d-opacity`, `aws-sync-main-46b6606d`,
   `probe-data`, `probe-qld`, `rust-vendor`, `shots-2d`.
+
+### 7. Model every forecast peak at once; places where a flood might be expected
+
+A button in the Warnings/watch panel ("Model forecast peaks") that, for every
+current item that predicts or threatens a flood, adds the place and — where a
+river level is known — builds the flood model too, rather than the user doing
+it gauge by gauge.
+
+Why: warnings rank and explain, but the point of the model is to *see* a
+flood; today only one warning's peak can be modelled at a time (the
+"Model the forecast peak" button in `viewer/warn-peaks.js`).
+
+Scope:
+
+- **Warnings with a parseable peak** ("may peak near 3.40 m"): reuse
+  `warn-peaks.js`'s parsing; for each warning that cleanly matches a gauge
+  with a known zero, build the model and add it as a numbered place, the
+  same as tapping the button on one warning.
+- **Warnings without a parseable peak** (flood watches, "minor flooding
+  possible"): add a place pinned at the gauge or catchment so a storm model
+  can be run there, but do not auto-build — rainfall to a river level needs
+  a design-storm choice the user should make.
+- **Heavy observed/forecast rain on the watch list** (`rainObs` ≥ 100 mm
+  near a gauge, forecast rain): same as above — add the place, no auto model.
+
+Approach:
+
+- A panel button iterates the warnings/watch list, calling the existing
+  `modelWarningPeak` / `openWatchItem` machinery per item; toast or counters
+  for "3 models built, 2 places added, 1 warning skipped (peak unknown)".
+- Rate limit and cap: confirm if it would create more than ~5 places at
+  once; skip items already modelled (track by warning id).
+- The button sits next to "Refresh now" in the watch panel.
+
+Risks: thundering-herd of model builds (they are computed locally per place,
+so cheap, but the creation flow animates and zooms — suppress per-place
+zoom when doing many); the peak parser's false positives (keep the
+"cleanly matched" bar); place-per-warning vs place-per-gauge when two
+warnings share a gauge (dedupe by gauge).
