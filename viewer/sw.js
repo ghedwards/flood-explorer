@@ -33,17 +33,21 @@ const TERRAIN_TILES = /^s3\.amazonaws\.com$/;
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
-    const app = await caches.open(APP);
-    // one at a time, so a missing optional file doesn't stop the rest
-    await Promise.all(SHELL.map((u) => app.add(new Request(u, { cache: 'reload' })).catch(() => {})));
+    try {
+      const app = await caches.open(APP);
+      // one at a time, so a missing optional file doesn't stop the rest
+      await Promise.all(SHELL.map((u) => app.add(new Request(u, { cache: 'reload' })).catch(() => {})));
+    } catch (err) { /* a broken cache storage must not stop install */ }
     await self.skipWaiting();
   })());
 });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    const keep = new Set([APP, TILES, TERRAIN, ELEV, API, LIVE]);
-    for (const k of await caches.keys()) if (!keep.has(k)) await caches.delete(k);
+    try {
+      const keep = new Set([APP, TILES, TERRAIN, ELEV, API, LIVE]);
+      for (const k of await caches.keys()) if (!keep.has(k)) await caches.delete(k);
+    } catch (err) { /* an old cache left behind is harmless */ }
     await self.clients.claim();
   })());
 });
@@ -51,17 +55,28 @@ self.addEventListener('activate', (e) => {
 async function trim(name) {
   const max = LIMITS[name];
   if (!max) return;
-  const c = await caches.open(name);
-  const keys = await c.keys();
-  for (let i = 0; i < keys.length - max; i++) await c.delete(keys[i]);
+  // nothing here is worth failing a request over: storage can break (a
+  // corrupt or full cache database — Firefox refuses Cache-API calls then,
+  // and every tile the worker answered would go black until the storage is
+  // cleared), so treat each cache call as optional
+  try {
+    const c = await caches.open(name);
+    const keys = await c.keys();
+    for (let i = 0; i < keys.length - max; i++) await c.delete(keys[i]);
+  } catch (err) { /* no trim this time */ }
 }
 
-// a cached response may only be served to a request whose mode allows that
-// response type: an opaque response only answers a no-cors request (a
-// crossOrigin <img>, fetch() or WebGL texture rejects it, so the tile stays
-// dark for good), and a cors response is rejected when the request was a
-// plain <img> (no-cors). Firefox enforces both strictly; Chromium mostly
-// does too. An unusable copy is refetched and replaced.
+// open a cache, or null when the cache storage refuses (corrupt/full); the
+// callers then answer from the network only
+async function openCache(name) {
+  try { return await caches.open(name); } catch (err) { return null; }
+}
+
+// a cache hit that can be served to this request mode: an opaque response
+// only answers a no-cors request (a crossOrigin <img>, fetch() or WebGL
+// texture rejects it, so the tile stays dark for good), and a cors response
+// is rejected when the request was a plain <img> (no-cors). Firefox enforces
+// both strictly; Chromium mostly does too.
 function usable(req, res) {
   if (!res || !res.type) return false;
   if (res.type === 'opaque') return req.mode === 'no-cors';
@@ -69,19 +84,24 @@ function usable(req, res) {
   return res.type === 'basic' || res.type === 'default';
 }
 
+// a match that survives a broken cache: nothing cached is then usable
+async function find(c, req, opts) {
+  try { return await c.match(req, Object.assign({ ignoreVary: true }, opts)); } catch (err) { return null; }
+}
+
 // fresh when online (within a few seconds), the cached copy otherwise
 async function networkFirst(req, name, waitMs) {
-  const c = await caches.open(name);
+  const c = await openCache(name);
   const net = fetchWithin(req, Math.max(NET_TIMEOUT_MS, waitMs * 4)).then((res) => {
-    if (res && (res.ok || res.type === 'opaque')) c.put(req, res.clone()).then(() => trim(name)).catch(() => {});
+    if (c && res && (res.ok || res.type === 'opaque')) try { c.put(req, res.clone()).then(() => trim(name)).catch(() => {}); } catch (err) { /* no copy kept */ }
     return res;
   });
+  const hit = c && (await find(c, req) || (name === APP ? await find(c, req, { ignoreSearch: true }) : null));
   try {
     const res = await Promise.race([net, new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), waitMs))]);
     if (!res.ok && res.type !== 'opaque') throw new Error(`HTTP ${res.status}`);
     return res;
   } catch (err) {
-    const hit = await c.match(req, { ignoreVary: true }) || (name === APP ? await c.match(req, { ignoreSearch: true }) : null);
     // no compatible copy: a slow network that eventually answers still wins
     return usable(req, hit) ? hit : net;
   }
@@ -91,19 +111,23 @@ async function networkFirst(req, name, waitMs) {
 // get the tile nor switch basemap: give up after this long
 const NET_TIMEOUT_MS = 20000;
 function fetchWithin(req, ms) {
-  if (typeof AbortController === 'undefined' || typeof setTimeout !== 'function') return fetch(req);
+  // Promise.resolve().then keeps a fetch that throws outright (as an
+  // offline storage state can) inside the promise chain
+  if (typeof AbortController === 'undefined' || typeof setTimeout !== 'function') return Promise.resolve().then(() => fetch(req));
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
   const done = () => { if (typeof clearTimeout === 'function') clearTimeout(t); };
-  return fetch(req, { signal: ac.signal }).then((r) => { done(); return r; }, (e) => { done(); throw e; });
+  return Promise.resolve().then(() => fetch(req, { signal: ac.signal })).then((r) => { done(); return r; }, (e) => { done(); throw e; });
 }
 
+// the cache first (immutable per address), refetch and replace when the copy
+// can't be served to this request
 async function cacheFirst(req, name) {
-  const c = await caches.open(name);
-  const hit = await c.match(req, { ignoreVary: true });
+  const c = await openCache(name);
+  const hit = c && await find(c, req);
   if (usable(req, hit)) return hit;
   const res = await fetchWithin(req, NET_TIMEOUT_MS);
-  if (res && (res.ok || res.type === 'opaque')) c.put(req, res.clone()).then(() => trim(name)).catch(() => {});
+  if (c && res && (res.ok || res.type === 'opaque')) try { c.put(req, res.clone()).then(() => trim(name)).catch(() => {}); } catch (err) { /* no copy kept */ }
   return res;
 }
 
