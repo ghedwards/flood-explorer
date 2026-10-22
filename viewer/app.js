@@ -5273,13 +5273,14 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     }
     return null;
   }
-  async function modelWarningPeak(w, i) {
+  async function modelWarningPeak(w, i, opts) {
+    const o = opts || {};
     const pk = warningPeaks(w)[i];
     if (!pk) return null;
     const f = pk.f, p = f.properties, [lo, la] = f.geometry.coordinates, t = pk.t;
     if (state.lmap) state.lmap.closePopup();
     const rep = openReport(f, { select: false });
-    const ok = await modelHere(la, lo, { kind: 'river', name: p.name, reportId: rep ? rep.id : null });
+    const ok = await modelHere(la, lo, { kind: 'river', name: p.name, reportId: rep ? rep.id : null, quiet: !!o.quiet });
     if (!ok || !state.a || state.gauge < 0) return null;
     try { await ensureHistory(); } catch (e) { /* no ratings: gauge zero only */ }
     if (rep) { try { await refreshHistory(p, document.createElement('div')); } catch (e) { /* daily averages only */ } }
@@ -5287,6 +5288,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const conv = boardToModel(p, t.level);
     status.warningModel = { warning: w.id, gauge: p.name, board: t.level, kind: t.kind, level: conv ? conv.level : null, exact: conv ? conv.exact : null, how: conv ? (conv.how || 'gauge zero') : null };
     if (!conv) {
+      if (o.quiet) return null;
       say(`Model ready, but ${p.name} has no published gauge zero or rating, so the warning's ${t.level.toFixed(2)} m (on the gauge board) can't be placed in it. Set the level in Scenario.`);
       return status.warningModel;
     }
@@ -5303,6 +5305,73 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     return status.warningModel;
   }
   window.__floodModelWarning = (i, j) => modelWarningPeak(allWarnings()[i || 0], j || 0);
+
+  // One button adds everything the watch list and the current warnings
+  // point at: a place at every listed gauge that has none, and a flood
+  // model at every warning's forecast peak that names a gauge with a
+  // publishable zero or a recent record. Models build one after another
+  // (each downloads its elevation from the national service), at most
+  // PEAK_MAX_PER_PRESS new things per press; the button stays and says
+  // what's left. Modelled again only for gauges whose model was closed.
+  const PEAK_MAX_PER_PRESS = 5;
+  const modeledWarns = new Set();   // warn keys modelled this visit
+  function pendingWatchWork() {
+    const gs = (nat.data && nat.data.gauges) || [];
+    const hasReport = (f) => reports.some((r) => r.id === `${f.properties.kind}:${f.properties.id}`);
+    const places = ((nat.readings && nat.readings.watch) || [])
+      .filter((w) => w.kind === 'river' || w.kind === 'flood')
+      .map((w) => w.kind === 'flood' ? gs.find((g) => String(g.properties.bom) === String(w.station)) : gs.find((g) => g.properties.station === w.station))
+      .filter((f) => f && !hasReport(f));
+    const byGauge = new Map();   // two warnings naming one gauge keep the higher peak
+    for (const w of allWarnings()) {
+      if (modeledWarns.has(warnKey(w))) continue;
+      for (const [i, pk] of warningPeaks(w).entries()) {
+        const f = pk.f;
+        const rep = reports.find((r) => r.id === `${f.properties.kind}:${f.properties.id}`);
+        if (rep && areaForReport(rep)) continue;   // that gauge already has a model
+        const old = byGauge.get(f.properties.id);
+        if (!old || pk.t.level > old.pk.t.level) byGauge.set(f.properties.id, { w, i, wkey: warnKey(w), pk });
+      }
+    }
+    return { places, models: [...byGauge.values()], total: places.length + byGauge.size };
+  }
+  async function modelAllWatchWork(btn) {
+    const pending = pendingWatchWork();
+    if (!pending.total) {
+      say('Nothing to add: every forecast peak is already modelled and every gauge on the watch list already has a place.');
+      return null;
+    }
+    const batch = [
+      ...pending.places.map((f) => ({ kind: 'place', f })),
+      ...pending.models.map((j) => ({ kind: 'model', j })),
+    ];
+    const doing = batch.slice(0, PEAK_MAX_PER_PRESS);
+    return withBusy(btn, 'Adding places and models…', async () => {
+      let modelsDone = 0, placesDone = 0, failed = 0;
+      for (const job of doing) {
+        if (job.kind === 'place') { openReport(job.f, { select: false }); placesDone++; continue; }
+        setBusy(true, `Building flood model ${modelsDone + 1} of ${doing.filter((x) => x.kind === 'model').length}…`);
+        try {
+          const got = await modelWarningPeak(job.j.w, job.j.i, { quiet: true });
+          if (got) { modeledWarns.add(job.j.wkey); modelsDone++; } else failed++;
+        } catch (e) { failed++; }
+      }
+      setBusy(false);
+      const left = batch.length - doing.length;
+      status.watchWork = { models: modelsDone, places: placesDone, failed, left };
+      const words = [];
+      if (placesDone) words.push(placesDone === 1 ? '1 gauge report' : `${placesDone} gauge reports`);
+      if (modelsDone) words.push(modelsDone === 1 ? '1 flood model' : `${modelsDone} flood models`);
+      let msg = words.length ? `Added ${words.join(' and ')} from the watch list and the current warnings.` : 'Nothing could be added.';
+      if (failed) msg += ` ${failed === 1 ? 'One forecast peak could' : `${failed} forecast peaks could`} not be placed (the gauge has no published zero or recent record) — open that warning and set the level in Scenario.`;
+      if (left) msg += ` ${left} more on the list — press the button again for the next batch.`;
+      renderWatch();
+      say(msg);
+      return status.watchWork;
+    });
+  }
+  window.__floodPendingWatchWork = () => { const p = pendingWatchWork(); return { models: p.models.length, places: p.places.length, total: p.total }; };
+  window.__floodModelPeaks = () => modelAllWatchWork(null);
   window.__floodHistory = (st) => (nat.history && nat.history[st]) || null;
   window.__floodWarningPeaks = () => allWarnings().map((w) => ({ id: w.id, peaks: warningPeaks(w).map((pk) => ({ place: pk.t.place, river: pk.t.river, level: pk.t.level, kind: pk.t.kind, gauge: pk.f.properties.name })), targets: warningTargets(w.description || '').length }));
   function onWarnModel(b) {
@@ -5397,8 +5466,18 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         <span class="watch-icon" aria-hidden="true">${WATCH_ICON[w.kind] || '•'}</span>
         <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && w.link ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
+      ${( () => {
+        let pend;
+        try { pend = pendingWatchWork(); } catch (e) { pend = { models: [], places: [] }; }
+        const bits = [];
+        if (pend.models.length) bits.push(`model ${pend.models.length === 1 ? 'the forecast peak' : `the ${pend.models.length} forecast peaks`}`);
+        if (pend.places.length) bits.push(`add ${pend.places.length === 1 ? 'the place' : `${pend.places.length} places`} in a flood`);
+        return bits.length ? `<p class="hint"><button type="button" class="btn primary" id="watchPeaks">${escapeHtml(`${bits[0]}${bits[1] ? ` and ${bits[1]}` : ''}`)}</button><br>One press builds a flood model for every warning peak at a gauge the model can place, and pins a place at every gauge the watch list flags. At most 5 per press — the elevation comes live from the national service.</p>` : '';
+      })()}
       ${typeof Notification !== 'undefined' ? `<p class="hint"><button type="button" class="btn" id="watchNotify">${(() => { try { return localStorage.getItem(WATCH_NOTIFY_KEY) === '1' && Notification.permission === 'granted'; } catch (e) { return false; } })() ? 'Stop notifications' : 'Notify me about new items near my places'}</button><br>While this map is open in a tab, it checks for new items every 15 minutes.</p>` : ''}
       <p class="hint">Updated ${escapeHtml(when(nat.readingsFetched))} ${(() => { const w = refreshWaitMs(); return w > 0 ? `<button type="button" class="link-btn" id="watchRefresh" disabled title="Once every 5 minutes">Refresh again in ${Math.ceil(w / 60e3)} min</button>` : '<button type="button" class="link-btn" id="watchRefresh">Refresh now</button>'; })()} (the broker fetches new readings every 15 minutes; the map checks for them every 15 minutes too). ${nat.readings.watchRule ? `On the list: ${escapeHtml(nat.readings.watchRule)}.` : ''} Near your places: within ${NEAR_KM} km of a gauge report, or in or beside a flood model or study area. A pointer to look closer, not a warning; follow official warnings.</p>`;
+    const pb = $('watchPeaks');
+    if (pb) pb.addEventListener('click', () => modelAllWatchWork(pb));
     const nb = $('watchNotify');
     if (nb) nb.addEventListener('click', async () => {
       let on = false;
