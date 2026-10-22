@@ -124,7 +124,20 @@ jobs:
       - name: Fetch national BoM gauges, dams and readings
         id: national
         continue-on-error: true
-        run: flood national site/data/national | tee national.log
+        env:
+          DATA_SOURCE: ${{ vars.DATA_SOURCE }}
+          FLOOD_BROKER_URL: ${{ vars.FLOOD_BROKER_URL }}
+        run: |
+          if [ "${DATA_SOURCE}" = "runtime" ] && [ -f cache/readings.json ]; then
+            echo "runtime mode: reusing cached readings fallback (the broker keeps them fresh)"
+            mkdir -p site/data/national
+            cp cache/readings.json site/data/national/readings.json
+            NATIONAL_SKIP_READINGS=1 flood national site/data/national | tee national.log
+          else
+            flood national site/data/national | tee national.log
+            mkdir -p cache
+            cp site/data/national/readings.json cache/readings.json
+          fi
 
       - name: Month for the monthly caches
         id: month
@@ -138,6 +151,14 @@ jobs:
         with:
           path: cache/events.json
           key: events-${{ hashFiles('config/events.json', 'rust/flood-pipeline/src/events.rs') }}
+
+      - name: Restore the fallback readings copy (runtime mode)
+        id: readingscache
+        uses: actions/cache@v6
+        with:
+          path: cache/readings.json
+          key: readings-fallback-${{ steps.month.outputs.month || 'x' }}-${{ hashFiles('config/events.json') }}
+          restore-keys: readings-fallback-
 
       - name: Fetch recorded flood readings (Water Data Online)
         if: steps.events.outputs.cache-hit != 'true' && steps.national.outcome == 'success'
@@ -269,7 +290,19 @@ jobs:
         id: floodinfo
         continue-on-error: true
         timeout-minutes: 5
-        run: flood floodinfo site/data/national | tee floodinfo.log
+        env:
+          DATA_SOURCE: ${{ vars.DATA_SOURCE }}
+        run: |
+          if [ "${DATA_SOURCE}" = "runtime" ] && [ -f cache/floodinfo.json ]; then
+            echo "runtime mode: reusing cached flood info fallback"
+            mkdir -p site/data/national
+            cp cache/floodinfo.json site/data/national/warnings.json 2>/dev/null || true
+            echo "Flood info: from cache (runtime mode)" | tee floodinfo.log
+          else
+            flood floodinfo site/data/national | tee floodinfo.log
+            mkdir -p cache
+            [ -f site/data/national/warnings.json ] && cp site/data/national/warnings.json cache/floodinfo.json
+          fi
 
       # Dam water history builds up across runs: restore the latest copy,
       # spend at most ~5 minutes filling in or refreshing dams, save again.

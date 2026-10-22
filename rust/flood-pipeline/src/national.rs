@@ -236,7 +236,16 @@ pub fn run(out_dir: &str, http: HttpJson) -> R<String> {
     let mut storages = build_storages(http, &mut errors);
     let stations = |fs: &[Value]| -> HashSet<String> { fs.iter().filter_map(|f| f["properties"]["station"].as_str()).filter(|s| !s.is_empty()).map(String::from).collect() };
     let (level_st, storage_st) = (stations(&gauges), stations(&storages));
-    let readings = flood_feeds::readings(http, &level_st, &storage_st, now_s() as i64, &mut errors);
+    let skip_readings = std::env::var("NATIONAL_SKIP_READINGS").ok().as_deref() == Some("1");
+    let readings = if skip_readings {
+        let cached = std::fs::read(out.join("readings.json")).ok();
+        match cached.and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+            Some(v) if v["level"].is_object() => v,
+            _ => flood_feeds::readings(http, &level_st, &storage_st, now_s() as i64, &mut errors),
+        }
+    } else {
+        flood_feeds::readings(http, &level_st, &storage_st, now_s() as i64, &mut errors)
+    };
     // the station lists, for the live data broker's own refreshes
     let mut lv: Vec<&String> = level_st.iter().collect();
     let mut sv: Vec<&String> = storage_st.iter().collect();
