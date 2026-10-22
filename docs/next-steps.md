@@ -459,6 +459,30 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
 
 ### 6. Smaller items
 
+Follow-ups from 2026-10-22 (verify once the pending publishes land):
+
+- **Firefox black tiles** (`b89ca9e8`): the hardened service worker ships with
+  the viewer build that was still publishing when this was written. Confirm a
+  reload clears any black tiles; if one session stays black, clearing site
+  data (DevTools → Storage) is the workaround. The bundled Playwright Firefox
+  on the dev machine won't launch ("Could not find profile folder"), so
+  `tests/sw-tiles.js` couldn't run locally — its Chromium half passed on the
+  live site; rerun both halves once the local binary is fixed (reinstall
+  playwright's firefox, or fix the profile folder).
+- **QLDTraffic key quota** (`db5d818a`): the shared public key was exhausted
+  (HTTP 429) and emptied the roads layer until the quota resets; the broker
+  now retries hourly while over quota. When TMR emails a dedicated key, add
+  the `QLD_TRAFFIC_API_KEY` repo secret and pass it to the Lambda env in
+  `broker-deploy.yml` (like `NSW_TRAFFIC_API_KEY` would be); the broker
+  prefers it already. Then confirm `/health` shows
+  `sources.roads.lastGood` fresh and the layer repopulates.
+- **All-events roads layer** (`4383dfe4`): the layer now takes every
+  QLDTraffic event type; on the live site it'll be visible once the QLD
+  quota allows (or with the dedicated key). Verify the legend's six classes,
+  a popup's "Because of: <due>" line and the all-events wording on the live
+  site; the old "flooding filter" wording anywhere else in docs already was
+  updated to match.
+
 - **Bureau links**: the user saw some fail; which ones is unknown. The
   warning link is `https://www.bom.gov.au/products/<ID>.shtml`; the Bureau's
   new site may have moved warnings. Ask before changing.
