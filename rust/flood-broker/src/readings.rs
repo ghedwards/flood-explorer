@@ -31,6 +31,10 @@ pub type Text = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 const RAIN_EVERY_MS: i64 = 3 * 3_600_000; // the forecast models run every 6 hours
 const SEA_EVERY_MS: i64 = 30 * 60_000;
 const ROADS_EVERY_MS: i64 = 30 * 60_000;
+/// Once QLDTraffic returns HTTP 429 its key's quota is spent, often for the
+/// rest of the day; retrying every half hour can't earn events, so wait an
+/// hour between attempts (the last list still serves its 2-hour carry).
+const ROADS_429_EVERY_MS: i64 = 60 * 60_000;
 /// Water Data Online (a day behind anyway): at most this often.
 const WDO_EVERY_MS: i64 = 60 * 60_000;
 /// Rain forecasts get this long; batches left over wait for the next refresh.
@@ -627,7 +631,10 @@ impl Readings {
         // Official flood road closures (QLDTraffic, and Live Traffic NSW when
         // NSW_TRAFFIC_API_KEY is set), every 30 minutes; carried up to 2 hours on error.
         if let Some(rf) = &self.roads {
-            match Self::carry(&prev, "roads", "roadsFetched", started, ROADS_EVERY_MS) {
+            // QLDTraffic's quota exhausted (a 429 in the last attempt's
+            // health): attempts earn nothing, so an hour between them
+            let quota = prev.as_ref().and_then(|p| p["sources"]["roads"]["lastError"].as_str()).is_some_and(|e| e.contains("429"));
+            match Self::carry(&prev, "roads", "roadsFetched", started, if quota { ROADS_429_EVERY_MS } else { ROADS_EVERY_MS }) {
                 Some((rd, at)) => {
                     r["roads"] = rd;
                     r["roadsFetched"] = at;
@@ -1016,6 +1023,45 @@ mod tests {
         t.fetch_add(50 * 60_000, Ordering::SeqCst);
         r.refresh().unwrap();
         assert!(KIWIS.load(Ordering::SeqCst) > k1, "and asked again after an hour");
+    }
+
+    #[test]
+    fn qld_traffic_over_quota_is_asked_hourly_not_every_half_hour() {
+        use std::sync::atomic::AtomicUsize;
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        let t = Arc::new(AtomicI64::new(crate::wmip::epoch_ms("2026-10-20T08:00:00Z").unwrap()));
+        let t2 = t.clone();
+        let r = Readings::new(Box::new(fake), Store::Memory, STATIONS_URL.into(), Box::new(move || t2.load(Ordering::SeqCst))).with_roads(Box::new(|iso: &str, errors: &mut Vec<String>| {
+            let n = CALLS.fetch_add(1, Ordering::SeqCst);
+            if n > 0 {
+                errors.push("roads QLD: HTTP 429".into());
+                return json!({"fetched": iso, "sources": {"QLD": "error: HTTP 429"}, "items": []});
+            }
+            json!({"fetched": iso, "sources": {"QLD": "ok"}, "items": []})
+        }));
+        // the first refresh fetches (no list yet) and records it as good
+        r.refresh().unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        // 40 minutes later: past the half-hour carry, so it is asked again —
+        // QLDTraffic is over quota (a 429), which the health now records
+        t.fetch_add(40 * 60_000, Ordering::SeqCst);
+        r.refresh().unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2, "a 40-minute-old list is refetched");
+        // 10 minutes after the 429: within the expired-quota hour, so the
+        // carried list serves the request without touching QLDTraffic
+        t.fetch_add(10 * 60_000, Ordering::SeqCst);
+        let s = r.refresh().unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2, "no attempt while the quota hour runs");
+        assert_eq!(s["roadClosures"], 0, "the list came from the carry, empty but present");
+        // half a quota hour more: asked again (the cadence measures from the
+        // stored list's time), still refused; the 2-hour carry keeps the
+        // old list on the map
+        t.fetch_add(30 * 60_000, Ordering::SeqCst);
+        r.refresh().unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 3, "the cadence passed, so it asks again");
+        let doc: Value = serde_json::from_slice(&r.latest().unwrap().unwrap().body).unwrap();
+        assert_eq!(doc["roads"]["fetched"], "2026-10-20T08:00:00Z", "still the first list: failed attempts don't restamp");
+        assert_eq!(doc["sources"]["roads"]["lastError"], "roads QLD: HTTP 429");
     }
 
     #[test]

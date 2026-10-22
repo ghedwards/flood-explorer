@@ -206,7 +206,14 @@ Sources (verify each with a probe first):
   published a public key for open use. The key and base URL were verified
   live (2026-10-22). We take **every open event** — the API's `event_type`
   filter param doesn't reliably filter anyway (it returned all 714 events
-  whatever the value) — within the 150-item cap, closures first. Terms:
+  whatever the value) — within the 150-item cap, closures first. The shared
+  public key has a request quota: on 2026-10-22 it was exhausted ("You have
+  exceeded the request quota assigned to your API key… email
+  QLDTraffic@tmr.qld.gov.au"), emptying the roads layer until the quota
+  resets; the broker now tries hourly (not half-hourly) instead of wasting
+  the attempts. When TMR issues a dedicated key, store it as the
+  `QLD_TRAFFIC_API_KEY` secret (the broker prefers it over the public one)
+  and the layer recovers on the next refresh. Terms:
   provided "as is"; attribution "© The State of Queensland
   (Department of Transport and Main Roads)".
 - **NSW, Live Traffic NSW hazards** (Transport for NSW, CC BY). GeoJSON
