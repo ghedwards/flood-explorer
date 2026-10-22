@@ -20,6 +20,9 @@ const KEY: &str = "readings.json";
 const KEY_GZ: &str = "readings.json.gz";
 /// The rolling hourly record of every gauge (history.rs).
 const KEY_HIST: &str = "readings-history.json.gz";
+/// The Bureau FTP directory's last seen `{name: [version, parsed]}` so
+/// unchanged warning and river-height files aren't downloaded again.
+const KEY_FTP: &str = "readings-ftp-index.json.gz";
 const S3_CHECK_MS: i64 = 60_000; // how often a copy looks for a newer file
 
 pub type Http = Box<dyn Fn(&str, &[(String, String)]) -> Result<Value, String> + Send + Sync>;
@@ -154,11 +157,17 @@ pub struct Readings {
     rain_http: Option<Http>,
     warnings: Option<Warnings>,
     classes: Option<Classes>,
+    ftp: Option<FtpOpen>,
+    ftp_index: Mutex<std::collections::HashMap<String, (String, Value)>>,
     history: Mutex<Option<HistoryCopy>>,
 }
 
 /// The hourly record as this copy last read it: (checked at, record, S3 ETag).
 type HistoryCopy = (i64, Arc<crate::history::History>, Option<String>);
+
+/// Opens a session to the Bureau's FTP server (one per refresh for both
+/// flood warnings and river height / flood class pages).
+pub type FtpOpen = Box<dyn Fn() -> Result<Box<dyn feeds::ftp::Dir>, String> + Send + Sync>;
 
 /// Fetches flood class levels and current classes: errors -> {station: ...}.
 pub type Classes = Box<dyn Fn(&mut Vec<String>) -> Value + Send + Sync>;
@@ -169,7 +178,14 @@ pub type Warnings = Box<dyn Fn(i64, &str, &mut Vec<String>) -> Value + Send + Sy
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, history: Mutex::new(None) }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, ftp: None, ftp_index: Mutex::new(Default::default()), history: Mutex::new(None) }
+    }
+
+    /// Fetch both flood warnings and flood class / river height pages over
+    /// one FTP session per refresh, downloading only changed files.
+    pub fn with_ftp(mut self, f: FtpOpen) -> Self {
+        self.ftp = Some(f);
+        self
     }
 
     /// Fetch plain-text files (the storm tide CSV) with this.
@@ -303,7 +319,47 @@ impl Readings {
         };
         let t_readings = (self.now)();
         let prev = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
+        // Track per-source health across refreshes: lastGood, lastError, errorCount.
+        let mut sources = prev.as_ref().and_then(|p| p["sources"].as_object().cloned()).unwrap_or_default();
+        let mut mark_source = |name: &str, attempted: bool, ok: bool, slice: &[String], at_iso: &str| {
+            let mut entry = sources.get(name).and_then(Value::as_object).cloned().unwrap_or_default();
+            if attempted {
+                if ok && slice.is_empty() {
+                    entry.insert("lastGood".into(), json!(at_iso));
+                    entry.insert("lastError".into(), Value::Null);
+                    entry.insert("errorCount".into(), json!(0));
+                } else if ok {
+                    entry.insert("lastGood".into(), json!(at_iso));
+                    entry.insert("lastError".into(), json!(slice.last().cloned().unwrap_or_default()));
+                    entry.insert("errorCount".into(), json!(slice.len()));
+                } else {
+                    let prev_n = entry.get("errorCount").and_then(Value::as_u64).unwrap_or(0);
+                    entry.insert("lastError".into(), json!(slice.last().cloned().unwrap_or_else(|| "failed".into())));
+                    entry.insert("errorCount".into(), json!(prev_n + slice.len().max(1) as u64));
+                }
+            }
+            sources.insert(name.to_string(), Value::Object(entry));
+        };
+        let wdo_errs: Vec<String> = errors.iter().filter(|e| !e.starts_with("Queensland")).cloned().collect();
+        let qld_errs: Vec<String> = errors.iter().filter(|e| e.starts_with("Queensland")).cloned().collect();
+        let now_readings_iso = crate::wmip::iso_utc(t_readings);
+        mark_source(
+            "wdo",
+            reuse.is_none(),
+            r["level"].as_object().is_some_and(|o| !o.is_empty()) || r["storage"].as_object().is_some_and(|o| !o.is_empty()),
+            &wdo_errs,
+            r["wdoFetched"].as_str().unwrap_or(&now_readings_iso),
+        );
+        mark_source(
+            "qld",
+            true,
+            feeds::realtime_count(&r) > 0 || qld_errs.is_empty(),
+            &qld_errs,
+            &now_readings_iso,
+        );
         // rain forecast near the flood network's gauges, every 3 hours
+        let mut rain_attempted = false;
+        let err_before_rain = errors.len();
         if !st.coords.is_empty() {
             // reused for 3 hours, unless the last fetch left gauges out
             let complete = prev.as_ref().is_none_or(|p| p["rainMissing"].as_u64().unwrap_or(0) == 0);
@@ -313,6 +369,7 @@ impl Readings {
                     r["rainFetched"] = at;
                 }
                 None => {
+                    rain_attempted = true;
                     let (cells, of) = feeds::rain_cells(&st.coords, feeds::RAIN_MAX_POINTS);
                     let rain_http = |u: &str, p: &[(String, String)]| match &self.rain_http { Some(h) => h(u, p), None => (self.http)(u, p) };
                     // rain gets its own budget; what doesn't arrive waits for the next refresh
@@ -329,9 +386,14 @@ impl Readings {
                             rain.insert(s.clone(), o.clone());
                         }
                     }
+                    let got_any = got.iter().any(Option::is_some);
                     if !rain.is_empty() {
                         r["rain"] = Value::Object(rain);
-                        r["rainFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                        if got_any {
+                            r["rainFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                        } else if let Some(at) = prev.as_ref().map(|p| p["rainFetched"].clone()).filter(|v| v.is_string()) {
+                            r["rainFetched"] = at;
+                        }
                         r["rainCells"] = json!(cells.len());
                         // cells that didn't arrive: try again next refresh, not in 3 hours
                         r["rainMissing"] = json!(got.iter().filter(|x| x.is_none()).count());
@@ -339,40 +401,92 @@ impl Readings {
                         r["rain"] = rain;
                         r["rainFetched"] = at;
                     }
+                    mark_source(
+                        "rain",
+                        true,
+                        got_any,
+                        &errors[err_before_rain..],
+                        r["rainFetched"].as_str().unwrap_or(&crate::wmip::iso_utc((self.now)())),
+                    );
                 }
             }
         }
+        if !rain_attempted && r["rainFetched"].is_string() {
+            mark_source("rain", false, true, &[], r["rainFetched"].as_str().unwrap_or(""));
+        }
         let t_rain = (self.now)();
         // Queensland's storm tide gauges, every 30 minutes
+        let mut sea_attempted = false;
+        let err_before_sea = errors.len();
         if let Some(text) = &self.text {
             match Self::carry(&prev, "sea", "seaFetched", started, SEA_EVERY_MS) {
                 Some((sea, at)) => {
                     r["sea"] = sea;
                     r["seaFetched"] = at;
                 }
-                None => match text(feeds::STORM_TIDE_CSV) {
-                    Ok(csv) => {
-                        let sea = feeds::parse_storm_tide(&csv);
-                        if sea.as_object().is_some_and(|o| !o.is_empty()) {
-                            r["sea"] = sea;
-                            r["seaFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                None => {
+                    sea_attempted = true;
+                    let mut sea_ok = false;
+                    match text(feeds::STORM_TIDE_CSV) {
+                        Ok(csv) => {
+                            let sea = feeds::parse_storm_tide(&csv);
+                            if sea.as_object().is_some_and(|o| !o.is_empty()) {
+                                r["sea"] = sea;
+                                r["seaFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                                sea_ok = true;
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("storm tide: {}", e));
+                            if let Some((sea, at)) = Self::carry(&prev, "sea", "seaFetched", started, 6 * 3_600_000) {
+                                r["sea"] = sea;
+                                r["seaFetched"] = at;
+                            }
                         }
                     }
-                    Err(e) => {
-                        errors.push(format!("storm tide: {}", e));
-                        if let Some((sea, at)) = Self::carry(&prev, "sea", "seaFetched", started, 6 * 3_600_000) {
-                            r["sea"] = sea;
-                            r["seaFetched"] = at;
-                        }
-                    }
-                },
+                    mark_source(
+                        "sea",
+                        true,
+                        sea_ok,
+                        &errors[err_before_sea..],
+                        r["seaFetched"].as_str().unwrap_or(&crate::wmip::iso_utc((self.now)())),
+                    );
+                }
             }
         }
+        if !sea_attempted && r["seaFetched"].is_string() {
+            mark_source("sea", false, true, &[], r["seaFetched"].as_str().unwrap_or(""));
+        }
         let t_sea = (self.now)();
-        // the Bureau's flood warnings, every refresh; a failed fetch keeps the last list (for 6 hours)
-        if let Some(wf) = &self.warnings {
-            let w = wf(started / 1000, &crate::wmip::iso_utc((self.now)()), &mut errors);
-            if w["ok"] == json!(true) {
+        // One FTP session for both flood warnings and flood class / river
+        // height pages when `with_ftp` is set, downloading only files whose
+        // LIST size/mtime changed since the last refresh.
+        let mut ftp_downloads: Option<usize> = None;
+        if let Some(open_ftp) = &self.ftp {
+            let carried_fc = Self::carry(&prev, "floodclass", "floodclassFetched", started, CLASSES_EVERY_MS);
+            let want_classes = carried_fc.is_none();
+            if let Some((fc, at)) = carried_fc {
+                r["floodclass"] = fc;
+                r["floodclassFetched"] = at;
+            }
+            let iso_now = crate::wmip::iso_utc((self.now)());
+            let err_before_ftp = errors.len();
+            let mut cache = self.load_ftp_index(started);
+            let (w, fc_opt, dl) = match open_ftp() {
+                Ok(mut dir) => feeds::flood_ftp_both(&mut *dir, &mut cache, started / 1000, &iso_now, want_classes, &mut errors),
+                Err(e) => {
+                    errors.push(format!("flood warnings: {}", e));
+                    if want_classes {
+                        errors.push(format!("flood classes: {}", e));
+                    }
+                    (json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e}), want_classes.then(|| json!({})), 0)
+                }
+            };
+            self.save_ftp_index(&cache, (self.now)());
+            ftp_downloads = Some(dl);
+            let w_ok = w["ok"] == json!(true);
+            let ftp_errs: Vec<String> = errors[err_before_ftp..].iter().filter(|e| e.starts_with("flood warnings")).cloned().collect();
+            if w_ok {
                 r["warnings"] = w;
             } else if let Some((old, _)) = Self::carry(&prev, "warnings", "warningsFetched", started, 6 * 3_600_000) {
                 r["warnings"] = old;
@@ -380,31 +494,102 @@ impl Readings {
             if r["warnings"]["ok"] == json!(true) {
                 r["warningsFetched"] = r["warnings"]["fetched"].clone();
             }
+            mark_source(
+                "warnings",
+                true,
+                w_ok,
+                &ftp_errs,
+                r["warningsFetched"].as_str().unwrap_or(&iso_now),
+            );
+            let err_before_areas = errors.len();
             self.warning_areas(&mut r["warnings"], &prev, &mut errors);
-        }
-        // flood class levels and the Bureau's current class at each gauge, hourly
-        if let Some(cf) = &self.classes {
-            match Self::carry(&prev, "floodclass", "floodclassFetched", started, CLASSES_EVERY_MS) {
-                Some((fc, at)) => {
+            let area_errs = &errors[err_before_areas..];
+            mark_source(
+                "warningAreas",
+                true,
+                area_errs.is_empty(),
+                area_errs,
+                &crate::wmip::iso_utc((self.now)()),
+            );
+            if let Some(mut fc) = fc_opt {
+                let fc_errs: Vec<String> = errors[err_before_ftp..err_before_areas].iter().filter(|e| e.starts_with("flood classes")).cloned().collect();
+                if let (Some(new), Some((old, _))) = (fc.as_object_mut(), Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000)) {
+                    if !new.is_empty() {
+                        for (k, v) in old.as_object().into_iter().flatten() {
+                            new.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                }
+                let fc_ok = fc.as_object().is_some_and(|o| !o.is_empty());
+                if fc_ok {
+                    r["floodclass"] = fc;
+                    r["floodclassFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                } else if let Some((fc, at)) = Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000) {
                     r["floodclass"] = fc;
                     r["floodclassFetched"] = at;
                 }
-                None => {
-                    let mut fc = cf(&mut errors);
-                    // gauges this fetch didn't reach keep their last entry (a day at most)
-                    if let (Some(new), Some((old, _))) = (fc.as_object_mut(), Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000)) {
-                        if !new.is_empty() {
-                            for (k, v) in old.as_object().into_iter().flatten() {
-                                new.entry(k.clone()).or_insert_with(|| v.clone());
-                            }
-                        }
-                    }
-                    if fc.as_object().is_some_and(|o| !o.is_empty()) {
-                        r["floodclass"] = fc;
-                        r["floodclassFetched"] = json!(crate::wmip::iso_utc((self.now)()));
-                    } else if let Some((fc, at)) = Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000) {
+                mark_source(
+                    "floodclass",
+                    true,
+                    fc_ok,
+                    &fc_errs,
+                    r["floodclassFetched"].as_str().unwrap_or(&iso_now),
+                );
+            } else if r["floodclassFetched"].is_string() {
+                mark_source("floodclass", false, true, &[], r["floodclassFetched"].as_str().unwrap_or(""));
+            }
+        }
+        // the Bureau's flood warnings, every refresh; a failed fetch keeps the last list (for 6 hours)
+        if self.ftp.is_none() {
+            if let Some(wf) = &self.warnings {
+                let err_before_w = errors.len();
+                let iso_now = crate::wmip::iso_utc((self.now)());
+                let w = wf(started / 1000, &iso_now, &mut errors);
+                let w_ok = w["ok"] == json!(true);
+                let w_errs: Vec<String> = errors[err_before_w..].to_vec();
+                if w_ok {
+                    r["warnings"] = w;
+                } else if let Some((old, _)) = Self::carry(&prev, "warnings", "warningsFetched", started, 6 * 3_600_000) {
+                    r["warnings"] = old;
+                }
+                if r["warnings"]["ok"] == json!(true) {
+                    r["warningsFetched"] = r["warnings"]["fetched"].clone();
+                }
+                mark_source("warnings", true, w_ok, &w_errs, r["warningsFetched"].as_str().unwrap_or(&iso_now));
+                let err_before_areas = errors.len();
+                self.warning_areas(&mut r["warnings"], &prev, &mut errors);
+                let area_errs = &errors[err_before_areas..];
+                mark_source("warningAreas", true, area_errs.is_empty(), area_errs, &crate::wmip::iso_utc((self.now)()));
+            }
+            // flood class levels and the Bureau's current class at each gauge, hourly
+            if let Some(cf) = &self.classes {
+                match Self::carry(&prev, "floodclass", "floodclassFetched", started, CLASSES_EVERY_MS) {
+                    Some((fc, at)) => {
                         r["floodclass"] = fc;
                         r["floodclassFetched"] = at;
+                        mark_source("floodclass", false, true, &[], r["floodclassFetched"].as_str().unwrap_or(""));
+                    }
+                    None => {
+                        let err_before_fc = errors.len();
+                        let mut fc = cf(&mut errors);
+                        let fc_errs: Vec<String> = errors[err_before_fc..].to_vec();
+                        // gauges this fetch didn't reach keep their last entry (a day at most)
+                        if let (Some(new), Some((old, _))) = (fc.as_object_mut(), Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000)) {
+                            if !new.is_empty() {
+                                for (k, v) in old.as_object().into_iter().flatten() {
+                                    new.entry(k.clone()).or_insert_with(|| v.clone());
+                                }
+                            }
+                        }
+                        let fc_ok = fc.as_object().is_some_and(|o| !o.is_empty());
+                        if fc_ok {
+                            r["floodclass"] = fc;
+                            r["floodclassFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                        } else if let Some((fc, at)) = Self::carry(&prev, "floodclass", "floodclassFetched", started, 24 * 3_600_000) {
+                            r["floodclass"] = fc;
+                            r["floodclassFetched"] = at;
+                        }
+                        mark_source("floodclass", true, fc_ok, &fc_errs, r["floodclassFetched"].as_str().unwrap_or(&crate::wmip::iso_utc((self.now)())));
                     }
                 }
             }
@@ -425,6 +610,7 @@ impl Readings {
         let rt = feeds::realtime_count(&r);
         let fetched = (self.now)();
         r["fetched"] = json!(crate::wmip::iso_utc(fetched));
+        r["sources"] = Value::Object(sources.clone());
         r["errors"] = json!(errors.iter().take(20).collect::<Vec<_>>());
         r["attribution"] = json!(format!("© Commonwealth of Australia (Bureau of Meteorology); Queensland live levels {}; {}; {}", feeds::WMIP_ATTRIBUTION, feeds::STORM_TIDE_ATTRIBUTION, feeds::RAIN_ATTRIBUTION));
         let body = serde_json::to_vec(&r).map_err(|e| e.to_string())?;
@@ -450,7 +636,47 @@ impl Readings {
             "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "gzStored": gz_stored, "version": crate::VERSION, "history": hist, "seconds": (fetched - started) / 1000,
             "warnings": r["warnings"]["warnings"].as_array().map(|a| a.len()),
             "floodClasses": r["floodclass"].as_object().map(|o| o.len()),
+            "ftpDownloads": ftp_downloads,
+            "sources": Value::Object(sources),
             "stageSeconds": {"readings": (t_readings - started) / 1000, "rain": (t_rain - t_readings) / 1000, "sea": (t_sea - t_rain) / 1000, "warnings": (t_warn - t_sea) / 1000}}))
+    }
+
+    /// The stored FTP directory index (`{filename: [version, parsed]}`), from
+    /// memory or S3 (`readings-ftp-index.json.gz`). Best effort: returns what
+    /// this copy has in memory if S3 has none or fails.
+    fn load_ftp_index(&self, now: i64) -> std::collections::HashMap<String, (String, Value)> {
+        let cur = self.ftp_index.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !cur.is_empty() {
+            return cur;
+        }
+        let Store::S3(b) = &self.store else { return cur };
+        let Ok(crate::s3::Got::Body(z, _)) = b.get(KEY_FTP, None, now) else { return cur };
+        let Ok(bytes) = crate::history::gunzip(&z) else { return cur };
+        let Ok(Value::Object(m)) = serde_json::from_slice::<Value>(&bytes) else { return cur };
+        let mut out = std::collections::HashMap::new();
+        for (k, v) in m {
+            if let Some(arr) = v.as_array().filter(|a| a.len() == 2) {
+                if let Some(ver) = arr[0].as_str() {
+                    out.insert(k, (ver.to_string(), arr[1].clone()));
+                }
+            }
+        }
+        *self.ftp_index.lock().unwrap_or_else(|e| e.into_inner()) = out.clone();
+        out
+    }
+
+    fn save_ftp_index(&self, cache: &std::collections::HashMap<String, (String, Value)>, now: i64) {
+        *self.ftp_index.lock().unwrap_or_else(|e| e.into_inner()) = cache.clone();
+        if let Store::S3(b) = &self.store {
+            let mut m = serde_json::Map::new();
+            for (k, (ver, val)) in cache {
+                m.insert(k.clone(), json!([ver, val]));
+            }
+            let z = crate::history::gzip(&serde_json::to_vec(&Value::Object(m)).unwrap_or_default());
+            if let Err(e) = b.put(KEY_FTP, &z, "application/gzip", now) {
+                eprintln!("{} not stored: {}", KEY_FTP, e);
+            }
+        }
     }
 
     /// The stored hourly record (S3: re-read when it has changed, checked at
@@ -627,6 +853,9 @@ mod tests {
         if url == STATIONS_URL {
             return Ok(json!({"level": ["143001C", "540198"], "storage": ["143001A"]}));
         }
+        if url == feeds::WARNING_AREAS {
+            return Ok(json!({"features": [{"properties": {"dist_name": "Barcoo River"}, "geometry": {"type": "Polygon", "coordinates": [[[144.0, -24.0], [145.0, -24.0], [145.0, -25.0], [144.0, -24.0]]]}}]}));
+        }
         if url.starts_with(feeds::WMIP) {
             let q: Value = serde_json::from_str(&crate::wmip::decode(url.split_once('?').unwrap().1)).unwrap();
             return Ok(if q["function"] == "get_site_list" {
@@ -758,5 +987,69 @@ mod tests {
         ok.store(false, Ordering::SeqCst);
         assert!(r.refresh().is_err());
         assert!(r.latest().unwrap().is_some());
+    }
+
+    #[test]
+    fn single_ftp_session_and_per_source_health_across_refreshes() {
+        struct MockFtp {
+            ver: String,
+            gets: Arc< std::sync::atomic::AtomicUsize>,
+        }
+        impl feeds::ftp::Dir for MockFtp {
+            fn list_meta(&mut self, _: &str) -> Result<Vec<(String, String)>, String> {
+                Ok(vec![
+                    ("IDQ20860.cap.xml".into(), "812 Oct 21 09:00".into()),
+                    ("IDQ65301.html".into(), self.ver.clone()),
+                ])
+            }
+            fn get(&mut self, path: &str) -> Result<Vec<u8>, String> {
+                self.gets.fetch_add(1, Ordering::SeqCst);
+                if path.ends_with(".cap.xml") {
+                    Ok(br#"<?xml version="1.0"?><alert><identifier>AusBoM-IDQ20860-2026</identifier><sent>2026-10-20T01:00:00+00:00</sent><info><event>Riverine Flood</event><severity>Minor</severity><expires>2026-10-25T00:00:00+00:00</expires><headline>Minor Flood Warning</headline><description>x</description><area><areaDesc>QLD</areaDesc></area></info></alert>"#.to_vec())
+                } else {
+                    Ok(br#"<area onmouseover="javascript:PopupRiver(&quot;Brisbane&quot;,'540198','-27.47','153.03','1.80','Minor','rising','20-10-2026 18:00:00','1.70','2.60','3.50','Click')"/>"#.to_vec())
+                }
+            }
+        }
+        let gets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ver = Arc::new(Mutex::new("2048 Oct 20 18:00".to_string()));
+        let sea_ok = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let t = Arc::new(AtomicI64::new(crate::wmip::epoch_ms("2026-10-20T08:00:00Z").unwrap()));
+        let (t2, g2, v2, s2) = (t.clone(), gets.clone(), ver.clone(), sea_ok.clone());
+        let r = Readings::new(Box::new(fake), Store::Memory, STATIONS_URL.into(), Box::new(move || t2.load(Ordering::SeqCst)))
+            .with_text(Box::new(move |_| {
+                if s2.load(Ordering::SeqCst) {
+                    Ok("Site, Seconds, DateTime, Water Level, Prediction, Residual, Latitude, Longitude\nwhyteislandnx,1792530000,2026-10-20T07:00,1.593,1.501,0.092,-27.4017,153.1574\n".into())
+                } else {
+                    Err("HTTP 503".into())
+                }
+            }))
+            .with_ftp(Box::new(move || Ok(Box::new(MockFtp { ver: v2.lock().unwrap().clone(), gets: g2.clone() }))));
+
+        let s1 = r.refresh().unwrap();
+        assert_eq!(s1["ftpDownloads"], 2, "initial refresh downloads CAP + class page");
+        assert_eq!(s1["sources"]["wdo"]["lastGood"], "2026-10-20T08:00:00Z");
+        assert_eq!(s1["sources"]["wdo"]["errorCount"], 0);
+        assert_eq!(s1["sources"]["warnings"]["lastGood"], "2026-10-20T08:00:00Z");
+        assert_eq!(s1["sources"]["floodclass"]["lastGood"], "2026-10-20T08:00:00Z");
+        assert_eq!(s1["sources"]["sea"]["lastGood"], "2026-10-20T08:00:00Z");
+
+        // 35 minutes later: sea is re-fetched and fails, classes are carried (< 60m),
+        // warnings check FTP but CAP file is unchanged -> 0 FTP downloads.
+        sea_ok.store(false, Ordering::SeqCst);
+        t.fetch_add(35 * 60_000, Ordering::SeqCst);
+        let s2 = r.refresh().unwrap();
+        assert_eq!(s2["ftpDownloads"], 0, "unchanged CAP file is not downloaded again");
+        assert_eq!(gets.load(Ordering::SeqCst), 2);
+        assert_eq!(s2["sources"]["sea"]["lastGood"], "2026-10-20T08:00:00Z", "lastGood kept when sea fails");
+        assert_eq!(s2["sources"]["sea"]["errorCount"], 1);
+        assert!(s2["sources"]["sea"]["lastError"].as_str().unwrap().contains("503"));
+
+        // 30 minutes later (65m total): classes due again, and IDQ65301.html has a new mtime -> 1 download
+        *ver.lock().unwrap() = "2055 Oct 20 19:00".into();
+        t.fetch_add(30 * 60_000, Ordering::SeqCst);
+        let s3 = r.refresh().unwrap();
+        assert_eq!(s3["ftpDownloads"], 1, "only the changed river-height page is downloaded");
+        assert_eq!(gets.load(Ordering::SeqCst), 3);
     }
 }

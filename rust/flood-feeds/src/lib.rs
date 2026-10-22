@@ -924,6 +924,49 @@ pub mod ftp {
         }
     }
 
+    /// A directory listing and file getter (an FTP session, or a stand-in
+    /// for tests). `list_meta` returns `(name, version)` where `version`
+    /// is size + modification time when the server gives them (LIST), or
+    /// empty when only names are known (NLST).
+    pub trait Dir {
+        fn list_meta(&mut self, dir: &str) -> Result<Vec<(String, String)>, String>;
+        fn get(&mut self, path: &str) -> Result<Vec<u8>, String>;
+    }
+
+    /// Parse unix-style `LIST` lines (`-rw-r--r-- 1 u g 12345 Oct 21 09:00 IDQ20855.cap.xml`)
+    /// into `(filename, "size mtime")`. Returns empty if no file lines match.
+    pub fn parse_list_lines(raw: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for line in raw.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 9 || f[0].starts_with('d') || f[0].starts_with("total") {
+                continue;
+            }
+            let Some(size) = f[4].parse::<u64>().ok() else { continue };
+            let name = f[8..].join(" ").rsplit('/').next().unwrap_or("").trim().to_string();
+            if !name.is_empty() {
+                out.push((name, format!("{} {} {} {}", size, f[5], f[6], f[7])));
+            }
+        }
+        out
+    }
+
+    impl Dir for Session {
+        fn list_meta(&mut self, dir: &str) -> Result<Vec<(String, String)>, String> {
+            if let Ok(b) = self.transfer(&format!("LIST {}", dir)) {
+                let parsed = parse_list_lines(&String::from_utf8_lossy(&b));
+                if !parsed.is_empty() {
+                    return Ok(parsed);
+                }
+            }
+            Ok(self.list(dir)?.into_iter().map(|n| (n, String::new())).collect())
+        }
+
+        fn get(&mut self, path: &str) -> Result<Vec<u8>, String> {
+            Session::get(self, path)
+        }
+    }
+
     impl Drop for Session {
         fn drop(&mut self) {
             let _ = self.ctl.write_all(b"QUIT\r\n");
@@ -1064,6 +1107,7 @@ pub fn cap_geocodes(xml: &str) -> Vec<String> {
 /// Every current flood warning on the Bureau's FTP server, as the map's
 /// warnings.json: {ok, fetched, source, warnings: [...]}, most severe first.
 pub fn flood_warnings(now_s: i64, iso_now: &str, errors: &mut Vec<String>) -> Value {
+    use ftp::Dir;
     let fail = |e: String, errors: &mut Vec<String>| {
         errors.push(format!("flood warnings: {}", e));
         json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e})
@@ -1072,35 +1116,12 @@ pub fn flood_warnings(now_s: i64, iso_now: &str, errors: &mut Vec<String>) -> Va
         Ok(s) => s,
         Err(e) => return fail(e, errors),
     };
-    let names = match s.list(BOM_FTP_DIR) {
-        Ok(n) => n,
+    let files = match s.list_meta(BOM_FTP_DIR) {
+        Ok(f) => f,
         Err(e) => return fail(e, errors),
     };
-    let caps: Vec<&String> = names.iter().filter(|n| n.ends_with(".cap.xml") && n.starts_with("ID")).collect();
-    let mut out = Vec::new();
-    let t0 = std::time::Instant::now();
-    for n in caps {
-        if t0.elapsed().as_secs() > 90 {
-            errors.push("flood warnings: out of time; the rest wait for the next refresh".into());
-            break;
-        }
-        match s.get(&format!("{}{}", BOM_FTP_DIR, n)) {
-            Ok(b) => {
-                if let Some(w) = parse_cap_flood(&String::from_utf8_lossy(&b), now_s) {
-                    out.push(w);
-                }
-            }
-            Err(e) => errors.push(format!("flood warnings {}: {}", n, e)),
-        }
-    }
-    let rank = |w: &Value| match w["severity"].as_str().unwrap_or("") {
-        "Extreme" | "Major" => 0,
-        "Severe" | "Moderate" => 1,
-        "Minor" => 2,
-        _ => 3,
-    };
-    out.sort_by_key(|w| (rank(w), w["state"].as_str().unwrap_or("").to_string()));
-    json!({"ok": true, "fetched": iso_now, "source": "ftp", "capFiles": names.iter().filter(|n| n.ends_with(".cap.xml")).count(), "attribution": "© Commonwealth of Australia (Bureau of Meteorology)", "warnings": out})
+    let mut cache = HashMap::new();
+    flood_warnings_from(&mut s, &files, &mut cache, now_s, iso_now, errors).0
 }
 
 #[cfg(test)]
@@ -1142,6 +1163,73 @@ mod warning_tests {
         let later = ts_epoch("2026-10-24T00:00:00Z").unwrap();
         assert!(parse_cap_flood(CAP, later).is_none(), "expired");
         assert!(parse_cap_flood(&CAP.replace("Riverine Flood", "Severe Thunderstorm"), now).is_none(), "not a flood");
+    }
+
+    struct FakeFtp {
+        listing: Vec<(String, String)>,
+        files: HashMap<String, Vec<u8>>,
+        gets: Vec<String>,
+    }
+
+    impl ftp::Dir for FakeFtp {
+        fn list_meta(&mut self, _: &str) -> Result<Vec<(String, String)>, String> {
+            Ok(self.listing.clone())
+        }
+        fn get(&mut self, path: &str) -> Result<Vec<u8>, String> {
+            let name = path.rsplit('/').next().unwrap_or(path).to_string();
+            self.gets.push(name.clone());
+            self.files.get(&name).cloned().ok_or_else(|| format!("missing {}", name))
+        }
+    }
+
+    #[test]
+    fn ftp_lists_once_and_downloads_only_changed_or_new_files() {
+        let raw = "total 16\ndrwxr-xr-x 2 0 0 4096 Oct 21 09:00 .\n-rw-r--r-- 1 0 0 812 Oct 21 09:00 IDQ20860.cap.xml\n-rw-r--r-- 1 0 0 2048 Oct 21 08:30 IDQ65301.html\n";
+        assert_eq!(
+            ftp::parse_list_lines(raw),
+            vec![
+                ("IDQ20860.cap.xml".into(), "812 Oct 21 09:00".into()),
+                ("IDQ65301.html".into(), "2048 Oct 21 08:30".into()),
+            ]
+        );
+        let now = ts_epoch("2026-10-21T00:00:00Z").unwrap();
+        let page = r#"<area onmouseover="javascript:PopupRiver(&quot;Balonne River at St George&quot;,'043104','-28.0667','148.5667','0.86','Below Flood Level','steady','21-10-2026 08:00:00','6.00','8.00','10.00','Click')"/>"#;
+        let cap2 = CAP.replace("IDQ20860", "IDN20861").replace("Barcoo", "Lachlan");
+        let mut fake = FakeFtp {
+            listing: vec![
+                ("IDQ20860.cap.xml".into(), "812 Oct 21 09:00".into()),
+                ("IDN20861.cap.xml".into(), "815 Oct 21 09:05".into()),
+                ("IDQ65301.html".into(), "2048 Oct 21 08:30".into()),
+            ],
+            files: [
+                ("IDQ20860.cap.xml".into(), CAP.as_bytes().to_vec()),
+                ("IDN20861.cap.xml".into(), cap2.as_bytes().to_vec()),
+                ("IDQ65301.html".into(), page.as_bytes().to_vec()),
+            ]
+            .into(),
+            gets: Vec::new(),
+        };
+        let mut cache = HashMap::new();
+        let mut errs = Vec::new();
+        let (w1, fc1, dl1) = flood_ftp_both(&mut fake, &mut cache, now, "2026-10-21T00:00:00Z", true, &mut errs);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(dl1, 3, "first refresh downloads all three");
+        assert_eq!(w1["warnings"].as_array().unwrap().len(), 2);
+        assert!(fc1.unwrap()["43104"].is_object());
+
+        // Second refresh: IDQ20860 disappeared (expired), IDN20861 unchanged, IDQ65301 changed
+        fake.gets.clear();
+        fake.listing = vec![
+            ("IDN20861.cap.xml".into(), "815 Oct 21 09:05".into()),
+            ("IDQ65301.html".into(), "2052 Oct 21 09:15".into()),
+        ];
+        let (w2, fc2, dl2) = flood_ftp_both(&mut fake, &mut cache, now, "2026-10-21T00:15:00Z", true, &mut errs);
+        assert_eq!(dl2, 1, "only the changed file is downloaded");
+        assert_eq!(fake.gets, vec!["IDQ65301.html".to_string()]);
+        assert_eq!(w2["warnings"].as_array().unwrap().len(), 1, "disappeared warning dropped");
+        assert_eq!(w2["warnings"][0]["id"], "IDN20861");
+        assert!(!cache.contains_key("IDQ20860.cap.xml"), "removed from cache too");
+        assert!(fc2.unwrap()["43104"].is_object());
     }
 }
 
@@ -1195,43 +1283,165 @@ pub fn parse_river_popups(html: &str) -> Vec<Value> {
 /// map pages: {Bureau station number: {name, minor, moderate, major, class,
 /// tendency, level, at, lat, lon}} (150-second limit).
 pub fn flood_classes(errors: &mut Vec<String>) -> Value {
-    let mut out = Map::new();
+    use ftp::Dir;
     let mut s = match ftp::Session::open(BOM_FTP_HOST, 30) {
         Ok(s) => s,
         Err(e) => {
             errors.push(format!("flood classes: {}", e));
-            return Value::Object(out);
+            return Value::Object(Map::new());
         }
     };
-    let names = match s.list(BOM_FTP_DIR) {
-        Ok(n) => n,
+    let files = match s.list_meta(BOM_FTP_DIR) {
+        Ok(f) => f,
         Err(e) => {
             errors.push(format!("flood classes: {}", e));
-            return Value::Object(out);
+            return Value::Object(Map::new());
         }
     };
-    let pages: Vec<&String> = names.iter().filter(|n| n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && &n[3..6] == "653").collect();
+    let mut cache = HashMap::new();
+    flood_classes_from(&mut s, &files, &mut cache, errors).0
+}
+
+/// warnings.json from an open FTP directory (`files` from `list_meta`), reusing
+/// `cache` (`{filename: (version, parsed_warning_or_null)}`) so unchanged CAP
+/// files aren't downloaded again; entries for files that disappeared are dropped.
+/// Returns `(warnings_doc, downloaded_count)`.
+pub fn flood_warnings_from(
+    dir: &mut dyn ftp::Dir,
+    files: &[(String, String)],
+    cache: &mut HashMap<String, (String, Value)>,
+    now_s: i64,
+    iso_now: &str,
+    errors: &mut Vec<String>,
+) -> (Value, usize) {
+    let caps: Vec<&(String, String)> = files.iter().filter(|(n, _)| n.ends_with(".cap.xml") && n.starts_with("ID")).collect();
+    let live: HashSet<&str> = caps.iter().map(|(n, _)| n.as_str()).collect();
+    cache.retain(|k, _| !k.ends_with(".cap.xml") || live.contains(k.as_str()));
+    let mut out = Vec::new();
+    let mut downloaded = 0usize;
     let t0 = std::time::Instant::now();
-    for n in pages {
-        if t0.elapsed().as_secs() > 150 {
-            errors.push("flood classes: out of time; the rest wait for the next refresh".into());
-            break;
-        }
-        match s.get(&format!("{}{}", BOM_FTP_DIR, n)) {
-            Ok(b) => {
-                for g in parse_river_popups(&String::from_utf8_lossy(&b)) {
-                    let has_levels = ["minor", "moderate", "major"].iter().any(|k| g[*k].is_number());
-                    let st = g["station"].as_str().unwrap_or("").to_string();
-                    // the same gauge can be on several pages: keep one with levels
-                    if has_levels || !out.contains_key(&st) {
-                        out.insert(st, g);
-                    }
+    for (n, ver) in &caps {
+        let hit = !ver.is_empty() && cache.get(n).is_some_and(|(v, _)| v == ver);
+        let parsed = if hit {
+            cache[n].1.clone()
+        } else {
+            if t0.elapsed().as_secs() > 90 {
+                errors.push("flood warnings: out of time; the rest wait for the next refresh".into());
+                break;
+            }
+            match dir.get(&format!("{}{}", BOM_FTP_DIR, n)) {
+                Ok(b) => {
+                    downloaded += 1;
+                    let w = parse_cap_flood(&String::from_utf8_lossy(&b), now_s).unwrap_or(Value::Null);
+                    cache.insert(n.clone(), (ver.clone(), w.clone()));
+                    w
+                }
+                Err(e) => {
+                    errors.push(format!("flood warnings {}: {}", n, e));
+                    cache.get(n).map(|(_, w)| w.clone()).unwrap_or(Value::Null)
                 }
             }
-            Err(e) => errors.push(format!("flood classes {}: {}", n, e)),
+        };
+        if parsed.is_object() && parsed["expires"].as_str().and_then(ts_epoch).is_none_or(|t| t >= now_s) {
+            out.push(parsed);
         }
     }
-    Value::Object(out)
+    let rank = |w: &Value| match w["severity"].as_str().unwrap_or("") {
+        "Extreme" | "Major" => 0,
+        "Severe" | "Moderate" => 1,
+        "Minor" => 2,
+        _ => 3,
+    };
+    out.sort_by_key(|w| (rank(w), w["state"].as_str().unwrap_or("").to_string()));
+    let doc = json!({
+        "ok": true, "fetched": iso_now, "source": "ftp",
+        "capFiles": files.iter().filter(|(n, _)| n.ends_with(".cap.xml")).count(),
+        "downloaded": downloaded,
+        "attribution": "© Commonwealth of Australia (Bureau of Meteorology)",
+        "warnings": out,
+    });
+    (doc, downloaded)
+}
+
+/// Flood class levels and current classes from an open FTP directory (`files`
+/// from `list_meta`), reusing `cache` (`{filename: (version, [parsed_gauges])}`)
+/// for unchanged `IDx653xx.html` pages and dropping pages that disappeared.
+/// Returns `(classes_doc, downloaded_count)`.
+pub fn flood_classes_from(
+    dir: &mut dyn ftp::Dir,
+    files: &[(String, String)],
+    cache: &mut HashMap<String, (String, Value)>,
+    errors: &mut Vec<String>,
+) -> (Value, usize) {
+    let pages: Vec<&(String, String)> = files.iter().filter(|(n, _)| n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && &n[3..6] == "653").collect();
+    let live: HashSet<&str> = pages.iter().map(|(n, _)| n.as_str()).collect();
+    cache.retain(|k, _| !k.ends_with(".html") || live.contains(k.as_str()));
+    let mut out = Map::new();
+    let mut downloaded = 0usize;
+    let t0 = std::time::Instant::now();
+    for (n, ver) in &pages {
+        let hit = !ver.is_empty() && cache.get(n).is_some_and(|(v, _)| v == ver);
+        let gauges = if hit {
+            cache[n].1.as_array().cloned().unwrap_or_default()
+        } else {
+            if t0.elapsed().as_secs() > 150 {
+                errors.push("flood classes: out of time; the rest wait for the next refresh".into());
+                break;
+            }
+            match dir.get(&format!("{}{}", BOM_FTP_DIR, n)) {
+                Ok(b) => {
+                    downloaded += 1;
+                    let gs = parse_river_popups(&String::from_utf8_lossy(&b));
+                    cache.insert(n.clone(), (ver.clone(), Value::Array(gs.clone())));
+                    gs
+                }
+                Err(e) => {
+                    errors.push(format!("flood classes {}: {}", n, e));
+                    cache.get(n).and_then(|(_, v)| v.as_array().cloned()).unwrap_or_default()
+                }
+            }
+        };
+        for g in gauges {
+            let has_levels = ["minor", "moderate", "major"].iter().any(|k| g[*k].is_number());
+            let st = g["station"].as_str().unwrap_or("").to_string();
+            // the same gauge can be on several pages: keep one with levels
+            if has_levels || !out.contains_key(&st) {
+                out.insert(st, g);
+            }
+        }
+    }
+    (Value::Object(out), downloaded)
+}
+
+/// Both flood warnings and flood class/river height pages over a single FTP
+/// session, downloading only files whose LIST size/mtime changed since `cache`.
+pub fn flood_ftp_both(
+    dir: &mut dyn ftp::Dir,
+    cache: &mut HashMap<String, (String, Value)>,
+    now_s: i64,
+    iso_now: &str,
+    want_classes: bool,
+    errors: &mut Vec<String>,
+) -> (Value, Option<Value>, usize) {
+    let files = match dir.list_meta(BOM_FTP_DIR) {
+        Ok(f) => f,
+        Err(e) => {
+            errors.push(format!("flood warnings: {}", e));
+            if want_classes {
+                errors.push(format!("flood classes: {}", e));
+            }
+            let w = json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e});
+            return (w, want_classes.then(|| Value::Object(Map::new())), 0);
+        }
+    };
+    let (w, dw) = flood_warnings_from(dir, &files, cache, now_s, iso_now, errors);
+    let (fc, dc) = if want_classes {
+        let (fc, d) = flood_classes_from(dir, &files, cache, errors);
+        (Some(fc), d)
+    } else {
+        (None, 0)
+    };
+    (w, fc, dw + dc)
 }
 
 /// Is a Bureau flood class one of minor, moderate or major flooding?

@@ -44,9 +44,15 @@ Shipped this round:
 - **Refresh now**: a button in the watch panel re-fetches live readings, at
   most once every 5 minutes (remembered across reloads); the page starts from
   the readings saved by the last visit and says why a saved copy wasn't used.
-- **Per-source status** (5f, part): readings record when each source was
-  fetched and recorded (clock times and live times per source); the Data
-  status panel never sits stuck on "Loading".
+- **Per-source status** (5f): readings record when each source was fetched
+  and recorded plus per-source `lastGood`, `lastError` and `errorCount` in
+  `r["sources"]` (exposed in `/health` and shown in the Data status panel,
+  which never sits stuck on "Loading").
+- **Single FTP session & incremental downloads** (5b): `flood_warnings` and
+  `flood_classes` share one `ftp::Session` per refresh (`flood_ftp_both`),
+  use `LIST` sizes and mtimes cached in memory and S3
+  (`readings-ftp-index.json.gz`), download only changed or new files, and
+  drop entries for files that disappeared.
 - **Service worker**: network requests give up after 20 s instead of hanging.
 - **Bureau access**: the broker reads the Bureau only through its FTP server
   and ArcGIS map service, never posing as a browser.
@@ -289,7 +295,7 @@ Until then `boardToModel` (app.js) places a peak from the gauge's rating
 (`gaugeRating`, median height) or from the lowest level recorded in the last
 5+ days; the message says which.
 
-### 5. Fetching improvements (5a, 5c and 5d are done; 5b, 5e and the rest of 5f remain)
+### 5. Fetching improvements (5a, 5b, 5c, 5d and 5f are done; 5e remains)
 
 Measured on a refresh (21 Oct): 196 s in all, of which Water Data Online
 (KiWIS) 189 s; recurring errors are KiWIS `HTTP 504` on value batches and
@@ -310,7 +316,7 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   far fewer 504s. Check: `stageSeconds.readings` in the summary; levels
   count and kinds unchanged in `tests/broker-live.js` notices.
 
-**5b. FTP: only changed files, one connection.**
+**5b. FTP: only changed files, one connection — DONE.**
 - `flood_warnings` and `flood_classes` each open a session and download
   every file. Use one `ftp::Session` per refresh for both; `LIST` gives
   sizes and modification times: keep `{name: (size, mtime, parsed)}` from
@@ -352,17 +358,13 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   via the public URL). Watch `build.yml` step outcomes and the
   "Data status" panel (it reads `data/status.json`).
 
-**5f. Health per source — partly done.**
+**5f. Health per source — DONE.**
 - Shipped: readings record when each source was fetched and recorded
-  (clock times and live times per source), and the Data status panel
-  never sits stuck on "Loading".
-- Still to do: per-source last success time, last error and a short error
-  count (Water Data Online, Qld WMIP, FTP warnings, FTP classes/levels,
-  map service (warning areas), Open-Meteo, storm tide CSV), in the refresh
-  summary and readings (`r["sources"]`), exposed in `/health` and shown in
-  the app's Data status panel ("Water Data Online: last good 12 min ago")
-  next to the build's sources. Makes the next "live readings unavailable"
-  report diagnosable from a screenshot.
+  (clock times and live times per source), plus per-source `lastGood`,
+  `lastError` and `errorCount` (`wdo`, `qld`, `warnings`, `warningAreas`,
+  `floodclass`, `rain`, `sea`) in the refresh summary and readings
+  (`r["sources"]`), exposed in `/health` and shown in the app's Data
+  status panel (which never sits stuck on "Loading").
 
 ### 6. Smaller items
 

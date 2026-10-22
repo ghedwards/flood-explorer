@@ -373,7 +373,10 @@ impl Broker {
             // which readings this copy of the broker serves, and from where
             // (loads them if it hasn't yet: one S3 request)
             let readings = self.readings.as_ref().map(|r| match r.latest() {
-                Ok(Some(d)) => json!({"fetched": wmip::iso_utc(d.fetched_ms), "loadedFrom": d.source, "bytes": d.body.len(), "gzBytes": d.gz.len()}),
+                Ok(Some(d)) => {
+                    let sources = serde_json::from_slice::<Value>(&d.body).ok().and_then(|v| v.get("sources").cloned());
+                    json!({"fetched": wmip::iso_utc(d.fetched_ms), "loadedFrom": d.source, "bytes": d.body.len(), "gzBytes": d.gz.len(), "sources": sources})
+                }
                 Ok(None) => json!({"loadedFrom": null}),
                 Err(e) => json!({"error": e}),
             });

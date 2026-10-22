@@ -8144,17 +8144,24 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       return best;
     };
     const count = (kind) => Object.values(r.level || {}).filter((x) => x && x.latestKind === kind).length;
-    const row = (name, fetched, extra) => `<li><strong>${escapeHtml(name)}</strong> <span class="hint">${fetched ? `fetched ${escapeHtml(when(fetched))}` : 'not fetched yet'}${extra ? ` · ${extra}` : ''}</span></li>`;
+    const src = (k) => (r.sources && r.sources[k]) || null;
+    const row = (name, key, fetched, extra) => {
+      const s = src(key);
+      const good = (s && s.lastGood) || fetched;
+      const err = s && s.errorCount ? ` · ${s.errorCount} error${s.errorCount === 1 ? '' : 's'}${s.lastError ? ` (${escapeHtml(String(s.lastError).slice(0, 120))})` : ''}` : '';
+      return `<li><strong>${escapeHtml(name)}</strong> <span class="hint">${good ? `last good ${escapeHtml(when(good))}` : 'not fetched yet'}${extra ? ` · ${extra}` : ''}${err}</span></li>`;
+    };
     const nr = (kind) => { const b = newest(kind); return b ? `${count(kind).toLocaleString('en-AU')} gauges, newest reading ${escapeHtml(when(b.iso))}` : 'none'; };
     const errs = (r.errors || []).slice(0, 4);
     const rows = [
-      row('Bureau river levels (FTP, hourly)', r.floodclassFetched || r.fetched, nr('bureau')),
-      row('Queensland live levels', r.fetched, nr('realtime')),
-      row('Water Data Online levels', r.fetched, `${nr('hourly')}; daily: ${count('daily').toLocaleString('en-AU')} gauges`),
-      row('Flood warnings (Bureau)', r.warningsFetched, `${((r.warnings && r.warnings.warnings) || []).length} current`),
-      row('Flood classes (Bureau)', r.floodclassFetched, `${Object.keys(r.floodclass || {}).length.toLocaleString('en-AU')} gauges`),
-      row('Rain forecast (Open-Meteo)', r.rainFetched, `${Object.keys(r.rain || {}).length.toLocaleString('en-AU')} gauges`),
-      row('Storm tide (Qld)', r.seaFetched, `${Object.keys(r.sea || {}).length} gauges`),
+      row('Bureau river levels (FTP, hourly)', 'floodclass', r.floodclassFetched || r.fetched, nr('bureau')),
+      row('Queensland live levels', 'qld', r.fetched, nr('realtime')),
+      row('Water Data Online levels', 'wdo', r.wdoFetched || r.fetched, `${nr('hourly')}; daily: ${count('daily').toLocaleString('en-AU')} gauges`),
+      row('Flood warnings (Bureau)', 'warnings', r.warningsFetched, `${((r.warnings && r.warnings.warnings) || []).length} current`),
+      row('Flood warning areas (Bureau)', 'warningAreas', r.warningsFetched, `${((r.warnings && r.warnings.warnings) || []).filter((w) => (w.polygons || []).length).length} with outlines`),
+      row('Flood classes (Bureau)', 'floodclass', r.floodclassFetched, `${Object.keys(r.floodclass || {}).length.toLocaleString('en-AU')} gauges`),
+      row('Rain forecast (Open-Meteo)', 'rain', r.rainFetched, `${Object.keys(r.rain || {}).length.toLocaleString('en-AU')} gauges`),
+      row('Storm tide (Qld)', 'sea', r.seaFetched, `${Object.keys(r.sea || {}).length} gauges`),
     ];
     return `<p class="hint"><strong>Live data</strong> (the broker, every 15 minutes): last fetch ${escapeHtml(when(r.fetched))}.</p><ul class="data-status">${rows.join('')}</ul>${errs.length ? `<p class="hint">Problems in the last fetch: ${errs.map(escapeHtml).join('; ')}</p>` : ''}<p class="hint"><strong>Site build</strong></p>`;
   }
@@ -8165,7 +8172,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!box) return null;
     // the live part needs no network: show it at once, then the build's
     // status file (at most 8 s: a stalled request mustn't leave "Loading…")
-    let live = '';
+    let live;
     try { live = liveSourcesHtml(); } catch (e) { live = `<p class="hint">Live data: couldn't list it (${escapeHtml(String(e && e.message || e))}).</p>`; }
     box.innerHTML = `${live}<p class="hint">Loading the site build's status…</p>`;
     let st, why = '';
