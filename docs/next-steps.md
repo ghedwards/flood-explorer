@@ -457,6 +457,51 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   (`r["sources"]`), exposed in `/health` and shown in the app's Data
   status panel (which never sits stuck on "Loading").
 
+**5g. Cache what we can, ask too often for nothing (design notes; open).**
+
+Why: the QLDTraffic public key's quota ran out on 22 Oct and the roads
+fetch went on trying every 30 minutes even though every 429 said the same
+thing; Water Data Online takes ~95% of a refresh when asked (5a fixed the
+worst); the site build refetches what the broker already holds (5e fixed
+the runtime build). Three rules, mostly to adopt generally rather than
+invent:
+
+1. **Ask no more often than the source changes** — the cadences are
+   scattered constants today; a single table (name, URL, every, carry,
+   backoff) next to `ROADS_EVERY_MS` etc. in `readings.rs` would make
+   them auditable at a glance:
+
+   | Source | Ask | Carries | Ref |
+   | --- | --- | --- | --- |
+   | QLD live levels, warnings, flood classes, sea | every refresh (15 min) | — | — |
+   | Water Data Online levels / daily series | 1 h / 3 h | in between | 5a |
+   | Rain forecast | 3 h cycle, batches resume individually | whole doc | 5d |
+   | Roads (QLD+NSW) | 30 min; hourly while over quota | 2 h, 24 h for floodclass | db5d818a |
+   | Site build | reuses cache/readings.json | — | 5e |
+
+2. **Back off on upstream refusals, per source**: on HTTP 429 (and an
+   upstream `Retry-After` when present), stop asking that source for an
+   hour, then 4 h, then let the day's quota go; a source in backoff skips
+   its next attempts and serves its carried copy, and the backoff state
+   should show in the source health (`lastError`/`errorCount` from 5f
+   already carry the pieces). Roads does the 1-hour step (`db5d818a`);
+   generalize it to every fetcher with a test like
+   `qld_traffic_over_quota_is_asked_hourly_not_every_half_hour`.
+3. **Serve from cache, validate in the background**: the service worker
+   already cacheFirsts tiles/terrain/elevation and networkFirsts API and
+   broker answers; candidates to flip are (a) map-service answers
+   (council/states/census — stale-while-revalidate: serve the cached
+   copy, refresh in the background, freshness matters less for planning
+   overlays), and (b) `stale-while-revalidate` on the live broker paths
+   with the ETags the broker already answers (a reloaded page today
+   re-pulls ~226 KB gzipped where a 304 would end it). Do not flip
+   warnings or road events network-first to cache-first: they are
+   life-safety and must stay fresh-first.
+
+Check: after a planted 429 a refresh makes exactly one call (the roads
+test pattern); `/health` shows the backoff; `tests/broker-live.js`
+stays green.
+
 ### 6. Smaller items
 
 Follow-ups from 2026-10-22 (verify once the pending publishes land):
@@ -482,6 +527,13 @@ Follow-ups from 2026-10-22 (verify once the pending publishes land):
   a popup's "Because of: <due>" line and the all-events wording on the live
   site; the old "flooding filter" wording anywhere else in docs already was
   updated to match.
+
+- **Broker smoke-test flakiness**: the deploy run shows "failure" even
+  though the function and refresh succeed, because the post-deploy
+  `/v1/levels` check hit a transient "the Queensland Water portal did
+  not answer". Either make that smoke step tolerant (exit 0 with a
+  warning, or retry the levels check) or drop it and rely on the readings
+  check alone, so the badge stays green on a normal deploy.
 
 - **Bureau links**: the user saw some fail; which ones is unknown. The
   warning link is `https://www.bom.gov.au/products/<ID>.shtml`; the Bureau's
