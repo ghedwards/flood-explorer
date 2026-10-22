@@ -4058,6 +4058,12 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!nat.warnLayer) nat.warnLayer = L.layerGroup();
     nat.layers['Flood warning areas (BoM)'] = nat.warnLayer;
     drawWarningAreas();
+    if (!nat.roadClosuresLayer) nat.roadClosuresLayer = L.layerGroup();
+    nat.layers['Road closures, flooding (official)'] = nat.roadClosuresLayer;
+    drawRoadClosures();
+    if (!nat.rainObsLayer) nat.rainObsLayer = L.layerGroup();
+    nat.layers['Rain gauges, observed 24h (BoM)'] = nat.rainObsLayer;
+    drawRainObs();
     if (nat.data.storages.length) {
       nat.layers['Dams and water storages (BoM)'] = L.geoJSON({ type: 'FeatureCollection', features: nat.data.storages }, {
         attribution: BOM_ATTR,
@@ -4077,7 +4083,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function addNationalLayers(m) {
     const L = window.L;
     buildNationalLayers(L, m);
-    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)'];
+    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures, flooding (official)'];
     for (const [name, layer] of Object.entries(nat.layers)) {
       registerOverlay(name, layer);
       if (nat.defaultsApplied) continue;   // respect what the viewer has switched since
@@ -4238,12 +4244,47 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       <span class="hint">${escapeHtml(fmtReadingTime(x.at))}. Heights on the gauge's own datum. Storm tide data &copy; State of Queensland, CC BY 4.0.</span></div>`;
   }
 
-  // Rain forecast near a gauge (broker, from Open-Meteo, every 3 hours)
+  // Rain forecast near a gauge (broker, from Open-Meteo, every 3 hours) and
+  // observed rainfall at this gauge (or the nearest Bureau rain gauge within 15 km).
+  function rainObsFor(p) {
+    const ro = nat.readings && nat.readings.rainObs;
+    if (!ro) return null;
+    const bom = String(p.bom || '').replace(/^0+/, '');
+    if (bom && ro[bom]) return Object.assign({ station: bom, exact: true }, ro[bom]);
+    const st = String(p.station || '').replace(/^0+/, '');
+    if (st && ro[st]) return Object.assign({ station: st, exact: true }, ro[st]);
+    const g = nat.data && nat.data.gauges && nat.data.gauges.find((f) => f.properties.id === p.id || f.properties.station === p.station);
+    const coords = g && g.geometry && g.geometry.coordinates;
+    if (!coords) return null;
+    const [lon, lat] = coords;
+    let best = null, bestKm = 15;
+    for (const [k, x] of Object.entries(ro)) {
+      if (!Number.isFinite(x.lat) || !Number.isFinite(x.lon)) continue;
+      const km = kmBetween([lat, lon], [x.lat, x.lon]);
+      if (km < bestKm) { bestKm = km; best = Object.assign({ station: k, exact: false, km }, x); }
+    }
+    return best;
+  }
+
   function rainHtml(p) {
+    const parts = [];
+    const obs = rainObsFor(p);
+    if (obs && (Number.isFinite(obs.mm24h) || Number.isFinite(obs.mm6h))) {
+      const m24 = Number.isFinite(obs.mm24h) ? obs.mm24h : 0;
+      const heavyObs = m24 >= 100 || (Number.isFinite(obs.mm6h) && obs.mm6h >= 50);
+      const bits = [];
+      if (Number.isFinite(obs.mm24h)) bits.push(`${obs.mm24h.toFixed(1)} mm in the last 24 hours`);
+      if (Number.isFinite(obs.mm6h)) bits.push(`${obs.mm6h.toFixed(1)} mm in 6 hours`);
+      if (Number.isFinite(obs.mm1h) && obs.mm1h > 0) bits.push(`${obs.mm1h.toFixed(1)} mm in 1 hour`);
+      const where = obs.exact ? '' : ` at ${obs.name || obs.station} (${obs.km.toFixed(0)} km away)`;
+      parts.push(`<span class="rise${heavyObs ? ' rise-fast' : ''}">${heavyObs ? '<strong>Heavy rain recorded:</strong> ' : 'Observed rain'}${escapeHtml(where)}: ${escapeHtml(bits.join(', '))} (Bureau of Meteorology)</span>`);
+    }
     const r = nat.readings && nat.readings.rain && nat.readings.rain[p.station];
-    if (!r) return '';
-    const heavy = r[0] >= 50 || r[1] >= 100;
-    return `<span class="rise${heavy ? ' rise-fast' : ''}">${heavy ? '<strong>Heavy rain forecast:</strong> ' : 'Rain forecast nearby: '}${Math.round(r[0])} mm in the next 24 hours, ${Math.round(r[1])} mm in 72 (Open-Meteo, CC BY 4.0)</span>`;
+    if (r) {
+      const heavy = r[0] >= 50 || r[1] >= 100;
+      parts.push(`<span class="rise${heavy ? ' rise-fast' : ''}">${heavy ? '<strong>Heavy rain forecast:</strong> ' : 'Rain forecast nearby: '}${Math.round(r[0])} mm in the next 24 hours, ${Math.round(r[1])} mm in 72 (Open-Meteo, CC BY 4.0)</span>`);
+    }
+    return parts.join('');
   }
 
   function sparkline(series) {
@@ -5090,6 +5131,66 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     }
     status.warningAreas = { warnings: allWarnings().length, drawn, bureauOutlines: outlines };
   }
+  function roadColor(closed, major) {
+    return closed ? (major ? '#b71c1c' : '#d32f2f') : (major ? '#ef6c00' : '#ff8f00');
+  }
+  function roadClosurePopupHtml(x) {
+    return `<div class="road-popup"><strong>${escapeHtml(x.road || 'Road')}</strong>${x.where ? ` <span class="hint">${escapeHtml(x.where)}</span>` : ''}<br>
+      <span class="hint">${escapeHtml(x.desc || 'Closed due to flooding')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span><br>
+      <span class="hint">${x.closed ? 'Closed to all traffic' : 'Caution advised'}${x.major ? ' · major road' : ''}</span>
+      ${x.line && x.line.length ? '' : ''}
+      ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
+  }
+  function drawRoadClosures() {
+    const L = window.L, lyr = nat.roadClosuresLayer;
+    if (!L || !lyr) return;
+    lyr.clearLayers();
+    const items = (nat.readings && nat.readings.roads && nat.readings.roads.items) || [];
+    let n = 0;
+    for (const x of items) {
+      if (!Number.isFinite(x.lat) || !Number.isFinite(x.lon)) continue;
+      const color = roadColor(!!x.closed, !!x.major);
+      const w = x.closed ? 4 : 2.5;
+      let m;
+      if (Array.isArray(x.line) && x.line.length >= 2) {
+        m = L.polyline(x.line.map(([la, lo]) => [la, lo]), { color, weight: w, opacity: 0.9, dashArray: x.closed ? null : '6 4' });
+      } else {
+        m = L.circleMarker([x.lat, x.lon], { radius: x.major ? 6 : 4, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 0.95 });
+      }
+      m.bindPopup(() => roadClosurePopupHtml(x), { maxWidth: 320 });
+      m.addTo(lyr);
+      n++;
+    }
+    status.roadClosures = { count: items.length, drawn: n, closed: items.filter((x) => x.closed).length, sources: nat.readings && nat.readings.roads ? nat.readings.roads.sources : null };
+  }
+  function drawRainObs() {
+    const L = window.L, lyr = nat.rainObsLayer;
+    if (!L || !lyr) return;
+    lyr.clearLayers();
+    const ro = (nat.readings && nat.readings.rainObs) || {};
+    const gaugeFor = (st) => (nat.data && nat.data.gauges || []).find((g) => String(g.properties.station) === String(st) || String(g.properties.bom).replace(/^0+/, '') === String(st));
+    let n = 0;
+    for (const [st, x] of Object.entries(ro)) {
+      if (!Number.isFinite(x.lat) || !Number.isFinite(x.lon)) continue;
+      const m24 = Number.isFinite(x.mm24h) ? x.mm24h : 0;
+      const heavy = m24 >= 100 || (Number.isFinite(x.mm6h) && x.mm6h >= 50);
+      const color = heavy ? '#c62828' : (m24 >= 50 ? '#ef6c00' : '#1565c0');
+      const m = L.circleMarker([x.lat, x.lon], { radius: heavy ? 7 : 5, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 0.9 });
+      const bits = [];
+      if (Number.isFinite(x.mm24h)) bits.push(`${x.mm24h.toFixed(1)} mm in 24 h`);
+      if (Number.isFinite(x.mm6h)) bits.push(`${x.mm6h.toFixed(1)} mm in 6 h`);
+      if (Number.isFinite(x.mm1h) && x.mm1h > 0) bits.push(`${x.mm1h.toFixed(1)} mm in 1 h`);
+      const gf = gaugeFor(st);
+      m.bindPopup(() => `<div class="rain-obs-popup"><strong>${escapeHtml(x.name || 'Rain gauge')}</strong>${gf ? ` <span class="hint">${escapeHtml(gf.properties.name || '')} area</span>` : ''}<br>
+        <span class="hint">Observed rainfall (Bureau of Meteorology, last ${Number.isFinite(x.mm24h) ? '24' : '6'} hours): ${escapeHtml(bits.join(', '))}${x.station ? ` · station ${escapeHtml(String(x.station))}` : ''}</span></div>`);
+      m.addTo(lyr);
+      n++;
+    }
+    status.rainObs = { count: Object.keys(ro).length, drawn: n };
+  }
+  // redraw the live sources (warnings, road closures, rain obs) when new
+  // readings arrive from the broker
+  // (defined later; declared here so buildNationalLayers can call them)
   // Show a warning on the map: switch the layer on, fit its area, open it.
   function showWarning(w) {
     if (!w || !state.lmap) return;
@@ -5379,6 +5480,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       renderWarnings();
       renderWatch();
       try { renderInfo(); } catch (e) { /* the panel isn't built yet */ }
+    try { drawRoadClosures(); drawRainObs(); } catch (e) { /* map not ready */ }
       status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched, manual: !!manual };
       return 'new';
     } catch (e) { return 'error'; /* next time */ }

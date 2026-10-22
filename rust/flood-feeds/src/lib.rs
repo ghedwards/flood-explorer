@@ -373,6 +373,8 @@ pub const RISE_24H_M: f64 = 1.0;
 /// Heavy rain forecast near a gauge (mm in the next 24 or 72 hours).
 pub const RAIN_24H_MM: f64 = 50.0;
 pub const RAIN_72H_MM: f64 = 100.0;
+/// Heavy rain observed at a rain gauge in the last 24 hours (mm).
+pub const RAIN_OBS_24H_MM: f64 = 100.0;
 /// A sea this much above the predicted tide (storm surge, metres).
 pub const SURGE_M: f64 = 0.3;
 
@@ -483,6 +485,35 @@ pub fn watch_list(doc: &Value) -> Value {
                 "why": [format!("{} flooding now{} (Bureau of Meteorology)", g["class"].as_str().unwrap_or(""), if tend.is_empty() { String::new() } else { format!(", {}", tend) })]})));
         }
     }
+    // rain gauges that have recorded heavy rain in the last 24 hours
+    if let Some(ro) = doc["rainObs"].as_object() {
+        for (st, x) in ro {
+            if let Some(mm) = x["mm24h"].as_f64().filter(|m| *m >= RAIN_OBS_24H_MM) {
+                let mut why = format!("{:.0} mm of rain recorded in the last 24 hours", mm);
+                if let Some(m6) = x["mm6h"].as_f64().filter(|m| *m > 0.0) {
+                    why.push_str(&format!(" ({:.0} mm in the last 6 hours)", m6));
+                }
+                w.push(((mm / RAIN_OBS_24H_MM) * 1.5, json!({
+                    "kind": "rainObs", "station": st, "name": x["name"],
+                    "lat": x["lat"], "lon": x["lon"], "mm24h": mm, "why": [why],
+                })));
+            }
+        }
+    }
+    // official flood road closures on major roads
+    for item in doc["roads"]["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        if item["closed"].as_bool() == Some(true) && item["major"].as_bool() == Some(true) {
+            let road = item["road"].as_str().unwrap_or("Road");
+            let wh = item["where"].as_str().unwrap_or("");
+            let name = if wh.is_empty() { road.to_string() } else { format!("{} ({})", road, wh) };
+            let desc = item["desc"].as_str().unwrap_or("Closed due to flooding");
+            w.push((4.0, json!({
+                "kind": "road", "station": item["id"], "name": name,
+                "lat": item["lat"], "lon": item["lon"], "at": item["updated"],
+                "link": item["link"], "why": [format!("{} ({})", desc, item["state"].as_str().unwrap_or(""))],
+            })));
+        }
+    }
     // the Bureau's own warnings come first
     for x in doc["warnings"]["warnings"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
         let sev = x["severity"].as_str().unwrap_or("");
@@ -496,8 +527,8 @@ pub fn watch_list(doc: &Value) -> Value {
 
 /// What puts something on the watch list, for the map to explain.
 pub fn watch_rule() -> String {
-    format!("a current Bureau flood warning; a gauge the Bureau has at minor flooding or above; river up at least {} m in 3 hours or {} m in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
-        RISE_3H_M, RISE_24H_M, RAIN_24H_MM, RAIN_72H_MM, SURGE_M)
+    format!("a current Bureau flood warning; a gauge the Bureau has at minor flooding or above; a major road officially closed by flooding; river up at least {} m in 3 hours or {} m in 24 hours; at least {:.0} mm of rain recorded in 24 hours; at least {} mm of rain forecast near the gauge in 24 hours or {} mm in 72; sea at least {} m above the predicted tide",
+        RISE_3H_M, RISE_24H_M, RAIN_OBS_24H_MM, RAIN_24H_MM, RAIN_72H_MM, SURGE_M)
 }
 
 /* ---------------------------------------------------------- the sea */
@@ -1235,6 +1266,23 @@ mod warning_tests {
 
 /* ------------------------------------------------- flood class levels */
 
+/// Split a popup call's arguments (`"name",'station','lat',...`) on commas
+/// outside quotes.
+fn split_popup_args(raw: &str) -> Vec<String> {
+    let args_src = xml_unescape(raw);
+    let (mut args, mut cur, mut q) = (Vec::new(), String::new(), None::<char>);
+    for ch in args_src.chars() {
+        match (q, ch) {
+            (None, '\'' | '"') => q = Some(ch),
+            (Some(c), _) if ch == c => q = None,
+            (None, ',') => args.push(std::mem::take(&mut cur).trim().to_string()),
+            _ => cur.push(ch),
+        }
+    }
+    args.push(cur.trim().to_string());
+    args
+}
+
 /// One gauge from the Bureau's river height map pages (IDx653xx.html on
 /// the FTP server): each gauge's marker carries
 /// PopupRiver("name", 'station', 'lat', 'lon', 'level', 'class',
@@ -1245,18 +1293,7 @@ pub fn parse_river_popups(html: &str) -> Vec<Value> {
     while let Some(i) = rest.find("PopupRiver(") {
         rest = &rest[i + "PopupRiver(".len()..];
         let end = rest.find(')').unwrap_or(rest.len());
-        let args_src = xml_unescape(&rest[..end]);
-        // split on commas outside quotes
-        let (mut args, mut cur, mut q) = (Vec::new(), String::new(), None::<char>);
-        for ch in args_src.chars() {
-            match (q, ch) {
-                (None, '\'' | '"') => q = Some(ch),
-                (Some(c), _) if ch == c => q = None,
-                (None, ',') => args.push(std::mem::take(&mut cur).trim().to_string()),
-                _ => cur.push(ch),
-            }
-        }
-        args.push(cur.trim().to_string());
+        let args = split_popup_args(&rest[..end]);
         if args.len() < 11 {
             continue;
         }
@@ -1275,6 +1312,32 @@ pub fn parse_river_popups(html: &str) -> Vec<Value> {
             "level": num(&args[4]), "class": args[5], "tendency": args[6], "at": at,
             "minor": num(&args[8]), "moderate": num(&args[9]), "major": num(&args[10]),
         }));
+    }
+    out
+}
+
+/// One rain gauge from the Bureau's rainfall map pages (IDx653xx.html on
+/// the FTP server): `PopupRain("name", 'station', 'lat', 'lon', 'mm',
+/// 'hours', 'hour')`.
+pub fn parse_rain_popups(html: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(i) = rest.find("PopupRain(") {
+        rest = &rest[i + "PopupRain(".len()..];
+        let end = rest.find(')').unwrap_or(rest.len());
+        let args = split_popup_args(&rest[..end]);
+        if args.len() < 6 {
+            continue;
+        }
+        let num = |s: &str| s.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let station = args[1].trim().trim_start_matches('0').to_string();
+        if station.is_empty() || !station.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let (Some(lat), Some(lon), Some(mm), Some(hours)) = (num(&args[2]), num(&args[3]), num(&args[4]).filter(|v| *v >= 0.0), args[5].trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        out.push(json!({"station": station, "name": args[0], "lat": lat, "lon": lon, "mm": round_to(mm, 1), "hours": hours}));
     }
     out
 }
@@ -1363,26 +1426,36 @@ pub fn flood_warnings_from(
     (doc, downloaded)
 }
 
-/// Flood class levels and current classes from an open FTP directory (`files`
-/// from `list_meta`), reusing `cache` (`{filename: (version, [parsed_gauges])}`)
-/// for unchanged `IDx653xx.html` pages and dropping pages that disappeared.
-/// Returns `(classes_doc, downloaded_count)`.
-pub fn flood_classes_from(
+/// Flood class levels, current classes, and observed rainfall from an open FTP
+/// directory (`files` from `list_meta`), reusing `cache` (`{filename: (version,
+/// {river: [...], rain: [...]})}`) for unchanged `IDx653xx.html` pages and
+/// dropping pages that disappeared.
+/// Returns `(classes_doc, rain_obs_doc, downloaded_count)`.
+pub fn flood_classes_and_rain_from(
     dir: &mut dyn ftp::Dir,
     files: &[(String, String)],
     cache: &mut HashMap<String, (String, Value)>,
     errors: &mut Vec<String>,
-) -> (Value, usize) {
+) -> (Value, Value, usize) {
     let pages: Vec<&(String, String)> = files.iter().filter(|(n, _)| n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && &n[3..6] == "653").collect();
     let live: HashSet<&str> = pages.iter().map(|(n, _)| n.as_str()).collect();
     cache.retain(|k, _| !k.ends_with(".html") || live.contains(k.as_str()));
     let mut out = Map::new();
+    let mut rain_out = Map::new();
     let mut downloaded = 0usize;
     let t0 = std::time::Instant::now();
     for (n, ver) in &pages {
-        let hit = !ver.is_empty() && cache.get(n).is_some_and(|(v, _)| v == ver);
-        let gauges = if hit {
-            cache[n].1.as_array().cloned().unwrap_or_default()
+        let hit = !ver.is_empty() && cache.get(n).is_some_and(|(v, val)| v == ver && (val.is_object() || val.is_array()));
+        let (gauges, rain) = if hit {
+            let val = &cache[n].1;
+            if let Some(arr) = val.as_array() {
+                (arr.clone(), Vec::new())
+            } else {
+                (
+                    val["river"].as_array().cloned().unwrap_or_default(),
+                    val["rain"].as_array().cloned().unwrap_or_default(),
+                )
+            }
         } else {
             if t0.elapsed().as_secs() > 150 {
                 errors.push("flood classes: out of time; the rest wait for the next refresh".into());
@@ -1391,13 +1464,19 @@ pub fn flood_classes_from(
             match dir.get(&format!("{}{}", BOM_FTP_DIR, n)) {
                 Ok(b) => {
                     downloaded += 1;
-                    let gs = parse_river_popups(&String::from_utf8_lossy(&b));
-                    cache.insert(n.clone(), (ver.clone(), Value::Array(gs.clone())));
-                    gs
+                    let text = String::from_utf8_lossy(&b);
+                    let gs = parse_river_popups(&text);
+                    let rn = parse_rain_popups(&text);
+                    cache.insert(n.clone(), (ver.clone(), json!({"river": gs, "rain": rn})));
+                    (gs, rn)
                 }
                 Err(e) => {
                     errors.push(format!("flood classes {}: {}", n, e));
-                    cache.get(n).and_then(|(_, v)| v.as_array().cloned()).unwrap_or_default()
+                    let val = cache.get(n).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+                    (
+                        val["river"].as_array().or_else(|| val.as_array()).cloned().unwrap_or_default(),
+                        val["rain"].as_array().cloned().unwrap_or_default(),
+                    )
                 }
             }
         };
@@ -1409,8 +1488,67 @@ pub fn flood_classes_from(
                 out.insert(st, g);
             }
         }
+        for rg in rain {
+            let st = rg["station"].as_str().unwrap_or("").to_string();
+            let (Some(mm), Some(hrs)) = (rg["mm"].as_f64(), rg["hours"].as_u64()) else { continue };
+            let entry = rain_out.entry(st).or_insert_with(|| json!({"name": rg["name"], "lat": rg["lat"], "lon": rg["lon"]}));
+            match hrs {
+                24 => entry["mm24h"] = json!(mm),
+                6 | 7 => entry["mm6h"] = json!(mm),
+                1 => entry["mm1h"] = json!(mm),
+                _ => {}
+            }
+        }
     }
-    (Value::Object(out), downloaded)
+    // Keep only gauges with at least a 24 h or 6 h reading
+    rain_out.retain(|_, v| v.get("mm24h").is_some() || v.get("mm6h").is_some());
+    (Value::Object(out), Value::Object(rain_out), downloaded)
+}
+
+/// Flood class levels and current classes from an open FTP directory (`files`
+/// from `list_meta`), reusing `cache` (`{filename: (version, ...)}`)
+/// for unchanged `IDx653xx.html` pages and dropping pages that disappeared.
+/// Returns `(classes_doc, downloaded_count)`.
+pub fn flood_classes_from(
+    dir: &mut dyn ftp::Dir,
+    files: &[(String, String)],
+    cache: &mut HashMap<String, (String, Value)>,
+    errors: &mut Vec<String>,
+) -> (Value, usize) {
+    let (fc, _, dl) = flood_classes_and_rain_from(dir, files, cache, errors);
+    (fc, dl)
+}
+
+/// Flood warnings, flood class/river height pages, and observed rainfall over
+/// a single FTP session, downloading only files whose LIST size/mtime changed
+/// since `cache`.
+pub fn flood_ftp_all(
+    dir: &mut dyn ftp::Dir,
+    cache: &mut HashMap<String, (String, Value)>,
+    now_s: i64,
+    iso_now: &str,
+    want_classes: bool,
+    errors: &mut Vec<String>,
+) -> (Value, Option<Value>, Option<Value>, usize) {
+    let files = match dir.list_meta(BOM_FTP_DIR) {
+        Ok(f) => f,
+        Err(e) => {
+            errors.push(format!("flood warnings: {}", e));
+            if want_classes {
+                errors.push(format!("flood classes: {}", e));
+            }
+            let w = json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e});
+            return (w, want_classes.then(|| Value::Object(Map::new())), want_classes.then(|| Value::Object(Map::new())), 0);
+        }
+    };
+    let (w, dw) = flood_warnings_from(dir, &files, cache, now_s, iso_now, errors);
+    let (fc, ro, dc) = if want_classes {
+        let (fc, ro, d) = flood_classes_and_rain_from(dir, &files, cache, errors);
+        (Some(fc), Some(ro), d)
+    } else {
+        (None, None, 0)
+    };
+    (w, fc, ro, dw + dc)
 }
 
 /// Both flood warnings and flood class/river height pages over a single FTP
@@ -1423,25 +1561,8 @@ pub fn flood_ftp_both(
     want_classes: bool,
     errors: &mut Vec<String>,
 ) -> (Value, Option<Value>, usize) {
-    let files = match dir.list_meta(BOM_FTP_DIR) {
-        Ok(f) => f,
-        Err(e) => {
-            errors.push(format!("flood warnings: {}", e));
-            if want_classes {
-                errors.push(format!("flood classes: {}", e));
-            }
-            let w = json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e});
-            return (w, want_classes.then(|| Value::Object(Map::new())), 0);
-        }
-    };
-    let (w, dw) = flood_warnings_from(dir, &files, cache, now_s, iso_now, errors);
-    let (fc, dc) = if want_classes {
-        let (fc, d) = flood_classes_from(dir, &files, cache, errors);
-        (Some(fc), d)
-    } else {
-        (None, 0)
-    };
-    (w, fc, dw + dc)
+    let (w, fc, _, dl) = flood_ftp_all(dir, cache, now_s, iso_now, want_classes, errors);
+    (w, fc, dl)
 }
 
 /// Is a Bureau flood class one of minor, moderate or major flooding?
@@ -1572,5 +1693,284 @@ mod bureau_level_tests {
         assert_eq!(level["A"]["latestKind"], "bureau");
         assert_eq!(level["B"]["latestKind"], "realtime", "the live Queensland hour is newer");
         assert_eq!(level["C"]["latest"][1], 0.4, "a gauge with no reading gets one");
+    }
+}
+
+/* ------------------------------------------- official road closures */
+
+/// Queensland Department of Transport and Main Roads QLDTraffic v2 events API
+/// (the public key published in the QLDTraffic website API specification).
+pub const QLD_TRAFFIC_URL: &str = "https://api.qldtraffic.qld.gov.au/v2/events";
+pub const QLD_TRAFFIC_PUBLIC_KEY: &str = "3e83add325cbb69ac4d8e5bf433d770b";
+pub const QLD_TRAFFIC_ATTRIBUTION: &str = "© The State of Queensland (Department of Transport and Main Roads)";
+/// Transport for NSW Live Traffic hazards (requires `Authorization: apikey <key>`).
+pub const NSW_TRAFFIC_URL: &str = "https://api.transport.nsw.gov.au/v1/live/hazards/flood-open.json";
+pub const NSW_TRAFFIC_ATTRIBUTION: &str = "© Transport for NSW (CC BY)";
+
+/// Simplify a GeoJSON geometry into `(center_lat, center_lon, optional_line)`
+/// where `line` has points at least ~100 m apart (0.001°) and at most 40 points.
+fn road_geometry(geom: &Value) -> Option<(f64, f64, Vec<[f64; 2]>)> {
+    let mut raw: Vec<[f64; 2]> = Vec::new();
+    let push_pt = |c: &Value, out: &mut Vec<[f64; 2]>| {
+        if let (Some(lon), Some(lat)) = (c.get(0).and_then(Value::as_f64), c.get(1).and_then(Value::as_f64)) {
+            if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) {
+                out.push([round_to(lat, 4), round_to(lon, 4)]);
+            }
+        }
+    };
+    match geom["type"].as_str() {
+        Some("Point") => push_pt(&geom["coordinates"], &mut raw),
+        Some("MultiPoint") | Some("LineString") => {
+            for c in geom["coordinates"].as_array().into_iter().flatten() {
+                push_pt(c, &mut raw);
+            }
+        }
+        Some("MultiLineString") | Some("Polygon") => {
+            for seg in geom["coordinates"].as_array().into_iter().flatten() {
+                for c in seg.as_array().into_iter().flatten() {
+                    push_pt(c, &mut raw);
+                }
+            }
+        }
+        Some("GeometryCollection") => {
+            for g in geom["geometries"].as_array().into_iter().flatten() {
+                if let Some((la, lo, ln)) = road_geometry(g) {
+                    if ln.is_empty() {
+                        raw.push([la, lo]);
+                    } else {
+                        raw.extend(ln);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    if raw.is_empty() {
+        return None;
+    }
+    let mid = raw[raw.len() / 2];
+    if raw.len() < 2 || matches!(geom["type"].as_str(), Some("Point") | Some("MultiPoint")) {
+        return Some((mid[0], mid[1], Vec::new()));
+    }
+    let mut line: Vec<[f64; 2]> = Vec::new();
+    for p in &raw {
+        let keep = match line.last() {
+            None => true,
+            Some(prev) => (p[0] - prev[0]).hypot(p[1] - prev[1]) >= 0.001,
+        };
+        if keep {
+            line.push(*p);
+            if line.len() >= 39 {
+                break;
+            }
+        }
+    }
+    if let Some(&last) = raw.last() {
+        if line.last() != Some(&last) {
+            line.push(last);
+        }
+    }
+    if line.len() < 2 {
+        line.clear();
+    }
+    Some((mid[0], mid[1], line))
+}
+
+/// Flood-related road closures and hazards from QLDTraffic's GeoJSON events
+/// FeatureCollection, closed and higher-priority roads first (capped at 150).
+pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["properties"];
+        let et = p["event_type"].as_str().unwrap_or("");
+        let sub = p["event_subtype"].as_str().unwrap_or("");
+        let desc = p["description"].as_str().unwrap_or("");
+        let due = p["event_due_to"].as_str().unwrap_or("");
+        let is_flood = et.eq_ignore_ascii_case("Flooding")
+            || sub.to_lowercase().contains("flood")
+            || sub.to_lowercase().contains("water over road")
+            || due.to_lowercase().contains("flood")
+            || desc.to_lowercase().contains("flood");
+        if !is_flood {
+            continue;
+        }
+        let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
+        let id = match &p["id"] {
+            Value::Number(n) => format!("qld:{}", n),
+            Value::String(s) if !s.is_empty() => format!("qld:{}", s),
+            _ => continue,
+        };
+        let road = p["road_summary"]["road_name"].as_str().unwrap_or("Road").trim().to_string();
+        let loc = p["road_summary"]["locality"].as_str().unwrap_or("").trim().to_string();
+        let lga = p["road_summary"]["local_government_area"].as_str().unwrap_or("").trim().to_string();
+        let wh = if !loc.is_empty() { loc } else { lga };
+        let imp_type = p["impact"]["impact_type"].as_str().unwrap_or("");
+        let imp_sub = p["impact"]["impact_subtype"].as_str().unwrap_or("");
+        let closed = imp_type.eq_ignore_ascii_case("Closures") || imp_sub.to_lowercase().contains("closed");
+        let pri = p["event_priority"].as_str().unwrap_or("");
+        let major = matches!(pri, "High" | "Extreme")
+            || road.contains("Highway")
+            || road.ends_with(" Hwy")
+            || road.contains("Motorway");
+        let summary = if !imp_sub.is_empty() && !desc.is_empty() {
+            format!("{}: {}", imp_sub, desc)
+        } else if !imp_sub.is_empty() {
+            imp_sub.to_string()
+        } else if !desc.is_empty() {
+            desc.to_string()
+        } else if !sub.is_empty() {
+            sub.to_string()
+        } else {
+            "Flooding".to_string()
+        };
+        let updated = p["last_updated"].as_str().or_else(|| p["duration"]["start"].as_str()).unwrap_or("");
+        let mut item = json!({
+            "id": id, "state": "QLD", "road": road, "where": wh,
+            "desc": summary, "closed": closed, "major": major,
+            "updated": updated, "lat": lat, "lon": lon,
+            "link": "https://qldtraffic.qld.gov.au/",
+        });
+        if !line.is_empty() {
+            item["line"] = json!(line);
+        }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
+/// Flood-related road closures and hazards from Transport for NSW Live Traffic
+/// (`flood-open.json` or `flood.json`).
+pub fn parse_nsw_roads(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["properties"];
+        if p["ended"].as_bool() == Some(true) {
+            continue;
+        }
+        let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
+        let id = match &f["id"].as_i64().or_else(|| p["id"].as_i64()) {
+            Some(n) => format!("nsw:{}", n),
+            None => format!("nsw:{:.4},{:.4}", lat, lon),
+        };
+        let r0 = p["roads"].as_array().and_then(|a| a.first()).cloned().unwrap_or(Value::Null);
+        let road = r0["mainStreet"].as_str().or_else(|| p["displayName"].as_str()).unwrap_or("Road").trim().to_string();
+        let wh = r0["suburb"].as_str().or_else(|| r0["CrossStreet"].as_str()).unwrap_or("").trim().to_string();
+        let head = p["headline"].as_str().unwrap_or("");
+        let advice = p["adviceA"].as_str().unwrap_or("");
+        let closed = head.to_lowercase().contains("closed") || advice.to_lowercase().contains("closed") || r0["impactedLanes"].as_array().is_some_and(|a| a.iter().any(|l| l["extent"].as_str().is_some_and(|s| s.to_lowercase().contains("closed"))));
+        let major = p["isMajor"].as_bool() == Some(true) || road.contains("Highway") || road.ends_with(" Hwy") || road.contains("Motorway");
+        let desc = if !head.is_empty() { head.to_string() } else { p["displayName"].as_str().unwrap_or("Flooding").to_string() };
+        let updated = p["lastUpdated"].as_i64().or_else(|| p["created"].as_i64()).map(|ms| wmip_stamp(ms / 1000)).unwrap_or_default();
+        let mut item = json!({
+            "id": id, "state": "NSW", "road": road, "where": wh,
+            "desc": desc, "closed": closed, "major": major,
+            "updated": updated, "lat": lat, "lon": lon,
+            "link": "https://www.livetraffic.com/",
+        });
+        if !line.is_empty() {
+            item["line"] = json!(line);
+        }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
+#[cfg(test)]
+mod road_and_rain_obs_tests {
+    use super::*;
+
+    #[test]
+    fn rain_popups_and_watch_list() {
+        let html = r#"<map name="IDQ65326.html">
+ <area onmouseover="javascript:PopupRain(&quot;Natural Bridge&quot;,'540837','-28.1988','153.2308','126.0','24','hour')"/>
+ <area onmouseover="javascript:PopupRain(&quot;Tewantin RSL Park&quot;,'040908','-26.3911','153.0403','20.0','24','hour')"/>
+ <area onmouseover="javascript:PopupRain(&quot;Natural Bridge&quot;,'540837','-28.1988','153.2308','42.0','6','hour')"/>
+</map>"#;
+        let p = parse_rain_popups(html);
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[0]["station"], "540837");
+        assert_eq!(p[0]["mm"], 126.0);
+        assert_eq!(p[0]["hours"], 24);
+        assert_eq!(p[1]["station"], "40908", "leading zero stripped");
+        let doc = json!({
+            "rainObs": {
+                "540837": {"name": "Natural Bridge", "lat": -28.1988, "lon": 153.2308, "mm24h": 126.0, "mm6h": 42.0},
+                "40908": {"name": "Tewantin RSL Park", "lat": -26.3911, "lon": 153.0403, "mm24h": 20.0},
+            }
+        });
+        let w = watch_list(&doc);
+        let arr = w.as_array().unwrap();
+        assert_eq!(arr.len(), 1, "only >= 100 mm/24h on watch list");
+        assert_eq!(arr[0]["kind"], "rainObs");
+        assert_eq!(arr[0]["station"], "540837");
+        assert!(arr[0]["why"][0].as_str().unwrap().contains("126 mm"));
+    }
+
+    #[test]
+    fn qld_and_nsw_flood_road_closures() {
+        let qld = json!({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": [[148.5, -28.0], [148.55, -28.05]]},
+                    "properties": {
+                        "id": 717127,
+                        "event_type": "Flooding",
+                        "event_subtype": "Long-term flooding",
+                        "event_priority": "High",
+                        "description": "Bridge underwater",
+                        "impact": {"impact_type": "Closures", "impact_subtype": "Road closed to all traffic"},
+                        "road_summary": {"road_name": "Carnarvon Highway", "locality": "St George"},
+                        "last_updated": "2026-10-22T04:00:00+10:00"
+                    }
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [153.0, -27.5]},
+                    "properties": {
+                        "id": 100,
+                        "event_type": "Roadworks",
+                        "event_subtype": "Planned roadworks",
+                        "road_summary": {"road_name": "Gympie Road", "locality": "Chermside"}
+                    }
+                }
+            ]
+        });
+        let items = parse_qld_roads(&qld);
+        assert_eq!(items.len(), 1, "only flood events kept");
+        assert_eq!(items[0]["id"], "qld:717127");
+        assert_eq!(items[0]["road"], "Carnarvon Highway");
+        assert_eq!(items[0]["where"], "St George");
+        assert_eq!(items[0]["closed"], true);
+        assert_eq!(items[0]["major"], true);
+        assert_eq!(items[0]["line"].as_array().unwrap().len(), 2);
+
+        let nsw = json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "id": 99,
+                "geometry": {"type": "Point", "coordinates": [153.28, -28.81]},
+                "properties": {
+                    "headline": "ROAD CLOSED Flooding",
+                    "displayName": "Bruxner Highway",
+                    "isMajor": true,
+                    "roads": [{"mainStreet": "Bruxner Highway", "suburb": "Lismore"}]
+                }
+            }]
+        });
+        let nitems = parse_nsw_roads(&nsw);
+        assert_eq!(nitems.len(), 1);
+        assert_eq!(nitems[0]["id"], "nsw:99");
+        assert_eq!(nitems[0]["closed"], true);
+        assert_eq!(nitems[0]["major"], true);
+
+        let w = watch_list(&json!({"roads": {"items": items}}));
+        assert_eq!(w.as_array().unwrap()[0]["kind"], "road");
+        assert_eq!(w.as_array().unwrap()[0]["name"], "Carnarvon Highway (St George)");
     }
 }

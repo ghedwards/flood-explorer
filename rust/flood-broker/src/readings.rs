@@ -30,6 +30,7 @@ pub type Text = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
 const RAIN_EVERY_MS: i64 = 3 * 3_600_000; // the forecast models run every 6 hours
 const SEA_EVERY_MS: i64 = 30 * 60_000;
+const ROADS_EVERY_MS: i64 = 30 * 60_000;
 /// Water Data Online (a day behind anyway): at most this often.
 const WDO_EVERY_MS: i64 = 60 * 60_000;
 /// Rain forecasts get this long; batches left over wait for the next refresh.
@@ -159,6 +160,7 @@ pub struct Readings {
     classes: Option<Classes>,
     ftp: Option<FtpOpen>,
     ftp_index: Mutex<std::collections::HashMap<String, (String, Value)>>,
+    roads: Option<RoadsFetch>,
     history: Mutex<Option<HistoryCopy>>,
 }
 
@@ -169,6 +171,9 @@ type HistoryCopy = (i64, Arc<crate::history::History>, Option<String>);
 /// flood warnings and river height / flood class pages).
 pub type FtpOpen = Box<dyn Fn() -> Result<Box<dyn feeds::ftp::Dir>, String> + Send + Sync>;
 
+/// Fetches official flood road closures: `(iso_now, errors) -> roads_doc`.
+pub type RoadsFetch = Box<dyn Fn(&str, &mut Vec<String>) -> Value + Send + Sync>;
+
 /// Fetches flood class levels and current classes: errors -> {station: ...}.
 pub type Classes = Box<dyn Fn(&mut Vec<String>) -> Value + Send + Sync>;
 const CLASSES_EVERY_MS: i64 = 60 * 60_000;
@@ -178,13 +183,19 @@ pub type Warnings = Box<dyn Fn(i64, &str, &mut Vec<String>) -> Value + Send + Sy
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, ftp: None, ftp_index: Mutex::new(Default::default()), history: Mutex::new(None) }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, ftp: None, ftp_index: Mutex::new(Default::default()), roads: None, history: Mutex::new(None) }
     }
 
     /// Fetch both flood warnings and flood class / river height pages over
     /// one FTP session per refresh, downloading only changed files.
     pub fn with_ftp(mut self, f: FtpOpen) -> Self {
         self.ftp = Some(f);
+        self
+    }
+
+    /// Fetch official flood road closures with this (every 30 minutes).
+    pub fn with_roads(mut self, f: RoadsFetch) -> Self {
+        self.roads = Some(f);
         self
     }
 
@@ -468,18 +479,22 @@ impl Readings {
             if let Some((fc, at)) = carried_fc {
                 r["floodclass"] = fc;
                 r["floodclassFetched"] = at;
+                if let Some((ro, ro_at)) = Self::carry(&prev, "rainObs", "rainObsFetched", started, CLASSES_EVERY_MS) {
+                    r["rainObs"] = ro;
+                    r["rainObsFetched"] = ro_at;
+                }
             }
             let iso_now = crate::wmip::iso_utc((self.now)());
             let err_before_ftp = errors.len();
             let mut cache = self.load_ftp_index(started);
-            let (w, fc_opt, dl) = match open_ftp() {
-                Ok(mut dir) => feeds::flood_ftp_both(&mut *dir, &mut cache, started / 1000, &iso_now, want_classes, &mut errors),
+            let (w, fc_opt, ro_opt, dl) = match open_ftp() {
+                Ok(mut dir) => feeds::flood_ftp_all(&mut *dir, &mut cache, started / 1000, &iso_now, want_classes, &mut errors),
                 Err(e) => {
                     errors.push(format!("flood warnings: {}", e));
                     if want_classes {
                         errors.push(format!("flood classes: {}", e));
                     }
-                    (json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e}), want_classes.then(|| json!({})), 0)
+                    (json!({"ok": false, "fetched": iso_now, "source": "ftp", "warnings": [], "error": e}), want_classes.then(|| json!({})), want_classes.then(|| json!({})), 0)
                 }
             };
             self.save_ftp_index(&cache, (self.now)());
@@ -537,6 +552,15 @@ impl Readings {
                 );
             } else if r["floodclassFetched"].is_string() {
                 mark_source("floodclass", false, true, &[], r["floodclassFetched"].as_str().unwrap_or(""));
+            }
+            if let Some(ro) = ro_opt {
+                if ro.as_object().is_some_and(|o| !o.is_empty()) {
+                    r["rainObs"] = ro;
+                    r["rainObsFetched"] = json!(crate::wmip::iso_utc((self.now)()));
+                } else if let Some((ro, at)) = Self::carry(&prev, "rainObs", "rainObsFetched", started, 24 * 3_600_000) {
+                    r["rainObs"] = ro;
+                    r["rainObsFetched"] = at;
+                }
             }
         }
         // the Bureau's flood warnings, every refresh; a failed fetch keeps the last list (for 6 hours)
@@ -600,6 +624,32 @@ impl Readings {
             let n = feeds::bureau_levels(&mut r["level"], &fc, &st.bom, &st.state);
             r["bureauLevels"] = json!(n);
         }
+        // Official flood road closures (QLDTraffic, and Live Traffic NSW when
+        // NSW_TRAFFIC_API_KEY is set), every 30 minutes; carried up to 2 hours on error.
+        if let Some(rf) = &self.roads {
+            match Self::carry(&prev, "roads", "roadsFetched", started, ROADS_EVERY_MS) {
+                Some((rd, at)) => {
+                    r["roads"] = rd;
+                    r["roadsFetched"] = at;
+                    mark_source("roads", false, true, &[], r["roadsFetched"].as_str().unwrap_or(""));
+                }
+                None => {
+                    let err_before_r = errors.len();
+                    let iso_now = crate::wmip::iso_utc((self.now)());
+                    let rd = rf(&iso_now, &mut errors);
+                    let rd_errs: Vec<String> = errors[err_before_r..].to_vec();
+                    let rd_ok = rd["sources"].as_object().is_some_and(|o| o.values().any(|v| v == "ok"));
+                    if rd_ok {
+                        r["roads"] = rd;
+                        r["roadsFetched"] = json!(iso_now.clone());
+                    } else if let Some((old, at)) = Self::carry(&prev, "roads", "roadsFetched", started, 2 * 3_600_000) {
+                        r["roads"] = old;
+                        r["roadsFetched"] = at;
+                    }
+                    mark_source("roads", true, rd_ok, &rd_errs, r["roadsFetched"].as_str().unwrap_or(&iso_now));
+                }
+            }
+        }
         let t_warn = (self.now)();
         r["watch"] = feeds::watch_list(&r);
         let nl = r["level"].as_object().map_or(0, |o| o.len());
@@ -612,7 +662,7 @@ impl Readings {
         r["fetched"] = json!(crate::wmip::iso_utc(fetched));
         r["sources"] = Value::Object(sources.clone());
         r["errors"] = json!(errors.iter().take(20).collect::<Vec<_>>());
-        r["attribution"] = json!(format!("© Commonwealth of Australia (Bureau of Meteorology); Queensland live levels {}; {}; {}", feeds::WMIP_ATTRIBUTION, feeds::STORM_TIDE_ATTRIBUTION, feeds::RAIN_ATTRIBUTION));
+        r["attribution"] = json!(format!("© Commonwealth of Australia (Bureau of Meteorology); Queensland live levels {}; {}; {}; {}", feeds::WMIP_ATTRIBUTION, feeds::STORM_TIDE_ATTRIBUTION, feeds::RAIN_ATTRIBUTION, feeds::QLD_TRAFFIC_ATTRIBUTION));
         let body = serde_json::to_vec(&r).map_err(|e| e.to_string())?;
         let doc = Doc::new(body, fetched, None);
         let mut gz_stored: Option<bool> = None;   // None: no S3 (a server keeps it in memory)
@@ -632,7 +682,8 @@ impl Readings {
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(doc)));
         let hist = self.update_history(&r["level"], fetched);
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
-        Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "seaGauges": count("sea"),
+        Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "rainObsGauges": count("rainObs"), "seaGauges": count("sea"),
+            "roadClosures": r["roads"]["items"].as_array().map(|a| a.len()),
             "watch": r["watch"].as_array().map_or(0, |a| a.len()), "errors": errors.len(), "gzStored": gz_stored, "version": crate::VERSION, "history": hist, "seconds": (fetched - started) / 1000,
             "warnings": r["warnings"]["warnings"].as_array().map(|a| a.len()),
             "floodClasses": r["floodclass"].as_object().map(|o| o.len()),
@@ -830,6 +881,59 @@ pub fn http_json(url: &str, params: &[(String, String)]) -> Result<Value, String
         }
     }
     Err(format!("{}: {}", &full[..full.len().min(120)], last))
+}
+
+/// Official flood road closures from QLDTraffic (and Live Traffic NSW when
+/// `NSW_TRAFFIC_API_KEY` is set in the environment).
+pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
+    use std::io::Read;
+    let get_json = |url: &str, auth: Option<&str>| -> Result<Value, String> {
+        let t = Some(std::time::Duration::from_secs(30));
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(t).timeout_recv_response(t).timeout_recv_body(t).http_status_as_error(false).build().into();
+        let mut req = agent.get(url).header("User-Agent", "flood-explorer-broker (+https://github.com/ghedwards/flood-explorer)");
+        if let Some(a) = auth {
+            req = req.header("Authorization", a);
+        }
+        let mut r = req.call().map_err(|e| e.to_string())?;
+        let code = r.status().as_u16();
+        let mut b = Vec::new();
+        r.body_mut().as_reader().take(32 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
+        if code >= 400 {
+            return Err(format!("HTTP {}", code));
+        }
+        serde_json::from_slice(&b).map_err(|e| format!("not JSON: {}", e))
+    };
+    let mut items = Vec::new();
+    let mut sources = serde_json::Map::new();
+    let qld_key = std::env::var("QLD_TRAFFIC_API_KEY").ok().filter(|k| !k.trim().is_empty()).unwrap_or_else(|| feeds::QLD_TRAFFIC_PUBLIC_KEY.into());
+    match get_json(&format!("{}?apikey={}", feeds::QLD_TRAFFIC_URL, feeds::encode(&qld_key)), None) {
+        Ok(gj) => {
+            items.extend(feeds::parse_qld_roads(&gj));
+            sources.insert("QLD".into(), json!("ok"));
+        }
+        Err(e) => {
+            errors.push(format!("roads QLD: {}", e));
+            sources.insert("QLD".into(), json!(format!("error: {}", e)));
+        }
+    }
+    if let Some(nsw_key) = std::env::var("NSW_TRAFFIC_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        match get_json(feeds::NSW_TRAFFIC_URL, Some(&format!("apikey {}", nsw_key))) {
+            Ok(gj) => {
+                items.extend(feeds::parse_nsw_roads(&gj));
+                sources.insert("NSW".into(), json!("ok"));
+            }
+            Err(e) => {
+                errors.push(format!("roads NSW: {}", e));
+                sources.insert("NSW".into(), json!(format!("error: {}", e)));
+            }
+        }
+    }
+    json!({
+        "fetched": iso_now,
+        "sources": Value::Object(sources),
+        "attribution": format!("{}; {}", feeds::QLD_TRAFFIC_ATTRIBUTION, feeds::NSW_TRAFFIC_ATTRIBUTION),
+        "items": items,
+    })
 }
 
 #[cfg(test)]
