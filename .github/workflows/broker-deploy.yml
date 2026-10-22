@@ -7,6 +7,7 @@ on:
     branches: [main, "2d-*"]
     paths:
       - "rust/flood-broker/**"
+      - "rust/flood-feeds/**"
       - "rust/Cargo.lock"
       - ".github/workflows/broker-deploy.yml"
   workflow_dispatch:
