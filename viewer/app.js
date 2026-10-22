@@ -5154,6 +5154,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     return `<div class="road-popup"><strong>${escapeHtml(x.road || 'Road')}</strong>${x.where ? ` <span class="hint">${escapeHtml(x.where)}</span>` : ''}<br>
       <div><span style="background:${st.color}" class="road-kind"></span><strong>${escapeHtml(st.label)}</strong>${x.type ? ` <span class="hint">· ${escapeHtml(x.type)}</span>` : ''}</div>
       <span class="hint">${escapeHtml(x.desc || 'Reported flooding')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span>
+      ${x.due ? `<br><span class="hint">Because of: ${escapeHtml(x.due)}</span>` : ''}
       ${x.impact ? `<br><span class="hint">${escapeHtml(x.impact)}</span>` : ''}
       <br><span class="hint">Source: ${escapeHtml(x.state === 'NSW' ? 'Live Traffic NSW' : 'QLDTraffic')}${x.major ? ' · major road' : ''}</span>
       ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
