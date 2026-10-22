@@ -376,14 +376,7 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
 - **Email/SMS alerts**: on hold by the user's choice (would be SNS from the
   refresh; topic in the stack, subscription made by hand, places in a repo
   variable, never committed).
-- **Branches to delete** (the agent's proxy can't delete remote branches):
-  `2d-fixes 2d-ftponly 2d-refreshbtn 2d-savedreadings 2d-nowdoc 2d-savefix
-  2d-statusfix shots-2d--2d-fixes shots-2d--2d-nowdoc shots-2d--2d-savefix
-  shots-2d--2d-statusfix`, `2d-warnareas 2d-slowload 2d-bedpct 2d-bomlevel
-  2d-demvoids` and the older ones (`2d-key 2d-polish 2d-sharp 2d-streets
-  2d-swfix 2d-tidy 2d-cluster 3d-bar 3d-imagery-seam 3d-imagery-zoom 3d-tidy
-  3d-v4 3d-v4-polish 2d-roadtime 2d-layerfb 2d-perf 2d-perf-worker
-  3d-perf-worker 3d-mem 2d-review 3d-review 3d-opacity 2d-dam 2d-tint
-  2d-release 2d-downstream 2d-study 2d-riverbed readings-hourly probe-qld
-  readings-qld 2d-broker 2d-readings 2d-cache 2d-normal 2d-watch probe-data
-  deps-webpki`).
+- **Branches to delete**: done — all merged `2d-*`, `3d-*`, `shots-*`, `readings-*`,
+  `deps-webpki` and `probe-*` branches were removed. Remaining remote branches:
+  `2d-downstream`, `2d-roadtime`, `3d-opacity`, `aws-sync-main-46b6606d`,
+  `probe-data`, `probe-qld`, `rust-vendor`, `shots-2d`.
