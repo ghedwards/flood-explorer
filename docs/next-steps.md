@@ -412,41 +412,24 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   `2d-downstream`, `2d-roadtime`, `3d-opacity`, `aws-sync-main-46b6606d`,
   `probe-data`, `probe-qld`, `rust-vendor`, `shots-2d`.
 
-### 7. Model every forecast peak at once; places where a flood might be expected
+### 7. Model every forecast peak at once; places where a flood might be expected — DONE
 
 A button in the Warnings/watch panel ("Model forecast peaks") that, for every
 current item that predicts or threatens a flood, adds the place and — where a
 river level is known — builds the flood model too, rather than the user doing
 it gauge by gauge.
 
-Why: warnings rank and explain, but the point of the model is to *see* a
-flood; today only one warning's peak can be modelled at a time (the
-"Model the forecast peak" button in `viewer/warn-peaks.js`).
+Shipped (commits `dc55ff21`+): the watch panel shows the button with the
+pending counts ("model the 5 forecast peaks and add 60 places") whenever there
+is anything to add. One press builds the models first (the slow part: each
+downloads its elevation live from the national service), then pins gauge
+reports for the watch list's river/flood items — at most 5 new things per
+press, and the button stays with what's left. `pendingWatchWork()` dedupes by
+gauge (two warnings naming one gauge keep the higher peak), skips gauges that
+already have a model, and a build that fails because the elevation service is
+refusing requests (429) stops the batch and asks for a retry instead of
+failing the rest the same way. Tested live in the browser against the broker:
+five peak models built (Stanley, Condamine, Warrego, Bulloo, Barcoo), 60+
+watch-list places pinned. Test hooks: `__floodPendingWatchWork`,
+`__floodModelPeaks`.
 
-Scope:
-
-- **Warnings with a parseable peak** ("may peak near 3.40 m"): reuse
-  `warn-peaks.js`'s parsing; for each warning that cleanly matches a gauge
-  with a known zero, build the model and add it as a numbered place, the
-  same as tapping the button on one warning.
-- **Warnings without a parseable peak** (flood watches, "minor flooding
-  possible"): add a place pinned at the gauge or catchment so a storm model
-  can be run there, but do not auto-build — rainfall to a river level needs
-  a design-storm choice the user should make.
-- **Heavy observed/forecast rain on the watch list** (`rainObs` ≥ 100 mm
-  near a gauge, forecast rain): same as above — add the place, no auto model.
-
-Approach:
-
-- A panel button iterates the warnings/watch list, calling the existing
-  `modelWarningPeak` / `openWatchItem` machinery per item; toast or counters
-  for "3 models built, 2 places added, 1 warning skipped (peak unknown)".
-- Rate limit and cap: confirm if it would create more than ~5 places at
-  once; skip items already modelled (track by warning id).
-- The button sits next to "Refresh now" in the watch panel.
-
-Risks: thundering-herd of model builds (they are computed locally per place,
-so cheap, but the creation flow animates and zooms — suppress per-place
-zoom when doing many); the peak parser's false positives (keep the
-"cleanly matched" bar); place-per-warning vs place-per-gauge when two
-warnings share a gauge (dedupe by gauge).

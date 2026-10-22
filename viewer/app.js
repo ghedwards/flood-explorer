@@ -5342,29 +5342,41 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       say('Nothing to add: every forecast peak is already modelled and every gauge on the watch list already has a place.');
       return null;
     }
+    // the models are the slow, scarce part: they get the cap first; the
+    // place pins are instant and fill whatever is left over
     const batch = [
-      ...pending.places.map((f) => ({ kind: 'place', f })),
       ...pending.models.map((j) => ({ kind: 'model', j })),
+      ...pending.places.map((f) => ({ kind: 'place', f })),
     ];
     const doing = batch.slice(0, PEAK_MAX_PER_PRESS);
     return withBusy(btn, 'Adding places and models…', async () => {
-      let modelsDone = 0, placesDone = 0, failed = 0;
+      let modelsDone = 0, placesDone = 0, failed = 0, stopped = null;
+      const modelJobs = doing.filter((x) => x.kind === 'model').length;
       for (const job of doing) {
         if (job.kind === 'place') { openReport(job.f, { select: false }); placesDone++; continue; }
-        setBusy(true, `Building flood model ${modelsDone + 1} of ${doing.filter((x) => x.kind === 'model').length}…`);
+        setBusy(true, `Building flood model ${modelsDone + 1} of ${modelJobs || 1}…`);
         try {
           const got = await modelWarningPeak(job.j.w, job.j.i, { quiet: true });
-          if (got) { modeledWarns.add(job.j.wkey); modelsDone++; } else failed++;
+          if (got) { modeledWarns.add(job.j.wkey); modelsDone++; } else {
+            failed++;
+            // the elevation service refusing more requests is not a bad
+            // match: stop the batch and ask for a retry instead of racing
+            // through the rest and failing them all the same way
+            const err = `${(status.local || {}).error || ''}`;
+            if (/429|too many|rate|throttl/i.test(err)) { stopped = 'rate'; break; }
+          }
         } catch (e) { failed++; }
+        setBusy(false);
       }
       setBusy(false);
       const left = batch.length - doing.length;
-      status.watchWork = { models: modelsDone, places: placesDone, failed, left };
+      status.watchWork = { models: modelsDone, places: placesDone, failed, left, stopped };
       const words = [];
       if (placesDone) words.push(placesDone === 1 ? '1 gauge report' : `${placesDone} gauge reports`);
       if (modelsDone) words.push(modelsDone === 1 ? '1 flood model' : `${modelsDone} flood models`);
       let msg = words.length ? `Added ${words.join(' and ')} from the watch list and the current warnings.` : 'Nothing could be added.';
-      if (failed) msg += ` ${failed === 1 ? 'One forecast peak could' : `${failed} forecast peaks could`} not be placed (the gauge has no published zero or recent record) — open that warning and set the level in Scenario.`;
+      if (stopped === 'rate') msg += ' The national elevation service is refusing more requests right now (too many at once) — press the button again in a few minutes for the flood models.';
+      else if (failed) msg += ` ${failed === 1 ? 'One forecast peak could' : `${failed} forecast peaks could`} not be placed (the gauge has no published zero or recent record) — open that warning and set the level in Scenario.`;
       if (left) msg += ` ${left} more on the list — press the button again for the next batch.`;
       renderWatch();
       say(msg);
