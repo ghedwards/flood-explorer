@@ -1806,7 +1806,25 @@ pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
         let wh = if !loc.is_empty() { loc } else { lga };
         let imp_type = p["impact"]["impact_type"].as_str().unwrap_or("");
         let imp_sub = p["impact"]["impact_subtype"].as_str().unwrap_or("");
-        let closed = imp_type.eq_ignore_ascii_case("Closures") || imp_sub.to_lowercase().contains("closed");
+        // what the closure actually is, as the agency reports it: a full
+        // closure, one closed to through traffic, a part closure, a
+        // restriction (4WD only, a weight limit) or mere lane/water
+        // impacts — all these had been flattened into "closed or not"
+        let imp_l = imp_sub.to_lowercase();
+        let level = if imp_l.contains("closed to all traffic") {
+            "closed"
+        } else if imp_l.contains("closed to through traffic") {
+            "closed to through traffic"
+        } else if imp_type.eq_ignore_ascii_case("Closures") {
+            "part closed"
+        } else if imp_l.contains("restricted") {
+            "access restricted"
+        } else if imp_l.contains("lane") || imp_l.contains("blocked") || imp_l.contains("affected") || imp_l.contains("single lane") {
+            "lanes affected"
+        } else {
+            "caution"
+        };
+        let closed = level.starts_with("closed");
         let pri = p["event_priority"].as_str().unwrap_or("");
         let major = matches!(pri, "High" | "Extreme")
             || road.contains("Highway")
@@ -1826,7 +1844,9 @@ pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
         let updated = p["last_updated"].as_str().or_else(|| p["duration"]["start"].as_str()).unwrap_or("");
         let mut item = json!({
             "id": id, "state": "QLD", "road": road, "where": wh,
-            "desc": summary, "closed": closed, "major": major,
+            "desc": summary, "closed": closed, "level": level,
+            "type": if sub.is_empty() { "Flooding" } else { sub }, "impact": imp_sub,
+            "major": major,
             "updated": updated, "lat": lat, "lon": lon,
             "link": "https://qldtraffic.qld.gov.au/",
         });
@@ -1865,7 +1885,8 @@ pub fn parse_nsw_roads(gj: &Value) -> Vec<Value> {
         let updated = p["lastUpdated"].as_i64().or_else(|| p["created"].as_i64()).map(|ms| wmip_stamp(ms / 1000)).unwrap_or_default();
         let mut item = json!({
             "id": id, "state": "NSW", "road": road, "where": wh,
-            "desc": desc, "closed": closed, "major": major,
+            "desc": desc, "closed": closed, "type": "Flooding",
+            "major": major,
             "updated": updated, "lat": lat, "lon": lon,
             "link": "https://www.livetraffic.com/",
         });
@@ -1938,17 +1959,80 @@ mod road_and_rain_obs_tests {
                         "event_subtype": "Planned roadworks",
                         "road_summary": {"road_name": "Gympie Road", "locality": "Chermside"}
                     }
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [153.1, -27.6]},
+                    "properties": {
+                        "id": 101,
+                        "event_type": "Flooding",
+                        "event_subtype": "Long-term flooding",
+                        "description": "Road is open to local traffic only",
+                        "impact": {"impact_type": "Closures", "impact_subtype": "Road closed to through traffic"},
+                        "road_summary": {"road_name": "Kennedy Highway", "locality": "Kuranda"}
+                    }
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [153.2, -27.7]},
+                    "properties": {
+                        "id": 102,
+                        "event_type": "Flooding",
+                        "event_subtype": "Flash flooding",
+                        "description": "Water over the road",
+                        "impact": {"impact_type": "Closures", "impact_subtype": "Partial lane closures"},
+                        "road_summary": {"road_name": "Muller Road", "locality": "Redland Bay"}
+                    }
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [152.9, -27.4]},
+                    "properties": {
+                        "id": 103,
+                        "event_type": "Flooding",
+                        "event_subtype": "Long-term flooding",
+                        "description": "Unsealed road flooded",
+                        "impact": {"impact_type": "Road restricted", "impact_subtype": "Restricted to four wheel drive vehicles only"},
+                        "road_summary": {"road_name": "Conondale Range Road", "locality": "Conondale"}
+                    }
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [152.8, -27.3]},
+                    "properties": {
+                        "id": 104,
+                        "event_type": "Flooding",
+                        "event_subtype": "Flash flooding",
+                        "description": "Water over the road at the causeway",
+                        "impact": {"impact_type": "Lanes affected", "impact_subtype": "All lanes affected"},
+                        "road_summary": {"road_name": "Bowen Street", "locality": "Gympie"}
+                    }
                 }
             ]
         });
         let items = parse_qld_roads(&qld);
-        assert_eq!(items.len(), 1, "only flood events kept");
-        assert_eq!(items[0]["id"], "qld:717127");
-        assert_eq!(items[0]["road"], "Carnarvon Highway");
-        assert_eq!(items[0]["where"], "St George");
-        assert_eq!(items[0]["closed"], true);
-        assert_eq!(items[0]["major"], true);
-        assert_eq!(items[0]["line"].as_array().unwrap().len(), 2);
+        assert_eq!(items.len(), 5, "only flood events kept: one planned roadworks dropped");
+        let carnarvon = items.iter().find(|x| x["id"] == "qld:717127").unwrap();
+        assert_eq!(carnarvon["road"], "Carnarvon Highway");
+        assert_eq!(carnarvon["where"], "St George");
+        assert_eq!(carnarvon["closed"], true);
+        assert_eq!(carnarvon["major"], true);
+        assert_eq!(carnarvon["type"], "Long-term flooding", "the agency's event subtype passes through");
+        assert_eq!(carnarvon["impact"], "Road closed to all traffic");
+        assert_eq!(carnarvon["line"].as_array().unwrap().len(), 2);
+        let through = items.iter().find(|x| x["id"] == "qld:101").unwrap();
+        assert_eq!(through["closed"], true, "through-traffic closures count as closed");
+        assert_eq!(through["level"], "closed to through traffic");
+        let partial = items.iter().find(|x| x["id"] == "qld:102").unwrap();
+        assert_eq!(partial["closed"], false, "a partial lane closure is not a full road closure");
+        assert_eq!(partial["level"], "part closed");
+        let restricted = items.iter().find(|x| x["id"] == "qld:103").unwrap();
+        assert_eq!(restricted["closed"], false);
+        assert_eq!(restricted["level"], "access restricted");
+        assert_eq!(restricted["impact"], "Restricted to four wheel drive vehicles only");
+        let lanes = items.iter().find(|x| x["id"] == "qld:104").unwrap();
+        assert_eq!(lanes["closed"], false, "lanes affected is not closed to all traffic");
+        assert_eq!(lanes["level"], "lanes affected");
 
         let nsw = json!({
             "type": "FeatureCollection",
@@ -1968,6 +2052,7 @@ mod road_and_rain_obs_tests {
         assert_eq!(nitems[0]["id"], "nsw:99");
         assert_eq!(nitems[0]["closed"], true);
         assert_eq!(nitems[0]["major"], true);
+        assert_eq!(nitems[0]["type"], "Flooding", "the whole NSW feed is flood hazards");
 
         let w = watch_list(&json!({"roads": {"items": items}}));
         assert_eq!(w.as_array().unwrap()[0]["kind"], "road");

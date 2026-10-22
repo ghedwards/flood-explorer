@@ -326,6 +326,8 @@ body.in3d #legendCard { display: none; }
 .watch-flood { border-left-color: #e65100; }
 .watch-river { border-left-color: #f9a825; }
 .watch-sea { border-left-color: #1565c0; }
+.road-popup { font-size: 13px; line-height: 1.4; }
+.road-kind { display: inline-block; width: .85em; height: .85em; border-radius: 3px; margin-right: 5px; vertical-align: baseline; }
 .warn-text { display: block; font-size: .85rem; margin: 2px 0; color: var(--text); }
 .warn-item.sev-major { border-left: 4px solid #b71c1c; }
 .warn-item.sev-moderate { border-left: 4px solid #e65100; }

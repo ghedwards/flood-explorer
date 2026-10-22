@@ -2113,6 +2113,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     NATIONAL_OVERLAYS.filter((o) => o.layer && state.lmap.hasLayer(o.layer)).forEach((o) => {
       parts.push(`<span><i style="background:linear-gradient(90deg,#e6f3fb,#5aa9d6,#08306b)"></i>${escapeHtml(o.legend)}</span>`);
     });
+    if (nat.roadClosuresLayer && state.lmap.hasLayer(nat.roadClosuresLayer)) {
+      const n = (nat.readings && nat.readings.roads && nat.readings.roads.items || []).length;
+      for (const st of Object.values(ROAD_LEVELS)) parts.push(`<span><i style="background:${st.color}"></i>${escapeHtml(st.label)}</span>`);
+      if (n) parts.push(`<span><i style="background:#c62828;height:4px;width:10px"></i>${n} official flood closure${n === 1 ? '' : 's'} on now (QLDTraffic${String((nat.readings.roads.sources || {}).NSW || '').startsWith('ok') ? ' and Live Traffic NSW' : ''})</span>`);
+    }
     on.filter((o) => o.kind === 'outline').forEach((o) => {
       parts.push(`<span><i style="background:transparent;border:2px dashed ${o.color};height:8px"></i>${o.name.replace('Recorded flood: ', 'Recorded ')}</span>`);
     });
@@ -5131,14 +5136,26 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     }
     status.warningAreas = { warnings: allWarnings().length, drawn, bureauOutlines: outlines };
   }
-  function roadColor(closed, major) {
-    return closed ? (major ? '#b71c1c' : '#d32f2f') : (major ? '#ef6c00' : '#ff8f00');
-  }
+  // What a road closure actually is, as the agencies report it: a full
+  // closure, one closed to through traffic, a part closure, a restriction
+  // (4WD or weight limits) or mere lane and water impacts. Each paints
+  // differently so nobody reads a lane closure as "closed to all traffic".
+  const ROAD_LEVELS = {
+    closed: { color: '#c62828', label: 'Closed to all traffic', dash: null },
+    'closed to through traffic': { color: '#d84315', label: 'Closed to through traffic', dash: null },
+    'part closed': { color: '#ef6c00', label: 'Part closed — some lanes', dash: '7 4' },
+    'access restricted': { color: '#6d4c41', label: 'Access restricted', dash: '7 4' },
+    'lanes affected': { color: '#f9a825', label: 'Lanes affected — pass with care', dash: '4 5' },
+    caution: { color: '#90a4ae', label: 'Flooding reported — use caution', dash: '4 5' },
+  };
+  const roadLevelOf = (x) => (x && x.level) || (x && x.closed ? 'closed' : 'caution');
   function roadClosurePopupHtml(x) {
+    const st = ROAD_LEVELS[roadLevelOf(x)] || ROAD_LEVELS.caution;
     return `<div class="road-popup"><strong>${escapeHtml(x.road || 'Road')}</strong>${x.where ? ` <span class="hint">${escapeHtml(x.where)}</span>` : ''}<br>
-      <span class="hint">${escapeHtml(x.desc || 'Closed due to flooding')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span><br>
-      <span class="hint">${x.closed ? 'Closed to all traffic' : 'Caution advised'}${x.major ? ' · major road' : ''}</span>
-      ${x.line && x.line.length ? '' : ''}
+      <div><span style="background:${st.color}" class="road-kind"></span><strong>${escapeHtml(st.label)}</strong>${x.type ? ` <span class="hint">· ${escapeHtml(x.type)}</span>` : ''}</div>
+      <span class="hint">${escapeHtml(x.desc || 'Reported flooding')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span>
+      ${x.impact ? `<br><span class="hint">${escapeHtml(x.impact)}</span>` : ''}
+      <br><span class="hint">Source: ${escapeHtml(x.state === 'NSW' ? 'Live Traffic NSW' : 'QLDTraffic')}${x.major ? ' · major road' : ''}</span>
       ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
   }
   function drawRoadClosures() {
@@ -5149,19 +5166,24 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     let n = 0;
     for (const x of items) {
       if (!Number.isFinite(x.lat) || !Number.isFinite(x.lon)) continue;
-      const color = roadColor(!!x.closed, !!x.major);
-      const w = x.closed ? 4 : 2.5;
+      const st = ROAD_LEVELS[roadLevelOf(x)] || ROAD_LEVELS.caution;
+      const w = (roadLevelOf(x) === 'closed' ? 4 : 2.5) + (x.major ? 1 : 0);
       let m;
       if (Array.isArray(x.line) && x.line.length >= 2) {
-        m = L.polyline(x.line.map(([la, lo]) => [la, lo]), { color, weight: w, opacity: 0.9, dashArray: x.closed ? null : '6 4' });
+        m = L.polyline(x.line.map(([la, lo]) => [la, lo]), { color: st.color, weight: w, opacity: 0.9, dashArray: st.dash || undefined });
       } else {
-        m = L.circleMarker([x.lat, x.lon], { radius: x.major ? 6 : 4, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 0.95 });
+        m = L.circleMarker([x.lat, x.lon], { radius: x.major ? 6 : 4, color: '#ffffff', weight: 1.5, fillColor: st.color, fillOpacity: 0.95 });
       }
       m.bindPopup(() => roadClosurePopupHtml(x), { maxWidth: 320 });
       m.addTo(lyr);
       n++;
     }
-    status.roadClosures = { count: items.length, drawn: n, closed: items.filter((x) => x.closed).length, sources: nat.readings && nat.readings.roads ? nat.readings.roads.sources : null };
+    status.roadClosures = {
+      count: items.length, drawn: n,
+      closed: items.filter((x) => x.closed).length,
+      levels: items.reduce((m, x) => { const k = roadLevelOf(x); m[k] = (m[k] || 0) + 1; return m; }, {}),
+      sources: nat.readings && nat.readings.roads ? nat.readings.roads.sources : null,
+    };
   }
   function drawRainObs() {
     const L = window.L, lyr = nat.rainObsLayer;
