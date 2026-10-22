@@ -4,7 +4,7 @@ Where Flood Explorer stands, how the live-data side fits together, the
 conventions and traps learned the hard way, and designs for the next pieces
 of work. Written so another agent can pick any item up cold.
 
-## State of play (main at `fbe5ea41`)
+## State of play (main at `c5f30fcb`)
 
 Live at https://ghedwards.github.io/flood-explorer/ with `DATA_SOURCE=runtime`:
 the map's readings come from the broker (Rust, AWS Lambda, Sydney), with the
@@ -30,6 +30,26 @@ Shipped this round:
   (`readings-history.json.gz`), `/v1/history?site=`, drawn in gauge reports.
 - **Versions** in the information panel (app commit, broker commit from
   `/health`) and in "Copy for reporting".
+- **Fetching split** (item 5c below): the broker serves `/v1/now` (latest
+  level per gauge, warnings with outlines, watch list, flood classes, sea,
+  rain totals — without the per-gauge series) and `/v1/series?site=`
+  (`&kind=storage` for dams); the map polls `/v1/now` and a report asks for
+  its own series lazily (`viewer/app.js`: `loadNationalData`,
+  `refreshLiveReadings`, `ensureSeries`).
+- **Water Data Online at most hourly** (5a): KiWIS hourly values once an hour
+  and daily series every 3 hours, carried in between with `Self::carry`, so
+  refreshes are shorter and value-batch 504s rarer.
+- **Steadier rain** (5d): fewer, larger Open-Meteo requests, a pause between
+  batches, and only the batches that failed are retried next refresh.
+- **Refresh now**: a button in the watch panel re-fetches live readings, at
+  most once every 5 minutes (remembered across reloads); the page starts from
+  the readings saved by the last visit and says why a saved copy wasn't used.
+- **Per-source status** (5f, part): readings record when each source was
+  fetched and recorded (clock times and live times per source); the Data
+  status panel never sits stuck on "Loading".
+- **Service worker**: network requests give up after 20 s instead of hanging.
+- **Bureau access**: the broker reads the Bureau only through its FTP server
+  and ArcGIS map service, never posing as a browser.
 
 ## How the live side fits together
 
@@ -39,7 +59,8 @@ Shipped this round:
   watch list).
 - `rust/flood-broker`: `readings.rs` (the refresh: stages with timings,
   carries old values when a stage fails, S3 store), `history.rs`, `lib.rs`
-  (HTTP: `/v1/readings`, `/v1/levels`, `/v1/history`, `/health`), `lambda.rs`
+  (HTTP: `/v1/now`, `/v1/series`, `/v1/readings`, `/v1/levels`, `/v1/history`,
+  `/health`), `lambda.rs`
   (runtime API loop; events `{"flood_broker":"refresh"|"probe"}`), `s3.rs`
   (SigV4, reusable for other AWS APIs via `s3::authorization`).
 - Deploy: `.github/workflows/broker-deploy.yml` (OIDC role, env vars set
@@ -268,7 +289,7 @@ Until then `boardToModel` (app.js) places a peak from the gauge's rating
 (`gaugeRating`, median height) or from the lowest level recorded in the last
 5+ days; the message says which.
 
-### 5. Fetching improvements (do 5a and 5b first)
+### 5. Fetching improvements (5a, 5c and 5d are done; 5b, 5e and the rest of 5f remain)
 
 Measured on a refresh (21 Oct): 196 s in all, of which Water Data Online
 (KiWIS) 189 s; recurring errors are KiWIS `HTTP 504` on value batches and
@@ -277,7 +298,7 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
 (about a day behind). Stage timings are in the refresh summary
 (`stageSeconds`) and the deploy's probe notice.
 
-**5a. Ask Water Data Online less often (biggest win).**
+**5a. Ask Water Data Online less often (biggest win) — DONE.**
 - In `readings.rs`, split the readings stage: Bureau FTP levels and Qld
   live levels every refresh; KiWIS hourly values every hour and daily
   series every 3 hours, carrying the previous values in between
@@ -300,7 +321,7 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
 - Add a test with a fake session (list twice, second time one changed
   file: one download).
 
-**5c. Split what the app downloads.**
+**5c. Split what the app downloads — DONE.**
 - Today the app fetches all of readings.json (~2 MB raw, ~170 KB gzipped)
   whenever it changes, mostly the per-gauge daily series.
 - Serve a small "now" document (`/v1/now`: latest level per gauge with
@@ -315,7 +336,7 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
 - Check on a phone-sized viewport in `shots2d` (bytes on the wire in the
   broker check: `curl --compressed -w '%{size_download}'`).
 
-**5d. Steadier rain forecasts.**
+**5d. Steadier rain forecasts — DONE.**
 - Open-Meteo batches fail to connect (one try per batch, 150 s budget, so
   a failed batch waits 3 h). Fewer, larger requests (check its limits on
   locations per request), a short pause between batches, and on the next
@@ -331,14 +352,17 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   via the public URL). Watch `build.yml` step outcomes and the
   "Data status" panel (it reads `data/status.json`).
 
-**5f. Health per source.**
-- Record per source the last success time, last error and a short error
-  count: Water Data Online, Qld WMIP, FTP warnings, FTP classes/levels,
-  map service (warning areas), Open-Meteo, storm tide CSV. Put it in the
-  refresh summary and readings (`r["sources"]`), expose it in `/health`,
-  and show it in the app's Data status panel ("Water Data Online: last
-  good 12 min ago") next to the build's sources. Makes the next "live
-  readings unavailable" report diagnosable from a screenshot.
+**5f. Health per source — partly done.**
+- Shipped: readings record when each source was fetched and recorded
+  (clock times and live times per source), and the Data status panel
+  never sits stuck on "Loading".
+- Still to do: per-source last success time, last error and a short error
+  count (Water Data Online, Qld WMIP, FTP warnings, FTP classes/levels,
+  map service (warning areas), Open-Meteo, storm tide CSV), in the refresh
+  summary and readings (`r["sources"]`), exposed in `/health` and shown in
+  the app's Data status panel ("Water Data Online: last good 12 min ago")
+  next to the build's sources. Makes the next "live readings unavailable"
+  report diagnosable from a screenshot.
 
 ### 6. Smaller items
 
@@ -351,10 +375,13 @@ give fresher levels (hourly, `bureauLevels` ~1,500 gauges) than KiWIS
   refresh; topic in the stack, subscription made by hand, places in a repo
   variable, never committed).
 - **Branches to delete** (the agent's proxy can't delete remote branches):
-  `2d-warnareas 2d-slowload 2d-bedpct 2d-bomlevel 2d-demvoids` and the older
-  ones (`2d-key 2d-polish 2d-sharp 2d-streets 2d-swfix 2d-tidy 2d-cluster
-  3d-bar 3d-imagery-seam 3d-imagery-zoom 3d-tidy 3d-v4 3d-v4-polish
-  2d-roadtime 2d-layerfb 2d-perf 2d-perf-worker 3d-perf-worker 3d-mem
-  2d-review 3d-review 3d-opacity 2d-dam 2d-tint 2d-release 2d-downstream
-  2d-study 2d-riverbed readings-hourly probe-qld readings-qld 2d-broker
-  2d-readings 2d-cache 2d-normal 2d-watch probe-data deps-webpki`).
+  `2d-fixes 2d-ftponly 2d-refreshbtn 2d-savedreadings 2d-nowdoc 2d-savefix
+  2d-statusfix shots-2d--2d-fixes shots-2d--2d-nowdoc shots-2d--2d-savefix
+  shots-2d--2d-statusfix`, `2d-warnareas 2d-slowload 2d-bedpct 2d-bomlevel
+  2d-demvoids` and the older ones (`2d-key 2d-polish 2d-sharp 2d-streets
+  2d-swfix 2d-tidy 2d-cluster 3d-bar 3d-imagery-seam 3d-imagery-zoom 3d-tidy
+  3d-v4 3d-v4-polish 2d-roadtime 2d-layerfb 2d-perf 2d-perf-worker
+  3d-perf-worker 3d-mem 2d-review 3d-review 3d-opacity 2d-dam 2d-tint
+  2d-release 2d-downstream 2d-study 2d-riverbed readings-hourly probe-qld
+  readings-qld 2d-broker 2d-readings 2d-cache 2d-normal 2d-watch probe-data
+  deps-webpki`).
