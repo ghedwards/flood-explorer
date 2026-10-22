@@ -2116,7 +2116,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (nat.roadClosuresLayer && state.lmap.hasLayer(nat.roadClosuresLayer)) {
       const n = (nat.readings && nat.readings.roads && nat.readings.roads.items || []).length;
       for (const st of Object.values(ROAD_LEVELS)) parts.push(`<span><i style="background:${st.color}"></i>${escapeHtml(st.label)}</span>`);
-      if (n) parts.push(`<span><i style="background:#c62828;height:4px;width:10px"></i>${n} official flood closure${n === 1 ? '' : 's'} on now (QLDTraffic${String((nat.readings.roads.sources || {}).NSW || '').startsWith('ok') ? ' and Live Traffic NSW' : ''})</span>`);
+      if (n) parts.push(`<span><i style="background:#c62828;height:4px;width:10px"></i>${n} official road event${n === 1 ? '' : 's'} on now (QLDTraffic${String((nat.readings.roads.sources || {}).NSW || '').startsWith('ok') ? ' and Live Traffic NSW' : ''})</span>`);
     }
     on.filter((o) => o.kind === 'outline').forEach((o) => {
       parts.push(`<span><i style="background:transparent;border:2px dashed ${o.color};height:8px"></i>${o.name.replace('Recorded flood: ', 'Recorded ')}</span>`);
@@ -4064,7 +4064,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     nat.layers['Flood warning areas (BoM)'] = nat.warnLayer;
     drawWarningAreas();
     if (!nat.roadClosuresLayer) nat.roadClosuresLayer = L.layerGroup();
-    nat.layers['Road closures, flooding (official)'] = nat.roadClosuresLayer;
+    nat.layers['Road closures and events (official)'] = nat.roadClosuresLayer;
     drawRoadClosures();
     if (!nat.rainObsLayer) nat.rainObsLayer = L.layerGroup();
     nat.layers['Rain gauges, observed 24h (BoM)'] = nat.rainObsLayer;
@@ -4088,7 +4088,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function addNationalLayers(m) {
     const L = window.L;
     buildNationalLayers(L, m);
-    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures, flooding (official)'];
+    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures and events (official)'];
     for (const [name, layer] of Object.entries(nat.layers)) {
       registerOverlay(name, layer);
       if (nat.defaultsApplied) continue;   // respect what the viewer has switched since
@@ -5146,14 +5146,14 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     'part closed': { color: '#ef6c00', label: 'Part closed — some lanes', dash: '7 4' },
     'access restricted': { color: '#6d4c41', label: 'Access restricted', dash: '7 4' },
     'lanes affected': { color: '#f9a825', label: 'Lanes affected — pass with care', dash: '4 5' },
-    caution: { color: '#90a4ae', label: 'Flooding reported — use caution', dash: '4 5' },
+    caution: { color: '#90a4ae', label: 'Hazard reported — use caution', dash: '4 5' },
   };
   const roadLevelOf = (x) => (x && x.level) || (x && x.closed ? 'closed' : 'caution');
   function roadClosurePopupHtml(x) {
     const st = ROAD_LEVELS[roadLevelOf(x)] || ROAD_LEVELS.caution;
     return `<div class="road-popup"><strong>${escapeHtml(x.road || 'Road')}</strong>${x.where ? ` <span class="hint">${escapeHtml(x.where)}</span>` : ''}<br>
       <div><span style="background:${st.color}" class="road-kind"></span><strong>${escapeHtml(st.label)}</strong>${x.type ? ` <span class="hint">· ${escapeHtml(x.type)}</span>` : ''}</div>
-      <span class="hint">${escapeHtml(x.desc || 'Reported flooding')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span>
+      <span class="hint">${escapeHtml(x.desc || 'Reported event')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span>
       ${x.due ? `<br><span class="hint">Because of: ${escapeHtml(x.due)}</span>` : ''}
       ${x.impact ? `<br><span class="hint">${escapeHtml(x.impact)}</span>` : ''}
       <br><span class="hint">Source: ${escapeHtml(x.state === 'NSW' ? 'Live Traffic NSW' : 'QLDTraffic')}${x.major ? ' · major road' : ''}</span>

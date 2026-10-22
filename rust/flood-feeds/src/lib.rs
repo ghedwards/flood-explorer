@@ -500,13 +500,13 @@ pub fn watch_list(doc: &Value) -> Value {
             }
         }
     }
-    // official flood road closures on major roads
+    // officially closed major-road events, whatever the reason
     for item in doc["roads"]["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
         if item["closed"].as_bool() == Some(true) && item["major"].as_bool() == Some(true) {
             let road = item["road"].as_str().unwrap_or("Road");
             let wh = item["where"].as_str().unwrap_or("");
             let name = if wh.is_empty() { road.to_string() } else { format!("{} ({})", road, wh) };
-            let desc = item["desc"].as_str().unwrap_or("Closed due to flooding");
+            let desc = item["desc"].as_str().unwrap_or(item["type"].as_str().unwrap_or("Closed"));
             w.push((4.0, json!({
                 "kind": "road", "station": item["id"], "name": name,
                 "lat": item["lat"], "lon": item["lon"], "at": item["updated"],
@@ -1776,8 +1776,9 @@ fn road_geometry(geom: &Value) -> Option<(f64, f64, Vec<[f64; 2]>)> {
     Some((mid[0], mid[1], line))
 }
 
-/// Flood-related road closures and hazards from QLDTraffic's GeoJSON events
-/// FeatureCollection, closed and higher-priority roads first (capped at 150).
+/// Every open road event from QLDTraffic's GeoJSON events FeatureCollection —
+/// closures, flooding, crashes, works and hazards, each carrying the agency's
+/// own reason — closed and higher-priority roads first (capped at 150).
 pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
     let mut out = Vec::new();
     for f in gj["features"].as_array().into_iter().flatten() {
@@ -1786,19 +1787,6 @@ pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
         let sub = p["event_subtype"].as_str().unwrap_or("");
         let desc = p["description"].as_str().unwrap_or("");
         let due = p["event_due_to"].as_str().unwrap_or("");
-        // why the agency says the road is affected: flooding ("Earlier
-        // flooding", "Flooding of river"), water over the road, heavy rain
-        // or boggy conditions are flood-related; rough surface, potholes and
-        // the like are not
-        let due_l = due.to_lowercase();
-        let flood_due = ["flood", "water over road", "heavy rain", "boggy", "river"].iter().any(|w| due_l.contains(w));
-        let is_flood = et.eq_ignore_ascii_case("Flooding")
-            || ["flood", "water over road"].iter().any(|w| sub.to_lowercase().contains(w))
-            || flood_due
-            || desc.to_lowercase().contains("flood");
-        if !is_flood {
-            continue;
-        }
         let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
         let id = match &p["id"] {
             Value::Number(n) => format!("qld:{}", n),
@@ -1843,14 +1831,16 @@ pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
             desc.to_string()
         } else if !sub.is_empty() {
             sub.to_string()
+        } else if !et.is_empty() {
+            et.to_string()
         } else {
-            "Flooding".to_string()
+            "Road event".to_string()
         };
         let updated = p["last_updated"].as_str().or_else(|| p["duration"]["start"].as_str()).unwrap_or("");
         let mut item = json!({
             "id": id, "state": "QLD", "road": road, "where": wh,
             "desc": summary, "closed": closed, "level": level,
-            "type": if sub.is_empty() { "Flooding" } else { sub },
+            "type": if !sub.is_empty() { sub } else if !et.is_empty() { et } else { "Event" },
             "due": due, "impact": imp_sub,
             "major": major,
             "updated": updated, "lat": lat, "lon": lon,
@@ -1938,7 +1928,7 @@ mod road_and_rain_obs_tests {
     }
 
     #[test]
-    fn qld_and_nsw_flood_road_closures() {
+    fn qld_and_nsw_road_events() {
         let qld = json!({
             "type": "FeatureCollection",
             "features": [
@@ -2043,7 +2033,7 @@ mod road_and_rain_obs_tests {
             ]
         });
         let items = parse_qld_roads(&qld);
-        assert_eq!(items.len(), 6, "only flood events kept: planned roadworks and a rough-surface hazard dropped");
+        assert_eq!(items.len(), 8, "every event kept, flood or not");
         let carnarvon = items.iter().find(|x| x["id"] == "qld:717127").unwrap();
         assert_eq!(carnarvon["road"], "Carnarvon Highway");
         assert_eq!(carnarvon["where"], "St George");
@@ -2052,6 +2042,11 @@ mod road_and_rain_obs_tests {
         assert_eq!(carnarvon["type"], "Long-term flooding", "the agency's event subtype passes through");
         assert_eq!(carnarvon["impact"], "Road closed to all traffic");
         assert_eq!(carnarvon["line"].as_array().unwrap().len(), 2);
+        // roadworks and hazards of any kind are in too
+        let works = items.iter().find(|x| x["id"] == "qld:100").unwrap();
+        assert_eq!(works["type"], "Planned roadworks", "the event type passes through when there is no subtype-matched name");
+        assert_eq!(works["closed"], false);
+        assert_eq!(works["level"], "caution");
         let through = items.iter().find(|x| x["id"] == "qld:101").unwrap();
         assert_eq!(through["closed"], true, "through-traffic closures count as closed");
         assert_eq!(through["level"], "closed to through traffic");
@@ -2065,11 +2060,15 @@ mod road_and_rain_obs_tests {
         let lanes = items.iter().find(|x| x["id"] == "qld:104").unwrap();
         assert_eq!(lanes["closed"], false, "lanes affected is not closed to all traffic");
         assert_eq!(lanes["level"], "lanes affected");
-        // the agency records why, in event_due_to
+        // the agency records why, in event_due_to — for floods and for
+        // every other kind of hazard alike
         let water = items.iter().find(|x| x["id"] == "qld:105").unwrap();
         assert_eq!(water["due"], "Water over road", "the reason passes through");
         assert_eq!(water["level"], "caution");
-        assert!(items.iter().all(|x| x["id"] != "qld:106"), "a hazard whose reason is not flooding is dropped");
+        let rough = items.iter().find(|x| x["id"] == "qld:106").unwrap();
+        assert_eq!(rough["due"], "Rough surface", "a non-flood reason is kept too");
+        assert_eq!(rough["type"], "Adverse driving conditions");
+        assert_eq!(rough["level"], "caution");
 
         let nsw = json!({
             "type": "FeatureCollection",

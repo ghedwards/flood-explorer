@@ -58,11 +58,15 @@ Shipped this round:
   `r["rainObs"]`, a "Rain gauges, observed 24h (BoM)" layer coloured by the
   24 h total, totals in gauge reports, and heavy totals (≥ 100 mm/24 h) on
   the watch list.
-- **Official road closures** (item 1): `parse_qld_roads` (QLDTraffic events
-  API, flooding) and `parse_nsw_roads` (Live Traffic NSW) fetched every
-  30 minutes by the broker; `r["roads"]`, a "Road closures, flooding
-  (official)" layer with popups, and major/closed closures on the watch
-  list. NSW needs a `NSW_TRAFFIC_API_KEY`.
+- **Official road closures — every event type now** (item 1): `parse_qld_roads`
+  (QLDTraffic events API, all open events — closures, flooding, crashes,
+  works, hazards — each with the agency's reason) and `parse_nsw_roads`
+  (Live Traffic NSW) fetched every 30 minutes by the broker; `r["roads"]`,
+  a "Road closures and events (official)" layer with closure classes
+  (`level`: closed / closed to through traffic / part closed / access
+  restricted / lanes affected / caution) and popups (`Because of: <due>`),
+  and major/closed events on the watch list. NSW needs a
+  `NSW_TRAFFIC_API_KEY`.
 - **Build without refetching** (5e): in runtime mode the site build reuses
   cached readings and warnings as the fallback instead of fetching Water
   Data Online and the Bureau on every push.
@@ -160,14 +164,36 @@ All new feeds follow the same pattern, so one recipe:
 Why: the model says which roads a flood would cut; the agencies say which
 are closed now. Side by side they show the situation and check the model.
 
-Shipped (commit `48fcbb23`): `parse_qld_roads` (QLDTraffic events API v2,
-flooding events, the specification's public key unless `QLD_TRAFFIC_API_KEY`
-overrides it) and `parse_nsw_roads` (Live Traffic NSW; needs a
-`NSW_TRAFFIC_API_KEY`, otherwise that state is skipped) fetched by the broker
-every 30 minutes (`ROADS_EVERY_MS`) and carried up to 2 h when a fetch fails.
-The viewer has a "Road closures, flooding (official)" layer — polylines where
-the closure has a geometry, a dot where it only has a point — with popups
-(`roadClosurePopupHtml`), and major/closed closures appear on the watch list.
+Shipped (commits `48fcbb23`, then the clarity and all-events work): `parse_qld_roads`
+(QLDTraffic events API v2; every open event — closures, flooding, crashes,
+roadworks, hazards — with the agency's reason in `event_due_to`, the
+specification's public key unless `QLD_TRAFFIC_API_KEY` overrides it) and
+`parse_nsw_roads` (Live Traffic NSW; needs a `NSW_TRAFFIC_API_KEY`, otherwise
+that state is skipped) fetched by the broker every 30 minutes
+(`ROADS_EVERY_MS`) and carried up to 2 h when a fetch fails. Each item
+carries `level` (`closed`, `closed to through traffic`, `part closed`,
+`access restricted`, `lanes affected`, `caution`), `type`
+(event_subtype/event_type), `due` (event_due_to) and `impact`
+(impact_subtype); `closed` is only the "closed" levels, so a partial lane
+closure no longer counts as "closed to all traffic". The viewer has a
+"Road closures and events (official)" layer — polylines where the event has
+a geometry, a dot where it only has a point — with a legend swatch per
+level, popups (`roadClosurePopupHtml`) showing level, type, reason
+("Because of: …") and impact, and major/closed events on the watch list.
+
+Per-state feed access (probed live 2026-10-22; verify again before wiring):
+
+| State | Feed | Access | Status |
+| --- | --- | --- | --- |
+| QLD | `api.qldtraffic.qld.gov.au/v2/events` | public key in spec | in production |
+| NSW | `api.transport.nsw.gov.au` hazards: `/flood/all`, `/flood/open`, also `/incident/…`, `/fire/…`, `/roadwork/…`, `/majorevent/…`, `/alpine/…` | free API key | coded (flood feed), awaiting `NSW_TRAFFIC_API_KEY`; broaden to `/incident/all` when wired |
+| WA | Main Roads WebEOC Road Closures ArcGIS (`services2.arcgis.com/cHGEnmsJ165IBJRM/.../WebEoc_RoadClosures/FeatureServer/4`) | open, no key | verified live; `IncidentType` (incl. Bushfire), `ClosureType` ("Road open with caution"…), `TrafficImpact`, region/suburb, polyline geometry |
+| SA | `maps.sa.gov.au/arcgis/rest/services/DPTIExtTransport/TrafficSAOpenData/MapServer/0` (DIT Traffic SA) | open, no key | responds 200 |
+| NT | `roadreport.nt.gov.au/api/Obstruction/GetAll` (Road Report NT API) | open, no key | responds 200 |
+| TAS | `data.stategrowth.tas.gov.au/geoserver/ssg/ows` WFS `ssg:GEO_ROAD_WORKS` | open, no key | responds 200 (roadworks; closures layer to identify) |
+| ACT | ACT Gov ArcGIS `Public_Temporary_Road_Closures` (`services1.arcgis.com/E5n4f1VY84i0xSjy`, plus `_HISTORICAL` views) | open, no key | layer listed on the server |
+| VIC | opendata.transport.vic.gov.au "Unplanned Disruptions – Road" (dataset `af595015-…`, resource `1b185c7f-…`) | API key (free registration) | real-time endpoint exists, published as an OpenAPI spec that requires a key |
+| — | "Harmonised National Roadworks and Road Closures" (`spatial.infrastructure.gov.au/.../RADAR_Curated_Prod_roadworks`) | open | stale archive (last captures 2020) — do not use |
 
 Sources (verify each with a probe first):
 
@@ -177,13 +203,19 @@ Sources (verify each with a probe first):
   https://qldtraffic.qld.gov.au/more/Developers-and-Data/ (PDF "QLDTraffic
   website API specification", v1.10). The API is `https://api.qldtraffic.qld.gov.au/v2/events`
   with an `apikey` query parameter; the specification has historically
-  published a public key for open use. **Verify** the base URL, the
-  flooding filter (`event_type`/`event_subtype`) and the key from the current
-  PDF. Terms: provided "as is"; attribution "© The State of Queensland
+  published a public key for open use. The key and base URL were verified
+  live (2026-10-22). We take **every open event** — the API's `event_type`
+  filter param doesn't reliably filter anyway (it returned all 714 events
+  whatever the value) — within the 150-item cap, closures first. Terms:
+  provided "as is"; attribution "© The State of Queensland
   (Department of Transport and Main Roads)".
 - **NSW, Live Traffic NSW hazards** (Transport for NSW, CC BY). GeoJSON
-  FeatureCollections at `https://api.transport.nsw.gov.au/v1/live/hazards/`:
-  `flood-open.json` (current), `flood.json` (open and closed). Properties:
+  FeatureCollections at `https://api.transport.nsw.gov.au/v1/live/hazards/`,
+  one per category (from the hub's documentation, Aug 2025): `/flood/all`,
+  `/flood/open`, `/flood/closed`, likewise `/incident/…`, `/fire/…`,
+  `/roadwork/…`, `/majorevent/…`, `/alpine/…` — the flood feed we use is
+  only one of them; extend to a broader category when the key lands.
+  Properties:
   `headline`, `displayName`, `roads[]` (road name, suburb, ...), `isMajor`,
   `created` and `lastUpdated` (ms since 1970), `mainCategory`/`subCategoryA`
   (documented as unstable: don't rely on them). Needs a free Open Data Hub
@@ -191,29 +223,38 @@ Sources (verify each with a probe first):
   `Authorization: apikey <key>`. Developer guide v1.9 (Oct 2023) on the hub.
   Store the key as a repo secret, pass it to the Lambda env in
   `broker-deploy.yml` (like `ALLOWED_ORIGINS`), never commit it.
-- **Victoria**: no public traffic hazards feed confirmed; check the
-  Department of Transport and Planning open data (VicTraffic) before
-  building anything for Victoria. Skip if none.
+- **Victoria**: the real-time "Unplanned Disruptions – Road" endpoint exists
+  on opendata.transport.vic.gov.au (see the table) but is published as an
+  OpenAPI spec that requires an API key (free registration, like NSW);
+  register for one before building anything for Victoria.
 
 Data shape in readings.json:
 
 ```json
 "roads": {"fetched": "...", "sources": {"QLD": "ok", "NSW": "ok"},
   "items": [{"id": "qld:123", "state": "QLD", "road": "Warrego Hwy",
-    "where": "Mitchell to Morven", "desc": "Closed due to flooding",
-    "closed": true, "major": false, "updated": "2026-10-21T04:00:00Z",
+    "where": "Mitchell to Morven", "desc": "Water over the road",
+    "closed": true, "level": "closed", "type": "Flash flooding",
+    "due": "Flooding of river", "impact": "Road closed to all traffic",
+    "major": false, "updated": "2026-10-21T04:00:00Z",
     "lat": -26.5, "lon": 147.9, "line": [[-26.5, 147.9], ...],
     "link": "https://qldtraffic.qld.gov.au/"}]}
 ```
 
-Flood-related only (type flooding, or text matching flood/water over
-road). `closed` true when the agency says closed; otherwise "caution".
+Every open event, whatever its type (`type` is the agency's subtype or
+event_type; `due` its reason). `closed` true only when the level says so;
+otherwise the level buckets the impact (`part closed`, `access restricted`,
+`lanes affected`, `caution`).
 
 App:
 
-- Layer "Road closures, flooding (official)", on by default when any: red
-  lines (closed) or orange (caution) where geometry is a line, else a
-  marker; popup with road, place, agency text, updated time and source link.
+- Layer "Road closures and events (official)", on by default when any:
+  six closure classes as line colours/dashes (closed red, through-traffic
+  closures dark orange, part closed orange, restricted brown, lanes
+  affected yellow, caution grey) where geometry is a line, else a marker;
+  popup with road, place, level, type, agency text, the reason
+  ("Because of: …"), updated time and source link; the legend lists the
+  classes and the count of official road events on now.
 - Model impact section (`renderImpact`/roads cut): list official closures
   inside the model's box next to the modelled cut roads: "The model cuts 12
   roads; officially closed now: Warrego Hwy (Mitchell–Morven)". Don't try to
@@ -231,13 +272,16 @@ say what to do: Advice (yellow), Watch and Act (orange), Emergency Warning
 (red), including "evacuate now" for named towns. Those are the warnings
 people act on.
 
-Sources (all need verifying; none confirmed reachable yet):
+Sources (probed 2026-10-22; verify the unconfirmed ones before wiring):
 
-- **NSW SES, Hazard Watch** (data.gov.au "Hazard Watch", CC BY 3.0 AU,
-  publisher NSW State Emergency Service). The dataset page lists no feed URL;
-  the public site hazardwatch.gov.au serves its map from a feed: find it
-  (browser dev tools by the user, or a probe) and confirm terms with NSW SES
-  (datansw@customerservice.nsw.gov.au) if unclear.
+- **NSW, RFS Major Incidents** — the best pattern proof: `https://www.rfs.nsw.gov.au/feeds/majorIncidents.json`
+  is **public, no key, live** (12 incidents at probe time). GeoJSON with
+  `title`, `link` (Fires Near Me), `category` (Advice / Watch and Act /
+  Emergency Warning / Planned Burn / Not Applicable) and a `description`
+  starting `ALERT LEVEL: …`. *Fire*, not flood — ideal for the fire
+  extension too. NSW SES's own Hazard Watch (data.gov.au, publisher NSW
+  SES) still has no listed feed URL: find it from hazardwatch.gov.au's
+  dev-tools network tab.
 - **Queensland, "Storm, flood and cyclone warnings" (CAP-AU XML)** by the
   Queensland Fire Department (data.qld.gov.au dataset
   `storm-flood-and-cyclone-warnings-capau-xml`): CAP-AU with warning areas,
@@ -245,12 +289,21 @@ Sources (all need verifying; none confirmed reachable yet):
   data.qld.gov.au. CAP parsing exists already (`parse_cap_flood`; extend it
   for `<parameter>` AWS level fields and `<polygon>` areas, which
   `cap_polygons` already reads).
-- **Victoria, VicEmergency**: the support article (2019) says the data feed
-  isn't public (register interest). The VicEmergency site's own map uses a
-  public events JSON that community tools read; using it needs the terms
-  checked with Emergency Management Victoria first. Treat Victoria as
-  optional.
-- Other states later (Emergency WA, SA SES, Tas SES, NT).
+- **Victoria, VicEmergency**: the site's events API needs a community API
+  key (register interest with EMV). Treat Victoria as optional until a key
+  exists.
+- **WA, DFES**: incident feed exists but the obvious path guesses returned
+  404 (20/10); find the correct URL (Emergency WA map's dev-tools tab) —
+  ~30 min detective task.
+- **SA, CFS**: same — the incident feed isn't at the guessed path
+  (`cfs.sa.gov.au/data/incidents.json`, 404); find the correct one.
+- **ACT, ESA**: esa.act.gov.au responded but the feed path is unverified —
+  confirm before wiring.
+- **NT / TAS**: thin emergency-incident feeds; treat as low value for this
+  map and skip for now.
+- Fire angle: where an incident feed carries fire hazards (NSW RFS above;
+  WA's road feed tags bushfire), tag items `hazard: fire` so the roads
+  layer and popups show them the same way (see WA row in the item-1 table).
 
 Data shape: `"emergency": {"items": [{"id", "state", "level":
 "advice"|"watch_and_act"|"emergency", "hazard": "flood", "title",
