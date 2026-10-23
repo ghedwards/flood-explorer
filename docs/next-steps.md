@@ -569,3 +569,32 @@ five peak models built (Stanley, Condamine, Warrego, Bulloo, Barcoo), 60+
 watch-list places pinned. Test hooks: `__floodPendingWatchWork`,
 `__floodModelPeaks`.
 
+
+### 8. Fire overlays (current and historical; open research)
+
+Current fire data already in the app:
+- **NSW RFS major incidents** — live point incidents with alert levels
+  (Advice / Watch and Act / Emergency Warning), shipped as the
+  `Emergency warnings (state)` layer (`0bb4e4d5`/`024c7b18`); hazard tagged
+  `fire` unless the text says flood.
+- **Road closures** tagged `hazard: fire` where the agency reports a
+  bushfire (WA's WebEOC feed carries `IncidentType: Bushfire`; QLD has a
+  handful).
+
+Available but not yet wired:
+- **Other states' current fire incidents** — VIC (CFA/DELWP, community key),
+  WA (DFES — feed path to find), QLD (QFES alerts), SA (CFS), ACT (ESA).
+  These arrive for free with item 2 (emergency warnings), which already
+  started with NSW RFS as the proven pattern.
+- **NASA FIRMS hotspots** (MODIS/VIIRS) — public, near-real-time point
+  hotspots; small effort as a live overlay like rain obs; needs a free
+  MAP_KEY. Good for "what's burning now" nationally.
+- **Historical fire perimeters** — Geoscience Australia "Bushfire
+  Historical Extents v3" (national, shapefile ZIP), plus state datasets
+  (NSW FESM, VIC FHIRES, WA, SA). Large; needs conversion to GeoJSON/tiles
+  before they can be an overlay — comparable effort to the recorded-flood
+  overlays. High value for "past fires" but a data-prep task.
+
+Recommendation: extend item 2 to more states first (current warnings, incl.
+fire); FIRMS hotspots as a quick follow-up; historical perimeters only if
+wanted as a recorded-fire overlay.
