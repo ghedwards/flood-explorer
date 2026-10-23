@@ -5117,7 +5117,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       ${w.description ? `<div class="warn-body">${escapeHtml(w.description)}</div>` : ''}
       ${shape && shape.names && shape.names.length ? `<small>Area: ${escapeHtml(shape.names.join('; '))} (the Bureau's flood warning catchments)</small>` : ''}
       ${g.length ? `<small>Gauges on ${shape && shape.from === 'bureau' ? 'this warning' : 'the warned rivers (the area drawn around them)'}: ${names}${g.length > 8 ? ` and ${g.length - 8} more` : ''}</small>` : '<small>No gauges on the map match this warning, so it has no area here.</small>'}
-      <div class="warn-actions">${peakBtns(w)}${w.link ? `<a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
+      <div class="warn-actions">${peakBtns(w)}<button type="button" class="btn small" data-warn-area="${escapeHtml(warnKey(w))}">Model this warning area</button>${w.link ? `<a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   }
   function drawWarningAreas() {
     const L = window.L, lyr = nat.warnLayer;
@@ -5425,14 +5425,30 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnKey || warnKey(x) === b.dataset.warnModel);
     if (w) withBusy(b, 'Building the flood model…', () => modelWarningPeak(w, +b.dataset.peak || 0));
   }
+  async function onWarnArea(b) {
+    const w = allWarnings().find((x) => warnKey(x) === b.dataset.warnArea);
+    if (!w) return;
+    const shape = nat.warnShapes && nat.warnShapes.get(warnKey(w));
+    if (!shape || !shape.layer) { say('No area outline for this warning.'); return; }
+    const bb = shape.layer.getBounds();
+    const center = bb.getCenter();
+    const halfKm = Math.min(15, Math.max(5, Math.ceil(Math.max(
+      (bb.getNorth() - bb.getSouth()) * 111 / 2,
+      (bb.getEast() - bb.getWest()) * 111 * Math.cos(center.lat * Math.PI / 180) / 2
+    ))));
+    await withBusy(b, 'Downloading elevation for this warning area…', async () => {
+      const ok = await modelHere(center.lat, center.lng, { halfKm, name: w.title, lidar: false });
+      if (ok) say(`Model area created for "${w.title}" (≈${2 * halfKm} km). Set a level in Scenario to run it.`);
+    });
+  }
   document.addEventListener('click', (e) => {
-    const b = e.target.closest && e.target.closest('[data-warn-model]');
-    if (b) { e.preventDefault(); onWarnModel(b); }
+    const b = e.target.closest && e.target.closest('[data-warn-model],[data-warn-area]');
+    if (b) { e.preventDefault(); if (b.hasAttribute('data-warn-area')) onWarnArea(b); else onWarnModel(b); }
   });
   // Leaflet keeps clicks inside a popup to itself: wire those directly
-  const wirePopupButtons = (el) => el && el.querySelectorAll('[data-warn-model]').forEach((b) => b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onWarnModel(b); }));
+  const wirePopupButtons = (el) => el && el.querySelectorAll('[data-warn-model],[data-warn-area]').forEach((b) => b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (b.hasAttribute('data-warn-area')) onWarnArea(b); else onWarnModel(b); }));
   const warnItemHtml = (x, meta) => `<div class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${meta}</small>
-    <div class="warn-actions">${peakBtns(x)}<button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${x.link ? `<a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
+    <div class="warn-actions">${peakBtns(x)}<button type="button" class="btn small" data-warn-area="${escapeHtml(warnKey(x))}">Model this warning area</button><button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${x.link ? `<a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.
