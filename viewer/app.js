@@ -1275,6 +1275,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     let n = 0;
     for (let i = 0; i < a.N; i++) {
       if (!a.valid[i]) continue;
+      const area = state.areaKey && areaReg.get(state.areaKey);
+      if (area && area.polygon) {
+        const ll = cellLatLng(i);
+        if (!pointInPolygon(ll[0], ll[1], area.polygon)) continue;
+      }
       let col = null, band = -1;
       if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
       if (cmp) {
@@ -3203,6 +3208,22 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const a = state.a, g = state.geo;
     const x = (i % a.W) + 0.5, y = Math.floor(i / a.W) + 0.5;
     return [g.north - (y / a.H) * (g.north - g.south), g.west + (x / a.W) * (g.east - g.west)];
+  }
+  function pointInPolygon(lat, lon, rings) {
+    if (!Array.isArray(rings) || !rings.length) return true;
+    let inside = false;
+    for (let r = 0; r < rings.length; r++) {
+      const ring = rings[r];
+      if (!Array.isArray(ring) || ring.length < 3) continue;
+      let c = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const yi = ring[i][0], xi = ring[i][1];
+        const yj = ring[j][0], xj = ring[j][1];
+        if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) c = !c;
+      }
+      if (r === 0) inside = c; else if (c) inside = false;
+    }
+    return inside;
   }
 
   function latLngCell(ll) {
@@ -5438,7 +5459,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     ))));
     await withBusy(b, 'Downloading elevation for this warning area…', async () => {
       const ok = await modelHere(center.lat, center.lng, { halfKm, name: w.title, lidar: false });
-      if (ok) say(`Model area created for "${w.title}" (≈${2 * halfKm} km). Set a level in Scenario to run it.`);
+      if (ok) {
+        const area = state.areaKey && areaReg.get(state.areaKey);
+        if (area) area.polygon = shape.rings;
+        say(`Model area created for "${w.title}" (≈${2 * halfKm} km). Set a level in Scenario to run it.`);
+      }
     });
   }
   document.addEventListener('click', (e) => {
