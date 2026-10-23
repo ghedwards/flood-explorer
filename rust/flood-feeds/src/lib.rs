@@ -1718,7 +1718,7 @@ pub const SA_ROADS_ATTRIBUTION: &str = "© Government of South Australia (Depart
 pub const NT_ROADS_URL: &str = "https://roadreport.nt.gov.au/api/Obstruction/GetAll";
 pub const NT_ROADS_ATTRIBUTION: &str = "© Northern Territory Government (Department of Infrastructure, Planning and Logistics)";
 /// Tasmania, State Growth road works (GeoServer WFS, open, no key).
-pub const TAS_ROADS_URL: &str = "https://data.stategrowth.tas.gov.au/geoserver/ssg/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=ssg%3AGEO_ROAD_WORKS&maxFeatures=500&outputFormat=application/json";
+pub const TAS_ROADS_URL: &str = "https://data.stategrowth.tas.gov.au/geoserver/ssg/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=ssg%3AGEO_ROAD_WORKS&maxFeatures=500&outputFormat=application/json&srsName=EPSG:4326";
 pub const TAS_ROADS_ATTRIBUTION: &str = "© State of Tasmania (Department of State Growth)";
 /// Australian Capital Territory, temporary road closures (ArcGIS FeatureServer, open, no key).
 pub const ACT_ROADS_URL: &str = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/Public_Temporary_Road_Closures/FeatureServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=2000&returnGeometry=true&outSR=4326";
