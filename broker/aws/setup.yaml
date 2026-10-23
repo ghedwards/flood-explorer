@@ -21,6 +21,17 @@ Parameters:
       "false" if this account already has the token.actions.githubusercontent.com
       identity provider (IAM > Identity providers); only one may exist.
 
+  # memory for the function: 128 MB is too small for a refresh that now
+  # fetches seven road feeds on top of Water Data Online and the Bureau;
+  # 256 MB keeps the cost near zero (~$0.00) while leaving headroom
+  MemorySize:
+    Type: Number
+    Default: 256
+    AllowedValues: [128, 256, 512]
+    Description: >-
+      Lambda memory (MB). 128 MB OOM-killed the refresh once the per-state
+      road feeds were added; 256 MB is the smallest size that fits.
+
   RefreshMinutes:
     Type: Number
     Default: 15
