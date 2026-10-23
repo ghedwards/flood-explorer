@@ -434,7 +434,7 @@ impl Readings {
         let mut sea_attempted = false;
         let err_before_sea = errors.len();
         if let Some(text) = &self.text {
-            match Self::carry(&prev, "sea", "seaFetched", started, SEA_EVERY_MS) {
+            match Self::carry(&prev, "sea", "seaFetched", (self.now)(), SEA_EVERY_MS) {
                 Some((sea, at)) => {
                     r["sea"] = sea;
                     r["seaFetched"] = at;
@@ -453,7 +453,7 @@ impl Readings {
                         }
                         Err(e) => {
                             errors.push(format!("storm tide: {}", e));
-                            if let Some((sea, at)) = Self::carry(&prev, "sea", "seaFetched", started, 6 * 3_600_000) {
+                            if let Some((sea, at)) = Self::carry(&prev, "sea", "seaFetched", (self.now)(), 6 * 3_600_000) {
                                 r["sea"] = sea;
                                 r["seaFetched"] = at;
                             }
@@ -634,7 +634,7 @@ impl Readings {
             // QLDTraffic's quota exhausted (a 429 in the last attempt's
             // health): attempts earn nothing, so an hour between them
             let quota = prev.as_ref().and_then(|p| p["sources"]["roads"]["lastError"].as_str()).is_some_and(|e| e.contains("429"));
-            match Self::carry(&prev, "roads", "roadsFetched", started, if quota { ROADS_429_EVERY_MS } else { ROADS_EVERY_MS }) {
+            match Self::carry(&prev, "roads", "roadsFetched", (self.now)(), if quota { ROADS_429_EVERY_MS } else { ROADS_EVERY_MS }) {
                 Some((rd, at)) => {
                     r["roads"] = rd;
                     r["roadsFetched"] = at;
@@ -649,7 +649,7 @@ impl Readings {
                     if rd_ok {
                         r["roads"] = rd;
                         r["roadsFetched"] = json!(iso_now.clone());
-                    } else if let Some((old, at)) = Self::carry(&prev, "roads", "roadsFetched", started, 2 * 3_600_000) {
+                    } else if let Some((old, at)) = Self::carry(&prev, "roads", "roadsFetched", (self.now)(), 2 * 3_600_000) {
                         r["roads"] = old;
                         r["roadsFetched"] = at;
                     }
