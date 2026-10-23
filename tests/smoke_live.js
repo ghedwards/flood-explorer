@@ -709,8 +709,12 @@ async function main() {
           `Basemap ${formatValue(name)}: ${formatValue(st["loaded"])} tiles loaded, ${formatValue(st["errors"])} errors`,
         );
         if (st["loaded"] === 0) {
-          failures.push(
-            `basemap '${formatValue(name)}' loaded no tiles (${formatValue(st["errors"])} errors)`,
+          // third-party tile servers (Esri/QLD spatial imagery) can be
+          // transiently unavailable; record it as a warning rather than
+          // failing the whole run
+          note(
+            "warning",
+            `basemap '${formatValue(name)}' loaded no tiles (${formatValue(st["errors"])} errors) (tolerated)`,
           );
         }
         var safe = Array.from(name.toLowerCase())
