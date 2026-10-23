@@ -141,7 +141,7 @@ Resources:
         Arn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"
         RoleArn: !GetAtt ScheduleRole.Arn
         Input: '{"flood_broker": "refresh"}'
-        RetryPolicy: { MaximumRetryAttempts: 0 }
+        RetryPolicy: { MaximumRetryAttempts: 3, MaximumEventAgeInSeconds: 900 }
 
   # an email if the month's spend heads past the budget (the whole account)
   SpendAlert:
