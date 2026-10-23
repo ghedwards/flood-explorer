@@ -281,14 +281,14 @@ people act on.
 
 Sources (probed 2026-10-22; verify the unconfirmed ones before wiring):
 
-- **NSW, RFS Major Incidents** — the best pattern proof: `https://www.rfs.nsw.gov.au/feeds/majorIncidents.json`
-  is **public, no key, live** (12 incidents at probe time). GeoJSON with
-  `title`, `link` (Fires Near Me), `category` (Advice / Watch and Act /
-  Emergency Warning / Planned Burn / Not Applicable) and a `description`
-  starting `ALERT LEVEL: …`. *Fire*, not flood — ideal for the fire
-  extension too. NSW SES's own Hazard Watch (data.gov.au, publisher NSW
-  SES) still has no listed feed URL: find it from hazardwatch.gov.au's
-  dev-tools network tab.
+- **NSW, RFS Major Incidents** — **shipped** (`0bb4e4d5`/`024c7b18`): `parse_nsw_rfs_emergency` in `flood-feeds`,
+  `fetch_emergency` in the broker (every refresh, 15-min carry), `r["emergency"]` in readings.json,
+  and an `Emergency warnings (state)` layer in the viewer (advice/watch_and_act/emergency colours).
+  Feed: `https://www.rfs.nsw.gov.au/feeds/majorIncidents.json` (public, no key, live) — GeoJSON with
+  `title`, `link` (Fires Near Me), `category` (Advice / Watch and Act / Emergency Warning /
+  Planned Burn / Not Applicable) and a `description` with TYPE/STATUS/SIZE/COUNCIL/LOCATION. *Fire*,
+  not flood — ideal for the fire extension too. NSW SES's own Hazard Watch (data.gov.au, publisher
+  NSW SES) still has no listed feed URL: find it from hazardwatch.gov.au's dev-tools network tab.
 - **Queensland, "Storm, flood and cyclone warnings" (CAP-AU XML)** by the
   Queensland Fire Department (data.qld.gov.au dataset
   `storm-flood-and-cyclone-warnings-capau-xml`): CAP-AU with warning areas,
