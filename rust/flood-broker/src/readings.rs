@@ -913,52 +913,62 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
     let mut items = Vec::new();
     let mut sources = serde_json::Map::new();
     let qld_key = std::env::var("QLD_TRAFFIC_API_KEY").ok().filter(|k| !k.trim().is_empty()).unwrap_or_else(|| feeds::QLD_TRAFFIC_PUBLIC_KEY.into());
-    match get_json(&format!("{}?apikey={}", feeds::QLD_TRAFFIC_URL, feeds::encode(&qld_key)), None) {
-        Ok(gj) => {
-            items.extend(feeds::parse_qld_roads(&gj));
-            sources.insert("QLD".into(), json!("ok"));
-        }
-        Err(e) => {
-            errors.push(format!("roads QLD: {}", e));
-            sources.insert("QLD".into(), json!(format!("error: {}", e)));
-        }
+    let nsw_key = std::env::var("NSW_TRAFFIC_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    // Each state's fetch is independent I/O: run them in parallel so a
+    // slow upstream (QLD portal, ArcGIS) doesn't stretch the whole refresh
+    // past the scheduler's 15-minute window (which used to drop invokes).
+    let mut jobs: Vec<(&str, String, Option<String>)> = Vec::new();
+    jobs.push(("QLD", format!("{}?apikey={}", feeds::QLD_TRAFFIC_URL, feeds::encode(&qld_key)), None));
+    if let Some(k) = &nsw_key {
+        jobs.push(("NSW", feeds::NSW_TRAFFIC_URL.to_string(), Some(format!("apikey {}", k))));
     }
-    if let Some(nsw_key) = std::env::var("NSW_TRAFFIC_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        match get_json(feeds::NSW_TRAFFIC_URL, Some(&format!("apikey {}", nsw_key))) {
+    jobs.push(("WA", feeds::WA_ROADS_URL.to_string(), None));
+    jobs.push(("SA", feeds::SA_ROADS_URL.to_string(), None));
+    jobs.push(("NT", feeds::NT_ROADS_URL.to_string(), None));
+    jobs.push(("TAS", feeds::TAS_ROADS_URL.to_string(), None));
+    jobs.push(("ACT", feeds::ACT_ROADS_URL.to_string(), None));
+
+    let mut results: Vec<(String, Result<Value, String>)> = Vec::new();
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for (state, url, auth) in &jobs {
+            let state = *state;
+            let url = url.clone();
+            let auth = auth.clone();
+            handles.push(s.spawn(move || {
+                let r = get_json(&url, auth.as_deref());
+                (state.to_string(), r)
+            }));
+        }
+        for h in handles {
+            if let Ok(r) = h.join() {
+                results.push(r);
+            }
+        }
+    });
+
+    for (state, res) in results {
+        match res {
             Ok(gj) => {
-                items.extend(feeds::parse_nsw_roads(&gj));
-                sources.insert("NSW".into(), json!("ok"));
+                let parsed = match state.as_str() {
+                    "QLD" => feeds::parse_qld_roads(&gj),
+                    "NSW" => feeds::parse_nsw_roads(&gj),
+                    "WA" => feeds::parse_wa_roads(&gj),
+                    "SA" => feeds::parse_sa_roads(&gj),
+                    "NT" => feeds::parse_nt_roads(&gj),
+                    "TAS" => feeds::parse_tas_roads(&gj),
+                    "ACT" => feeds::parse_act_roads(&gj),
+                    _ => Vec::new(),
+                };
+                items.extend(parsed);
+                sources.insert(state, json!("ok"));
             }
             Err(e) => {
-                errors.push(format!("roads NSW: {}", e));
-                sources.insert("NSW".into(), json!(format!("error: {}", e)));
+                errors.push(format!("roads {}: {}", state, e));
+                sources.insert(state, json!(format!("error: {}", e)));
             }
         }
-    }
-    // Western Australia (Main Roads WebEOC, open, no key)
-    match get_json(feeds::WA_ROADS_URL, None) {
-        Ok(gj) => { items.extend(feeds::parse_wa_roads(&gj)); sources.insert("WA".into(), json!("ok")); }
-        Err(e) => { errors.push(format!("roads WA: {}", e)); sources.insert("WA".into(), json!(format!("error: {}", e))); }
-    }
-    // South Australia (DIT Traffic SA, open, no key)
-    match get_json(feeds::SA_ROADS_URL, None) {
-        Ok(gj) => { items.extend(feeds::parse_sa_roads(&gj)); sources.insert("SA".into(), json!("ok")); }
-        Err(e) => { errors.push(format!("roads SA: {}", e)); sources.insert("SA".into(), json!(format!("error: {}", e))); }
-    }
-    // Northern Territory (Road Report NT, open JSON, no key)
-    match get_json(feeds::NT_ROADS_URL, None) {
-        Ok(gj) => { items.extend(feeds::parse_nt_roads(&gj)); sources.insert("NT".into(), json!("ok")); }
-        Err(e) => { errors.push(format!("roads NT: {}", e)); sources.insert("NT".into(), json!(format!("error: {}", e))); }
-    }
-    // Tasmania (State Growth WFS, open, no key)
-    match get_json(feeds::TAS_ROADS_URL, None) {
-        Ok(gj) => { items.extend(feeds::parse_tas_roads(&gj)); sources.insert("TAS".into(), json!("ok")); }
-        Err(e) => { errors.push(format!("roads TAS: {}", e)); sources.insert("TAS".into(), json!(format!("error: {}", e))); }
-    }
-    // Australian Capital Territory (ArcGIS, open, no key)
-    match get_json(feeds::ACT_ROADS_URL, None) {
-        Ok(gj) => { items.extend(feeds::parse_act_roads(&gj)); sources.insert("ACT".into(), json!("ok")); }
-        Err(e) => { errors.push(format!("roads ACT: {}", e)); sources.insert("ACT".into(), json!(format!("error: {}", e))); }
     }
     json!({
         "fetched": iso_now,
