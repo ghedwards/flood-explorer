@@ -904,7 +904,7 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
         let mut r = req.call().map_err(|e| e.to_string())?;
         let code = r.status().as_u16();
         let mut b = Vec::new();
-        r.body_mut().as_reader().take(2 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
+        r.body_mut().as_reader().take(8 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
         if code >= 400 {
             return Err(format!("HTTP {}", code));
         }
