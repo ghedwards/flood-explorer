@@ -187,11 +187,11 @@ Per-state feed access (probed live 2026-10-22; verify again before wiring):
 | --- | --- | --- | --- |
 | QLD | `api.qldtraffic.qld.gov.au/v2/events` | public key in spec | in production |
 | NSW | `api.transport.nsw.gov.au` hazards: `/flood/all`, `/flood/open`, also `/incident/…`, `/fire/…`, `/roadwork/…`, `/majorevent/…`, `/alpine/…` | free API key | coded (flood feed), awaiting `NSW_TRAFFIC_API_KEY`; broaden to `/incident/all` when wired |
-| WA | Main Roads WebEOC Road Closures ArcGIS (`services2.arcgis.com/cHGEnmsJ165IBJRM/.../WebEoc_RoadClosures/FeatureServer/4`) | open, no key | verified live; `IncidentType` (incl. Bushfire), `ClosureType` ("Road open with caution"…), `TrafficImpact`, region/suburb, polyline geometry |
-| SA | `maps.sa.gov.au/arcgis/rest/services/DPTIExtTransport/TrafficSAOpenData/MapServer/0` (DIT Traffic SA) | open, no key | responds 200 |
-| NT | `roadreport.nt.gov.au/api/Obstruction/GetAll` (Road Report NT API) | open, no key | responds 200 |
-| TAS | `data.stategrowth.tas.gov.au/geoserver/ssg/ows` WFS `ssg:GEO_ROAD_WORKS` | open, no key | responds 200 (roadworks; closures layer to identify) |
-| ACT | ACT Gov ArcGIS `Public_Temporary_Road_Closures` (`services1.arcgis.com/E5n4f1VY84i0xSjy`, plus `_HISTORICAL` views) | open, no key | layer listed on the server |
+| WA | Main Roads WebEOC Road Closures ArcGIS (`services2.arcgis.com/cHGEnmsJ165IBJRM/.../WebEoc_RoadClosures/FeatureServer/4`) | open, no key | **shipped** (`abe0c33c`): `parse_wa_roads`; `IncidentTy` (incl. Bushfire → `hazard: fire`), `ClosureTyp`, `TrafficImp`, polyline geometry |
+| SA | `maps.sa.gov.au/arcgis/rest/services/DPTIExtTransport/TrafficSAOpenData/MapServer/0` (DIT Traffic SA) | open, no key | **shipped** (`abe0c33c`): `parse_sa_roads`; point features, `REC_TYPE`/`DESCRIPTION`/`NO_LANES_CLOSED` |
+| NT | `roadreport.nt.gov.au/api/Obstruction/GetAll` (Road Report NT API) | open, no key | **shipped** (`abe0c33c`): `parse_nt_roads`; `response[]`, startPoint→endPoint line |
+| TAS | `data.stategrowth.tas.gov.au/geoserver/ssg/ows` WFS `ssg:GEO_ROAD_WORKS` | open, no key | **shipped** (`abe0c33c`): `parse_tas_roads`; roadworks, LineString geometry |
+| ACT | ACT Gov ArcGIS `Public_Temporary_Road_Closures` (`services1.arcgis.com/E5n4f1VY84i0xSjy`, plus `_HISTORICAL` views) | open, no key | **shipped** (`abe0c33c`): `parse_act_roads`; point features, `projectTitle`/`roadsClosed` |
 | VIC | opendata.transport.vic.gov.au "Unplanned Disruptions – Road" (dataset `af595015-…`, resource `1b185c7f-…`) | API key (free registration) | real-time endpoint exists, published as an OpenAPI spec that requires a key |
 | — | "Harmonised National Roadworks and Road Closures" (`spatial.infrastructure.gov.au/.../RADAR_Curated_Prod_roadworks`) | open | stale archive (last captures 2020) — do not use |
 
