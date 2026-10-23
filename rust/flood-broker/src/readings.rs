@@ -165,6 +165,7 @@ pub struct Readings {
     ftp: Option<FtpOpen>,
     ftp_index: Mutex<std::collections::HashMap<String, (String, Value)>>,
     roads: Option<RoadsFetch>,
+    emergency: Option<EmergencyFetch>,
     history: Mutex<Option<HistoryCopy>>,
 }
 
@@ -177,6 +178,7 @@ pub type FtpOpen = Box<dyn Fn() -> Result<Box<dyn feeds::ftp::Dir>, String> + Se
 
 /// Fetches official flood road closures: `(iso_now, errors) -> roads_doc`.
 pub type RoadsFetch = Box<dyn Fn(&str, &mut Vec<String>) -> Value + Send + Sync>;
+pub type EmergencyFetch = Box<dyn Fn(&str, &mut Vec<String>) -> Value + Send + Sync>;
 
 /// Fetches flood class levels and current classes: errors -> {station: ...}.
 pub type Classes = Box<dyn Fn(&mut Vec<String>) -> Value + Send + Sync>;
@@ -187,7 +189,7 @@ pub type Warnings = Box<dyn Fn(i64, &str, &mut Vec<String>) -> Value + Send + Sy
 
 impl Readings {
     pub fn new(http: Http, store: Store, stations_url: String, now: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
-        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, ftp: None, ftp_index: Mutex::new(Default::default()), roads: None, history: Mutex::new(None) }
+        Readings { http, store, stations_url, now, current: Mutex::new(None), refreshing: Mutex::new(()), text: None, pause: Box::new(|| std::thread::sleep(std::time::Duration::from_secs(12))), rain_http: None, warnings: None, classes: None, ftp: None, ftp_index: Mutex::new(Default::default()), roads: None, emergency: None, history: Mutex::new(None) }
     }
 
     /// Fetch both flood warnings and flood class / river height pages over
@@ -200,6 +202,11 @@ impl Readings {
     /// Fetch official flood road closures with this (every 30 minutes).
     pub fn with_roads(mut self, f: RoadsFetch) -> Self {
         self.roads = Some(f);
+        self
+    }
+
+    pub fn with_emergency(mut self, f: EmergencyFetch) -> Self {
+        self.emergency = Some(f);
         self
     }
 
@@ -657,6 +664,33 @@ impl Readings {
                 }
             }
         }
+        // State emergency warnings (Australian Warning System), NSW first via
+        // the RFS major incidents feed (public, no key); one HTTP fetch per
+        // refresh, carried 15 minutes on error.
+        if let Some(ef) = &self.emergency {
+            match Self::carry(&prev, "emergency", "emergencyFetched", (self.now)(), 15 * 60_000) {
+                Some((ed, at)) => {
+                    r["emergency"] = ed;
+                    r["emergencyFetched"] = at;
+                    mark_source("emergency", false, true, &[], r["emergencyFetched"].as_str().unwrap_or(""));
+                }
+                None => {
+                    let err_before_e = errors.len();
+                    let iso_now = crate::wmip::iso_utc((self.now)());
+                    let ed = ef(&iso_now, &mut errors);
+                    let ed_errs: Vec<String> = errors[err_before_e..].to_vec();
+                    let ed_ok = ed["items"].as_array().is_some_and(|a| !a.is_empty()) || ed_errs.is_empty();
+                    if ed_ok {
+                        r["emergency"] = ed;
+                        r["emergencyFetched"] = json!(iso_now.clone());
+                    } else if let Some((old, at)) = Self::carry(&prev, "emergency", "emergencyFetched", (self.now)(), 2 * 3_600_000) {
+                        r["emergency"] = old;
+                        r["emergencyFetched"] = at;
+                    }
+                    mark_source("emergency", true, ed_ok, &ed_errs, r["emergencyFetched"].as_str().unwrap_or(&iso_now));
+                }
+            }
+        }
         let t_warn = (self.now)();
         r["watch"] = feeds::watch_list(&r);
         let nl = r["level"].as_object().map_or(0, |o| o.len());
@@ -956,6 +990,39 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
         "fetched": iso_now,
         "sources": Value::Object(sources),
         "attribution": format!("{}; {}; {}; {}; {}; {}; {}", feeds::QLD_TRAFFIC_ATTRIBUTION, feeds::NSW_TRAFFIC_ATTRIBUTION, feeds::WA_ROADS_ATTRIBUTION, feeds::SA_ROADS_ATTRIBUTION, feeds::NT_ROADS_ATTRIBUTION, feeds::TAS_ROADS_ATTRIBUTION, feeds::ACT_ROADS_ATTRIBUTION),
+        "items": items,
+    })
+}
+
+/// Emergency warnings: NSW RFS major incidents (public, no key) for now.
+pub fn fetch_emergency(iso_now: &str, errors: &mut Vec<String>) -> Value {
+    use std::io::Read;
+    let get_json = |url: &str| -> Result<Value, String> {
+        let t = Some(std::time::Duration::from_secs(30));
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(t).timeout_recv_response(t).timeout_recv_body(t).http_status_as_error(false).build().into();
+        let mut r = agent.get(url).header("User-Agent", "flood-explorer-broker (+https://github.com/ghedwards/flood-explorer)").call().map_err(|e| e.to_string())?;
+        let code = r.status().as_u16();
+        let mut b = Vec::new();
+        r.body_mut().as_reader().take(8 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
+        if code >= 400 { return Err(format!("HTTP {}", code)); }
+        serde_json::from_slice(&b).map_err(|e| format!("not JSON: {}", e))
+    };
+    let mut items = Vec::new();
+    let mut sources = serde_json::Map::new();
+    match get_json(feeds::NSW_RFS_MAJOR_INCIDENTS_URL) {
+        Ok(gj) => {
+            items.extend(feeds::parse_nsw_rfs_emergency(&gj));
+            sources.insert("NSW".into(), json!("ok"));
+        }
+        Err(e) => {
+            errors.push(format!("emergency NSW: {}", e));
+            sources.insert("NSW".into(), json!(format!("error: {}", e)));
+        }
+    }
+    json!({
+        "fetched": iso_now,
+        "sources": Value::Object(sources),
+        "attribution": feeds::NSW_RFS_ATTRIBUTION,
         "items": items,
     })
 }

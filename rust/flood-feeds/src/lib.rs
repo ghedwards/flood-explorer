@@ -1723,6 +1723,11 @@ pub const TAS_ROADS_ATTRIBUTION: &str = "© State of Tasmania (Department of Sta
 /// Australian Capital Territory, temporary road closures (ArcGIS FeatureServer, open, no key).
 pub const ACT_ROADS_URL: &str = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/Public_Temporary_Road_Closures/FeatureServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=2000&returnGeometry=true&outSR=4326";
 pub const ACT_ROADS_ATTRIBUTION: &str = "© ACT Government (Transport Canberra and City Services)";
+/// NSW Rural Fire Service major incidents (public GeoJSON, no key). Carries
+/// ALERT LEVEL (Advice / Watch and Act / Emergency Warning) and a Planned
+/// Burn category — the Australian Warning System pattern for fire.
+pub const NSW_RFS_MAJOR_INCIDENTS_URL: &str = "https://www.rfs.nsw.gov.au/feeds/majorIncidents.json";
+pub const NSW_RFS_ATTRIBUTION: &str = "© NSW Rural Fire Service";
 
 /// Simplify a GeoJSON geometry into `(center_lat, center_lon, optional_line)`
 /// where `line` has points at least ~100 m apart (0.001°) and at most 40 points.
@@ -2118,9 +2123,62 @@ pub fn parse_act_roads(gj: &Value) -> Vec<Value> {
     out
 }
 
+/// Emergency warnings from the NSW RFS major incidents feed (public GeoJSON,
+/// no key): points with ALERT LEVEL (Advice / Watch and Act / Emergency
+/// Warning) and a TYPE/STATUS/SIZE/COUNCIL in the description. RFS is the
+/// fire service, so hazard defaults to "fire" unless the text says flood.
+pub fn parse_nsw_rfs_emergency(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["properties"];
+        let Some((lat, lon, _)) = road_geometry(&f["geometry"]) else { continue };
+        let title = p["title"].as_str().unwrap_or("").trim().to_string();
+        if title.is_empty() { continue; }
+        let category = p["category"].as_str().unwrap_or("").trim().to_string();
+        let level = match category.as_str() {
+            "Advice" => "advice",
+            "Watch and Act" => "watch_and_act",
+            "Emergency Warning" => "emergency",
+            _ => continue,
+        };
+        let desc = p["description"].as_str().unwrap_or("").to_string();
+        let mut fields: std::collections::BTreeMap<String, String> = Default::default();
+        for part in desc.split("<br />") {
+            let part = part.trim();
+            if let Some((k, v)) = part.split_once(':') {
+                let k = k.trim().to_uppercase();
+                let v = v.trim().to_string();
+                if !v.is_empty() { fields.insert(k, v); }
+            }
+        }
+        let hazard = if ["flood", "storm", "cyclone"].iter().any(|w| format!("{} {}", title, desc).to_lowercase().contains(w)) {
+            "flood"
+        } else {
+            "fire"
+        };
+        let link = p["link"].as_str().unwrap_or("https://www.rfs.nsw.gov.au/fire-information/fires-near-me").to_string();
+        let id = p["guid"].as_str().unwrap_or(&title).to_string();
+        let updated = p["pubDate"].as_str().unwrap_or("").to_string();
+        let status = fields.get("STATUS").cloned();
+        let etype = fields.get("TYPE").cloned();
+        let size = fields.get("SIZE").cloned();
+        let council = fields.get("COUNCIL AREA").cloned();
+        let location = fields.get("LOCATION").cloned().unwrap_or_else(|| title.clone());
+        out.push(json!({
+            "id": id, "state": "NSW", "level": level, "hazard": hazard,
+            "title": title, "action": null,
+            "status": status, "type": etype, "size": size, "council": council,
+            "location": location, "point": [lat, lon],
+            "updated": updated, "link": link,
+            "source": "NSW RFS",
+        }));
+    }
+    out
+}
 
 #[cfg(test)]
 mod road_and_rain_obs_tests {
+
     use super::*;
 
     #[test]
