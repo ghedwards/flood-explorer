@@ -1707,9 +1707,35 @@ pub const QLD_TRAFFIC_ATTRIBUTION: &str = "© The State of Queensland (Departmen
 pub const NSW_TRAFFIC_URL: &str = "https://api.transport.nsw.gov.au/v1/live/hazards/flood-open.json";
 pub const NSW_TRAFFIC_ATTRIBUTION: &str = "© Transport for NSW (CC BY)";
 
+/// Western Australia, Main Roads WebEOC Road Closures (ArcGIS FeatureServer,
+/// open, no key). IncidentType includes Bushfire.
+pub const WA_ROADS_URL: &str = "https://services2.arcgis.com/cHGEnmsJ165IBJRM/arcgis/rest/services/WebEoc_RoadClosures/FeatureServer/4/query?where=1%3D1&outFields=*&f=json&resultRecordCount=2000&returnGeometry=true&outSR=4326";
+pub const WA_ROADS_ATTRIBUTION: &str = "© Main Roads Western Australia (WebEOC road closures)";
+/// South Australia, DIT Traffic SA open data (ArcGIS MapServer, open, no key).
+pub const SA_ROADS_URL: &str = "https://maps.sa.gov.au/arcgis/rest/services/DPTIExtTransport/TrafficSAOpenData/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=2000&returnGeometry=true&outSR=4326";
+pub const SA_ROADS_ATTRIBUTION: &str = "© Government of South Australia (Department for Infrastructure and Transport)";
+/// Northern Territory, Road Report NT obstructions (open JSON, no key).
+pub const NT_ROADS_URL: &str = "https://roadreport.nt.gov.au/api/Obstruction/GetAll";
+pub const NT_ROADS_ATTRIBUTION: &str = "© Northern Territory Government (Department of Infrastructure, Planning and Logistics)";
+/// Tasmania, State Growth road works (GeoServer WFS, open, no key).
+pub const TAS_ROADS_URL: &str = "https://data.stategrowth.tas.gov.au/geoserver/ssg/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=ssg%3AGEO_ROAD_WORKS&maxFeatures=500&outputFormat=application/json";
+pub const TAS_ROADS_ATTRIBUTION: &str = "© State of Tasmania (Department of State Growth)";
+/// Australian Capital Territory, temporary road closures (ArcGIS FeatureServer, open, no key).
+pub const ACT_ROADS_URL: &str = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/Public_Temporary_Road_Closures/FeatureServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=2000&returnGeometry=true&outSR=4326";
+pub const ACT_ROADS_ATTRIBUTION: &str = "© ACT Government (Transport Canberra and City Services)";
+
 /// Simplify a GeoJSON geometry into `(center_lat, center_lon, optional_line)`
 /// where `line` has points at least ~100 m apart (0.001°) and at most 40 points.
 fn road_geometry(geom: &Value) -> Option<(f64, f64, Vec<[f64; 2]>)> {
+    // ArcGIS (Esri) geometries use "paths" (polyline) or "x"/"y" (point)
+    // instead of GeoJSON's "type"/"coordinates"; normalise to GeoJSON first
+    let geom = if geom.get("paths").is_some() {
+        json!({"type": "MultiLineString", "coordinates": geom["paths"]})
+    } else if geom.get("x").is_some() && geom.get("y").is_some() {
+        json!({"type": "Point", "coordinates": [geom["x"], geom["y"]]})
+    } else {
+        geom.clone()
+    };
     let mut raw: Vec<[f64; 2]> = Vec::new();
     let push_pt = |c: &Value, out: &mut Vec<[f64; 2]>| {
         if let (Some(lon), Some(lat)) = (c.get(0).and_then(Value::as_f64), c.get(1).and_then(Value::as_f64)) {
@@ -1837,11 +1863,16 @@ pub fn parse_qld_roads(gj: &Value) -> Vec<Value> {
             "Road event".to_string()
         };
         let updated = p["last_updated"].as_str().or_else(|| p["duration"]["start"].as_str()).unwrap_or("");
+        let hazard = if ["fire", "bushfire", "smoke"].iter().any(|w| format!("{} {} {} {}", et, sub, desc, due).to_lowercase().contains(w)) {
+            Some("fire")
+        } else {
+            None
+        };
         let mut item = json!({
             "id": id, "state": "QLD", "road": road, "where": wh,
             "desc": summary, "closed": closed, "level": level,
             "type": if !sub.is_empty() { sub } else if !et.is_empty() { et } else { "Event" },
-            "due": due, "impact": imp_sub,
+            "due": due, "impact": imp_sub, "hazard": hazard,
             "major": major,
             "updated": updated, "lat": lat, "lon": lon,
             "link": "https://qldtraffic.qld.gov.au/",
@@ -1895,6 +1926,198 @@ pub fn parse_nsw_roads(gj: &Value) -> Vec<Value> {
     out.truncate(150);
     out
 }
+
+/// Road closures and hazards from Main Roads WA's WebEOC ArcGIS FeatureServer.
+pub fn parse_wa_roads(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["attributes"];
+        let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
+        let id = match &p["Id"] {
+            Value::Number(n) => format!("wa:{}", n),
+            Value::String(s) if !s.is_empty() => format!("wa:{}", s),
+            _ => continue,
+        };
+        let road = p["Road"].as_str().unwrap_or("Road").trim().to_string();
+        let where_ = p["Suburb"].as_str().or_else(|| p["Region"].as_str()).unwrap_or("").trim().to_string();
+        let incident = p["IncidentTy"].as_str().unwrap_or("").trim().to_string();
+        let closure = p["ClosureTyp"].as_str().unwrap_or("").trim().to_string();
+        let impact = p["TrafficImp"].as_str().unwrap_or("").trim().to_string();
+        let closed = closure.to_lowercase().contains("closed");
+        let level = if closed { "closed" } else { "caution" };
+        let major = road.contains("Highway") || road.ends_with(" Hwy") || road.contains("Motorway");
+        let updated = p["UpdateDate"].as_str().or_else(|| p["EntryDate"].as_str()).unwrap_or("").to_string();
+        let hazard = if ["fire", "bushfire", "smoke"].iter().any(|w| incident.to_lowercase().contains(w)) { Some("fire") } else { None };
+        let mut item = json!({
+            "id": id, "state": "WA", "road": road, "where": where_,
+            "desc": if !impact.is_empty() { impact.clone() } else { incident.clone() },
+            "closed": closed, "level": level,
+            "type": if incident.is_empty() { "Road event" } else { incident.as_str() },
+            "due": impact, "impact": closure, "hazard": hazard,
+            "major": major, "updated": updated, "lat": lat, "lon": lon,
+            "link": "https://travelmap.mainroads.wa.gov.au/",
+        });
+        if !line.is_empty() { item["line"] = json!(line); }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
+/// Road closures and works from SA DIT Traffic SA (point features).
+pub fn parse_sa_roads(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["attributes"];
+        let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
+        let id = match &p["ROADWORKS_AND_INCIDENTS_ID"] {
+            Value::String(s) if !s.is_empty() => format!("sa:{}", s),
+            Value::Number(n) => format!("sa:{}", n),
+            _ => continue,
+        };
+        let road = p["LOCAL_ROAD"].as_str().or_else(|| p["SIDE_STREET"].as_str()).unwrap_or("Road").trim().to_string();
+        let where_ = p["SUBURB"].as_str().or_else(|| p["SIDE_STREET"].as_str()).unwrap_or("").trim().to_string();
+        let desc = p["DESCRIPTION"].as_str().unwrap_or("").trim().to_string();
+        let closed = desc.to_lowercase().contains("closed");
+        let level = if closed { "closed" } else if p["NO_LANES_CLOSED"].as_str().map(|s| !s.trim().is_empty()).unwrap_or(false) { "lanes affected" } else { "caution" };
+        let major = road.contains("Highway") || road.ends_with(" Hwy") || road.contains("Motorway");
+        let updated = p["START_DATE_STRING"].as_str().unwrap_or("").to_string();
+        let hazard = if ["fire", "bushfire", "smoke"].iter().any(|w| desc.to_lowercase().contains(w)) { Some("fire") } else { None };
+        let mut item = json!({
+            "id": id, "state": "SA", "road": road, "where": where_,
+            "desc": if desc.is_empty() { "Road event".to_string() } else { desc.clone() },
+            "closed": closed, "level": level,
+            "type": p["REC_TYPE"].as_str().unwrap_or("Road event").trim().to_string(),
+            "due": desc, "impact": p["TRAFFIC_DIR"].as_str().unwrap_or("").trim().to_string(),
+            "hazard": hazard, "major": major, "updated": updated, "lat": lat, "lon": lon,
+            "link": "https://www.traffic.sa.gov.au/",
+        });
+        if !line.is_empty() { item["line"] = json!(line); }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
+/// Obstructions and restrictions from Road Report NT.
+pub fn parse_nt_roads(doc: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for o in doc["response"].as_array().into_iter().flatten() {
+        let Some(start) = o["startPoint"].as_array() else { continue };
+        if start.len() < 2 { continue; }
+        let (Some(lat), Some(lon)) = (start[0].as_f64(), start[1].as_f64()) else { continue };
+        let mut line = Vec::new();
+        if let Some(end) = o["endPoint"].as_array() {
+            if end.len() >= 2 {
+                if let (Some(ela), Some(elo)) = (end[0].as_f64(), end[1].as_f64()) {
+                    if (ela - lat).abs() > 1e-9 || (elo - lon).abs() > 1e-9 {
+                        line.push([lat, lon]);
+                        line.push([ela, elo]);
+                    }
+                }
+            }
+        }
+        let id = format!("nt:{}", o["obstructionId"].as_i64().or_else(|| o["recordId"].as_i64()).unwrap_or(0));
+        if id == "nt:0" { continue; }
+        let road = o["roadName"].as_str().unwrap_or("Road").trim().to_string();
+        let where_ = o["locationComment"].as_str().unwrap_or("").trim().to_string();
+        let otype = o["obstructionType"].as_str().unwrap_or("").trim().to_string();
+        let rtype = o["restrictionType"].as_str().unwrap_or("").trim().to_string();
+        let comment = o["comment"].as_str().unwrap_or("").trim().to_string();
+        let closed = format!("{} {}", otype, comment).to_lowercase().contains("closed");
+        let level = if closed { "closed" } else { "access restricted" };
+        let major = road.contains("Highway") || road.ends_with(" Hwy") || road.contains("Motorway");
+        let hazard = if ["fire", "bushfire", "smoke"].iter().any(|w| format!("{} {}", otype, comment).to_lowercase().contains(w)) { Some("fire") } else { None };
+        let mut item = json!({
+            "id": id, "state": "NT", "road": road, "where": where_,
+            "desc": if comment.is_empty() { otype.clone() } else { comment.clone() },
+            "closed": closed, "level": level,
+            "type": if otype.is_empty() { rtype.clone() } else { otype.clone() },
+            "due": comment, "impact": otype, "hazard": hazard,
+            "major": major, "updated": o["dateLastUpdated"].as_str().unwrap_or("").to_string(),
+            "lat": lat, "lon": lon, "link": "https://roadreport.nt.gov.au/",
+        });
+        if line.len() >= 2 { item["line"] = json!(line); }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
+/// Road works from State Growth Tasmania (GeoServer WFS GeoJSON).
+pub fn parse_tas_roads(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["properties"];
+        let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
+        let id = match &p["ID"] {
+            Value::Number(n) => format!("tas:{}", n),
+            Value::String(s) if !s.is_empty() => format!("tas:{}", s),
+            _ => continue,
+        };
+        let road = p["ROAD_NAME"].as_str().unwrap_or("Road").trim().to_string();
+        let where_ = p["LOCATION_DESC"].as_str().unwrap_or("").trim().to_string();
+        let event_type = p["EVENT_TYPE"].as_str().unwrap_or("Roadworks").trim().to_string();
+        let tm = p["TRAFFIC_MANAGEMENT"].as_str().unwrap_or("").trim().to_string();
+        let closed = event_type.to_lowercase().contains("closure") || tm.to_lowercase().contains("closed");
+        let level = if closed { "closed" } else if tm.to_lowercase().contains("lane") { "lanes affected" } else { "caution" };
+        let major = road.contains("Highway") || road.ends_with(" Hwy") || road.contains("Motorway");
+        let updated = p["START_TIME"].as_str().unwrap_or("").to_string();
+        let mut item = json!({
+            "id": id, "state": "TAS", "road": road, "where": where_,
+            "desc": if where_.is_empty() { event_type.clone() } else { where_.clone() },
+            "closed": closed, "level": level,
+            "type": event_type, "due": tm, "impact": tm, "hazard": null,
+            "major": major, "updated": updated, "lat": lat, "lon": lon,
+            "link": p["WEB_LINK"].as_str().unwrap_or("https://www.transport.tas.gov.au/roadworks"),
+        });
+        if !line.is_empty() { item["line"] = json!(line); }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
+/// Temporary road closures from ACT (ArcGIS FeatureServer, point features).
+pub fn parse_act_roads(gj: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in gj["features"].as_array().into_iter().flatten() {
+        let p = &f["attributes"];
+        let Some((lat, lon, line)) = road_geometry(&f["geometry"]) else { continue };
+        let id = match &p["globalid"] {
+            Value::String(s) if !s.is_empty() => format!("act:{}", s),
+            _ => match &p["objectid"] { Value::Number(n) => format!("act:{}", n), _ => continue },
+        };
+        let title = p["projectTitle"].as_str().unwrap_or("").trim().to_string();
+        let rtype = p["type"].as_str().unwrap_or("other").trim().to_string();
+        let roads_closed = p["roadsClosed"].as_str().unwrap_or("").trim().to_string();
+        let activity = p["describeActivity"].as_str().unwrap_or("").trim().to_string();
+        let closed = roads_closed.to_lowercase().contains("closed");
+        let level = if closed { "closed" } else { "caution" };
+        let updated = p["startTimeClosure"].as_i64().map(|ms| wmip_stamp(ms / 1000)).unwrap_or_default();
+        let desc = if roads_closed.is_empty() { title.clone() } else { roads_closed.clone() };
+        let hazard = if ["fire", "bushfire", "smoke"].iter().any(|w| format!("{} {} {}", title, roads_closed, activity).to_lowercase().contains(w)) { Some("fire") } else { None };
+        let mut item = json!({
+            "id": id, "state": "ACT", "road": if title.is_empty() { "Road".to_string() } else { title.clone() },
+            "where": if activity.is_empty() { title.clone() } else { activity.clone() },
+            "desc": desc, "closed": closed, "level": level,
+            "type": if rtype.is_empty() { "Road closure".to_string() } else { rtype },
+            "due": roads_closed, "impact": roads_closed, "hazard": hazard,
+            "major": false, "updated": updated, "lat": lat, "lon": lon,
+            "link": "https://www.accesscanberra.act.gov.au/",
+        });
+        if !line.is_empty() { item["line"] = json!(line); }
+        out.push(item);
+    }
+    out.sort_by_key(|x| (!x["closed"].as_bool().unwrap_or(false), !x["major"].as_bool().unwrap_or(false), x["road"].as_str().unwrap_or("").to_string()));
+    out.truncate(150);
+    out
+}
+
 
 #[cfg(test)]
 mod road_and_rain_obs_tests {

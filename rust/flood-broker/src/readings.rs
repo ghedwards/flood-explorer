@@ -935,10 +935,35 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
             }
         }
     }
+    // Western Australia (Main Roads WebEOC, open, no key)
+    match get_json(feeds::WA_ROADS_URL, None) {
+        Ok(gj) => { items.extend(feeds::parse_wa_roads(&gj)); sources.insert("WA".into(), json!("ok")); }
+        Err(e) => { errors.push(format!("roads WA: {}", e)); sources.insert("WA".into(), json!(format!("error: {}", e))); }
+    }
+    // South Australia (DIT Traffic SA, open, no key)
+    match get_json(feeds::SA_ROADS_URL, None) {
+        Ok(gj) => { items.extend(feeds::parse_sa_roads(&gj)); sources.insert("SA".into(), json!("ok")); }
+        Err(e) => { errors.push(format!("roads SA: {}", e)); sources.insert("SA".into(), json!(format!("error: {}", e))); }
+    }
+    // Northern Territory (Road Report NT, open JSON, no key)
+    match get_json(feeds::NT_ROADS_URL, None) {
+        Ok(gj) => { items.extend(feeds::parse_nt_roads(&gj)); sources.insert("NT".into(), json!("ok")); }
+        Err(e) => { errors.push(format!("roads NT: {}", e)); sources.insert("NT".into(), json!(format!("error: {}", e))); }
+    }
+    // Tasmania (State Growth WFS, open, no key)
+    match get_json(feeds::TAS_ROADS_URL, None) {
+        Ok(gj) => { items.extend(feeds::parse_tas_roads(&gj)); sources.insert("TAS".into(), json!("ok")); }
+        Err(e) => { errors.push(format!("roads TAS: {}", e)); sources.insert("TAS".into(), json!(format!("error: {}", e))); }
+    }
+    // Australian Capital Territory (ArcGIS, open, no key)
+    match get_json(feeds::ACT_ROADS_URL, None) {
+        Ok(gj) => { items.extend(feeds::parse_act_roads(&gj)); sources.insert("ACT".into(), json!("ok")); }
+        Err(e) => { errors.push(format!("roads ACT: {}", e)); sources.insert("ACT".into(), json!(format!("error: {}", e))); }
+    }
     json!({
         "fetched": iso_now,
         "sources": Value::Object(sources),
-        "attribution": format!("{}; {}", feeds::QLD_TRAFFIC_ATTRIBUTION, feeds::NSW_TRAFFIC_ATTRIBUTION),
+        "attribution": format!("{}; {}; {}; {}; {}; {}; {}", feeds::QLD_TRAFFIC_ATTRIBUTION, feeds::NSW_TRAFFIC_ATTRIBUTION, feeds::WA_ROADS_ATTRIBUTION, feeds::SA_ROADS_ATTRIBUTION, feeds::NT_ROADS_ATTRIBUTION, feeds::TAS_ROADS_ATTRIBUTION, feeds::ACT_ROADS_ATTRIBUTION),
         "items": items,
     })
 }

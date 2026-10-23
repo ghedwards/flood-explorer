@@ -2116,7 +2116,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (nat.roadClosuresLayer && state.lmap.hasLayer(nat.roadClosuresLayer)) {
       const n = (nat.readings && nat.readings.roads && nat.readings.roads.items || []).length;
       for (const st of Object.values(ROAD_LEVELS)) parts.push(`<span><i style="background:${st.color}"></i>${escapeHtml(st.label)}</span>`);
-      if (n) parts.push(`<span><i style="background:#c62828;height:4px;width:10px"></i>${n} official road event${n === 1 ? '' : 's'} on now (QLDTraffic${String((nat.readings.roads.sources || {}).NSW || '').startsWith('ok') ? ' and Live Traffic NSW' : ''})</span>`);
+      const items = (nat.readings && nat.readings.roads && nat.readings.roads.items) || [];
+      if (n) parts.push(`<span><i style="background:#c62828;height:4px;width:10px"></i>${n} official road event${n === 1 ? '' : 's'} on now (${[...new Set(items.map((x) => roadSource(x.state)))].join(', ')})</span>`);
     }
     on.filter((o) => o.kind === 'outline').forEach((o) => {
       parts.push(`<span><i style="background:transparent;border:2px dashed ${o.color};height:8px"></i>${o.name.replace('Recorded flood: ', 'Recorded ')}</span>`);
@@ -5148,15 +5149,17 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     'lanes affected': { color: '#f9a825', label: 'Lanes affected — pass with care', dash: '4 5' },
     caution: { color: '#90a4ae', label: 'Hazard reported — use caution', dash: '4 5' },
   };
+  const ROAD_SOURCE = { QLD: 'QLDTraffic', NSW: 'Live Traffic NSW', WA: 'Main Roads WA', SA: 'Traffic SA', NT: 'Road Report NT', TAS: 'State Growth Tasmania', ACT: 'ACT Gov' };
+  const roadSource = (st) => ROAD_SOURCE[st] || 'official traffic feed';
   const roadLevelOf = (x) => (x && x.level) || (x && x.closed ? 'closed' : 'caution');
   function roadClosurePopupHtml(x) {
     const st = ROAD_LEVELS[roadLevelOf(x)] || ROAD_LEVELS.caution;
     return `<div class="road-popup"><strong>${escapeHtml(x.road || 'Road')}</strong>${x.where ? ` <span class="hint">${escapeHtml(x.where)}</span>` : ''}<br>
-      <div><span style="background:${st.color}" class="road-kind"></span><strong>${escapeHtml(st.label)}</strong>${x.type ? ` <span class="hint">· ${escapeHtml(x.type)}</span>` : ''}</div>
+      <div><span style="background:${st.color}" class="road-kind"></span><strong>${escapeHtml(st.label)}</strong>${x.type ? ` <span class="hint">· ${escapeHtml(x.type)}</span>` : ''}${x.hazard === 'fire' ? ' <span class="hint">· 🔥 fire</span>' : ''}</div>
       <span class="hint">${escapeHtml(x.desc || 'Reported event')}${x.updated ? ` · updated ${escapeHtml(when(x.updated))}` : ''}</span>
       ${x.due ? `<br><span class="hint">Because of: ${escapeHtml(x.due)}</span>` : ''}
       ${x.impact ? `<br><span class="hint">${escapeHtml(x.impact)}</span>` : ''}
-      <br><span class="hint">Source: ${escapeHtml(x.state === 'NSW' ? 'Live Traffic NSW' : 'QLDTraffic')}${x.major ? ' · major road' : ''}</span>
+      <br><span class="hint">Source: ${escapeHtml(roadSource(x.state))}${x.major ? ' · major road' : ''}</span>
       ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
   }
   function drawRoadClosures() {
