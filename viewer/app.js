@@ -2615,7 +2615,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       trackLayer(name, overlays[name]);
       input.addEventListener('change', () => {
         overlays[name].userOn = input.checked;
-        if (input.checked) overlays[name].addTo(m); else m.removeLayer(overlays[name]);
+        if (input.checked) overlays[name].addTo(m); else if (overlays[name] && m.hasLayer(overlays[name])) m.removeLayer(overlays[name]);
         renderOverlayLegend();
         syncLayerLists();
       });
@@ -2830,9 +2830,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!m) return;
     if (hidden) hiddenNums.add(n); else hiddenNums.delete(n);
     const area = areaByNumber(n);
-    if (area) [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && (hidden ? m.removeLayer(l) : l.addTo(m)));
-    reports.filter((r) => r.n === n && r.pin).forEach((r) => (hidden ? m.removeLayer(r.pin) : r.pin.addTo(m)));
-    pins.filter((p) => p.n === n && p.marker).forEach((p) => (hidden ? m.removeLayer(p.marker) : p.marker.addTo(m)));
+    if (area) [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && (hidden ? m.removeLayer(l) : l.addTo(m)));
+    reports.filter((r) => r.n === n && r.pin).forEach((r) => (hidden ? (r.pin && m.removeLayer(r.pin)) : (r.pin && r.pin.addTo(m))));
+    pins.filter((p) => p.n === n && p.marker).forEach((p) => (hidden ? (p.marker && m.removeLayer(p.marker)) : (p.marker && p.marker.addTo(m))));
     if (hidden && area && area.key === state.areaKey) say(`${n}. ${area.name} is hidden. Its scenario is kept; show it again from Places.`);
     scheduleFine();   // the 5 m patch follows its place's flood layer
     reports.forEach(refreshReportLink);
