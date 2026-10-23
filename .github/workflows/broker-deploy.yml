@@ -77,11 +77,11 @@ jobs:
           if aws lambda get-function --function-name "$FUNCTION" > /dev/null 2>&1; then
             aws lambda update-function-code --function-name "$FUNCTION" --zip-file fileb://lambda/flood-broker.zip --architectures arm64 > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION"
-            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 128 --timeout 900 --environment "$envjson" > /dev/null
+            aws lambda update-function-configuration --function-name "$FUNCTION" --memory-size 256 --timeout 900 --environment "$envjson" > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION"
           else
             aws lambda create-function --function-name "$FUNCTION" --runtime provided.al2023 --architectures arm64 --handler bootstrap \
-              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 128 --timeout 900 --environment "$envjson" \
+              --role "$role" --zip-file fileb://lambda/flood-broker.zip --memory-size 256 --timeout 900 --environment "$envjson" \
               --description "Flood Explorer live river levels (github.com/${GITHUB_REPOSITORY})" --tags project=flood-explorer > /dev/null
             aws lambda wait function-active-v2 --function-name "$FUNCTION"
           fi
