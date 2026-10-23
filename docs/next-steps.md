@@ -613,10 +613,13 @@ Two levels of effort:
   capped 5-15 km). The polygon stays on the map as the boundary. Caveat: the
   model still computes a rectangle, so water is shown outside the warning
   area too.
-- **Proper (polygon clip)**: store the polygon on the area, clip the
-  rendered flood raster and the "water in box" totals to it, and skip
-  elevation cells whose centre is outside. Needs changes in `renderFlood`,
-  `status.floodPixels` accounting and the impact section. ~2-3 days.
+- **Proper (polygon clip) — shipped** (`1282763e`): the model area now
+  carries `area.polygon` (the warning rings); `composeWater()` skips cells
+  whose centre is outside the polygon (ray-casting point-in-polygon, holes
+  supported), so the flood raster and `floodPixels` count only show water
+  inside the warning area. The terrain relief base is left as the full bbox
+  for context. The model still computes the rectangle underneath, but the
+  display and totals are clipped.
 
 Recommendation: ship the bbox version first (it reuses `modelHere` and the
 existing peak button), then decide whether the clipping is worth it.
