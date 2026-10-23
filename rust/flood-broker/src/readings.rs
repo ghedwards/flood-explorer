@@ -915,9 +915,10 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
     let qld_key = std::env::var("QLD_TRAFFIC_API_KEY").ok().filter(|k| !k.trim().is_empty()).unwrap_or_else(|| feeds::QLD_TRAFFIC_PUBLIC_KEY.into());
     let nsw_key = std::env::var("NSW_TRAFFIC_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
-    // Each state's fetch is independent I/O: run them in parallel so a
-    // slow upstream (QLD portal, ArcGIS) doesn't stretch the whole refresh
-    // past the scheduler's 15-minute window (which used to drop invokes).
+    // Run the per-state fetches sequentially: each body is capped at 2 MB
+    // (above) and the refresh already holds ~100 MB, so doing them one at a
+    // time keeps the peak under the Lambda's 128 MB. They are independent
+    // but 7 x ~2 s is cheap and avoids an OutOfMemory kill.
     let mut jobs: Vec<(&str, String, Option<String>)> = Vec::new();
     jobs.push(("QLD", format!("{}?apikey={}", feeds::QLD_TRAFFIC_URL, feeds::encode(&qld_key)), None));
     if let Some(k) = &nsw_key {
@@ -929,29 +930,10 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
     jobs.push(("TAS", feeds::TAS_ROADS_URL.to_string(), None));
     jobs.push(("ACT", feeds::ACT_ROADS_URL.to_string(), None));
 
-    let mut results: Vec<(String, Result<Value, String>)> = Vec::new();
-    std::thread::scope(|s| {
-        let mut handles = Vec::new();
-        for (state, url, auth) in &jobs {
-            let state = *state;
-            let url = url.clone();
-            let auth = auth.clone();
-            handles.push(s.spawn(move || {
-                let r = get_json(&url, auth.as_deref());
-                (state.to_string(), r)
-            }));
-        }
-        for h in handles {
-            if let Ok(r) = h.join() {
-                results.push(r);
-            }
-        }
-    });
-
-    for (state, res) in results {
-        match res {
+    for (state, url, auth) in &jobs {
+        match get_json(url, auth.as_deref()) {
             Ok(gj) => {
-                let parsed = match state.as_str() {
+                let parsed = match *state {
                     "QLD" => feeds::parse_qld_roads(&gj),
                     "NSW" => feeds::parse_nsw_roads(&gj),
                     "WA" => feeds::parse_wa_roads(&gj),
@@ -962,11 +944,11 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
                     _ => Vec::new(),
                 };
                 items.extend(parsed);
-                sources.insert(state, json!("ok"));
+                sources.insert(state.to_string(), json!("ok"));
             }
             Err(e) => {
                 errors.push(format!("roads {}: {}", state, e));
-                sources.insert(state, json!(format!("error: {}", e)));
+                sources.insert(state.to_string(), json!(format!("error: {}", e)));
             }
         }
     }
