@@ -4067,6 +4067,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!nat.roadClosuresLayer) nat.roadClosuresLayer = L.layerGroup();
     nat.layers['Road closures and events (official)'] = nat.roadClosuresLayer;
     drawRoadClosures();
+    if (!nat.emergencyLayer) nat.emergencyLayer = L.layerGroup();
+    nat.layers['Emergency warnings (state)'] = nat.emergencyLayer;
+    drawEmergencyWarnings();
     if (!nat.rainObsLayer) nat.rainObsLayer = L.layerGroup();
     nat.layers['Rain gauges, observed 24h (BoM)'] = nat.rainObsLayer;
     drawRainObs();
@@ -4089,7 +4092,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function addNationalLayers(m) {
     const L = window.L;
     buildNationalLayers(L, m);
-    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures and events (official)'];
+    const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures and events (official)', 'Emergency warnings (state)'];
     for (const [name, layer] of Object.entries(nat.layers)) {
       registerOverlay(name, layer);
       if (nat.defaultsApplied) continue;   // respect what the viewer has switched since
@@ -5189,6 +5192,34 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       sources: nat.readings && nat.readings.roads ? nat.readings.roads.sources : null,
     };
   }
+  const EMERGENCY_COLORS = { advice: '#f9a825', watch_and_act: '#ef6c00', emergency: '#c62828' };
+  function emergencyPopupHtml(x) {
+    const c = EMERGENCY_COLORS[x.level] || '#90a4ae';
+    return `<div class="road-popup"><strong>${escapeHtml(x.title || 'Emergency warning')}</strong>${x.location ? ` <span class="hint">${escapeHtml(x.location)}</span>` : ''}<br>
+      <div><span style="background:${c}" class="road-kind"></span><strong>${escapeHtml((x.level || '').replace(/_/g,' '))}</strong>${x.hazard ? ` <span class="hint">· ${escapeHtml(x.hazard)}</span>` : ''}${x.type ? ` <span class="hint">· ${escapeHtml(x.type)}</span>` : ''}</div>
+      ${x.status ? `<span class="hint">Status: ${escapeHtml(x.status)}</span><br>` : ''}
+      ${x.size && x.size !== '0 ha' ? `<span class="hint">Size: ${escapeHtml(x.size)}</span><br>` : ''}
+      ${x.council ? `<span class="hint">Council: ${escapeHtml(x.council)}</span><br>` : ''}
+      <span class="hint">Source: ${escapeHtml(x.source || 'state emergency service')}${x.updated ? ` · issued ${escapeHtml(x.updated)}` : ''}</span>
+      ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
+  }
+  function drawEmergencyWarnings() {
+    const L = window.L, lyr = nat.emergencyLayer;
+    if (!L || !lyr) return;
+    lyr.clearLayers();
+    const items = (nat.readings && nat.readings.emergency && nat.readings.emergency.items) || [];
+    let n = 0;
+    for (const x of items) {
+      const pt = Array.isArray(x.point) ? x.point : null;
+      if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+      const c = EMERGENCY_COLORS[x.level] || '#90a4ae';
+      const m = L.circleMarker([pt[0], pt[1]], { radius: x.level === 'emergency' ? 8 : 6, color: '#ffffff', weight: 1.5, fillColor: c, fillOpacity: 0.95 });
+      m.bindPopup(() => emergencyPopupHtml(x), { maxWidth: 320 });
+      m.addTo(lyr);
+      n++;
+    }
+    status.emergencyWarnings = { count: items.length, drawn: n, levels: items.reduce((m, x) => { m[x.level] = (m[x.level] || 0) + 1; return m; }, {}) };
+  }
   function drawRainObs() {
     const L = window.L, lyr = nat.rainObsLayer;
     if (!L || !lyr) return;
@@ -5597,7 +5628,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       renderWarnings();
       renderWatch();
       try { renderInfo(); } catch (e) { /* the panel isn't built yet */ }
-    try { drawRoadClosures(); drawRainObs(); } catch (e) { /* map not ready */ }
+    try { drawRoadClosures(); drawEmergencyWarnings(); drawRainObs(); } catch (e) { /* map not ready */ }
       status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched, manual: !!manual };
       return 'new';
     } catch (e) { return 'error'; /* next time */ }

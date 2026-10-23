@@ -382,7 +382,7 @@ async function main() {
       // tolerate a slow/empty upstream rather than failing the whole run
       note(
         "warning",
-        `NSW flood planning layer did not draw zoomed out (tolerated): ${formatValue(nsw9)}`,
+        `NSW flood planning layer did not draw zoomed out (tolerated)`,
       );
     }
     await page.screenshot({ path: "smoke-nsw-z9.png" });
