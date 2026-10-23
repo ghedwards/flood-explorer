@@ -598,3 +598,25 @@ Available but not yet wired:
 Recommendation: extend item 2 to more states first (current warnings, incl.
 fire); FIRMS hotspots as a quick follow-up; historical perimeters only if
 wanted as a recorded-fire overlay.
+
+### 9. Model a flood warning area (polygon) instead of only a rectangle (open design)
+
+Why: the Bureau's "Flood warning areas (BoM)" are catchment polygons, but the
+flood model only runs on a rectangular grid the user draws. A warning area
+already says where the flood is expected, so modelling it (rather than a
+hand-drawn box) is the natural next step.
+
+Two levels of effort:
+- **Cheap (bbox)**: a "Model this warning area" button on the warning popup
+  that creates a model area from the polygon's bounding box (reusing
+  `modelHere` with `center`/`halfKm` from the bounds) and runs the
+  forecast peak. The polygon stays on the map as the boundary. ~half a day.
+  Caveat: the model still computes a rectangle, so water is shown outside
+  the warning area too.
+- **Proper (polygon clip)**: store the polygon on the area, clip the
+  rendered flood raster and the "water in box" totals to it, and skip
+  elevation cells whose centre is outside. Needs changes in `renderFlood`,
+  `status.floodPixels` accounting and the impact section. ~2-3 days.
+
+Recommendation: ship the bbox version first (it reuses `modelHere` and the
+existing peak button), then decide whether the clipping is worth it.
