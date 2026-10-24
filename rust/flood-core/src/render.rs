@@ -80,7 +80,7 @@ pub fn compose_water(
     ocean: &[u8],
     stream: &[u8],
     acc: &[f32],
-    sat: &[i32],
+    sat: &[f32],
     base_wet: &[u8],
     run_wet: &[u8],
     run_depth: &[f32],
@@ -167,7 +167,7 @@ pub fn compose_water(
             d[o + 1] = WATER[1];
             d[o + 2] = WATER[2];
             d[o + 3] = stream_a;
-        } else if !relief && ocean[i] == 0 && ((channel && !(sat.len() == n && sat[i] >= 0 && (sat[i] as f32) < SAT_CHANNEL)) || (base_wet.len() == n && base_wet[i] != 0)) {
+        } else if !relief && ocean[i] == 0 && ((channel && !(sat.len() == n && sat[i] >= 0.0 && sat[i] < SAT_CHANNEL)) || (base_wet.len() == n && base_wet[i] != 0)) {
             d[o] = NORMAL_WATER[0];
             d[o + 1] = NORMAL_WATER[1];
             d[o + 2] = NORMAL_WATER[2];
@@ -187,7 +187,7 @@ mod tests {
         let ocean = vec![0u8; n];
         let stream = vec![0u8; n];
         let acc = vec![0f32; n];
-        let sat = vec![0i32; n];
+        let sat = vec![0f32; n];
         let base_wet = vec![0u8; n];
         let run_wet = vec![0u8; n];
         let run_depth = vec![0f32; n];
@@ -205,7 +205,7 @@ mod tests {
         let ocean = vec![0u8; n];
         let stream = vec![0u8; n];
         let acc = vec![0f32; n];
-        let sat = vec![0i32; n];
+        let sat = vec![0f32; n];
         let base_wet = vec![0u8; n];
         let mut run_wet = vec![0u8; n];
         run_wet[4] = 1; // centre cell wet
@@ -229,7 +229,7 @@ mod tests {
         let ocean = vec![0u8; n];
         let stream = vec![0u8; n];
         let acc = vec![0f32; n];
-        let sat = vec![0i32; n];
+        let sat = vec![0f32; n];
         let base_wet = vec![0u8; n];
         let mut run_wet = vec![0u8; n];
         run_wet[4] = 1;

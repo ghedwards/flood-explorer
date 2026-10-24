@@ -581,7 +581,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let ocean = b.u8s("ocean").unwrap_or_default();
             let stream = b.u8s("stream").unwrap_or_default();
             let acc = b.f32s("acc").unwrap_or_default();
-            let sat = b.i32s("sat").unwrap_or_default();
+            let sat = b.f32s("sat").unwrap_or_default();
             let base_wet = b.u8s("baseWet").unwrap_or_default();
             let run_wet = b.u8s("runWet").unwrap_or_default();
             let run_depth = b.f32s("runDepth").unwrap_or_default();
