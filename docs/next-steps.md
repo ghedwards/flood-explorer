@@ -635,12 +635,11 @@ auto-update. Replaces the Lambda/S3 cloud backend (the only cloud cost).
 Start with phase 1 (local mode + Tauri shell) once the current web roadmap
 items settle.
 
-### 11. Rendering pipeline in Rust (WASM for web, native for desktop) — open design
+### 11. Rendering pipeline in Rust (WASM for web, native for desktop) — in progress
 
-See `ROADMAP.md` "Rendering pipeline in Rust (WASM for web, native for
-desktop) (proposed)": move `composeWater()` (depth/hazard → RGBA) out of
-JavaScript into `flood-wasm`, called from the web app and reused natively by
-the desktop build; canvas `putImageData` (and optionally a WebGL texture
-upload) stays in JS. One source of truth for colour tables, faster tight
-loops, and pairs with the desktop version. Start with step 1 (extract
-`composeWater` + a byte-parity test against the current JS output).
+Steps 1-2 and 4 (canvas) shipped (`ba527775`, `2a4847b1`, `7880fda4`):
+`composeWater()` now tries the Rust/WASM `composeWater` op first (with JS
+fallback), and the flood raster renders via `setPixels` on a canvas overlay
+instead of `toBlob`+PNG+`setUrl`, removing the encode step. Step 3 (desktop
+reuse) comes with the desktop version; step 4's WebGL texture upload remains
+an optional follow-up (canvas is now fast enough that WebGL is not urgent).
