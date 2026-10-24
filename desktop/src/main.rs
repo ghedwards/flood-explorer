@@ -3,4 +3,3 @@
 fn main() {
     flood_explorer_desktop_lib::run()
 }
-EOF
