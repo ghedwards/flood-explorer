@@ -24,7 +24,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/flood-broker"],
-    "resources": ["../viewer/data/national/*"]
+    "resources": ["../site/*", "../viewer/data/national/*"]
   }
 }

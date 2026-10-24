@@ -856,7 +856,8 @@ impl Readings {
                 let gz_path = dir.join("readings.json.gz");
                 let plain_path = dir.join("readings.json");
                 if let Ok(gz) = std::fs::read(&gz_path) {
-                    if let Ok(doc) = Doc::from_gz(gz, None, None) {
+                    if let Ok(mut doc) = Doc::from_gz(gz, None, None) {
+                        doc.source = "local-gz";
                         let doc = Arc::new(doc);
                         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
                         return Ok(Some(doc));
