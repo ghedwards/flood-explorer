@@ -624,16 +624,25 @@ Two levels of effort:
 Recommendation: ship the bbox version first (it reuses `modelHere` and the
 existing peak button), then decide whether the clipping is worth it.
 
-### 10. Desktop version (offline-first) — open design
+### 10. Desktop version (offline-first) — phase 1 in progress
 
-See `ROADMAP.md` "Desktop (offline-first) version (proposed)": Tauri shell
-around `viewer/` with `flood-broker` as a local sidecar in a new
-`FLOOD_STORAGE=local` mode (files instead of S3, timer instead of
-EventBridge), an elevation proxy to kill the last CORS workaround, bundled
-or first-run-downloaded national data, and the Tauri updater for
-auto-update. Replaces the Lambda/S3 cloud backend (the only cloud cost).
-Start with phase 1 (local mode + Tauri shell) once the current web roadmap
-items settle.
+Phase 1 started (`b75b5fac` + scaffold in `desktop/`):
+- `Store::Local` in `readings.rs`: reads/writes `readings.json` (+ `.gz`) to a
+  data dir; `latest()` loads from disk on cold start, `refresh()` persists.
+- `main.rs`: `FLOOD_STORAGE=local`, `FLOOD_DATA_DIR=<path>` or `--data-dir`
+  select local mode; refresh loop runs in-process (as it already did for
+  in-memory). Verified locally: broker serves on 8787 and writes readings.json.
+- Tauri 2 scaffold in `desktop/`: `Cargo.toml`, `tauri.conf.json`,
+  `src/main.rs` + `src/lib.rs` (launches the broker sidecar in local mode),
+  `desktop/README.md` with build steps. `beforeBuildCommand` sets
+  `FLOOD_BROKER_URL=http://127.0.0.1:8787` so the webview points at the
+  local broker; national data bundled via `bundle.resources`.
+
+Still to do in phase 1: Tauri sidecar port discovery (currently assumes 8787)
+and an elevation proxy in the broker (today the webview fetches GA directly).
+Tauri CLI is not installed on the dev machine, so the shell is scaffolded
+but not yet built/tested. Phases 2-3 (bundled data, offline badge,
+signed installers + updater) are untouched. See `ROADMAP.md`.
 
 ### 11. Rendering pipeline in Rust (WASM for web, native for desktop) — in progress
 

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flood Explorer",
+  "version": "0.1.0",
+  "identifier": "au.gov.flood-explorer",
+  "build": {
+    "beforeDevCommand": "FLOOD_BROKER_URL=http://127.0.0.1:8787 npm run build",
+    "beforeBuildCommand": "FLOOD_BROKER_URL=http://127.0.0.1:8787 npm run build",
+    "devUrl": "http://localhost:8000",
+    "frontendDist": "../site"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Flood Explorer",
+        "width": 1280,
+        "height": 800,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["binaries/flood-broker"],
+    "resources": ["../viewer/data/national/*"]
+  }
+}
+EOF
