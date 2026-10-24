@@ -533,6 +533,90 @@ pub fn http_fetch(url: &str) -> Result<Value, String> {
     fetch_with_timeout(url, 20)
 }
 
+/// Run the broker as a plain HTTP/1.1 server on `addr` (blocking).
+/// Used by the standalone binary (main.rs) and by the desktop build (in-process).
+pub fn run_server(broker: std::sync::Arc<Broker>, addr: &str, workers: usize, trust_proxy: bool) {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    const MAX_HEAD: usize = 16 * 1024;
+    fn reason(code: u16) -> &'static str {
+        match code {
+            200 => "OK", 204 => "No Content", 400 => "Bad Request", 404 => "Not Found",
+            405 => "Method Not Allowed", 413 => "Request Header Fields Too Large",
+            429 => "Too Many Requests", 500 => "Internal Server Error",
+            502 => "Bad Gateway", 503 => "Service Unavailable", _ => "",
+        }
+    }
+    fn plain(status: u16, msg: &str) -> Response {
+        Response { status, headers: vec![("Content-Type".into(), "application/json; charset=utf-8".into())], body: format!("{{\"error\":\"{}\"}}", msg).into_bytes() }
+    }
+    fn write_response(s: &mut TcpStream, r: &Response) {
+        let mut head = format!("HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n", r.status, reason(r.status), r.body.len());
+        for (k, v) in &r.headers { head.push_str(&format!("{}: {}\r\n", k, v)); }
+        head.push_str("\r\n");
+        let _ = s.write_all(head.as_bytes());
+        let _ = s.write_all(&r.body);
+        let _ = s.flush();
+    }
+    fn serve(broker: &Broker, mut s: TcpStream, trust_proxy: bool) {
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+        let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+        let mut buf = Vec::with_capacity(2048);
+        let mut chunk = [0u8; 2048];
+        loop {
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            if buf.len() > MAX_HEAD { return write_response(&mut s, &plain(413, "request too large")); }
+            match s.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let mut headers = [httparse::EMPTY_HEADER; 48];
+        let mut req = httparse::Request::new(&mut headers);
+        match req.parse(&buf) {
+            Ok(httparse::Status::Complete(_)) => {}
+            _ => return write_response(&mut s, &plain(400, "bad request")),
+        }
+        let h = |name: &str| req.headers.iter().find(|x| x.name.eq_ignore_ascii_case(name)).and_then(|x| std::str::from_utf8(x.value).ok()).map(str::trim);
+        let peer = s.peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|_| "?".into());
+        let client = if trust_proxy { h("x-forwarded-for").and_then(|v| v.split(',').next()).map(str::trim).filter(|v| !v.is_empty()).unwrap_or(&peer) } else { &peer };
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            broker.handle(&Request {
+                method: req.method.unwrap_or(""),
+                target: req.path.unwrap_or("/"),
+                origin: h("origin"),
+                client,
+                gzip: h("accept-encoding").is_some_and(|v| v.split(',').any(|x| x.trim().starts_with("gzip"))),
+                if_none_match: h("if-none-match"),
+            })
+        })).unwrap_or_else(|_| plain(500, "broker error"));
+        write_response(&mut s, &r);
+    }
+    let listener = TcpListener::bind(addr).unwrap_or_else(|e| {
+        eprintln!("flood-broker: can't listen on {}: {}", addr, e);
+        std::process::exit(1);
+    });
+    let (tx, rx) = mpsc::sync_channel::<TcpStream>(workers * 16);
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..workers {
+        let (rx, broker) = (rx.clone(), broker.clone());
+        std::thread::spawn(move || loop {
+            let s = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            serve(&broker, s, trust_proxy);
+        });
+    }
+    println!("flood-broker listening on http://{} ({} workers)", addr, workers);
+    for s in listener.incoming().flatten() {
+        if let Err(mpsc::TrySendError::Full(mut s)) = tx.try_send(s) {
+            write_response(&mut s, &plain(503, "busy"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
