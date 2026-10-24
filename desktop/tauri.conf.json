@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "au.gov.flood-explorer",
   "build": {
-    "beforeDevCommand": "FLOOD_BROKER_URL=http://127.0.0.1:8787 npm run build",
-    "beforeBuildCommand": "FLOOD_BROKER_URL=http://127.0.0.1:8787 npm run build",
+    "beforeDevCommand": "FLOOD_BROKER_URL=http://127.0.0.1:8787 VITE_DATA_SOURCE=runtime npm run build",
+    "beforeBuildCommand": "FLOOD_BROKER_URL=http://127.0.0.1:8787 VITE_DATA_SOURCE=runtime npm run build",
     "frontendDist": "../site"
   },
   "app": {

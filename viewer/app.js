@@ -2467,7 +2467,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           if (!this._image) this._initImage();
           const c = this._image;
           if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-          c.getContext('2d').putImageData(new ImageData(rgba, w, h), 0, 0);
+          const buf = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba);
+          c.getContext('2d').putImageData(new ImageData(buf, w, h), 0, 0);
           return this;
         },
       });
@@ -3318,8 +3319,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const gen = ++overlayGen;
     const ov = state.overlay;
     if (ov && typeof ov.setPixels === 'function') {
-      ov.setPixels(img, a.W, a.H);
-      status.overlayUpdates++;
+      try {
+        ov.setPixels(img, a.W, a.H);
+        status.overlayUpdates++;
+      } catch (e) {
+        // canvas upload failed (e.g. bad buffer); fall back to PNG encode
+        off.toBlob((blob) => {
+          if (!blob || gen !== overlayGen) return;
+          const url = URL.createObjectURL(blob);
+          const old = ov._floodUrl;
+          ov._floodUrl = url;
+          ov.setUrl(url);
+          status.overlayUpdates++;
+          if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
+        }, 'image/png');
+      }
     } else {
       off.toBlob((blob) => {
         if (!blob || gen !== overlayGen) return;
