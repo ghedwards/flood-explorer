@@ -623,3 +623,14 @@ Two levels of effort:
 
 Recommendation: ship the bbox version first (it reuses `modelHere` and the
 existing peak button), then decide whether the clipping is worth it.
+
+### 10. Desktop version (offline-first) — open design
+
+See `ROADMAP.md` "Desktop (offline-first) version (proposed)": Tauri shell
+around `viewer/` with `flood-broker` as a local sidecar in a new
+`FLOOD_STORAGE=local` mode (files instead of S3, timer instead of
+EventBridge), an elevation proxy to kill the last CORS workaround, bundled
+or first-run-downloaded national data, and the Tauri updater for
+auto-update. Replaces the Lambda/S3 cloud backend (the only cloud cost).
+Start with phase 1 (local mode + Tauri shell) once the current web roadmap
+items settle.

@@ -173,3 +173,78 @@ and when roads close and how long places stay cut off (flood over time).
   WebAssembly memory. Returning only what the map draws (or sharing
   memory) would make interactive updates quicker; analysis, storms and
   flood timelines are already 1.2–2.6× faster.
+
+## Desktop (offline-first) version (proposed)
+
+**Goal:** Ship Flood Explorer as a desktop app (Windows/macOS/Linux) that
+bundles the cache, storage, data fetching and processing, so it runs with no
+cloud backend and no per-request cost. Motivation: the web app depends on the
+Lambda broker (compute + S3 storage) and is subject to CORS, cold starts and
+rate limits; a desktop build removes all of that.
+
+**Why Tauri (not Electron):** the backend is already Rust (`flood-broker`,
+`flood-feeds`) and the frontend is already a web app (`viewer/`); Tauri
+wraps the webview around a Rust core, ships a small binary, and reuses the
+existing crates. Electron would duplicate the backend in Node.
+
+**Shape of the work:**
+1. **Local mode in `flood-broker`.** Add a storage backend switch: when
+   `FLOOD_STORAGE=local` (or a `--data-dir` flag), read/write the readings
+   document to `~/.flood-explorer/readings.json` (and a gz copy) instead of
+   S3, and run the refresh loop on a tokio timer instead of via EventBridge.
+   The fetch/parse logic is unchanged. This keeps web and desktop on one
+   binary.
+2. **Tauri shell.** New `desktop/` crate: Tauri app whose webview loads
+   `viewer/index.html` (built by Vite), with the broker as a sidecar
+   process started on launch and stopped on quit. Configure the webview's
+   `FLOOD_BROKER_URL` to `http://127.0.0.1:<port>`. Reuse the existing
+   CORS handling (the local broker sets the right headers).
+3. **Elevation proxy.** Route Geoscience Australia elevation requests
+   through the local broker (a `/v1/elev` or passthrough) so the webview
+   never hits CORS and offline-cached tiles work. The broker already caches
+   tiles in `ELEV`/`TERRAIN`.
+4. **National data.** Either bundle `viewer/data/national/*` in the
+   installer (~tens of MB) or download on first run into the data dir with a
+   progress screen. Subsequent runs use the cached copy; the build pipeline
+   (`flood-pipeline`) is unchanged.
+5. **Offline-first.** The service worker already caches tiles/terrain/live
+   readings; on desktop the broker's local store replaces S3, so the app
+   works fully offline after the first data fetch. Add an "offline" badge
+   using the existing `nat.readingsSource` plumbing.
+6. **Distribution.** Tauri produces `.msi`/`.dmg`/`.AppImage`. Code signing
+   and notarisation (macOS) are the main cost; the Tauri updater
+   (signed update manifests) gives in-app auto-update from a GitHub
+   Releases host. No server-side hosting needed.
+
+**What it replaces / saves:**
+- Lambda broker + S3 + API Gateway (the only cloud cost) → $0.
+- No cold starts; refreshes run on the user's machine.
+- No CORS workarounds; the elevation proxy removes the last one.
+
+**What it costs:**
+- Two release artefacts to maintain (web + desktop), though they share
+  `viewer/` and `rust/flood-feeds`.
+- Installers, code signing, notarisation and the updater signing key.
+- Users must download ~50-100 MB and update periodically for new data
+  (the Bureau's annual gauge list changes).
+
+**Suggested phasing:**
+1. Local mode in `flood-broker` + a tiny `desktop/` Tauri shell that
+   launches it (proof of life, ~3-5 days).
+2. Elevation proxy + bundled national data + offline badge (~1 week).
+3. Auto-updater + signed installers for the three platforms (~1 week).
+4. Drop the cloud broker from the web build once the desktop is proven
+   (or keep both: web stays, desktop is the "full" version).
+
+**Open questions:**
+- Should the desktop build be the *primary* product (web becomes a
+  preview) or a companion? Keeping both doubles the release surface.
+- Data refresh cadence on desktop: the scheduler's 15 min is fine, but a
+  laptop that sleeps won't refresh; resume on wake.
+- Whether to gate heavy features (2D inertial model, LiDAR) behind a
+  "desktop only" flag, since they're the parts that benefit most from
+  native memory.
+
+**Status:** Not started. Large effort; treat as a major release item. Start
+with phase 1 (local mode + Tauri shell) once the web app's current roadmap
+items settle.
