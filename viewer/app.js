@@ -2828,7 +2828,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       const fromReport = state.areaMeta.reportId && reports.find((r) => r.id === state.areaMeta.reportId);
       const fromPin = state.areaMeta.pinN != null && pins.find((x) => x.n === state.areaMeta.pinN);
       area = { key, name: state.areaMeta.name || key, n: state.areaMeta.keepN != null ? state.areaMeta.keepN : fromReport ? fromReport.n : fromPin ? fromPin.n : nextNumber(), reportId: state.areaMeta.reportId || null };
-      area.overlay = subpixelImageOverlay(BLANK, bounds, {
+      area.overlay = fineCanvasOverlay(bounds, {
         opacity: parseFloat($('floodOpacity').value) / 100, className: 'flood-layer', zIndex: 6,
       }).addTo(m);
       // static terrain shading under the flood raster (never re-encoded per
@@ -3317,15 +3317,20 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     off.getContext('2d').putImageData(img, 0, 0);
     const gen = ++overlayGen;
     const ov = state.overlay;
-    off.toBlob((blob) => {
-      if (!blob || gen !== overlayGen) return;
-      const url = URL.createObjectURL(blob);
-      const old = ov._floodUrl;
-      ov._floodUrl = url;
-      ov.setUrl(url);
+    if (ov && typeof ov.setPixels === 'function') {
+      ov.setPixels(img, a.W, a.H);
       status.overlayUpdates++;
-      if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
-    }, 'image/png');
+    } else {
+      off.toBlob((blob) => {
+        if (!blob || gen !== overlayGen) return;
+        const url = URL.createObjectURL(blob);
+        const old = ov._floodUrl;
+        ov._floodUrl = url;
+        ov.setUrl(url);
+        status.overlayUpdates++;
+        if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
+      }, 'image/png');
+    }
     scheduleFine();
     if (state.gauge >= 0) {
       state.gaugeMarker.setLatLng(cellLatLng(state.gauge));
