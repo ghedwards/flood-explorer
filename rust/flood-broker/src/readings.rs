@@ -51,6 +51,7 @@ struct Stations {
 
 pub enum Store {
     Memory,
+    Local(std::path::PathBuf),
     S3(Bucket),
 }
 
@@ -721,6 +722,15 @@ impl Readings {
             }
         }
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(doc)));
+        // persist to disk in local mode so the next start is instant
+        if let Store::Local(dir) = &self.store {
+            let _ = std::fs::create_dir_all(dir);
+            let cur = self.current.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some((_, doc)) = cur {
+                let _ = std::fs::write(dir.join("readings.json"), doc.body.as_ref());
+                if !doc.gz.is_empty() { let _ = std::fs::write(dir.join("readings.json.gz"), doc.gz.as_ref()); }
+            }
+        }
         let hist = self.update_history(&r["level"], fetched);
         let count = |k: &str| r[k].as_object().map_or(0, |o| o.len());
         Ok(json!({"levels": nl, "storages": ns, "liveQueensland": rt, "rainGauges": count("rain"), "rainObsGauges": count("rainObs"), "seaGauges": count("sea"),
@@ -836,6 +846,32 @@ impl Readings {
         let cur = self.current.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match &self.store {
             Store::Memory => Ok(cur.map(|c| c.1)),
+            Store::Local(dir) => {
+                if let Some((checked, doc)) = &cur {
+                    if now - checked < S3_CHECK_MS {
+                        return Ok(Some(doc.clone()));
+                    }
+                }
+                // try gz first, then plain
+                let gz_path = dir.join("readings.json.gz");
+                let plain_path = dir.join("readings.json");
+                if let Ok(gz) = std::fs::read(&gz_path) {
+                    if let Ok(doc) = Doc::from_gz(gz, None, None) {
+                        let doc = Arc::new(doc);
+                        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
+                        return Ok(Some(doc));
+                    }
+                }
+                if let Ok(body) = std::fs::read(&plain_path) {
+                    let fetched_ms = doc_fetched(&body).unwrap_or(now);
+                    let mut doc = Doc::new(body, fetched_ms, None);
+                    doc.source = "local";
+                    let doc = Arc::new(doc);
+                    *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, doc.clone()));
+                    return Ok(Some(doc));
+                }
+                Ok(cur.map(|c| c.1))
+            }
             Store::S3(b) => {
                 if let Some((checked, doc)) = &cur {
                     if now - checked < S3_CHECK_MS {

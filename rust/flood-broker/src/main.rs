@@ -104,6 +104,14 @@ fn serve(broker: &Broker, mut s: TcpStream, trust_proxy: bool) {
 }
 
 fn main() {
+    // tiny arg parse: --data-dir <path>
+    let args: Vec<String> = std::env::args().collect();
+    let mut data_dir_arg: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--data-dir" && i + 1 < args.len() { data_dir_arg = Some(args[i+1].clone()); i += 2; continue; }
+        i += 1;
+    }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let origins = env("ALLOWED_ORIGINS").unwrap_or_else(|| "https://ghedwards.github.io".into());
     let cfg = Config {
@@ -112,12 +120,20 @@ fn main() {
         refresh_ms: env("READINGS_REFRESH_MINUTES").and_then(|v| v.parse::<i64>().ok()).filter(|m| *m > 0).unwrap_or(15) * 60_000,
     };
     // readings for the whole map: in S3 when a bucket is given (Lambda),
-    // otherwise in memory
-    let store = match env("READINGS_BUCKET") {
-        Some(name) => Store::S3(Bucket { name, region: env("AWS_REGION").unwrap_or_else(|| "ap-southeast-2".into()) }),
-        None => Store::Memory,
+    // in a local directory for the desktop build, otherwise in memory
+    let store = match (env("READINGS_BUCKET"), data_dir_arg.or_else(|| env("FLOOD_DATA_DIR"))) {
+        (Some(name), _) => Store::S3(Bucket { name, region: env("AWS_REGION").unwrap_or_else(|| "ap-southeast-2".into()) }),
+        (_, Some(dir)) => Store::Local(std::path::PathBuf::from(dir)),
+        _ => {
+            if env("FLOOD_STORAGE").as_deref() == Some("local") {
+                let dir = env("HOME").or_else(|| env("USERPROFILE")).unwrap_or_else(|| ".".into());
+                Store::Local(std::path::PathBuf::from(dir).join(".flood-explorer"))
+            } else {
+                Store::Memory
+            }
+        }
     };
-    let in_memory = matches!(store, Store::Memory);
+    let in_memory = matches!(store, Store::Memory | Store::Local(_));
     let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)).with_text(Box::new(readings::http_text)).with_rain_http(Box::new(readings::http_json_once)).with_ftp(Box::new(|| flood_feeds::ftp::Session::open(flood_feeds::BOM_FTP_HOST, 30).map(|s| Box::new(s) as Box<dyn flood_feeds::ftp::Dir>))).with_roads(Box::new(readings::fetch_roads)).with_emergency(Box::new(readings::fetch_emergency)));
     // on AWS Lambda (a function URL): the runtime API loop instead of a socket
     if let Some(api) = env("AWS_LAMBDA_RUNTIME_API") {
