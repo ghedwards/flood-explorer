@@ -568,6 +568,36 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let (wse, on_path) = with_analysis(b.num("a"), |a| stream_surface(a, &s))?;
             o.f64s("wse", &wse).u8s("onPath", &on_path);
         }
+        "composeWater" => {
+            let w = b.num("w") as usize;
+            let h = b.num("h") as usize;
+            let relief = b.num("relief") != 0.0;
+            let mode = b.num("mode") as u8;
+            let flood_a = b.num("floodA") as u8;
+            let stream_a = b.num("streamA") as u8;
+            let cell_km2 = b.num("cellKm2") as f32;
+            let stream_thr = b.num("streamThr") as f32;
+            let valid = b.u8s("valid").unwrap_or_default();
+            let ocean = b.u8s("ocean").unwrap_or_default();
+            let stream = b.u8s("stream").unwrap_or_default();
+            let acc = b.f32s("acc").unwrap_or_default();
+            let sat = b.i32s("sat").unwrap_or_default();
+            let base_wet = b.u8s("baseWet").unwrap_or_default();
+            let run_wet = b.u8s("runWet").unwrap_or_default();
+            let run_depth = b.f32s("runDepth").unwrap_or_default();
+            let hz_cls = b.u8s("hzCls").unwrap_or_default();
+            let cmp_diff = b.i32s("cmpDiff").unwrap_or_default();
+            let cmp_diff: Vec<i8> = cmp_diff.iter().map(|&x| x as i8).collect();
+            let mask = b.u8s("mask");
+            let params = flood_core::render::ComposeParams {
+                w, h, relief, mode, flood_a, stream_a, cell_km2, stream_thr,
+            };
+            let (rgba, count) = flood_core::render::compose_water(
+                &valid, &ocean, &stream, &acc, &sat, &base_wet, &run_wet,
+                &run_depth, &hz_cls, &cmp_diff, &params, mask.as_deref(),
+            );
+            o.u8s("rgba", &rgba).num("count", count as f64);
+        }
         "inundate" => {
             let s = scenario_of(b);
             let slim = b.has("slim");
