@@ -1,10 +1,10 @@
 // Tauri entry point: run the flood-broker HTTP server in-process (local
 // mode), then load the web app. No separate broker process or sidecar.
 use flood_broker::Config;
+use flood_broker::run_server;
 use flood_broker::readings::{Readings, Store};
 use std::sync::Arc;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|_app| {
@@ -35,7 +35,6 @@ pub fn run() {
             .with_ftp(Box::new(|| flood_feeds::ftp::Session::open(flood_feeds::BOM_FTP_HOST, 30).map(|s| Box::new(s) as Box<dyn flood_feeds::ftp::Dir>)))
             .with_roads(Box::new(flood_broker::readings::fetch_roads))
             .with_emergency(Box::new(flood_broker::readings::fetch_emergency)));
-            // refresh loop in-process
             let rd2 = rd.clone();
             let every = env("READINGS_REFRESH_MINUTES").and_then(|v| v.parse::<u64>().ok()).unwrap_or(15);
             if every > 0 {
@@ -51,7 +50,7 @@ pub fn run() {
             let port = env("PORT").unwrap_or_else(|| "8787".into());
             let addr = format!("127.0.0.1:{}", port);
             std::thread::spawn(move || {
-                flood_broker::run_server(broker, &addr, 4, false);
+                run_server(broker, &addr, 4, false);
             });
             Ok(())
         })
