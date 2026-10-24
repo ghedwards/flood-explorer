@@ -390,7 +390,7 @@ impl Broker {
             drop(st);
             return self.reply(req, 200, &body, &[("Cache-Control", "no-store")]);
         }
-        if !matches!(path, "/v1/levels" | "/v1/readings" | "/v1/now" | "/v1/series" | "/v1/history") {
+        if !matches!(path, "/v1/levels" | "/v1/readings" | "/v1/now" | "/v1/series" | "/v1/history" | "/v1/elev") {
             return self.reply(req, 404, &json!({"error": "not found"}), &[]);
         }
         if !self.allowed(req.client) {
@@ -401,6 +401,31 @@ impl Broker {
         }
         if path == "/v1/history" {
             return self.serve_history(req, query);
+        }
+        if path == "/v1/elev" {
+            // proxy for Geoscience Australia elevation (WCS GetCoverage).
+            // Returns the raw GeoTIFF bytes. Used by the desktop build to
+            // avoid CORS and to share the SW's tile cache; on Lambda the
+            // web app fetches GA directly, so this is a best-effort passthrough.
+            let url = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "url").map(|(_, v)| wmip::decode(v)).unwrap_or_default();
+            if !url.starts_with("https://services.ga.gov.au/") {
+                return self.reply(req, 400, &json!({"error": "url must be a services.ga.gov.au WCS URL"}), &[]);
+            }
+            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(Some(std::time::Duration::from_secs(30))).timeout_recv_response(Some(std::time::Duration::from_secs(60))).timeout_recv_body(Some(std::time::Duration::from_secs(60))).http_status_as_error(false).build().into();
+            let mut r = match agent.get(&url).header("User-Agent", "flood-explorer-broker").call() {
+                Ok(r) => r,
+                Err(e) => return self.reply(req, 502, &json!({"error": e.to_string()}), &[]),
+            };
+            let code = r.status().as_u16();
+            let mut b = Vec::new();
+            if r.body_mut().as_reader().take(64 << 20).read_to_end(&mut b).is_err() {
+                return self.reply(req, 502, &json!({"error": "read body failed"}), &[]);
+            }
+            if code >= 400 {
+                return self.reply(req, code, &json!({"error": format!("upstream HTTP {}", code)}), &[]);
+            }
+            let ct = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+            return Response { status: 200, headers: vec![("Content-Type".into(), ct), ("Cache-Control".into(), "public, max-age=86400".into())], body: b };
         }
         if path == "/v1/now" {
             return self.serve_doc(req, true);
@@ -593,10 +618,13 @@ pub fn run_server(broker: std::sync::Arc<Broker>, addr: &str, workers: usize, tr
         })).unwrap_or_else(|_| plain(500, "broker error"));
         write_response(&mut s, &r);
     }
-    let listener = TcpListener::bind(addr).unwrap_or_else(|e| {
-        eprintln!("flood-broker: can't listen on {}: {}", addr, e);
-        std::process::exit(1);
-    });
+    let listener = match TcpListener::bind(addr) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("flood-broker: can't listen on {}: {}", addr, e);
+            return;
+        }
+    };
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(workers * 16);
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..workers {
