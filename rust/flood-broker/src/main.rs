@@ -36,7 +36,21 @@ fn main() {
         if args[i] == "--data-dir" && i + 1 < args.len() { data_dir_arg = Some(args[i+1].clone()); i += 2; continue; }
         i += 1;
     }
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    // settings file: --settings <path>, or FLOOD_SETTINGS, or ./settings.ini
+    let settings_file = std::env::args().skip(1).zip(std::env::args().skip(2)).find(|(a,_)| a == "--settings").map(|(_,v)| v)
+        .or_else(|| std::env::var("FLOOD_SETTINGS").ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "settings.ini".into());
+    let file_settings: std::collections::HashMap<String, String> = std::fs::read_to_string(&settings_file)
+        .ok()
+        .map(|txt| txt.lines().filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() || l.starts_with('#') || l.starts_with(';') { return None; }
+            let (k, v) = l.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        }).collect())
+        .unwrap_or_default();
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty())
+        .or_else(|| file_settings.get(k).cloned().filter(|v| !v.trim().is_empty()));
     let origins = env("ALLOWED_ORIGINS").unwrap_or_else(|| "https://ghedwards.github.io".into());
     let cfg = Config {
         origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
