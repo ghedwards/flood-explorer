@@ -2517,7 +2517,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           if (!this._image) this._initImage();
           const c = this._image;
           if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-          const buf = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba);
+          const src = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba && rgba.data ? rgba.data : rgba);
+          const expected = w * h * 4;
+          const buf = src.length === expected ? src : (() => { const b = new Uint8ClampedArray(expected); b.set(src.subarray(0, Math.min(src.length, expected))); return b; })();
           c.getContext('2d').putImageData(new ImageData(buf, w, h), 0, 0);
           return this;
         },
@@ -3370,7 +3372,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const ov = state.overlay;
     if (ov && typeof ov.setPixels === 'function') {
       try {
-        ov.setPixels(img, a.W, a.H);
+        ov.setPixels(img.data, a.W, a.H);
         status.overlayUpdates++;
       } catch (e) {
         // canvas upload failed (e.g. bad buffer); fall back to PNG encode
@@ -7801,7 +7803,10 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // request otherwise leaves "Downloading elevation…" up for good)
   const RASTER_TIMEOUT_MS = 45000;
   async function fetchRaster(base, box, W, H, url0) {
-    const url = url0 || wcsUrl(base, box, W, H);
+    const direct = url0 || wcsUrl(base, box, W, H);
+    // on desktop (or whenever a broker is configured) route through the
+    // broker so the request shares its cache and avoids CORS
+    const url = BROKER ? `${BROKER}/v1/elev?url=${encodeURIComponent(direct)}` : direct;
     // GA's service occasionally drops a request (its error replies carry no
     // CORS header, so the browser reports a network failure): try again
     let r = null;
