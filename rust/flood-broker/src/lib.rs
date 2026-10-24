@@ -418,6 +418,7 @@ impl Broker {
             };
             let code = r.status().as_u16();
             let mut b = Vec::new();
+            use std::io::Read;
             if r.body_mut().as_reader().take(64 << 20).read_to_end(&mut b).is_err() {
                 return self.reply(req, 502, &json!({"error": "read body failed"}), &[]);
             }
