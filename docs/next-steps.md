@@ -634,3 +634,13 @@ or first-run-downloaded national data, and the Tauri updater for
 auto-update. Replaces the Lambda/S3 cloud backend (the only cloud cost).
 Start with phase 1 (local mode + Tauri shell) once the current web roadmap
 items settle.
+
+### 11. Rendering pipeline in Rust (WASM for web, native for desktop) — open design
+
+See `ROADMAP.md` "Rendering pipeline in Rust (WASM for web, native for
+desktop) (proposed)": move `composeWater()` (depth/hazard → RGBA) out of
+JavaScript into `flood-wasm`, called from the web app and reused natively by
+the desktop build; canvas `putImageData` (and optionally a WebGL texture
+upload) stays in JS. One source of truth for colour tables, faster tight
+loops, and pairs with the desktop version. Start with step 1 (extract
+`composeWater` + a byte-parity test against the current JS output).

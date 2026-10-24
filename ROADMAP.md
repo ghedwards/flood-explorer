@@ -248,3 +248,62 @@ existing crates. Electron would duplicate the backend in Node.
 **Status:** Not started. Large effort; treat as a major release item. Start
 with phase 1 (local mode + Tauri shell) once the web app's current roadmap
 items settle.
+
+## Rendering pipeline in Rust (WASM for web, native for desktop) (proposed)
+
+**Goal:** Move the flood raster rendering (depth → colour, hazard bands, terrain
+shading, stream lines) out of JavaScript and into Rust, so the web app calls
+it through WebAssembly and the desktop app calls it natively. One source of
+truth for colours and depth bands; faster (Rust loops over ~445k cells beat
+JS); and the desktop build gets the same rendering for free.
+
+**What's already Rust:** the flood model itself (`flood-core`, `flood-wasm`).
+**What's still JS:** `composeWater()` (depth/hazard → RGBA), the terrain
+relief base, stream-channel tinting, the `floodPixels` count, and the
+canvas `putImageData` upload. That is the thing to move.
+
+**Shape of the work:**
+1. **Extract `composeWater` into `flood-wasm`.** A new export, e.g.
+   `compose_water(depth: &[f32], wet: &[u8], hazard: &[u8], base: &[u8],
+   terrain: &[u8], params) -> Vec<u8>` returning an RGBA buffer, with the
+   depth bands, hazard colours, stream threshold and relief alpha encoded as
+   parameters (or a small config struct). The JS side keeps only the
+   `putImageData` upload and the overlay positioning. Add a parity test:
+   the WASM output must byte-match the current JS output for a fixed grid.
+2. **Wire the web app to it.** Replace the `composeWater()` body with a call
+   into the WASM module; keep `cellLatLng`, `area.polygon` masking and the
+   `floodPixels` count in JS (or move the mask into WASM too). Measure the
+   speedup (target: under 16 ms for a 667x667 grid so it stays interactive
+   during timeline playback).
+3. **Desktop reuse.** The desktop build (ROADMAP "Desktop version") calls
+   the same Rust function natively — no WASM overhead, and it can render
+   directly to a texture/surface if a GPU path is added later.
+4. **(Optional) WebGL upload.** Once the RGBA buffer is produced in WASM,
+   upload it as a `WebGLTexture` instead of `putImageData` + PNG blob. This
+   is the bigger win for pan/zoom smoothness but is a separate change; the
+   canvas path stays as the fallback.
+
+**What it does not change:** the model (already Rust), the elevation fetch,
+the map (Leaflet), or the UI. Only the colour-mapping step moves.
+
+**Risks / things to watch:**
+- The colour tables (`DEPTH_STOPS`, `HAZARD_COLORS`, `DEPTH_ALPHA`) and the
+  relief/stream logic must be reproduced exactly; the parity test is the
+  guard. Any drift shows up as a visible colour change.
+- WASM ↔ JS data transfer for a 667x667x4 buffer (~1.8 MB) per render is
+  fine but must reuse a single buffer (no per-frame allocation) to avoid GC
+  pressure during timeline playback.
+- `area.polygon` masking (just shipped) must be applied either in WASM or
+  as a post-pass; doing it in WASM keeps one code path.
+
+**Status:** Not started. Medium effort (~1 week for step 1-2). Pairs
+naturally with the desktop version: do the WASM extraction first, then the
+desktop build consumes it natively.
+
+**Open questions:**
+- Should the colour tables live in `flood-core` (shared by pipeline and
+  browser) or in `flood-wasm` only? Putting them in `flood-core` lets the
+  pipeline render comparison images too.
+- WebGL upload (step 4) vs staying on canvas: canvas is simpler and already
+  works; WebGL is faster but adds a shader + texture lifecycle. Decide
+  after measuring step 2.
