@@ -652,3 +652,25 @@ fallback), and the flood raster renders via `setPixels` on a canvas overlay
 instead of `toBlob`+PNG+`setUrl`, removing the encode step. Step 3 (desktop
 reuse) comes with the desktop version; step 4's WebGL texture upload remains
 an optional follow-up (canvas is now fast enough that WebGL is not urgent).
+
+### 12. Settings: cloud settings.ini + desktop settings page (open)
+
+Cloud (deployable server, `main.rs`): a `settings.ini` next to the binary (or
+`/etc/flood-broker/settings.ini`, or `--settings <path>`) with `key = value`
+lines, read at startup. Env vars take precedence (so Lambda keeps using its
+env), and the file fills in gaps — so a host can change a key without a
+redeploy and without env-var plumbing. Keys:
+- `QLD_TRAFFIC_API_KEY`, `NSW_TRAFFIC_API_KEY` (and, later, `VIC_TRAFFIC_API_KEY`)
+- `ALLOWED_ORIGINS`, `BROKER_MAX_CONCURRENCY`, `BROKER_REFRESH_MINUTES`
+- `STATIONS_URL`, `READINGS_BUCKET`, `AWS_REGION` (cloud only)
+- `FLOOD_DATA_DIR`, `FLOOD_STORAGE` (desktop only)
+
+Desktop: a settings page in the viewer (opened from a gear icon) that writes
+the API keys to `~/.flood-explorer/settings.json` (or `settings.ini`); the
+in-process broker reads them on startup and on a "reload settings" action.
+No restart needed for key changes if the broker re-reads per refresh.
+
+Work order: (1) broker reads a settings file in local/standalone mode;
+(2) settings page in the viewer that persists keys; (3) (optional) reload
+without restart; (4) (optional) per-source status in the settings page
+(lastGood/lastError from `/health`).
