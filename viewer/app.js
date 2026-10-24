@@ -340,6 +340,56 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   renderProblems();
   window.__floodProblemsReport = problemsReport;
 
+  // Settings (API keys): desktop (Tauri) persists to ~/.flood-explorer/settings.ini
+  // via the in-process broker's save_settings command; web falls back to localStorage.
+  const isTauri = () => !!(window.__TAURI__ && (window.__TAURI__.core || window.__TAURI__));
+  const tauriInvoke = async (cmd, args) => {
+    const t = window.__TAURI__;
+    const inv = (t && t.core && t.core.invoke) || (t && t.invoke);
+    if (!inv) throw new Error('Tauri invoke not available');
+    return inv(cmd, args || {});
+  };
+  const settingsModal = document.getElementById('settingsModal');
+  const openSettings = async () => {
+    if (!settingsModal) return;
+    settingsModal.hidden = false;
+    const status = document.getElementById('settingsStatus');
+    if (status) status.textContent = '';
+    try {
+      let qld = '', nsw = '';
+      if (isTauri()) {
+        const s = await tauriInvoke('load_settings', {});
+        qld = (s && s.QLD_TRAFFIC_API_KEY) || '';
+        nsw = (s && s.NSW_TRAFFIC_API_KEY) || '';
+      } else {
+        qld = localStorage.getItem('floodExplorer.qldKey') || '';
+        nsw = localStorage.getItem('floodExplorer.nswKey') || '';
+      }
+      const qi = document.getElementById('setQldKey'); if (qi) qi.value = qld;
+      const ni = document.getElementById('setNswKey'); if (ni) ni.value = nsw;
+    } catch (e) { if (status) status.textContent = `Could not load settings: ${e && e.message || e}`; }
+  };
+  const closeSettings = () => { if (settingsModal) settingsModal.hidden = true; };
+  const settingsBtn = document.getElementById('settingsBtn');
+  if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
+  const settingsClose = document.getElementById('settingsClose');
+  if (settingsClose) settingsClose.addEventListener('click', closeSettings);
+  const settingsSave = document.getElementById('settingsSave');
+  if (settingsSave) settingsSave.addEventListener('click', async () => {
+    const status = document.getElementById('settingsStatus');
+    const qld = (document.getElementById('setQldKey') || {}).value || '';
+    const nsw = (document.getElementById('setNswKey') || {}).value || '';
+    try {
+      if (isTauri()) {
+        await tauriInvoke('save_settings', { qldKey: qld.trim() || null, nswKey: nsw.trim() || null });
+      } else {
+        try { localStorage.setItem('floodExplorer.qldKey', qld.trim()); localStorage.setItem('floodExplorer.nswKey', nsw.trim()); } catch (e) { /* ignore */ }
+      }
+      if (status) status.textContent = 'Saved. The broker re-reads keys on its next refresh.';
+      setTimeout(closeSettings, 1200);
+    } catch (e) { if (status) status.textContent = `Save failed: ${e && e.message || e}`; }
+  });
+
   /* A button whose work takes a moment (fetching or calculating): while it
    * runs the button shows a spinner and what it's doing, can't be pressed
    * twice, and keeps its width; it comes back when the work ends. */

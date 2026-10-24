@@ -512,3 +512,12 @@ ol.problems li { overflow-wrap: anywhere; }
 .problem-when { display: block; color: var(--muted); font-size: 11.5px; }
 .problem-msg { display: block; }
 ol.problems pre { white-space: pre-wrap; font: 11px/1.35 var(--font-data); margin: 4px 0 0; color: var(--muted); }
+
+/* Settings modal */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 10000; }
+.modal[hidden] { display: none; }
+.modal-card { background: var(--bg, #fff); color: var(--fg, #222); padding: 18px 20px; border-radius: 10px; max-width: 420px; width: 90%; box-shadow: 0 8px 24px rgba(0,0,0,.25); display: grid; gap: 10px; }
+.modal-card h2 { margin: 0 0 4px; }
+.modal-card .row { display: grid; gap: 4px; }
+.modal-card input { width: 100%; padding: 6px 8px; font: 13px/1.3 var(--font-data, monospace); }
+.modal-card .link-row { display: flex; gap: 8px; justify-content: flex-end; }
