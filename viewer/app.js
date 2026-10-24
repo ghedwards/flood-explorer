@@ -1265,6 +1265,50 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function composeWater() {
     const a = state.a, run = state.run, base = state.base;
     const relief = $('showRelief').checked;
+    // --- WASM path (Rust colour mapping) with JS fallback ---
+    const F = window.FloodCore;
+    if (F && typeof F.composeWater === 'function') {
+      try {
+        const area = state.areaKey && areaReg.get(state.areaKey);
+        const W = a.W, H = a.H, N = a.N;
+        const modeStr = colorMode();
+        const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
+        const hz = modeStr === 'hazard' ? hazardNow() : null;
+        const cmp = modeStr === 'compare' ? compareNow() : null;
+        const valid = a.valid instanceof Uint8Array ? a.valid : new Uint8Array(a.valid || []);
+        const ocean = a.ocean instanceof Uint8Array ? a.ocean : new Uint8Array(a.ocean || []);
+        const stream = a.stream instanceof Uint8Array ? a.stream : new Uint8Array(a.stream || []);
+        const acc = a.acc instanceof Float32Array ? a.acc : new Float32Array(a.acc || []);
+        const satRaw = a.sat || [];
+        const sat = satRaw instanceof Float32Array ? satRaw : new Float32Array(satRaw.length ? satRaw : 0);
+        const baseWet = (base && base.wet) ? (base.wet instanceof Uint8Array ? base.wet : new Uint8Array(base.wet)) : new Uint8Array(0);
+        const runWet = run.wet instanceof Uint8Array ? run.wet : new Uint8Array(run.wet || []);
+        const runDepth = run.depth instanceof Float32Array ? run.depth : new Float32Array(run.depth || []);
+        const hzCls = (hz && hz.cls) ? (hz.cls instanceof Uint8Array ? hz.cls : new Uint8Array(hz.cls)) : new Uint8Array(0);
+        const cmpArr = (cmp && cmp.diff) ? cmp.diff.map((v) => (v == null ? 0 : v)) : [];
+        const cmpDiff = new Int32Array(cmpArr);
+        // per-cell polygon mask
+        let mask = null;
+        if (area && area.polygon) {
+          mask = new Uint8Array(N);
+          for (let i = 0; i < N; i++) {
+            const ll = cellLatLng(i);
+            mask[i] = pointInPolygon(ll[0], ll[1], area.polygon) ? 1 : 0;
+          }
+        }
+        const r = F.composeWater({
+          w: W, h: H, relief: relief ? 1 : 0, mode: modeCode,
+          floodA: relief ? 224 : 255, streamA: relief ? 230 : 0,
+          cellKm2: (a.cell * a.cell) / 1e6, streamThr: state.streamAreaKm2 * 3,
+          valid, ocean, stream, acc, sat, baseWet, runWet, runDepth, hzCls, cmpDiff, mask,
+        });
+        if (r && r.rgba && r.rgba.length === W * H * 4) {
+          if (!waterImg || waterImg.width !== W || waterImg.height !== H) waterImg = new ImageData(W, H);
+          waterImg.data.set(r.rgba);
+          return { img: waterImg, count: r.count || 0 };
+        }
+      } catch (e) { /* fall through to JS */ }
+    }
     if (!waterImg || waterImg.width !== a.W || waterImg.height !== a.H) waterImg = new ImageData(a.W, a.H);
     const d = waterImg.data;
     d.fill(0);
