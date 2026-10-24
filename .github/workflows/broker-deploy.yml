@@ -55,7 +55,7 @@ jobs:
           role="${{ vars.AWS_DEPLOY_ROLE_ARN }}"
           echo "role: $role (account $(cut -d: -f5 <<< "$role")), region ${{ vars.AWS_REGION || 'ap-southeast-2' }}"
           echo "::notice title=Sign-in details::iss=$(jq -r .iss <<< "$claims" 2>/dev/null) aud=$(jq -r .aud <<< "$claims" 2>/dev/null) sub=$(jq -r .sub <<< "$claims" 2>/dev/null) role=$role"
-      - uses: aws-actions/configure-aws-credentials@v5
+      - uses: aws-actions/configure-aws-credentials@v6
         if: steps.aws.outputs.deploy == '1'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
