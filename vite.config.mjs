@@ -12,6 +12,7 @@ export default defineConfig({
     emptyOutDir: false,
     assetsInlineLimit: 0,
     target: "es2022",
+    rolldownOptions: { input: { main: path.join(root, 'viewer/index.html'), tsunami: path.join(root, 'viewer/tsunami.html') } },
   },
   worker: { format: "es" },
   // the commit this site was built from, shown with logged problems

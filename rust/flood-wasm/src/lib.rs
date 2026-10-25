@@ -196,6 +196,7 @@ impl Out {
 
 thread_local! {
     static INERTIAL: RefCell<Option<inertial::Solver>> = const { RefCell::new(None) };
+    static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
     static ANALYSES: RefCell<Vec<Option<Analysis>>> = const { RefCell::new(Vec::new()) };
     static WAVES: RefCell<Vec<Option<Wave>>> = const { RefCell::new(Vec::new()) };
     static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -492,6 +493,32 @@ fn levees_of(b: &Bag) -> Vec<Levee> {
 pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
     let mut o = Out::default();
     match op {
+        "tsunamiStart" => {
+            TSUNAMI.with(|s| *s.borrow_mut() = None);
+            let mut solver = tsunami::Solver::new(
+                b.num("W") as usize, b.num("H") as usize, b.num("cell"),
+                b.f64s("depth").ok_or("missing ocean depths")?,
+                b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
+            )?;
+            if b.num("method") == 1.0 { solver.method = tsunami::Method::FiniteVolume; }
+            o.num("dt", solver.dt);
+            TSUNAMI.with(|s| *s.borrow_mut() = Some(solver));
+        }
+        "tsunamiStep" => {
+            TSUNAMI.with(|slot| -> Result<(), String> {
+                let mut slot = slot.borrow_mut();
+                let s = slot.as_mut().ok_or("no active tsunami simulation")?;
+                let steps = b.num("steps");
+                if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 {
+                    return Err("invalid tsunami step count".into());
+                }
+                s.advance(steps as usize)?;
+                o.num("time", s.time).num("dt", s.dt).num("volume", s.volume());
+                o.f32s("eta", &s.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                o.f32s("peak", &s.peak.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                Ok(())
+            })?;
+        }
         "inertialStart" => {
             // One simulation per dedicated worker/module instance.
             INERTIAL.with(|s| *s.borrow_mut() = None);

@@ -342,6 +342,8 @@
     }
 
     const rust = {
+      tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt) }; },
+      tsunamiStep: (steps) => { const o = call('tsunamiStep', { steps }); return { eta: o.eta, peak: o.peak, time: num(o.time), dt: num(o.dt), volume: num(o.volume) }; },
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },

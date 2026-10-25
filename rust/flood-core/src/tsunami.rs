@@ -1,0 +1,239 @@
+//! Idealised long-wave propagation on fixed bathymetry (metres below sea level).
+//! Linear SWE: eta_t = -div(q), q_t = -g H grad(eta).
+//! Cell-centred eta and face-centred transport use staggered leapfrog time steps.
+//! Land is a fixed reflecting wall; an optional outer sponge absorbs waves.
+//! No wetting/drying, earthquake source physics, dispersion or inundation.
+
+const G: f64 = 9.81;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Method { Staggered, FiniteVolume }
+
+pub struct Solver {
+    pub w: usize,
+    pub h: usize,
+    pub cell: f64,
+    pub depth: Vec<f64>,
+    pub eta: Vec<f64>,
+    pub peak: Vec<f64>,
+    pub time: f64,
+    pub dt: f64,
+    pub steps: usize,
+    pub method: Method,
+    mx: Vec<f64>,
+    my: Vec<f64>,
+    qx: Vec<f64>,
+    qy: Vec<f64>,
+    damping: Vec<f64>,
+}
+
+impl Solver {
+    pub fn new(w: usize, h: usize, cell: f64, depth: Vec<f64>, eta: Vec<f64>, absorbing: bool) -> Result<Self, String> {
+        if !(4..=512).contains(&w) || !(4..=512).contains(&h)
+            || !cell.is_finite() || cell < 1.0 || depth.len() != w * h || eta.len() != w * h {
+            return Err("invalid tsunami grid (4–512 cells per side, cell size at least 1 m)".into());
+        }
+        if depth.iter().any(|v| !v.is_finite() || *v < 0.0 || *v > 12_000.0)
+            || eta.iter().any(|v| !v.is_finite() || v.abs() > 100.0) {
+            return Err("invalid ocean depths or initial displacement".into());
+        }
+        let max_depth = depth.iter().copied().fold(0.0_f64, f64::max);
+        if max_depth <= 0.0 { return Err("the grid contains no ocean".into()); }
+        if depth.iter().zip(&eta).any(|(d, e)| *d == 0.0 && *e != 0.0) {
+            return Err("initial displacement must be zero on land".into());
+        }
+        let dt = 0.45 * cell / (G * max_depth).sqrt();
+        let mut damping = vec![1.0; w * h];
+        if absorbing {
+            let width = (w.min(h) / 8).clamp(2, 16) as f64;
+            for y in 0..h { for x in 0..w {
+                let edge = x.min(w - 1 - x).min(y.min(h - 1 - y)) as f64;
+                let strength = (1.0 - edge / width).max(0.0);
+                damping[y * w + x] = (-0.12 * strength * strength).exp();
+            } }
+        }
+        Ok(Self { w, h, cell, peak: eta.iter().map(|v| v.abs()).collect(), depth, eta, time: 0.0, dt, steps: 0,
+            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping,
+            method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
+    }
+
+    pub fn advance(&mut self, steps: usize) -> Result<(), String> {
+        if steps > 200 { return Err("advance at most 200 steps per call".into()); }
+        for _ in 0..steps {
+            if self.method == Method::FiniteVolume {
+                self.finite_volume_step()?;
+                continue;
+            }
+            // Initial transport is zero at t=0: the first kick reaches dt/2.
+            let kick = if self.steps == 0 { self.dt * 0.5 } else { self.dt } * G / self.cell;
+            for y in 0..self.h { for x in 1..self.w {
+                let right = y * self.w + x;
+                let left = right - 1;
+                let face = y * (self.w + 1) + x;
+                if self.depth[left] > 0.0 && self.depth[right] > 0.0 {
+                    let depth = (self.depth[left] + self.depth[right]) * 0.5;
+                    self.qx[face] = (self.qx[face] - kick * depth * (self.eta[right] - self.eta[left]))
+                        * (self.damping[left] * self.damping[right]).sqrt();
+                }
+            } }
+            for y in 1..self.h { for x in 0..self.w {
+                let below = y * self.w + x;
+                let above = below - self.w;
+                if self.depth[above] > 0.0 && self.depth[below] > 0.0 {
+                    let depth = (self.depth[above] + self.depth[below]) * 0.5;
+                    self.qy[below] = (self.qy[below] - kick * depth * (self.eta[below] - self.eta[above]))
+                        * (self.damping[above] * self.damping[below]).sqrt();
+                }
+            } }
+            for y in 0..self.h { for x in 0..self.w {
+                let i = y * self.w + x;
+                if self.depth[i] == 0.0 { continue; }
+                let div = self.qx[y * (self.w + 1) + x + 1] - self.qx[y * (self.w + 1) + x]
+                    + self.qy[i + self.w] - self.qy[i];
+                self.eta[i] = (self.eta[i] - self.dt / self.cell * div) * self.damping[i];
+                if !self.eta[i].is_finite() { return Err("non-finite wave state; stop the simulation".into()); }
+                self.peak[i] = self.peak[i].max(self.eta[i].abs());
+            } }
+            self.steps += 1;
+            self.time += self.dt;
+        }
+        Ok(())
+    }
+
+    pub fn volume(&self) -> f64 { self.eta.iter().sum::<f64>() * self.cell * self.cell }
+
+    // Acoustic Riemann flux for the same linear equations. Momentum is
+    // cell-centred here; variable H multiplies the pressure gradient, so a
+    // constant free surface remains exactly at rest over uneven bathymetry.
+    fn rhs(&self, eta: &[f64], mx: &[f64], my: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = self.w * self.h;
+        let (mut de, mut dx, mut dy) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        for y in 0..self.h { for x in 0..self.w {
+            let i = y * self.w + x;
+            if self.depth[i] == 0.0 { continue; }
+            for (nx, ny) in [(-1_i32, 0_i32), (1, 0), (0, -1), (0, 1)] {
+                let xx = x as i32 + nx;
+                let yy = y as i32 + ny;
+                let j = if xx >= 0 && yy >= 0 && xx < self.w as i32 && yy < self.h as i32 { Some(yy as usize * self.w + xx as usize) } else { None };
+                let q = nx as f64 * mx[i] + ny as f64 * my[i];
+                let (mass, surface) = match j.filter(|j| self.depth[*j] > 0.0) {
+                    Some(j) => {
+                        let c = (G * self.depth[i].max(self.depth[j])).sqrt();
+                        let other = nx as f64 * mx[j] + ny as f64 * my[j];
+                        (0.5 * (q + other) - 0.5 * c * (eta[j] - eta[i]),
+                         0.5 * (eta[i] + eta[j]) - 0.5 * (other - q) / c)
+                    }
+                    None => (0.0, eta[i] + q / (G * self.depth[i]).sqrt()),
+                };
+                de[i] -= mass / self.cell;
+                dx[i] -= G * self.depth[i] * nx as f64 * surface / self.cell;
+                dy[i] -= G * self.depth[i] * ny as f64 * surface / self.cell;
+            }
+        } }
+        (de, dx, dy)
+    }
+
+    fn finite_volume_step(&mut self) -> Result<(), String> {
+        // SSP-RK2 time integration. Spatial reconstruction is first order:
+        // intentionally more diffusive than the staggered reference method.
+        let (de, dx, dy) = self.rhs(&self.eta, &self.mx, &self.my);
+        let e: Vec<f64> = self.eta.iter().zip(de).map(|(a, b)| a + self.dt * b).collect();
+        let x: Vec<f64> = self.mx.iter().zip(dx).map(|(a, b)| a + self.dt * b).collect();
+        let y: Vec<f64> = self.my.iter().zip(dy).map(|(a, b)| a + self.dt * b).collect();
+        let (de, dx, dy) = self.rhs(&e, &x, &y);
+        for i in 0..self.eta.len() {
+            self.eta[i] = 0.5 * (self.eta[i] + e[i] + self.dt * de[i]) * self.damping[i];
+            self.mx[i] = 0.5 * (self.mx[i] + x[i] + self.dt * dx[i]) * self.damping[i];
+            self.my[i] = 0.5 * (self.my[i] + y[i] + self.dt * dy[i]) * self.damping[i];
+            if !self.eta[i].is_finite() { return Err("non-finite finite-volume wave state".into()); }
+            self.peak[i] = self.peak[i].max(self.eta[i].abs());
+        }
+        self.steps += 1;
+        self.time += self.dt;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn still_water_stays_still_over_variable_bathymetry() {
+        let depth: Vec<f64> = (0..800).map(|i| if i % 40 > 30 { 0.0 } else { 30.0 + (i % 40) as f64 * 100.0 }).collect();
+        let mut s = Solver::new(40, 20, 1000.0, depth, vec![0.0; 800], true).unwrap();
+        s.advance(200).unwrap();
+        assert!(s.eta.iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn wave_speed_matches_sqrt_gh() {
+        // Gaussian at rest splits into two pulses moving at sqrt(g H).
+        let (w, h) = (240, 8);
+        let eta = (0..w*h).map(|i| (-0.5 * ((i % w) as f64 - 120.0).powi(2) / 64.0).exp()).collect();
+        let mut s = Solver::new(w, h, 1000.0, vec![1000.0; w*h], eta, false).unwrap();
+        s.advance(100).unwrap();
+        let peak_x = (125..220).max_by(|a, b| s.eta[*a].total_cmp(&s.eta[*b])).unwrap();
+        let expected = 120.0 + (G * 1000.0).sqrt() * s.time / s.cell;
+        assert!((peak_x as f64 - expected).abs() < 1.5, "peak {peak_x}, expected {expected}");
+        assert!((s.eta[peak_x] - 0.5).abs() < 0.02);
+    }
+
+    #[test]
+    fn reflecting_basin_conserves_displacement_volume_and_dry_cells() {
+        let (w, h) = (50, 40);
+        let depth: Vec<f64> = (0..w*h).map(|i| if i % w > 40 { 0.0 } else { 500.0 }).collect();
+        let eta = (0..w*h).map(|i| if i == 20 * w + 15 { 0.5 } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, 1000.0, depth, eta, false).unwrap();
+        let initial = s.volume();
+        for _ in 0..10 { s.advance(100).unwrap(); }
+        assert!((s.volume() - initial).abs() < 1e-6);
+        assert!(s.eta.iter().zip(&s.depth).all(|(e, d)| e.is_finite() && (*d > 0.0 || *e == 0.0)));
+    }
+
+    #[test]
+    fn outer_sponge_reduces_returning_wave_energy() {
+        let mut sums = Vec::new();
+        for absorbing in [false, true] {
+            let eta = (0..80*60).map(|i| (-0.5 * (((i % 80) as f64 - 40.0).powi(2) + ((i / 80) as f64 - 30.0).powi(2)) / 25.0).exp()).collect();
+            let mut s = Solver::new(80, 60, 1000.0, vec![1000.0; 4800], eta, absorbing).unwrap();
+            for _ in 0..6 { s.advance(100).unwrap(); }
+            sums.push(s.eta.iter().map(|v| v*v).sum::<f64>());
+        }
+        assert!(sums[1] < sums[0] * 0.15, "{sums:?}");
+    }
+
+    #[test]
+    fn rejects_invalid_grids_and_step_budgets() {
+        assert!(Solver::new(4, 4, 1.0, vec![0.0; 16], vec![0.0; 16], false).is_err());
+        assert!(Solver::new(4, 4, f64::NAN, vec![100.0; 16], vec![0.0; 16], false).is_err());
+        assert!(Solver::new(4, 4, 1.0, vec![100.0; 15], vec![0.0; 16], false).is_err());
+        let mut s = Solver::new(4, 4, 1.0, vec![100.0; 16], vec![0.0; 16], false).unwrap();
+        assert!(s.advance(201).is_err());
+    }
+
+    #[test]
+    fn finite_volume_rest_and_mass_conservation() {
+        let depth: Vec<f64> = (0..40*24).map(|i| if i % 40 > 32 { 0.0 } else { 500.0 + (i % 40) as f64 * 50.0 }).collect();
+        let eta = depth.iter().map(|d| if *d > 0.0 { 0.1 } else { 0.0 }).collect();
+        let mut s = Solver::new(40, 24, 1000.0, depth, eta, false).unwrap();
+        s.method = Method::FiniteVolume;
+        s.advance(100).unwrap();
+        assert!(s.eta.iter().zip(&s.depth).all(|(e, d)| (*e - if *d > 0.0 { 0.1 } else { 0.0 }).abs() < 1e-12));
+        s.eta[12 * 40 + 20] += 0.3;
+        let volume = s.volume();
+        s.advance(200).unwrap();
+        assert!((s.volume() - volume).abs() < 1e-5);
+    }
+
+    #[test]
+    fn finite_volume_wave_speed_and_damping_are_distinct() {
+        let eta: Vec<f64> = (0..240*8).map(|i| (-0.5 * ((i % 240) as f64 - 120.0).powi(2) / 64.0).exp()).collect();
+        let mut s = Solver::new(240, 8, 1000.0, vec![1000.0; 240*8], eta, false).unwrap();
+        s.method = Method::FiniteVolume;
+        s.advance(100).unwrap();
+        let peak = (125..220).max_by(|a, b| s.eta[*a].total_cmp(&s.eta[*b])).unwrap();
+        assert!((peak as f64 - 120.0 - (G * 1000.0).sqrt() * s.time / s.cell).abs() < 2.0);
+        assert!(s.eta[peak] > 0.3 && s.eta[peak] < 0.49, "{}", s.eta[peak]);
+    }
+}

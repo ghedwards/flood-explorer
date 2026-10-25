@@ -18,3 +18,4 @@ pub use render::*;
 pub use wave::*;
 
 pub mod inertial;
+pub mod tsunami;
