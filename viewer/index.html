@@ -488,6 +488,13 @@
     <div class="row"><label for="setNswKey">NSW traffic API key</label><input type="password" id="setNswKey" autocomplete="off" placeholder="from opendata.transport.nsw.gov.au"></div>
     <div class="link-row"><button type="button" class="btn small primary" id="settingsSave">Save</button> <button type="button" class="btn small" id="settingsClose">Close</button></div>
     <p class="hint" id="settingsStatus"></p>
+    <section id="desktopUpdates" hidden aria-label="Application updates">
+      <h3>Application updates</h3>
+      <p id="updateStatus" role="status" aria-live="polite"></p>
+      <p id="updateNotes" class="hint" style="white-space:pre-wrap"></p>
+      <button type="button" class="btn small" id="updateCheck">Check for updates</button>
+      <button type="button" class="btn small primary" id="updateInstall" hidden>Install update and restart</button>
+    </section>
   </div>
 </div>
 

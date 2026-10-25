@@ -4,6 +4,8 @@ use flood_broker::readings::{Readings, Store};
 use flood_broker::Config;
 use std::sync::Arc;
 
+mod updater;
+
 struct SettingsPath(std::path::PathBuf);
 
 #[tauri::command]
@@ -33,8 +35,17 @@ fn save_settings(
 }
 
 pub fn run() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![load_settings, save_settings])
+    let mut builder = tauri::Builder::default();
+    if !updater::PUBLIC_KEY.trim().is_empty() {
+        builder = builder.plugin(
+            tauri_plugin_updater::Builder::new()
+                .pubkey(updater::PUBLIC_KEY)
+                .build(),
+        );
+    }
+    builder
+        .manage(updater::Updates::default())
+        .invoke_handler(tauri::generate_handler![load_settings, save_settings, updater::check_for_update, updater::install_update])
         .setup(|app| {
             use tauri::Manager;
             // Bind before opening the window: a port conflict must fail startup,

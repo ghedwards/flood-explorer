@@ -1,3 +1,4 @@
+import { desktopUpdates } from './desktop-updates.js';
 import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { classifyDemGaps } from './dem-voids.js';
@@ -349,6 +350,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!inv) throw new Error('Tauri invoke not available');
     return inv(cmd, args || {});
   };
+  desktopUpdates({ invoke: tauriInvoke, desktop: isTauri(), document });
   const settingsModal = document.getElementById('settingsModal');
   const openSettings = async () => {
     if (!settingsModal) return;
