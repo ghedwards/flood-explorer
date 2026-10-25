@@ -12,6 +12,23 @@ displacement view, three virtual gauges and CSV export. The canvas uses basin
 coordinates in kilometres for idealised cases. Five Australian east-coast
 subsets use geographic bounds and show the source latitude/longitude.
 
+## Demonstration defaults
+
+The UI starts with an intentionally exaggerated **2.5 m nominal source strength**.
+Local scenes use a 450 m pulse width (Gaussian standard deviation) and playback
+of five simulated minutes per second. The previous settings were 1 m, 300 m and
+one minute per second locally. These changes make propagation and inundation
+easier to inspect; they do not represent a selected earthquake or hazard level.
+The low-level grid factory retains its 1 m default for numerical examples.
+
+Source strength is displacement amplitude, not crest-to-trough wave height.
+The local shallow-depth taper can reduce the actual initial maximum, especially
+in the lake or Pine River. The maximum-displacement metric reports modelled
+values. Water levels and Manning resistance are not exaggerated: sea level
+starts at a hypothetical terrain elevation of zero, the idealised lake at 1 m,
+and Manning n at 0.025. A single roughness value is a simplification, not a
+calibrated representation of vegetated floodplains or urban obstacles.
+
 ## Regional propagation models
 
 The two linear methods solve the linear shallow-water equations:

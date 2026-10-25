@@ -36,6 +36,7 @@ function labels() {
   $('roughnessValue').textContent = (+$('roughness').value).toFixed(3);
   $('lakeValue').textContent = `${(+$('lakeLevel').value).toFixed(2)} m`;
   $('deepValue').textContent = `${Math.round((bathymetry || localScene()) ? Math.max(...grid.depth) : +$('deep').value).toLocaleString('en-AU')} m`;
+  $('waveSettingsHint').textContent = `${+$('amplitude').value >= 2 ? 'Exaggerated demonstration wave' : 'Hypothetical demonstration wave'}, not a calibrated tsunami scenario. ${localScene() ? 'Shallow water reduces the initial pulse; the actual maximum appears below.' : 'Source strength is displacement from still water, not crest-to-trough wave height.'}`;
   $('amplitudeValue').textContent = `${(+$('amplitude').value).toFixed(2)} m`;
   $('widthValue').textContent = `${(+$('width').value).toFixed(localScene() ? 2 : 0)} km`;
   const sourceDepth = grid.depth[source[1] * grid.W + source[0]];
@@ -91,9 +92,9 @@ async function changeScene() {
   for (const id of ['depth', 'speed']) $('view').querySelector(`[value="${id}"]`).disabled = !local;
   if (!local && ['depth', 'speed'].includes($('view').value)) $('view').value = 'surface';
   const width = $('width');
-  if (local && +width.min >= 5) { width.min = '.1'; width.max = '.8'; width.step = '.05'; width.value = '.3'; }
+  if (local && +width.min >= 5) { width.min = '.1'; width.max = '.8'; width.step = '.05'; width.value = '.45'; }
   if (!local && +width.min < 5) { width.max = '20'; width.min = '5'; width.step = '1'; width.value = '10'; }
-  if (local) { $('speed').value = '1'; if (+$('duration').value > 30) $('duration').value = '10'; }
+  if (local) { $('speed').value = '5'; if (+$('duration').value > 30) $('duration').value = '10'; }
   if (id === 'estuary') { bathymetry = null; source = [38, 48]; probes = [[60, 48], [115, 55], [128, 22]]; reset(); return; }
 
   if (!coastIds.includes(id) && id !== 'pine-estuary') { bathymetry = null; source = [38, 48]; probes = [[65, 48], [105, 35], [122, 60]]; reset(); return; }
