@@ -16,5 +16,5 @@ serde_json = { version = "1", features = ["preserve_order"] }
 httparse = "1"
 ring = "0.17"
 flate2 = "1"
-base64 = "0.22"
+base64 = "0.23"
 flood-feeds = { path = "../flood-feeds" }
