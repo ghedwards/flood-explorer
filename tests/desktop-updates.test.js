@@ -5,11 +5,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { collect, manifest, TARGETS } = require('../scripts/desktop-release.js');
 
-async function ui(invoke, desktop = true) {
+async function ui(invoke, desktop = true, onAvailable) {
   const source = fs.readFileSync(path.join(__dirname, '../viewer/desktop-updates.js'), 'utf8');
   const { desktopUpdates } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   const elements = Object.fromEntries(['desktopUpdates', 'updateStatus', 'updateNotes', 'updateCheck', 'updateInstall', 'settingsModal'].map(id => [id, { hidden: true, disabled: false, textContent: '', addEventListener() {} }]));
-  const controller = desktopUpdates({ invoke, desktop, document: { getElementById: id => elements[id] } });
+  const controller = desktopUpdates({ invoke, desktop, onAvailable, document: { getElementById: id => elements[id] } });
   if (controller) await controller.ready;
   return { controller, elements };
 }
@@ -96,4 +96,12 @@ test('unsigned bundles and mismatched metadata cannot be collected or published'
   assert.throws(() => collect('x86_64-unknown-linux-gnu', root, path.join(root, 'output')), /ENOENT/);
   fs.writeFileSync(path.join(root, 'test.AppImage.sig'), '');
   assert.throws(() => collect('x86_64-unknown-linux-gnu', root, path.join(root, 'output')), /Missing signature/);
+});
+
+test('startup update notice uses the Settings loader before showing editable keys', async () => {
+  let loaded = false;
+  const { elements } = await ui(async () => ({ currentVersion: '0.2.0', version: '0.3.0' }), true, async () => { loaded = true; });
+  assert.equal(loaded, true);
+  assert.equal(elements.settingsModal.hidden, true); // the callback owns opening and loading Settings
+  assert.equal(elements.updateInstall.hidden, false);
 });
