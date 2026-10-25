@@ -3,16 +3,14 @@ name: Desktop installers
 on:
   push:
     tags: ['desktop-v*']
+  pull_request:
+    paths: ['desktop/**', 'viewer/desktop-updates.js', 'scripts/desktop-release.js', '.github/workflows/desktop-release.yml']
   workflow_dispatch:
     inputs:
       verify_only:
         description: 'Build and test installers without signing keys or creating a release'
         type: boolean
         default: true
-      prepare_lockfile:
-        description: 'Update the desktop Cargo lockfile on this feature branch (no release)'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -22,35 +20,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  lockfile:
-    if: github.event_name == 'workflow_dispatch' && inputs.prepare_lockfile
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+  native-check:
+    if: github.event_name == 'pull_request' || inputs.verify_only
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.ref_name }}
-      - name: Update desktop lockfile on feature branch
-        env:
-          BRANCH: ${{ github.ref_name }}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
-          test "$BRANCH" = 'feat/desktop-self-update'
-          if test -f desktop/self-update.patch; then
-            git apply --check desktop/self-update.patch
-            git apply desktop/self-update.patch
-            rm desktop/self-update.patch
-          fi
-          cargo generate-lockfile --manifest-path desktop/Cargo.toml
-          cargo fmt --manifest-path desktop/Cargo.toml --all
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add desktop viewer scripts tests
-          git diff --cached --quiet || git commit -m 'Update desktop updater dependency lockfile'
-          git push origin "HEAD:$BRANCH"
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: desktop-check-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: desktop-${{ runner.os }}-
+      - name: Check desktop Rust code
+        shell: bash
+        run: |
+          mkdir -p site
+          printf '<!doctype html><title>Compile check</title>' > site/index.html
+          cargo check --locked --manifest-path desktop/Cargo.toml
 
   data:
-    if: ${{ !inputs.prepare_lockfile }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     outputs:
@@ -184,8 +184,9 @@ jobs:
         shell: bash
         env:
           VERIFY_ONLY: ${{ inputs.verify_only }}
+          FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
         run: |
-          node -e "require('node:fs').writeFileSync('desktop/updater.conf.json', JSON.stringify({bundle:{createUpdaterArtifacts:process.env.VERIFY_ONLY !== 'true'}}))"
+          node -e "require('node:fs').writeFileSync('desktop/updater.conf.json', JSON.stringify({bundle:{createUpdaterArtifacts:process.env.VERIFY_ONLY !== 'true'},plugins:{updater:{pubkey:process.env.FLOOD_UPDATER_PUBLIC_KEY || ''}}}))"
       - name: Build installers
         env:
           FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
