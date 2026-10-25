@@ -123,6 +123,7 @@ The app checks `releases/latest/download/latest.json`; drafts and prereleases
 are deliberately excluded. Publishing the draft makes the complete feed live
 atomically. Never replace the assets of an already-published release.
 
-The optional **prepare_lockfile** workflow dispatch is restricted to the
-`feat/desktop-self-update` branch and only updates its Cargo lockfile; it creates
-no release and does not need signing secrets.
+Manual workflow runs default to verification only: installers are built and
+retained as workflow artifacts without creating a release. Uncheck **Build and
+test installers without signing keys or creating a release** for a signed
+release build. Tag-triggered builds always require the signing keys.
