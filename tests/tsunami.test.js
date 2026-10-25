@@ -48,7 +48,7 @@ test('zero displacement stays at rest through the WASM solver', async () => {
 
 test('prefetched Australian coastal terrain runs with both methods', async () => {
   const { tsunamiGrid } = await gridModule;
-  for (const id of ['moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney']) {
+  for (const id of (await import('../viewer/tsunami-locations.js')).regionalIds) {
     const bathymetry = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data', `${id}.json`)));
     assert.match(bathymetry.source, /Geoscience Australia/);
     assert.match(bathymetry.sourceUrl, /^https:\/\/services\.ga\.gov\.au\//);
@@ -96,19 +96,29 @@ test('nonlinear estuary wets dry land, moves water along the river, and preserve
   assert.ok(Math.abs(lakeResult.volumeError) < 1e-5);
 });
 
-test('prefetched Pine River terrain uses only sea-connected initial water and runs nonlinear flow', async () => {
-  const { tsunamiGrid } = await gridModule;
-  const bathymetry = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/pine-estuary.json')));
-  assert.equal(bathymetry.license, 'CC BY-SA');
-  assert.match(bathymetry.verticalDatum, /Not specified/);
-  const grid = tsunamiGrid({ preset: 'pine-estuary', bathymetry, source: [143, 47], width: .3, absorbing: false });
-  assert.ok(grid.bed.some(z => z > 1));
-  assert.ok(grid.bed.some(z => z < -2));
-  F.tsunamiStart(grid);
-  let result;
-  for (let n = 0; n < 3; n++) result = F.tsunamiStep(200);
-  assert.ok(result.water.every(h => Number.isFinite(h) && h >= 0));
-  assert.ok(result.water.some((h, i) => grid.depth[i] === 0 && h > .01));
-  assert.ok(Math.abs(result.volumeError) < 1e-5);
-  assert.throws(() => tsunamiGrid({ preset: 'pine-estuary', bathymetry: { ...bathymetry, elevation: [] }, width: .3 }), /Invalid/);
+test('all local terrain experiments start in sea-connected water and run nonlinear flow', async () => {
+  const { tsunamiGrid, connectedWaterDepth } = await gridModule;
+  for (const id of (await import('../viewer/tsunami-locations.js')).estuaryIds) {
+    const bathymetry = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data', `${id}.json`)));
+    assert.equal(bathymetry.license, 'CC BY-SA');
+    assert.match(bathymetry.verticalDatum, /Not specified/);
+    const initial = connectedWaterDepth(bathymetry.elevation, 160, 96, 0, bathymetry.seaEdges);
+    let sourceIndex = -1, distance = Infinity;
+    initial.forEach((depth, i) => {
+      const d = Math.hypot(i % 160 - bathymetry.sourceTarget[0], Math.floor(i / 160) - bathymetry.sourceTarget[1]);
+      if (depth > 3.1 && d < distance) { sourceIndex = i; distance = d; }
+    });
+    assert.ok(sourceIndex >= 0);
+    const grid = tsunamiGrid({ preset: id, bathymetry, source: [sourceIndex % 160, Math.floor(sourceIndex / 160)], width: .45, amplitude: 2.5, absorbing: false });
+    assert.ok(grid.bed.some(z => z > 1));
+    assert.ok(grid.bed.some(z => z < -2));
+    F.tsunamiStart(grid);
+    let result;
+    for (let n = 0; n < 3; n++) result = F.tsunamiStep(200);
+    assert.ok(result.water.every(h => Number.isFinite(h) && h >= 0));
+    assert.ok(result.speed.some(v => v > 0));
+    if (id === 'pine-estuary') assert.ok(result.water.some((h, i) => grid.depth[i] === 0 && h > .01));
+    assert.ok(Math.abs(result.volumeError) < 1e-5);
+    assert.throws(() => tsunamiGrid({ preset: id, bathymetry: { ...bathymetry, elevation: [] }, width: .3 }), /Invalid/);
+  }
 });

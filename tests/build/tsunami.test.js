@@ -52,7 +52,7 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
     await page.locator('#step').click();
     await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
-    for (const coast of ['moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney']) {
+    for (const coast of (await import('../../viewer/tsunami-locations.js')).regionalIds) {
       await page.locator('#preset').selectOption(coast);
       await page.waitForFunction(id => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === id, coast);
       assert.match(await page.locator('#dataCredit').innerText(), /2009/);
@@ -76,13 +76,16 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     assert.match(await page.locator('#legend').innerText(), /water depth/);
     await page.locator('#view').selectOption('speed');
     assert.match(await page.locator('#legend').innerText(), /current speed/);
-    await page.locator('#preset').selectOption('pine-estuary');
-    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === 'pine-estuary');
-    assert.equal(await page.locator('#lakeControl').isVisible(), false);
-    assert.match(await page.locator('#dataCredit').innerText(), /Not specified/);
-    assert.equal(await page.locator('#terrainTerms').isVisible(), true);
-    await page.locator('#step').click();
-    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    for (const coast of (await import('../../viewer/tsunami-locations.js')).estuaryIds) {
+      await page.locator('#preset').selectOption(coast);
+      await page.waitForFunction(id => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === id, coast);
+      assert.equal(await page.locator('#lakeControl').isVisible(), false);
+      assert.match(await page.locator('#dataCredit').innerText(), /Not specified/);
+      assert.equal(await page.locator('#terrainTerms').isVisible(), true);
+      assert.match(await page.locator('#placeContext').innerText(), /Gazetteer/);
+      await page.locator('#step').click();
+      await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    }
     await page.locator('#preset').selectOption('shelf');
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'staggered');
     assert.equal(await page.locator('#inundationControls').isVisible(), false);

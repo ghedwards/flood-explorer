@@ -9,7 +9,7 @@ The prototype explores propagation, reflection and refraction.
 It includes uniform ocean, continental shelf, and island/shelf bathymetries,
 a movable paired uplift/subsidence pulse, pause/step/reset, a maximum absolute
 displacement view, three virtual gauges and CSV export. The canvas uses basin
-coordinates in kilometres for idealised cases. Five Australian east-coast
+coordinates in kilometres for idealised cases. Eight Australian east-coast
 subsets use geographic bounds and show the source latitude/longitude.
 
 ## Demonstration defaults
@@ -64,8 +64,9 @@ is fixed at 1.5 times the source amplitude; gauge traces autoscale.
 
 ## Prefetched Australian east coast
 
-The location picker includes Moreton Bay/Brisbane (Qld), Gold Coast/Tweed
-(Qld/NSW), Coffs Harbour, Newcastle/Hunter coast and Sydney/Central Coast (NSW).
+The regional picker includes Moreton Bay/Brisbane, Gold Coast/Tweed, Coffs
+Harbour, Newcastle/Hunter coast, Sydney/Central Coast, Sunshine Coast,
+Port Macquarie and Wollongong/Illawarra.
 Each is a 240 × 144 km regional grid at 1.5 km spacing. Coast grids are bundled
 JSON, so viewing them does not contact an external feed. Rebuild them explicitly
 with `node scripts/prepare-tsunami-coasts.js`.
@@ -104,7 +105,8 @@ experimentally, with different terrain and initialisation requirements.
 
 ## Nonlinear land, river and lake experiments
 
-Choose **Idealised estuary, river and lake** or **Pine River / Moreton Bay**.
+Choose **Idealised estuary, river and lake**, **Pine River / Moreton Bay**,
+**Brisbane River mouth** or **Currumbin Creek / Gold Coast**.
 These local scenes select a separate nonlinear Rust solver automatically;
 the regional 1.5 km grids remain propagation-only. A `?scene=estuary` or
 `?scene=pine-estuary` URL opens the corresponding local scene directly.
@@ -131,7 +133,7 @@ is confined to the connected waterbody containing the source. The imposed
 local dipole is initially at rest and is tapered in shallow water to retain non-negative depth. Its
 width can be 0.1–0.8 km, rather than the regional 5–20 km source width.
 
-The Pine River subset is numeric terrain from the [Queensland QldDem mosaic](https://spatial-img.information.qld.gov.au/arcgis/rest/services/Elevation/QldDem/ImageServer),
+The three local Queensland subsets are numeric terrain from the [Queensland QldDem mosaic](https://spatial-img.information.qld.gov.au/arcgis/rest/services/Elevation/QldDem/ImageServer),
 clipped in GDA2020 / MGA zone 56 (EPSG:7856) and bilinearly resampled to 25 m.
 Recreate it with `node scripts/prepare-tsunami-estuary.js`. Source resolution
 and survey age vary; resampling does not turn lower-resolution bathymetry
@@ -142,10 +144,12 @@ level is therefore a hypothetical elevation in source terrain units,
 shoreline connectivity have not been independently verified. This is a
 local terrain/solver experiment, not a calibrated estuary inundation model.
 
-Initial water is flood-filled from the Pine grid's eastern bay edge through
-cells below the chosen level. Disconnected depressions start dry; lake levels
+Initial water is flood-filled through cells below the chosen level, starting
+from each grid's declared ocean-facing edges: east for Pine, north for Brisbane
+River mouth, and north/east for Currumbin. Source and virtual-gauge cells are
+chosen from this connected water, rather than from arbitrary negative terrain. Disconnected depressions start dry; lake levels
 are unknown there. The idealised scene demonstrates separately initialised
-lakes. The Pine terrain has its own **CC BY-SA** terms, retained attribution,
+lakes. These local terrain subsets have their own **CC BY-SA** terms, retained attribution,
 modification notice and required acknowledgements (see the adjacent data
 README and JSON). The application code remains MIT licensed.
 
@@ -176,6 +180,45 @@ is not coupled to the regional offshore solver or to an earthquake scenario.
 - [Kamchatka analysis (September 2026)](https://www.nature.com/articles/s43247-026-04050-5)
   uses dispersive modelling to reproduce satellite-observed wave structure.
   A Boussinesq/non-hydrostatic option is a future physical extension.
+
+## Terrain and water overlay
+
+Terrain shading is on by default beneath the selected water overlay. Deep bed
+elevations are dark blue, shallow beds light blue; ground above the terrain
+reference zero grades from green to brown. Separate colour ramps report the
+bed and ground ranges in metres. Each scene uses its own range, so colours
+cannot be compared quantitatively between locations. The source's reference
+zero is not necessarily verified mean sea level (especially Pine River).
+
+Terrain uses the solver bed for local scenes and original elevation samples
+for prefetched regional scenes, rather than the propagation solver's 10 m
+shallow-water floor. Synthetic regional land masks have no elevation samples;
+they remain neutral and are reported as unknown. No land heights are invented.
+
+Water movement is blended over those colours according to the selected view
+and magnitude. **Terrain only** hides the water overlay without stopping the
+simulation. **Show terrain beneath water** can be switched off for the previous
+wave-only palette. Pointer inspection shows bed/ground elevation, initial model
+water depth, and current water depth and surface elevation for the nonlinear
+solver. Linear scenes show wave displacement instead of asserting a changing
+physical water surface over their floored depths.
+
+## Reference names and further modelling work
+
+Geographic scenes include offline point labels from the Composite Gazetteer of
+Australia, retaining source IDs and attribution to GA and state naming
+authorities. Rebuild them with `node scripts/prepare-tsunami-places.js` after
+preparing terrain. Regional coordinates are mapped to their geographic bounds;
+local coordinates are requested in the same MGA56 projection as the terrain.
+Labels avoid gauge markers and one another. Points outside the cropped domain
+are listed as outside-grid references rather than repositioned on the map.
+The idealised scene labels its ocean, channel, lake and floodplain; it does not
+assign real city names to synthetic geography.
+
+See [the tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026)
+for proposed data improvements, offshore/river coupling, refinement, sensitivity
+runs and an optional **dispersive-wave (Boussinesq-type)** solver. Dispersion
+means wavelength-dependent propagation speed; it has not been implemented.
 
 ## Checks and limits
 

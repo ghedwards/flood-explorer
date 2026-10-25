@@ -1,7 +1,10 @@
 import '@fontsource-variable/archivo/standard.css';
 import '@fontsource/ibm-plex-mono/latin-400.css';
 import './tsunami.css';
-import { tsunamiGrid } from './tsunami-grid.js';
+import { estuaryIds, regionalIds } from './tsunami-locations.js';
+import referencePlaces from './public/tsunami-data/places.json';
+import { terrainFor } from './tsunami-terrain.js';
+import { tsunamiGrid, connectedWaterDepth } from './tsunami-grid.js';
 
 const $ = id => document.getElementById(id);
 const map = $('waveMap'), ctx = map.getContext('2d');
@@ -12,10 +15,10 @@ const colours = ['#007e92', '#ac5528', '#7f60a0'];
 let probes = [[65, 48], [105, 35], [122, 60]];
 let source = [38, 48], grid, frame, worker, ready = false, busy = false, running = false;
 let budget = 0, previousWall = 0, history = [];
-let bathymetry = null, sceneVersion = 0;
-const localScene = () => ['estuary', 'pine-estuary'].includes($('preset').value);
+let bathymetry = null, sceneVersion = 0, terrain, inspected = null;
+const localScene = () => $('preset').value === 'estuary' || estuaryIds.includes($('preset').value);
 const nonlinear = () => grid?.method === 2;
-const coastIds = ['moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney'];
+const coastIds = regionalIds;
 const options = () => ({ preset: $('preset').value, deep: +$('deep').value, amplitude: +$('amplitude').value,
   width: +$('width').value, source, absorbing: $('absorbing').checked, method: $('method').value, tide: +$('tide').value, roughness: +$('roughness').value, lakeLevel: +$('lakeLevel').value });
 const totalSeconds = () => +$('duration').value * 60;
@@ -46,9 +49,12 @@ function labels() {
   $('methodHint').textContent = localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
     ? 'Staggered-grid propagation with low numerical damping. Both methods solve linear shallow-water equations; neither models onshore flooding.'
     : 'Finite-volume acoustic fluxes with RK2 time stepping. This first-order spatial method damps short waves more. It solves the same linear equations; it does not add inundation physics.';
-  $('mapHint').textContent = `${grid.W * grid.cell / 1000} × ${grid.H * grid.cell / 1000} km ${bathymetry ? 'Australian coastal subset' : 'idealised basin'} · ${grid.cell / 1000} km cells · ${localScene() ? 'Click water to move the local source; the idealised lake can have its own wave.' : 'Click the ocean to move the hypothetical source.'} Markers 1–3 are virtual gauges.`;
+  $('mapHint').textContent = `${grid.W * grid.cell / 1000} × ${grid.H * grid.cell / 1000} km ${bathymetry ? 'Australian coastal subset' : 'idealised basin'} · ${grid.cell / 1000} km cells · ${localScene() ? ($('preset').value === 'estuary' ? 'Click water to move the local source; the idealised lake can have its own wave.' : 'Click connected bay water to move the local wave source.') : 'Click the ocean to move the hypothetical source.'} Markers 1–3 are virtual gauges.`;
+  $('seaHeightRange').textContent = `Bed below zero: ${terrain.low.toFixed(1)} to 0 m`;
+  $('landHeightRange').textContent = terrain.high > 0 ? `Ground above zero: 0 to ${terrain.high.toFixed(1)} m` : 'Land heights unavailable in this scene';
+  updatePlaceContext();
   $('boundaryHint').textContent = localScene() ? 'Outer edges are reflecting walls. The optional sponge relaxes initially wet edge cells towards their starting water levels; it is not an offshore tsunami boundary or a river inflow.' : 'Turn off absorption to compare reflections in a closed basin. The coastline always reflects; water does not move onto land.';
-  $('dataNote').textContent = localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : 'Real Pine River terrain resampled to 25 m, with a hypothetical local wave. Source bathymetry coverage and vertical datum are unverified. Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.') : bathymetry
+  $('dataNote').textContent = localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : 'Real local terrain resampled to 25 m, with a hypothetical local wave. Source bathymetry coverage and vertical datum are unverified. Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.') : bathymetry
     ? 'Real coastal topography and bathymetry, with a hypothetical offshore pulse. This is not a historical earthquake reconstruction or a coastal hazard prediction. Land remains a reflecting wall: no river flow, run-up or inundation.'
     : 'Synthetic ocean depths and a prescribed uplift/subsidence pulse. This is not an earthquake scenario or a prediction for a real coast. It does not model wave breaking, shoreline run-up or inundation.';
   $('dataCredit').hidden = !bathymetry;
@@ -97,7 +103,7 @@ async function changeScene() {
   if (local) { $('speed').value = '5'; if (+$('duration').value > 30) $('duration').value = '10'; }
   if (id === 'estuary') { bathymetry = null; source = [38, 48]; probes = [[60, 48], [115, 55], [128, 22]]; reset(); return; }
 
-  if (!coastIds.includes(id) && id !== 'pine-estuary') { bathymetry = null; source = [38, 48]; probes = [[65, 48], [105, 35], [122, 60]]; reset(); return; }
+  if (!coastIds.includes(id) && !estuaryIds.includes(id)) { bathymetry = null; source = [38, 48]; probes = [[65, 48], [105, 35], [122, 60]]; reset(); return; }
   ready = running = false; controls();
   if (worker) worker.terminate();
   $('status').textContent = 'Loading the prefetched Australian coastal grid…';
@@ -105,21 +111,65 @@ async function changeScene() {
     const response = await fetch(new URL(`tsunami-data/${id}.json`, document.baseURI), { signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`Coastal grid: HTTP ${response.status}`);
     const data = await response.json();
-    const nextSource = waterPoint(data.elevation || [], id === 'pine-estuary' ? [142, 48] : [120, 48], id === 'pine-estuary' ? 3.1 : 500);
+    const referenceElevation = estuaryIds.includes(id) ? Array.from(connectedWaterDepth(data.elevation || [], 160, 96, +$('tide').value, data.seaEdges || ['east']), depth => -depth) : data.elevation || [];
+    const nextSource = waterPoint(referenceElevation, estuaryIds.includes(id) ? data.sourceTarget || [142, 48] : [120, 48], estuaryIds.includes(id) ? 3.1 : 500);
     // Validate the entire numeric grid before accepting it into the UI.
     tsunamiGrid({ ...options(), bathymetry: data, source: nextSource });
     if (version !== sceneVersion) return;
     bathymetry = data; source = nextSource;
-    probes = id === 'pine-estuary' ? [[130, 48], [85, 48], [40, 48]].map(point => waterPoint(data.elevation, point, .5)) : [[62, 26], [62, 48], [62, 70]].map(point => waterPoint(data.elevation, point, 30));
+    probes = estuaryIds.includes(id) ? [[130, 48], [85, 48], [40, 48]].map(point => waterPoint(referenceElevation, point, .5)) : [[62, 26], [62, 48], [62, 70]].map(point => waterPoint(data.elevation, point, 30));
     reset();
   } catch (error) {
     if (version === sceneVersion) $('status').textContent = `${error.message} The grid could not load. Reset to retry or choose an idealised scene.`;
   }
 }
 
+function scenePlaces() {
+  if (bathymetry) return referencePlaces.scenes[bathymetry.id] || [];
+  if ($('preset').value === 'estuary') return [
+    { name: 'Ocean', u: .14, v: .18 }, { name: 'River channel', u: .68, v: .59 },
+    { name: 'Lake', u: .8, v: .17 }, { name: 'Floodplain', u: .69, v: .83 },
+  ];
+  return [];
+}
+function updatePlaceContext() {
+  const text = $('placeContext');
+  text.hidden = !$('showPlaces').checked;
+  if (!bathymetry) { text.textContent = $('preset').value === 'estuary' ? 'Idealised terrain: feature labels are illustrative; this map has no real city locations.' : ''; return; }
+  const places = scenePlaces();
+  const outside = places.filter(p => p.u < 0 || p.u > 1 || p.v < 0 || p.v > 1);
+  text.replaceChildren(document.createTextNode(`Reference places: ${places.map(p => p.name + (outside.includes(p) ? ' (outside grid)' : '')).join(' · ')}. `));
+  const link = document.createElement('a'); link.href = referencePlaces.sourceUrl; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Names: Composite Gazetteer of Australia / GA and state authorities ↗'; text.append(link);
+}
+function drawPlaces(screen) {
+  if (!$('showPlaces').checked) return;
+  ctx.save();
+  ctx.font = `600 ${11 * screen}px system-ui`;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  const occupied = probes.map(([x, y]) => [(x + .5) / grid.W * map.width - 12 * screen, (y + .5) / grid.H * map.height - 12 * screen, 24 * screen, 24 * screen]);
+  const intersects = ([x, y, w, h]) => occupied.some(([a, b, c, d]) => x < a + c && x + w > a && y < b + d && y + h > b);
+  for (const p of scenePlaces()) {
+    if (p.u < 0 || p.u >= 1 || p.v < 0 || p.v >= 1) continue;
+    const x = p.u * map.width, y = p.v * map.height, w = ctx.measureText(p.name).width, h = 16 * screen;
+    const candidate = [[x + 7 * screen, y - 10 * screen], [x + 7 * screen, y + 12 * screen], [x - w - 7 * screen, y - 10 * screen], [x - w - 7 * screen, y + 12 * screen]]
+      .map(([a, b]) => [a - 3 * screen, b - h / 2, w + 6 * screen, h])
+      .find(box => box[0] >= 2 * screen && box[1] >= 2 * screen && box[0] + box[2] <= map.width - 2 * screen && box[1] + box[3] <= map.height - 2 * screen && !intersects(box));
+    if (!candidate) continue;
+    occupied.push(candidate);
+    ctx.beginPath(); ctx.arc(x, y, 2.5 * screen, 0, Math.PI * 2); ctx.fillStyle = '#173346'; ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = screen; ctx.stroke();
+    const tx = candidate[0] + 3 * screen, ty = candidate[1] + h / 2;
+    ctx.strokeStyle = '#ffffffed'; ctx.lineWidth = 3 * screen; ctx.strokeText(p.name, tx, ty);
+    ctx.fillStyle = '#173346'; ctx.fillText(p.name, tx, ty);
+  }
+  ctx.restore();
+}
+
 function paint() {
   if (!frame || !grid) return;
   const peakView = $('view').value === 'peak';
+  const terrainOnly = $('view').value === 'terrain';
+  const terrainVisible = $('showTerrain').checked || terrainOnly;
+  $('terrainKey').hidden = !terrainVisible;
   const view = $('view').value;
   const values = view === 'depth' ? frame.water : view === 'speed' ? frame.speed : peakView ? frame.peak : frame.eta;
   if (!values) return;
@@ -136,6 +186,18 @@ function paint() {
       const target = nonlinear() && (view === 'depth' || view === 'speed' || grid.depth[i] === 0) ? [0, 136, 154] : v < 0 ? [22, 113, 174] : [216, 80, 27];
       const intensity = nonlinear() && grid.depth[i] === 0 && values[i] > .01 ? Math.min(1, .3 + .7 * values[i]) : Math.abs(v);
       rgb = target.map(c => Math.round(base + (c - base) * intensity));
+    }
+    if (terrainVisible) {
+      const base = terrain.colours.subarray(i * 3, i * 3 + 3);
+      // Leave terrain visible where water is still; stronger wave values
+      // increase overlay opacity. Dry land always retains its height colour.
+      const dry = nonlinear() ? frame.water[i] < .001 : !grid.depth[i];
+      const historicalFlood = peakView && grid.depth[i] === 0 && frame.peak[i] > .01;
+      let opacity = terrainOnly || (dry && !historicalFlood) ? 0 : Math.min(.9, Math.abs(values[i]) / scale);
+      if (!terrainOnly && nonlinear() && grid.depth[i] === 0 && values[i] > .01) opacity = Math.max(.55, opacity);
+      if (!terrainOnly && ['depth', 'speed'].includes(view) && !dry) opacity = Math.max(.15, opacity);
+      const tint = view === 'depth' || view === 'speed' || (nonlinear() && grid.depth[i] === 0) ? [0, 153, 182] : values[i] < 0 ? [20, 136, 236] : [246, 90, 28];
+      rgb = base.map((c, k) => Math.round(c + (tint[k] - c) * opacity));
     }
     image.data.set([...rgb, 255], i * 4);
   }
@@ -156,9 +218,18 @@ function paint() {
     ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.strokeStyle = colours[n]; ctx.stroke();
     ctx.fillStyle = colours[n]; ctx.fillText(String(n + 1), (x + .5) * sx, (y + .5) * sy);
   });
+  drawPlaces(screen);
   $('clock').textContent = `${timeLabel(frame.time)} simulated`;
-  $('range').textContent = view === 'speed' ? `0 to ${scale.toFixed(1)} m/s` : view === 'depth' ? `0 to ${scale.toFixed(1)} m` : peakView ? `0 to ${scale.toFixed(2)} m` : `−${scale.toFixed(2)} to +${scale.toFixed(2)} m`;
-  $('legend').textContent = view === 'depth' ? 'Teal: water depth · Green: dry ground' : view === 'speed' ? 'Teal: current speed · Green: dry ground' : peakView ? (nonlinear() ? 'Orange: maximum |wave| · Teal: maximum new flooding' : 'White: no displacement · Orange: maximum |wave|') : nonlinear() ? 'Blue: drawdown · Orange: crest · Teal: flooded ground · Green: dry' : 'Blue: drawdown · White: still water · Orange: crest';
+  $('range').textContent = terrainOnly ? 'Terrain elevations (m)' : view === 'speed' ? `0 to ${scale.toFixed(1)} m/s` : view === 'depth' ? `0 to ${scale.toFixed(1)} m` : peakView ? `0 to ${scale.toFixed(2)} m` : `−${scale.toFixed(2)} to +${scale.toFixed(2)} m`;
+  $('legend').textContent = terrainOnly ? 'Terrain only · wave model continues in the background' : view === 'depth' ? 'Teal: water depth · Green: dry ground' : view === 'speed' ? 'Teal: current speed · Green: dry ground' : peakView ? (nonlinear() ? 'Orange: maximum |wave| · Teal: maximum new flooding' : 'White: no displacement · Orange: maximum |wave|') : nonlinear() ? 'Blue: drawdown · Orange: crest · Teal: flooded ground · Green: dry' : 'Blue: drawdown · White: still water · Orange: crest';
+  if (terrainVisible && !terrainOnly) {
+    $('legend').textContent = view === 'depth' ? 'Water overlay: teal = water depth · Terrain beneath'
+      : view === 'speed' ? 'Water overlay: teal = current speed · Terrain beneath'
+      : peakView ? 'Water overlay: orange = maximum |wave| · Teal = new flooding'
+      : 'Water overlay: bright blue = drawdown · Orange = crest · Teal = new flooding';
+  }
+  if (terrainVisible && !terrainOnly && !nonlinear()) $('legend').textContent = $('legend').textContent.replace(' · Teal = new flooding', '');
+  inspectTerrain();
   if (nonlinear()) {
     let flooded = 0, maximum = 0;
     frame.water.forEach((h, i) => { if (grid.depth[i] === 0 && h > .01) { flooded++; maximum = Math.max(maximum, h); } });
@@ -221,7 +292,7 @@ function reset(play = false) {
   let next;
   try { next = tsunamiGrid({ ...options(), bathymetry }); } catch (error) { fail(error.message); return; }
   if (worker) worker.terminate();
-  grid = next; frame = null; history = []; ready = running = busy = false; budget = 0;
+  grid = next; terrain = terrainFor(grid, bathymetry); inspected = null; frame = null; history = []; ready = running = busy = false; budget = 0;
   labels(); controls();
   $('status').textContent = 'Starting a fresh Rust wave simulation…';
   const current = worker = new Worker(new URL('./tsunami-worker.js', import.meta.url), { type: 'module' });
@@ -267,11 +338,29 @@ $('play').addEventListener('click', () => {
   controls();
 });
 $('step').addEventListener('click', () => advance(8));
-$('reset').addEventListener('click', () => (coastIds.includes($('preset').value) || $('preset').value === 'pine-estuary') && bathymetry?.id !== $('preset').value ? changeScene() : reset());
+$('reset').addEventListener('click', () => (coastIds.includes($('preset').value) || estuaryIds.includes($('preset').value)) && bathymetry?.id !== $('preset').value ? changeScene() : reset());
 $('preset').addEventListener('change', changeScene);
 for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel']) $(id).addEventListener('change', () => reset());
 for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel']) $(id).addEventListener('input', labels);
 $('view').addEventListener('change', paint);
+$('showTerrain').addEventListener('change', paint);
+$('showPlaces').addEventListener('change', () => { updatePlaceContext(); paint(); });
+function inspectTerrain() {
+  if (!terrain || !frame || !inspected) { $('terrainReadout').textContent = 'Move over the map to inspect terrain and water depth. Touch a cell to inspect it; tapping wet cells also moves the source.'; return; }
+  const [x, y] = inspected, i = y * grid.W + x, z = terrain.elevation[i];
+  const height = Number.isFinite(z) ? `Terrain elevation ${z >= 0 ? '+' : ''}${z.toFixed(2)} m` : 'Land height unavailable (mask only)';
+  const water = nonlinear() ? `Water depth now ${frame.water[i].toFixed(2)} m · Surface elevation ${(z + frame.water[i]).toFixed(2)} m` : `Wave change ${frame.eta[i].toFixed(2)} m`;
+  $('terrainReadout').textContent = `${height} · Initial model water depth ${grid.depth[i].toFixed(2)} m · ${water}`;
+}
+function inspectPointer(event) {
+  if (!grid) return;
+  const rect = map.getBoundingClientRect();
+  inspected = [Math.max(0, Math.min(grid.W - 1, Math.floor((event.clientX - rect.left) / rect.width * grid.W))), Math.max(0, Math.min(grid.H - 1, Math.floor((event.clientY - rect.top) / rect.height * grid.H)))];
+  inspectTerrain();
+}
+map.addEventListener('pointermove', inspectPointer);
+map.addEventListener('pointerdown', inspectPointer);
+map.addEventListener('pointerleave', event => { if (event.pointerType !== 'touch') { inspected = null; inspectTerrain(); } });
 function moveSource(next) {
   if (!ready) return;
   const x = Math.floor(next[0]), y = Math.floor(next[1]);
@@ -280,7 +369,7 @@ function moveSource(next) {
     return;
   }
   try { tsunamiGrid({ ...options(), bathymetry, source: [x, y] }); } catch (error) { $('status').textContent = error.message; return; }
-  source = [x, y]; reset();
+  source = [x, y]; reset(); inspected = [x, y];
 }
 map.addEventListener('click', event => {
   const rect = map.getBoundingClientRect();

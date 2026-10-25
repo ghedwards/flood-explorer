@@ -24,7 +24,7 @@ const BROKER_PATH = /^\/v1\/(readings|now|series|levels|history)$/;
 const BUILD_ASSETS = [];
 const SHELL = [
   './', 'index.html', 'tsunami.html', 'manifest.webmanifest', ...BUILD_ASSETS,
-  ...['pine-estuary', 'moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney'].map(id => `tsunami-data/${id}.json`),
+  ...['places', 'pine-estuary', 'brisbane-mouth', 'currumbin', 'sunshine-coast', 'port-macquarie', 'wollongong', 'moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney'].map(id => `tsunami-data/${id}.json`),
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'data/national/gauges-core.min.json', 'data/national/storages.geojson', 'data/national/readings.json', 'data/national/meta.json',
 ];

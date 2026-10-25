@@ -669,3 +669,22 @@ restarting. The web build leaves key management to the broker host.
 
 Optional follow-ups: immediate refresh after saving and per-source status
 in the Settings panel (`/health` exposes lastGood/lastError).
+
+
+### 13. Tsunami coastal experiments and dispersive methods (25 Oct 2026)
+
+The client-side Rust/WASM prototype is at `tsunami.html`. See
+[the current prototype notes](tsunami-prototype.md) for implemented methods,
+terrain provenance, scene selection, overlays, controls and validation.
+
+The next modelling work is recorded under
+[Tsunami: data, coastal coupling and dispersive waves](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026):
+verified bed/land data and vertical datums; identified offshore scenarios and
+boundary time series; tide and upstream river flow; coastal grid refinement;
+an optional Boussinesq-type dispersive solver; and sensitivity ensembles.
+
+Dispersive modelling means wavelengths can travel at different speeds, changing
+pulse shape as it propagates. It is a proposed additional physical model, not
+another name for the existing linear finite-volume method or its numerical
+damping. No dispersive solver has been implemented. The roadmap lists the
+physics, wet/dry coupling and runtime checks required before offering it.

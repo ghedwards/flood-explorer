@@ -3,20 +3,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const sites = [
-  ['moreton', 'Moreton Bay / Brisbane', -27.45, 153.75],
-  ['gold-coast', 'Gold Coast / Tweed', -28.1, 154.05],
-  ['coffs', 'Coffs Harbour', -30.3, 153.8],
-  ['newcastle', 'Newcastle / Hunter coast', -32.9, 152.4],
-  ['sydney', 'Sydney / Central Coast', -33.85, 151.95],
-];
+
 
 async function main() {
   const { fromArrayBuffer } = await import('geotiff');
+  const { regionalLocations: sites } = await import('../viewer/tsunami-locations.js');
   const output = path.join(root, 'viewer/public/tsunami-data');
   const cache = path.join(root, 'work/tsunami-source');
   fs.mkdirSync(output, { recursive: true }); fs.mkdirSync(cache, { recursive: true });
-  for (const [id, name, lat, lon] of sites) {
+  for (const { id, name, lat, lon } of sites) {
     const W = 160, H = 96, cell = 1500;
     const dy = H * cell / 111320 / 2, dx = W * cell / (111320 * Math.cos(lat * Math.PI / 180)) / 2;
     const bounds = [lon - dx, lat - dy, lon + dx, lat + dy].map(n => +n.toFixed(7));

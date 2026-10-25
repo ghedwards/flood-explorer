@@ -23,6 +23,61 @@ would add, how it could be built from open data, and what to watch for.
 
 ## Modelling
 
+### Tsunami: data, coastal coupling and dispersive waves (25 Oct 2026)
+
+The Rust/WASM prototype has two linear propagation methods and a separate
+nonlinear local wetting/drying solver. Its bundled terrain, reference labels
+and display overlays are described in [the prototype notes](docs/tsunami-prototype.md).
+The present local pulse is hypothetical; offshore-to-estuary coupling is not
+implemented. The following work is proposed, not completed:
+
+1. **Verify terrain and water references.** Prefetch finer coastal LiDAR and
+   nearshore/channel bed surveys, retain source coverage and uncertainty, and
+   reconcile vertical datums before applying tide levels. Evaluate GA regional
+   bathymetry and the [CSIRO Queensland estuary composite](https://doi.org/10.25919/1xzm-pw88), including their
+   modelled rather than surveyed channel depths. Replace the single Manning
+   resistance with supported land-cover classes only where resolution permits.
+2. **Defined offshore forcing, tides and river flow.** Use identified
+   [GA PTHA18 scenarios](https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha)
+   or validated historical waveforms; drive local coastal boundaries with
+   consistent time series instead of an arbitrary local dipole. Add tide levels
+   with a verified datum conversion, upstream discharge and observed gauge
+   series for validation. Preserve scenario IDs and distinguish illustrative
+   runs from hazard estimates.
+3. **Finer grids where needed.** Evaluate nested/coastal refinement with
+   conservative exchange between offshore and estuary domains, plus a higher
+   order, well-balanced, positivity-preserving nonlinear scheme to reduce
+   numerical damping. [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
+   a useful reference for dry/wet shorelines and adaptive grids. Keep the
+   browser worker responsive with bounded step batches and memory use.
+4. **Optional dispersive-wave method — research, not started.** Dispersion
+   means different wavelengths travel at different speeds, so a pulse can
+   spread and change shape. The current shallow-water methods omit this
+   wavelength-dependent physics; numerical diffusion in a solver is a
+   different effect. Evaluate a Boussinesq-type solver in Rust/WASM alongside
+   the existing methods, using [JAGURS](https://github.com/jagurs-admin/jagurs)
+   and published formulations as references. It may improve shorter-wave
+   propagation and waveform detail within its valid depth/wavelength range;
+   it does not automatically improve inundation, terrain accuracy or source
+   reconstruction. Document the extra computational cost and the formulation's
+   limitations before exposing it as an experimental picker option.
+5. **Sensitivity runs.** Compare bounded ensembles of source strength, water
+   level, friction and terrain uncertainty. Report ranges of arrival time,
+   water depth and speed, with their assumptions. Parameter sweeps alone do
+   not supply hazard probabilities.
+
+**Acceptance for a dispersive option:** recover the long-wave limit; check
+phase speed and pulse spreading against an appropriate analytical dispersion
+relation within the formulation's stated validity range; compare arrival time,
+waveform and energy behaviour with published benchmarks; retain water balance
+and non-negative depth at the coastal coupling; define how dispersion is
+handled near breaking and wet/dry cells; measure browser runtime and memory.
+Validate the baseline coastal solver first using
+[NOAA benchmark cases](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html).
+A future solver option must state which physical effects it adds and remain
+labelled experimental until its own checks pass.
+
+
 ### On-demand Copernicus GLO-30 + hydrology (proposed)
 - **Goal:** Let the on-demand model (20 km squares) optionally use Copernicus GLO-30 with the full hydrology pipeline (breach, fill, D8, flow accumulation, streams, HAND) instead of only DEM-H.
 - **Why:** GLO-30 covers areas DEM-H doesn't, and matches the detailed Brisbane pipeline; consistent tooling across detailed and on-demand models.
