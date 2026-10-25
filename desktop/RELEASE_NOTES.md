@@ -13,7 +13,10 @@ These are preview builds. macOS builds are ad-hoc signed unless the release
 maintainer has configured Apple signing and notarization credentials. Windows
 builds are unsigned. Operating systems may warn when installing them.
 
-`SHA256SUMS.txt` contains installer checksums. Automatic updates are not enabled;
-download a newer installer from this releases page when available.
+`SHA256SUMS.txt` contains installer and updater checksums. Starting with 0.2.0,
+the app checks for stable releases on startup and in Settings → Application
+updates. Choose Install update and restart to install a signed update.
+Windows, macOS and Linux AppImage support self-update; DEB installations use
+a newer DEB package. Users of 0.1.0 must upgrade manually once.
 
 This is a screening model. Do not use it for emergency or property decisions.

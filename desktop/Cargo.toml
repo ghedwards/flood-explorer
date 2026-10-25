@@ -1,6 +1,6 @@
 [package]
 name = "flood-explorer-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Flood Explorer desktop (Tauri) shell"
 license = "MIT"
@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-updater = "=2.14.0"
 flood-broker = { path = "../rust/flood-broker" }
 flood-feeds = { path = "../rust/flood-feeds" }
 

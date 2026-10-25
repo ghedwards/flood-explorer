@@ -1,3 +1,4 @@
+import { desktopUpdates } from './desktop-updates.js';
 import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { classifyDemGaps } from './dem-voids.js';
@@ -372,6 +373,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     settingsBtn.hidden = !isTauri();
     settingsBtn.addEventListener('click', openSettings);
   }
+  desktopUpdates({ invoke: tauriInvoke, desktop: isTauri(), document, onAvailable: openSettings });
   const settingsClose = document.getElementById('settingsClose');
   if (settingsClose) settingsClose.addEventListener('click', closeSettings);
   const settingsSave = document.getElementById('settingsSave');

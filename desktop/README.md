@@ -48,7 +48,7 @@ After committing and pushing the changes:
 Manual runs create the version tag at the selected commit. Rerunning an
 existing draft updates its assets, so use a new version when switching commits.
 Drafts are visible to repository collaborators; public downloads become
-available after publication. In-app automatic updates are not enabled.
+available after publication. See Self-updates below before creating an update-enabled release.
 
 Mac builds default to ad-hoc signing. For Apple signing and notarization,
 configure repository secrets `APPLE_CERTIFICATE` (base64 P12),
@@ -79,3 +79,51 @@ its broker host, so it does not display the local Settings button.
 Desktop elevation requests go through `/v1/elev` on the local broker to avoid
 WebKit CORS restrictions. Hosted web builds also use their configured broker,
 with direct GA access as a fallback if the proxy fails.
+
+## Self-updates
+
+Version 0.2.0 introduces a startup check and **Settings → Application updates →
+Check for updates**. A new version offers **Install update and restart**; nothing
+is downloaded or installed until the user clicks it. Update signatures are
+verified before installation. Offline checks show an error without blocking the
+map. Settings, cached readings and saved places remain in their existing locations.
+The 0.1.0 preview needs one manual upgrade to acquire this updater.
+
+Windows NSIS, macOS (both architectures), and Linux AppImage support in-app
+updates. DEB users install a newer DEB with their package manager. Put the macOS
+app in Applications and run an AppImage from a writable location.
+
+### One-time signing setup
+
+Generate a dedicated update key on a trusted maintainer computer:
+
+```sh
+cargo tauri signer generate -w /secure/backup/flood-explorer-updater.key
+```
+
+Keep the private key and its password in a durable secure backup. Add the private
+key contents as GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`, and its password
+as secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty for an unencrypted key).
+Add the public key file contents as Actions variable `FLOOD_UPDATER_PUBLIC_KEY`.
+This key is separate from Apple/Windows code-signing certificates. Never commit
+the private key. Keep the same key for subsequent releases: existing apps trust
+only the public key compiled into them.
+
+The release workflow fails early if the key is absent. Local builds without
+`FLOOD_UPDATER_PUBLIC_KEY` still run, but explain that updates are not configured.
+
+### Publishing updates
+
+Bump the desktop version in Cargo, Tauri config and the lockfile. Build using
+**Desktop installers**. The draft includes the five manual installers, four
+signed update bundles (the Windows and AppImage artifacts are reused), their
+signatures, `latest.json`, and checksums. All four targets must pass. Test the
+installers, then publish the draft as a **stable release** and mark it **Latest**.
+The app checks `releases/latest/download/latest.json`; drafts and prereleases
+are deliberately excluded. Publishing the draft makes the complete feed live
+atomically. Never replace the assets of an already-published release.
+
+Manual workflow runs default to verification only: installers are built and
+retained as workflow artifacts without creating a release. Uncheck **Build and
+test installers without signing keys or creating a release** for a signed
+release build. Tag-triggered builds always require the signing keys.
