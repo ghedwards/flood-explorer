@@ -1,4 +1,5 @@
 import { desktopUpdates } from './desktop-updates.js';
+import { createFeedClient } from './feed-health.js';
 import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { classifyDemGaps } from './dem-voids.js';
@@ -4050,6 +4051,43 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       return j;
     } catch (e) { status.savedCheck = { error: String(e && e.message || e) }; return null; }
   }
+  function renderFeedHealth() {
+    const health = nat.feedHealth;
+    const box = $('feedStatus'), pill = $('feedPill');
+    if (!box || !pill) return;
+    const issues = [...(health ? [...(health.error ? [{ name: 'Live readings', reason: health.error }] : []), ...health.issues] : []),
+      ...Object.entries(nat.layerIssues || {}).map(([name, reason]) => ({ name, reason }))];
+    box.hidden = pill.hidden = !issues.length;
+    pill.textContent = issues.length === 1 ? '1 feed issue' : `${issues.length} feed issues`;
+    if (!issues.length) return;
+    const copy = nat.readingsFetched ? `Keeping the last available readings (${when(nat.readingsFetched)}).` : 'The map remains usable; live readings may be unavailable.';
+    const retry = health?.checking ? 'Checking again now…' : health?.nextRetry
+      ? `Retrying automatically at ${new Date(health.nextRetry).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.`
+      : 'Failed sources will be checked again by the live service; some providers impose longer rate limits.';
+    box.innerHTML = `<strong>Some data is delayed</strong><p>${escapeHtml(copy)} ${escapeHtml(retry)}</p><ul>${issues.map(issue => `<li><strong>${escapeHtml(issue.name)}</strong>: ${escapeHtml(issue.reason)}${issue.lastGood ? ` Last successful fetch: ${escapeHtml(when(issue.lastGood))}.` : ''}</li>`).join('')}</ul>`;
+  }
+  function runLiveUpdate(name, draw) {
+    nat.layerIssues = nat.layerIssues || {};
+    try { draw(); delete nat.layerIssues[name]; } catch (error) {
+      const reason = `Could not display this feed: ${String(error?.message || error)}. Other layers remain available.`;
+      if (nat.layerIssues[name] !== reason) logProblem('data', name, reason);
+      nat.layerIssues[name] = reason;
+    }
+  }
+  function requestLiveReadings(timeout, cache) {
+    if (!nat.feedClient) nat.feedClient = createFeedClient({
+      fetch: (...args) => fetch(...args), url: `${BROKER}/v1/now`, previous: () => nat.readings || {},
+      retry: () => refreshLiveReadings(true),
+      onChange: health => {
+        if (health.error && health.error !== nat.feedHealth?.error)
+          logProblem('live', 'Live readings delayed; keeping available data and retrying', health.error);
+        nat.feedHealth = health;
+        status.feeds = health;
+        renderFeedHealth();
+      },
+    });
+    return nat.feedClient.request(timeout, cache);
+  }
   async function loadNationalData() {
     if (nat.data) return nat.data;
     const get = async (f) => {
@@ -4070,19 +4108,17 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       // in the background, instead of waiting on the broker
       const saved = DATA_SOURCE === 'runtime' ? await savedReadings() : null;
       const live = saved ? Promise.resolve(saved) : DATA_SOURCE === 'runtime'
-        ? fetch(`${BROKER}/v1/now`, { signal: AbortSignal.timeout(8000) }).then((r) => {
-          if (r.status === 503) return null;   // just started: nothing fetched yet
-          if (!r.ok) throw new Error(`broker readings: HTTP ${r.status}`);
-          saveReadings(r.clone());
-          return r.json();
-        }).catch((err) => { logProblem('live', 'Live readings unavailable; using the site build\'s', String(err && err.message || err)); return null; })
+        ? requestLiveReadings(8000).then(fresh => {
+          saveReadings(new Response(JSON.stringify(fresh), { headers: { 'Content-Type': 'application/json' } }));
+          return fresh;
+        }).catch(() => null)
         : Promise.resolve(null);
       const [gauges, storages, built, meta, fresh] = await Promise.all([
         gaugeFile, get('storages.geojson'), get('readings.json').catch((err) => (DATA_SOURCE === 'runtime' ? null : Promise.reject(err))), get('meta.json'), live]);
       const readings = fresh && fresh.level ? fresh : built || { level: {}, storage: {} };
       nat.readingsSource = fresh && fresh.level ? 'runtime' : 'build';
       nat.readingsSaved = !!(saved && fresh === saved);
-      if (nat.readingsSaved) setTimeout(() => { refreshLiveReadings(true).then((got) => { nat.readingsSaved = false; status.savedThenFresh = got; renderVersions(); }); }, 1200);
+      if (nat.readingsSaved) setTimeout(() => { refreshLiveReadings(true).then((got) => { status.savedThenFresh = got; renderVersions(); }).catch(() => {}); }, 1200);
       nat.readingsFetched = (fresh && fresh.level && fresh.fetched) || (meta && meta.fetched) || null;
       nat.data = { gauges: gauges.features || [], storages: storages.features || [], meta };
       nat.readings = readings;
@@ -4100,8 +4136,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       logProblem('data', 'National map data could not be loaded', String(e && e.message || e));
     }
     // Replace the loading placeholder even when a required dataset failed.
-    renderWarnings();
-    renderWatch();
+    runLiveUpdate('Flood warnings', renderWarnings);
+    runLiveUpdate('Watch list', renderWatch);
+    renderFeedHealth();
     status.national = {
       loaded: true, gauges: nat.data.gauges.length, storages: nat.data.storages.length,
       levelReadings: Object.keys(nat.readings.level || {}).length,
@@ -4273,22 +4310,23 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       if (radarCtl) { radarCtl._ctl.remove(); radarCtl = null; }
     });
     nat.layers['Rain radar, last 2 hours (RainViewer)'] = radar;
-    updateLiveGaugeLayers(L, renderer);
+    runLiveUpdate('River and tide markers', () => updateLiveGaugeLayers(L, renderer));
     // warning areas: the Bureau's own outline where its warning has one,
     // otherwise around the gauges on the warned rivers (redrawn when the
     // warnings update)
     if (!nat.warnLayer) nat.warnLayer = L.layerGroup();
     nat.layers['Flood warning areas (BoM)'] = nat.warnLayer;
-    drawWarningAreas();
+    runLiveUpdate('Flood warning areas', drawWarningAreas);
     if (!nat.roadClosuresLayer) nat.roadClosuresLayer = L.layerGroup();
     nat.layers['Road closures and events (official)'] = nat.roadClosuresLayer;
-    drawRoadClosures();
+    runLiveUpdate('Road events', drawRoadClosures);
     if (!nat.emergencyLayer) nat.emergencyLayer = L.layerGroup();
     nat.layers['Emergency warnings (state)'] = nat.emergencyLayer;
-    drawEmergencyWarnings();
+    runLiveUpdate('Emergency warnings', drawEmergencyWarnings);
     if (!nat.rainObsLayer) nat.rainObsLayer = L.layerGroup();
     nat.layers['Rain gauges, observed 24h (BoM)'] = nat.rainObsLayer;
-    drawRainObs();
+    runLiveUpdate('Observed rainfall', drawRainObs);
+    renderFeedHealth();
     if (nat.data.storages.length) {
       nat.layers['Dams and water storages (BoM)'] = L.geoJSON({ type: 'FeatureCollection', features: nat.data.storages }, {
         attribution: BOM_ATTR,
@@ -5845,13 +5883,10 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (DATA_SOURCE !== 'runtime' || !nat.readings || (document.hidden && !manual)) return 'off';
     const fallback = nat.readingsSource !== 'runtime';
     try {
-      const r = await fetch(`${BROKER}/v1/now`, { cache: manual ? 'no-cache' : 'default', signal: AbortSignal.timeout(fallback || manual ? 30000 : 15000) });
-      if (!r.ok) return 'error';
-      const copy = r.clone();
-      const fresh = await r.json();
-      if (!fresh || !fresh.level) return 'error';
-      if (!fallback && fresh.fetched === nat.readingsFetched) return 'same';
-      saveReadings(copy);
+      const fresh = await requestLiveReadings(fallback || manual ? 30000 : 15000, manual ? 'no-cache' : 'default');
+      nat.readingsSaved = false;
+      if (!fallback && fresh.fetched === nat.readingsFetched) { renderFeedHealth(); return 'same'; }
+      saveReadings(new Response(JSON.stringify(fresh), { headers: { 'Content-Type': 'application/json' } }));
       nat.readings = fresh;
       nat.readingsFetched = fresh.fetched;
       if (fallback) {
@@ -5862,24 +5897,25 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       }
       if (fresh.warnings && fresh.warnings.ok) nat.warnings = fresh.warnings;
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
-      if (state.lmap && nat.renderer) {
+      const redraws = [['Flood warnings', renderWarnings], ['Watch list', renderWatch], ['Place information', renderInfo],
+        ['Road events', drawRoadClosures], ['Emergency warnings', drawEmergencyWarnings], ['Observed rainfall', drawRainObs]];
+      if (state.lmap && nat.renderer) redraws.unshift(['River and tide markers', () => {
         updateLiveGaugeLayers(window.L, nat.renderer);
         scaleDots(); orderDots(); scheduleClusters();
-      }
-      renderWarnings();
-      renderWatch();
-      try { renderInfo(); } catch (e) { /* the panel isn't built yet */ }
-    try { drawRoadClosures(); drawEmergencyWarnings(); drawRainObs(); } catch (e) { /* map not ready */ }
+      }]);
+      for (const [name, redraw] of redraws) runLiveUpdate(name, redraw);
+      renderFeedHealth();
       status.liveRefresh = { at: new Date().toISOString(), fetched: fresh.fetched, manual: !!manual };
       return 'new';
     } catch (e) { return 'error'; /* next time */ }
   }
   setInterval(refreshLiveReadings, 15 * 60 * 1000);
-  // after a slow first try: again shortly, not in 15 minutes
+  // Retry missing startup readings. Once connected, the feed client also
+  // retries subsequent failures with bounded backoff, without overlapping requests.
   const liveRetry = setInterval(() => {
     if (!nat.readings) return;
     if (DATA_SOURCE !== 'runtime' || nat.readingsSource === 'runtime') { clearInterval(liveRetry); return; }
-    refreshLiveReadings();
+    if (!nat.feedHealth?.nextRetry) refreshLiveReadings();
   }, 45 * 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLiveReadings(); });
   window.__floodRefreshLive = (manual) => refreshLiveReadings(manual);

@@ -30,6 +30,7 @@
   <button type="button" class="icon-btn" id="settingsBtn" hidden aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.26.6.8 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   <button type="button" class="pill" id="noticePill" data-open="panel-about">Screening only</button>
   <span class="pill offline-pill" id="offlinePill" role="status" hidden>Offline: saved data</span>
+  <button type="button" class="pill feed-pill" id="feedPill" data-open="panel-forecast" aria-live="polite" hidden>Data delayed</button>
   <div class="search-results float" id="searchResults" aria-live="polite" hidden></div>
 </header>
 
@@ -389,7 +390,7 @@
 <!-- Forecast -->
 <aside class="sheet float" id="panel-forecast" data-panel data-side="right" aria-labelledby="floodhubTitle" hidden>
   <div class="sheet-head"><h2 id="floodhubTitle">Warnings and forecasts</h2><button type="button" class="close" data-close aria-label="Close">×</button></div>
-  <div class="sheet-body" id="floodhub"><section id="watchBox" hidden></section><section id="warningsBox"><p class="hint">Loading flood warnings…</p></section>
+  <div class="sheet-body" id="floodhub"><section id="feedStatus" class="feed-status" role="status" aria-live="polite" hidden></section><section id="watchBox" hidden></section><section id="warningsBox"><p class="hint">Loading flood warnings…</p></section>
     <h3 class="places-sub">Google Flood Hub</h3><div id="floodhubBody"><p class="hint">Loading…</p></div></div>
 </aside>
 
