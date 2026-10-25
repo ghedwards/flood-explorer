@@ -111,8 +111,9 @@ jobs:
         with:
           name: desktop-data
           path: viewer/data
-      - name: Build installers
-        uses: tauri-apps/tauri-action@v1
+      - name: Prepare Apple signing environment
+        if: runner.os == 'macOS'
+        shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -120,6 +121,23 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          node <<'JS'
+          const fs = require('node:fs');
+          const { randomUUID } = require('node:crypto');
+          // Tauri treats present-but-empty variables as real credentials.
+          // Export only configured values; an imported P12 may have an empty password.
+          const names = ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD',
+            'APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'];
+          for (const name of names) {
+            const value = process.env[name] || '';
+            if (!value && !(name === 'APPLE_CERTIFICATE_PASSWORD' && process.env.APPLE_CERTIFICATE)) continue;
+            const delimiter = randomUUID();
+            fs.appendFileSync(process.env.GITHUB_ENV, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
+          }
+          JS
+      - name: Build installers
+        uses: tauri-apps/tauri-action@v1
         with:
           projectPath: desktop
           tauriScript: npx --yes --package @tauri-apps/cli@2.12.4 tauri
