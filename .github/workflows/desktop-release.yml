@@ -30,6 +30,7 @@ jobs:
           mkdir release-assets
           while IFS= read -r -d '' file; do
             name=$(basename "$file")
+            name="${name// /.}"
             test ! -e "release-assets/$name" || { echo "Duplicate installer: $name"; exit 1; }
             cp "$file" "release-assets/$name"
           done < <(find downloads -type f \( -name '*_0.2.0_*.dmg' -o -name '*_0.2.0_*.exe' -o -name '*_0.2.0_*.deb' -o -name '*_0.2.0_*.AppImage' \) -print0)
