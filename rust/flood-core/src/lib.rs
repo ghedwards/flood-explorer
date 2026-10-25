@@ -19,3 +19,5 @@ pub use wave::*;
 
 pub mod inertial;
 pub mod tsunami;
+
+pub mod inundation;

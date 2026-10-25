@@ -196,6 +196,7 @@ impl Out {
 
 thread_local! {
     static INERTIAL: RefCell<Option<inertial::Solver>> = const { RefCell::new(None) };
+    static INUNDATION: RefCell<Option<inundation::Solver>> = const { RefCell::new(None) };
     static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
     static ANALYSES: RefCell<Vec<Option<Analysis>>> = const { RefCell::new(Vec::new()) };
     static WAVES: RefCell<Vec<Option<Wave>>> = const { RefCell::new(Vec::new()) };
@@ -495,29 +496,55 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
     match op {
         "tsunamiStart" => {
             TSUNAMI.with(|s| *s.borrow_mut() = None);
-            let mut solver = tsunami::Solver::new(
-                b.num("W") as usize, b.num("H") as usize, b.num("cell"),
-                b.f64s("depth").ok_or("missing ocean depths")?,
-                b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
-            )?;
-            if b.num("method") == 1.0 { solver.method = tsunami::Method::FiniteVolume; }
-            o.num("dt", solver.dt);
-            TSUNAMI.with(|s| *s.borrow_mut() = Some(solver));
+            INUNDATION.with(|s| *s.borrow_mut() = None);
+            if b.num("method") == 2.0 {
+                let solver = inundation::Solver::new(
+                    b.num("W") as usize, b.num("H") as usize, b.num("cell"),
+                    b.f64s("bed").ok_or("missing bed elevations")?,
+                    b.f64s("depth").ok_or("missing initial water depths")?,
+                    b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
+                    b.num("roughness"),
+                )?;
+                o.num("dt", solver.dt);
+                INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
+            } else {
+                let mut solver = tsunami::Solver::new(
+                    b.num("W") as usize, b.num("H") as usize, b.num("cell"),
+                    b.f64s("depth").ok_or("missing ocean depths")?,
+                    b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
+                )?;
+                if b.num("method") == 1.0 { solver.method = tsunami::Method::FiniteVolume; }
+                o.num("dt", solver.dt);
+                TSUNAMI.with(|s| *s.borrow_mut() = Some(solver));
+            }
         }
         "tsunamiStep" => {
-            TSUNAMI.with(|slot| -> Result<(), String> {
+            let steps = b.num("steps");
+            if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 {
+                return Err("invalid tsunami step count".into());
+            }
+            let nonlinear = INUNDATION.with(|slot| -> Result<bool, String> {
                 let mut slot = slot.borrow_mut();
-                let s = slot.as_mut().ok_or("no active tsunami simulation")?;
-                let steps = b.num("steps");
-                if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 {
-                    return Err("invalid tsunami step count".into());
-                }
+                let Some(s) = slot.as_mut() else { return Ok(false); };
                 s.advance(steps as usize)?;
-                o.num("time", s.time).num("dt", s.dt).num("volume", s.volume());
-                o.f32s("eta", &s.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                o.f32s("peak", &s.peak.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                Ok(())
+                o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
+                    .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume);
+                for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
+                    o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                }
+                Ok(true)
             })?;
+            if !nonlinear {
+                TSUNAMI.with(|slot| -> Result<(), String> {
+                    let mut slot = slot.borrow_mut();
+                    let s = slot.as_mut().ok_or("no active tsunami simulation")?;
+                    s.advance(steps as usize)?;
+                    o.num("time", s.time).num("dt", s.dt).num("volume", s.volume());
+                    o.f32s("eta", &s.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                    o.f32s("peak", &s.peak.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                    Ok(())
+                })?;
+            }
         }
         "inertialStart" => {
             // One simulation per dedicated worker/module instance.

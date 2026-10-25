@@ -12,9 +12,9 @@ displacement view, three virtual gauges and CSV export. The canvas uses basin
 coordinates in kilometres for idealised cases. Five Australian east-coast
 subsets use geographic bounds and show the source latitude/longitude.
 
-## Model
+## Regional propagation models
 
-Both selectable methods solve the linear shallow-water equations:
+The two linear methods solve the linear shallow-water equations:
 
 ```
 d eta / dt = -div(q)
@@ -81,32 +81,70 @@ domain or imported offshore boundary time series.
 
 More samples alone do not ensure better predictions: vertical datum,
 measurement error, survey age, source uncertainty, grid resolution and solver
-physics must be compatible. The current solver cannot turn land data into
-river or inundation predictions without implementing those dynamics.
+physics must be compatible. Regional propagation alone cannot turn land data into river or inundation
+predictions. The separate nonlinear local tests below implement those dynamics
+experimentally, with different terrain and initialisation requirements.
 
-## Extending to land, lakes and rivers
+## Nonlinear land, river and lake experiments
 
-This requires a nonlinear shallow-water solver that evolves total water depth
-and momentum, including advection, bed slope and friction. A well-balanced,
-positivity-preserving scheme must keep still water at rest and allow cells to
-wet and dry without introducing negative depths. The existing linear methods
-cannot provide this by simply removing the land mask.
+Choose **Idealised estuary, river and lake** or **Pine River / Moreton Bay**.
+These local scenes select a separate nonlinear Rust solver automatically;
+the regional 1.5 km grids remain propagation-only. A `?scene=estuary` or
+`?scene=pine-estuary` URL opens the corresponding local scene directly.
 
-The input must retain bed elevation independently of the initial water surface.
-Ocean water can start at a chosen tide level; lakes and rivers can have different
-levels. A disconnected inland lake must not automatically start at sea level.
-River discharge and upstream boundary conditions are separate from the tsunami
-forcing at the offshore boundary. Banks, dunes and channel connections must be
-resolved before interpreting overtopping or upstream propagation.
+The solver evolves total water depth and both depth-integrated momenta using
+the nonlinear two-dimensional shallow-water equations. It uses first-order
+Rusanov fluxes with [Audusse et al. hydrostatic reconstruction (2004)](https://publications.imp.fu-berlin.de/478/),
+explicit conservative face exchanges, bed-slope pressure corrections and
+semi-implicit Manning friction. It recomputes an adaptive step from the sum
+of directional characteristic speeds with CFL 0.4. Dry cells may wet and
+wet cells may drain; no fixed shoreline mask is imposed. Tiny wet cells
+below 1e-7 m have their momentum zeroed, without discarding their water.
+Outer walls reflect. The optional sponge relaxes initially wet edge cells
+towards their initial reference depth, with its water exchange included in
+the volume balance. It is not an open-ocean radiation boundary.
 
-A practical first east-coast case is a small estuary inside the Moreton Bay
-region, using a fine local terrain grid driven by offshore wave time series.
-The existing 1.5 km grids cannot resolve its channels. Prefetch finer bathymetry,
-land elevation, waterbody connectivity and available bed surveys, with explicit
-coverage and vertical-datum metadata. Start with an idealised beach/channel/lake
-case and validate run-up, still-water balance and mass conservation before
-using a real local grid. Outputs would include water depth over land, current
-speed and maximum inundation extent, rather than just surface displacement.
+Both local scenes are 160 × 96 cells at 25 m spacing (4 × 2.4 km). The
+idealised case has a sloping beach, a low floodplain, a curving channel and
+an enclosed lake with an independently adjustable initial water elevation.
+There is no imposed upstream river discharge, rainfall, breach or sediment
+transport. The synthetic lake rim prevents exchange until overtopped; it is
+not automatically filled to sea level. Clicking the idealised lake generates a local lake wave; the initial pulse
+is confined to the connected waterbody containing the source. The imposed
+local dipole is initially at rest and is tapered in shallow water to retain non-negative depth. Its
+width can be 0.1–0.8 km, rather than the regional 5–20 km source width.
+
+The Pine River subset is numeric terrain from the [Queensland QldDem mosaic](https://spatial-img.information.qld.gov.au/arcgis/rest/services/Elevation/QldDem/ImageServer),
+clipped in GDA2020 / MGA zone 56 (EPSG:7856) and bilinearly resampled to 25 m.
+Recreate it with `node scripts/prepare-tsunami-estuary.js`. Source resolution
+and survey age vary; resampling does not turn lower-resolution bathymetry
+into a 25 m survey. Missing elevation samples are rejected, not filled or
+channel-carved. The export does not specify a vertical datum. Initial sea
+level is therefore a hypothetical elevation in source terrain units,
+**not a verified tide or MSL/AHD conversion**. Submerged bed coverage and
+shoreline connectivity have not been independently verified. This is a
+local terrain/solver experiment, not a calibrated estuary inundation model.
+
+Initial water is flood-filled from the Pine grid's eastern bay edge through
+cells below the chosen level. Disconnected depressions start dry; lake levels
+are unknown there. The idealised scene demonstrates separately initialised
+lakes. The Pine terrain has its own **CC BY-SA** terms, retained attribution,
+modification notice and required acknowledgements (see the adjacent data
+README and JSON). The application code remains MIT licensed.
+
+Views show surface change from each cell's initial reference water depth,
+maximum absolute change, current water depth and depth-averaged speed. On
+initially dry land, surface change equals inundation depth. Peak change in
+initially wet cells is not maximum total depth. Flooded area counts initially
+dry cells exceeding 1 cm now; all such initialisation depends on the selected
+sea/lake levels. Gauge traces and CSV report water-depth change from initial
+reference (equivalent to surface elevation change at continuously wet gauges).
+The mass error subtracts both initial water volume and sponge exchange.
+
+Next: independently verified bed surveys and datum conversions, prescribed
+river inflow, a physically consistent offshore boundary time series, local
+refinement and published run-up/inundation benchmarks. The current local pulse
+is not coupled to the regional offshore solver or to an earthquake scenario.
 
 ## Recent mathematical work to evaluate
 
@@ -128,7 +166,11 @@ Rust tests check rest over variable bathymetry, propagation speed against
 `sqrt(g H)`, pulse splitting amplitude, displacement-volume conservation in a
 closed basin, dry cells and reduction of returning waves by the sponge. JS
 tests exercise the actual WASM bridge and browser tests exercise the built
-worker, nested deployment paths, controls and export. Run:
+worker, nested deployment paths, controls and export. Nonlinear tests check
+resting water over a variable bed and a dry shore, separate lake levels,
+positive depths, mass balance including sponge exchange, beach run-up and
+subsequent drainage, and a dry-bed Ritter dam-break depth profile and contour
+position. These first-order tests are not tsunami run-up certification. Run:
 
 ```
 cargo test --locked --manifest-path rust/Cargo.toml -p flood-core -p flood-wasm
@@ -143,8 +185,10 @@ It excludes nonlinear advection, breaking, dispersive effects, friction,
 Coriolis, moving seabed, wetting/drying and coastal inundation. It cannot
 produce site-specific hazard, run-up or evacuation information.
 
-Next steps are real bathymetry/topography with compatible vertical datums,
-well-defined source scenarios, nonlinear wetting/drying and grid refinement,
+The nonlinear local solver also omits dispersion, Coriolis, moving seabed,
+non-hydrostatic wave breaking, structures and sub-cell channel hydraulics.
+Next steps are verified bathymetry/topography with compatible vertical datums,
+well-defined source and boundary scenarios, and grid refinement,
 then validation against published analytical, laboratory and field benchmarks.
 See [NOAA's modelling overview](https://nctr.pmel.noaa.gov/model.html) and
 [analytical benchmark collection](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html).
