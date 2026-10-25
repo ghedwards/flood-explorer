@@ -1,5 +1,5 @@
 // Desktop only. The native side owns the update URL, signature check and installer.
-export function desktopUpdates({ invoke, desktop, document }) {
+export function desktopUpdates({ invoke, desktop, document, onAvailable }) {
   const panel = document.getElementById('desktopUpdates');
   if (!desktop || !panel) return null;
   const status = document.getElementById('updateStatus');
@@ -25,7 +25,10 @@ export function desktopUpdates({ invoke, desktop, document }) {
         status.textContent = `Flood Explorer ${result.version} is available (installed: ${result.currentVersion}). Installing will close and restart the app. Save any work first.`;
         notes.textContent = result.notes || '';
         install.hidden = false;
-        if (automatic && settings) settings.hidden = false;
+        if (automatic && settings) {
+          if (onAvailable) await onAvailable();
+          else settings.hidden = false;
+        }
       } else {
         status.textContent = `Flood Explorer ${result.currentVersion} is up to date.`;
       }
