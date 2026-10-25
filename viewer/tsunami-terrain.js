@@ -1,7 +1,8 @@
 // Display original terrain, independently of water depth and the propagation
 // solver's shallow-water floor. Synthetic land masks have no known heights.
 export function terrainFor(grid, bathymetry) {
-  const elevation = grid.bed || bathymetry?.elevation || Float64Array.from(grid.depth, d => d > 0 ? -d : NaN);
+  let elevation = grid.bed || bathymetry?.elevation || Float64Array.from(grid.depth, d => d > 0 ? -d : NaN);
+  if (grid.valid) elevation = Float64Array.from(elevation, (z, i) => grid.valid[i] ? z : NaN);
   let low = 0, high = 0;
   for (const z of elevation) if (Number.isFinite(z)) { low = Math.min(low, z); high = Math.max(high, z); }
   const colours = new Uint8Array(elevation.length * 3);

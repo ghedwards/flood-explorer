@@ -100,9 +100,14 @@ test('all local terrain experiments start in sea-connected water and run nonline
   const { tsunamiGrid, connectedWaterDepth } = await gridModule;
   for (const id of (await import('../viewer/tsunami-locations.js')).estuaryIds) {
     const bathymetry = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data', `${id}.json`)));
-    assert.equal(bathymetry.license, 'CC BY-SA');
-    assert.match(bathymetry.verticalDatum, /Not specified/);
-    const initial = connectedWaterDepth(bathymetry.elevation, 160, 96, 0, bathymetry.seaEdges);
+    assert.equal(bathymetry.license, id === 'gold-coast-seaway' ? 'CC BY 4.0' : 'CC BY-SA');
+    assert.match(bathymetry.verticalDatum, id === 'gold-coast-seaway' ? /AVWS/ : /Not specified/);
+    if (bathymetry.terrainSource) {
+      assert.equal(bathymetry.terrainSource.length, 160*96);
+      assert.equal(bathymetry.sourceCounts.reduce((n, s) => n+s.cells, 0) + bathymetry.missing, 160*96);
+      assert.ok(bathymetry.terrainSource.every((v, i) => bathymetry.valid[i] ? v >= 0 && v <= 7 : v === 255));
+    }
+    const initial = connectedWaterDepth(bathymetry.elevation, 160, 96, 0, bathymetry.seaEdges, bathymetry.valid);
     let sourceIndex = -1, distance = Infinity;
     initial.forEach((depth, i) => {
       const d = Math.hypot(i % 160 - bathymetry.sourceTarget[0], Math.floor(i / 160) - bathymetry.sourceTarget[1]);
@@ -117,8 +122,25 @@ test('all local terrain experiments start in sea-connected water and run nonline
     for (let n = 0; n < 3; n++) result = F.tsunamiStep(200);
     assert.ok(result.water.every(h => Number.isFinite(h) && h >= 0));
     assert.ok(result.speed.some(v => v > 0));
+    if (grid.valid) assert.ok(result.water.every((h, i) => grid.valid[i] || h === 0));
     if (id === 'pine-estuary') assert.ok(result.water.some((h, i) => grid.depth[i] === 0 && h > .01));
     assert.ok(Math.abs(result.volumeError) < 1e-5);
     assert.throws(() => tsunamiGrid({ preset: id, bathymetry: { ...bathymetry, elevation: [] }, width: .3 }), /Invalid/);
   }
+});
+
+test('dispersive WASM waves conserve volume and differ from shallow-water propagation', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const grid = tsunamiGrid({ preset: 'flat', method: 'dispersive', deep: 5000, width: 5, absorbing: false });
+  const initial = grid.eta.reduce((a, b) => a + b, 0) * grid.cell ** 2;
+  F.tsunamiStart(grid);
+  const dispersive = F.tsunamiStep(160);
+  assert.ok(dispersive.eta.every(Number.isFinite));
+  assert.ok(Math.abs(dispersive.volume - initial) < .001);
+  F.tsunamiStart({ ...grid, method: 0 });
+  const shallow = F.tsunamiStep(160);
+  const difference = dispersive.eta.reduce((s, v, i) => s + Math.abs(v - shallow.eta[i]), 0) / grid.eta.length;
+  assert.ok(difference > .001, `waveform difference ${difference}`);
+  assert.throws(() => tsunamiGrid({ method: 'dispersive', preset: 'shelf' }), /uniform ocean/);
+  assert.throws(() => F.tsunamiStart({ ...tsunamiGrid({ preset: 'shelf' }), method: 3 }), /uniform ocean/);
 });

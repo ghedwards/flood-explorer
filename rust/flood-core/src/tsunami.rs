@@ -7,7 +7,7 @@
 const G: f64 = 9.81;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Method { Staggered, FiniteVolume }
+pub enum Method { Staggered, FiniteVolume, Dispersive }
 
 pub struct Solver {
     pub w: usize,
@@ -25,6 +25,7 @@ pub struct Solver {
     qx: Vec<f64>,
     qy: Vec<f64>,
     damping: Vec<f64>,
+    filter: Option<crate::dispersion::Filter>,
 }
 
 impl Solver {
@@ -53,17 +54,26 @@ impl Solver {
             } }
         }
         Ok(Self { w, h, cell, peak: eta.iter().map(|v| v.abs()).collect(), depth, eta, time: 0.0, dt, steps: 0,
-            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping,
+            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping, filter: None,
             method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
     }
 
     pub fn advance(&mut self, steps: usize) -> Result<(), String> {
         if steps > 200 { return Err("advance at most 200 steps per call".into()); }
+        if self.method == Method::Dispersive {
+            let uniform = self.depth[0];
+            if uniform <= 0.0 || self.depth.iter().any(|d| (*d-uniform).abs() > 1e-9) {
+                return Err("dispersive prototype requires a uniform ocean with no land".into());
+            }
+            if self.filter.is_none() { self.filter = Some(crate::dispersion::Filter::new(self.w,self.h,uniform,self.cell)); }
+        }
         for _ in 0..steps {
             if self.method == Method::FiniteVolume {
                 self.finite_volume_step()?;
                 continue;
             }
+            if self.method == Method::Dispersive { self.filter.as_mut().unwrap().solve(&self.eta)?; }
+            let surface = if self.method == Method::Dispersive { &self.filter.as_ref().unwrap().surface } else { &self.eta };
             // Initial transport is zero at t=0: the first kick reaches dt/2.
             let kick = if self.steps == 0 { self.dt * 0.5 } else { self.dt } * G / self.cell;
             for y in 0..self.h { for x in 1..self.w {
@@ -72,7 +82,7 @@ impl Solver {
                 let face = y * (self.w + 1) + x;
                 if self.depth[left] > 0.0 && self.depth[right] > 0.0 {
                     let depth = (self.depth[left] + self.depth[right]) * 0.5;
-                    self.qx[face] = (self.qx[face] - kick * depth * (self.eta[right] - self.eta[left]))
+                    self.qx[face] = (self.qx[face] - kick * depth * (surface[right] - surface[left]))
                         * (self.damping[left] * self.damping[right]).sqrt();
                 }
             } }
@@ -81,7 +91,7 @@ impl Solver {
                 let above = below - self.w;
                 if self.depth[above] > 0.0 && self.depth[below] > 0.0 {
                     let depth = (self.depth[above] + self.depth[below]) * 0.5;
-                    self.qy[below] = (self.qy[below] - kick * depth * (self.eta[below] - self.eta[above]))
+                    self.qy[below] = (self.qy[below] - kick * depth * (surface[below] - surface[above]))
                         * (self.damping[above] * self.damping[below]).sqrt();
                 }
             } }
@@ -236,4 +246,37 @@ mod tests {
         assert!((peak as f64 - 120.0 - (G * 1000.0).sqrt() * s.time / s.cell).abs() < 2.0);
         assert!(s.eta[peak] > 0.3 && s.eta[peak] < 0.49, "{}", s.eta[peak]);
     }
+    #[test]
+    fn dispersive_modes_follow_the_boussinesq_frequency_and_long_wave_limit() {
+        // Neumann cosine eigenmodes: compare against the fully discrete
+        // leapfrog dispersion relation, not a fitted animation arrival time.
+        let (w,h,depth,cell) = (160,4,3000.0,1000.0);
+        for mode in [1, 12] {
+            let theta = mode as f64*std::f64::consts::PI/w as f64;
+            let k = 2.0*(theta/2.0).sin()/cell;
+            let omega = (G*depth*k*k/(1.0+depth*depth*k*k/3.0)).sqrt();
+            let eta: Vec<f64> = (0..w*h).map(|i| 0.1*(theta*((i%w) as f64+0.5)).cos()).collect();
+            let mut s = Solver::new(w,h,cell,vec![depth;w*h],eta.clone(),false).unwrap();
+            s.method = Method::Dispersive;
+            s.advance(80).unwrap();
+            let discrete = 2.0*(omega*s.dt/2.0).asin()/s.dt;
+            let expected = (discrete*s.time).cos();
+            let projection = s.eta.iter().zip(&eta).map(|(e,a)|e*a).sum::<f64>()/eta.iter().map(|a|a*a).sum::<f64>();
+            assert!((projection-expected).abs()<1e-7, "mode {mode}: {projection} vs {expected}");
+            let ratio = omega/(G*depth).sqrt()/k;
+            if mode == 1 { assert!((ratio-1.0).abs()<0.001); }
+            else { assert!(ratio<0.93); }
+            assert!(s.volume().abs()<1e-4);
+        }
+    }
+    #[test]
+    fn dispersive_rest_and_restrictions() {
+        let mut s = Solver::new(20,12,1000.0,vec![1000.0;240],vec![0.0;240],false).unwrap();
+        s.method = Method::Dispersive;
+        s.advance(200).unwrap();
+        assert!(s.eta.iter().all(|v| *v==0.0));
+        s.depth[10]=500.0;
+        assert!(s.advance(1).is_err());
+    }
+
 }

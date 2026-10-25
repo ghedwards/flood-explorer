@@ -58,3 +58,5 @@ summary { cursor: pointer; font-weight: 600; }
 .sea-ramp { background: linear-gradient(to right, #11365e, #a4d6e1); }
 .land-ramp { background: linear-gradient(to right, #8bb273, #b99160); }
 .terrain-readout { font-size: 12px; line-height: 1.6; color: var(--ink); background: #e2ecec; padding: 9px 12px; border-radius: 6px; min-height: 38px; }
+
+.terrain-coverage { border: 1px solid #d49ac6; border-left: 4px solid #b00083; background: #fff0fb; color: #672552; padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.6; }

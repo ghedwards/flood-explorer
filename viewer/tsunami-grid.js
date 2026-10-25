@@ -1,9 +1,10 @@
 import { estuaryIds } from './tsunami-locations.js';
 // Regional propagation grids and a separate idealised nonlinear estuary test.
 export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, width = 10, source = [38, 48], absorbing = true, method = 'staggered', bathymetry = null, tide = 0, roughness = 0.025, lakeLevel = 1 } = {}) {
+  if (method === 'dispersive' && (preset !== 'flat' || bathymetry)) throw new Error('Dispersive waves currently require a uniform ocean.');
   if (estuaryIds.includes(preset)) return localEstuaryGrid({ preset, bathymetry, amplitude, width, source, absorbing, tide, roughness });
   if (preset === 'estuary') return estuaryGrid({ amplitude, width, source, absorbing, tide, roughness, lakeLevel });
-  if ((!bathymetry && !['flat', 'shelf', 'island'].includes(preset)) || !['staggered', 'finite-volume'].includes(method) || !Number.isFinite(deep) || deep < 500 || deep > 5000
+  if ((!bathymetry && !['flat', 'shelf', 'island'].includes(preset)) || !['staggered', 'finite-volume', 'dispersive'].includes(method) || !Number.isFinite(deep) || deep < 500 || deep > 5000
     || !Number.isFinite(amplitude) || Math.abs(amplitude) > 3 || !Number.isFinite(width) || width < 5 || width > 20
     || !Array.isArray(source) || source.length !== 2 || source.some(x => !Number.isFinite(x))) throw new Error('Invalid wave scenario.');
   const W = 160, H = 96, cell = bathymetry ? 1500 : 1000;
@@ -31,7 +32,7 @@ export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, widt
     }
   }
   if (depth[Math.floor(source[1]) * W + Math.floor(source[0])] === 0) throw new Error('Choose a wave source in the ocean.');
-  return { W, H, cell, depth, eta, absorbing, method: method === 'finite-volume' ? 1 : 0 };
+  return { W, H, cell, depth, eta, absorbing, method: method === 'dispersive' ? 3 : method === 'finite-volume' ? 1 : 0 };
 }
 
 // 4 × 2.4 km idealised coast. Not a reconstruction of Moreton Bay.
@@ -73,33 +74,35 @@ export function estuaryGrid({ amplitude = 1, width = .3, source = [38, 48], abso
 }
 
 export function localEstuaryGrid({ preset = 'pine-estuary', bathymetry, amplitude = 1, width = .3, source = [140, 48], absorbing = true, tide = 0, roughness = .025 } = {}) {
-  const data = bathymetry, W = 160, H = 96, cell = 25;
-  if (!data || !estuaryIds.includes(preset) || data.id !== preset || data.W !== W || data.H !== H || data.cell !== cell
+  const data = bathymetry, W = 160, H = 96, cell = data?.cell;
+  if (!Number.isFinite(cell) || cell < 10 || cell > 100 || !data || !estuaryIds.includes(preset) || data.id !== preset || data.W !== W || data.H !== H || data.cell !== cell
+    || (data.valid != null && (!Array.isArray(data.valid) || data.valid.length !== W * H || data.valid.some(v => v !== 0 && v !== 1)))
     || !Array.isArray(data.elevation) || data.elevation.length !== W * H
-    || data.elevation.some(v => !Number.isFinite(v) || v < -100 || v > 1000)
+    || data.elevation.some((v, i) => data.valid?.[i] === 0 ? v !== null : !Number.isFinite(v) || v < -100 || v > 1000)
     || !Array.isArray(data.extent) || data.extent.length !== 4 || data.extent.some(v => !Number.isFinite(v))
     || Math.abs(data.extent[2] - data.extent[0] - W * cell) > .01 || Math.abs(data.extent[3] - data.extent[1] - H * cell) > .01
     || ![amplitude, width, tide, roughness].every(Number.isFinite) || Math.abs(amplitude) > 3 || width < .1 || width > .8
     || tide < -1 || tide > 2 || roughness < 0 || roughness > .2
     || !Array.isArray(source) || source.length !== 2 || source.some(v => !Number.isInteger(v))
     || source[0] < 0 || source[0] >= W || source[1] < 0 || source[1] >= H) throw new Error('Invalid local estuary terrain or water settings.');
-  const bed = Float64Array.from(data.elevation), eta = new Float64Array(W * H);
-  const depth = connectedWaterDepth(bed, W, H, tide, data.seaEdges || ['east']);
+  const valid = data.valid ? Uint8Array.from(data.valid) : undefined;
+  const bed = Float64Array.from(data.elevation, v => v ?? 0), eta = new Float64Array(W * H);
+  const depth = connectedWaterDepth(bed, W, H, tide, data.seaEdges || ['east'], valid);
   if (depth[source[1] * W + source[0]] < 2) throw new Error('Choose a source in connected bay water at least 2 m deep.');
   for (let i = 0; i < eta.length; i++) if (depth[i] > 0) {
     const dx = (i % W - source[0]) * cell / 1000 / width, dy = (Math.floor(i / W) - source[1]) * cell / 1000 / width;
     // Crest faces west towards the river. Depth taper keeps drawdown positive.
     eta[i] = -amplitude * dx * Math.exp(.5 - .5 * (dx * dx + dy * dy)) * Math.min(1, depth[i] / 5);
   }
-  return { W, H, cell, bed, depth, eta, absorbing, roughness, method: 2 };
+  return { W, H, cell, bed, depth, eta, valid, absorbing, roughness, method: 2 };
 }
 
 // Only ocean-facing edges seed the initial sea level; each cropped estuary
 // declares its bay/ocean sides. This does not impose an open-flow boundary.
-export function connectedWaterDepth(bed, W, H, level, edges = ['east']) {
+export function connectedWaterDepth(bed, W, H, level, edges = ['east'], valid = null) {
   if (!edges.length || edges.some(edge => !['east', 'west', 'north', 'south'].includes(edge))) throw new Error('Invalid ocean-facing terrain edges.');
   const depth = new Float64Array(W * H), seen = new Uint8Array(W * H), queue = [];
-  const add = i => { if (!seen[i] && bed[i] < level) { seen[i] = 1; queue.push(i); } };
+  const add = i => { if (!seen[i] && (valid == null || valid[i] !== 0) && Number.isFinite(bed[i]) && bed[i] < level) { seen[i] = 1; queue.push(i); } };
   for (let y = 0; y < H; y++) { if (edges.includes('east')) add(y * W + W - 1); if (edges.includes('west')) add(y * W); }
   for (let x = 0; x < W; x++) { if (edges.includes('north')) add(x); if (edges.includes('south')) add((H - 1) * W + x); }
   for (let head = 0; head < queue.length; head++) {

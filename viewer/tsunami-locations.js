@@ -10,6 +10,7 @@ export const regionalLocations = [
   { id: 'wollongong', name: 'Wollongong / Illawarra, NSW', lat: -34.42, lon: 151.65 },
 ];
 export const estuaryLocations = [
+  { id: 'gold-coast-seaway', name: 'Gold Coast / Broadwater & Seaway, Qld · terrain test', cell: 50, extent: [537500, 6905500, 545500, 6910300], seaEdges: ['east', 'north'], sourceTarget: [130, 32] },
   { id: 'pine-estuary', name: 'Pine River / Moreton Bay, Qld · terrain test', extent: [504000, 6979500, 508000, 6981900], seaEdges: ['east'], sourceTarget: [142, 48] },
   { id: 'brisbane-mouth', name: 'Brisbane River mouth, Qld · terrain test', extent: [513500, 6970000, 517500, 6972400], seaEdges: ['north'], sourceTarget: [70, 14] },
   { id: 'currumbin', name: 'Currumbin Creek / Gold Coast, Qld · terrain test', extent: [545500, 6887000, 549500, 6889400], seaEdges: ['east', 'north'], sourceTarget: [135, 30] },

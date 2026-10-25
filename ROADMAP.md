@@ -26,16 +26,20 @@ would add, how it could be built from open data, and what to watch for.
 ### Tsunami: data, coastal coupling and dispersive waves (25 Oct 2026)
 
 The Rust/WASM prototype has two linear propagation methods and a separate
-nonlinear local wetting/drying solver. Its bundled terrain, reference labels
+nonlinear local wetting/drying solver,
+plus a uniform-depth dispersive comparison. Bundled terrain, reference labels
 and display overlays are described in [the prototype notes](docs/tsunami-prototype.md).
 The present local pulse is hypothetical; offshore-to-estuary coupling is not
-implemented. The following work is proposed, not completed:
+implemented. The priorities below distinguish the working uniform-depth dispersive
+comparison from proposed coastal extensions:
 
 1. **Verify terrain and water references.** Prefetch finer coastal LiDAR and
    nearshore/channel bed surveys, retain source coverage and uncertainty, and
    reconcile vertical datums before applying tide levels. Evaluate GA regional
    bathymetry and the [CSIRO Queensland estuary composite](https://doi.org/10.25919/1xzm-pw88), including their
-   modelled rather than surveyed channel depths. Replace the single Manning
+   modelled rather than surveyed channel depths. The Gold Coast Broadwater scene
+   now bundles a consistent AVWS CSIRO grid with source flags and optional
+   provenance overlay; tide calibration and bed validation remain outstanding. Replace the single Manning
    resistance with supported land-cover classes only where resolution permits.
 2. **Defined offshore forcing, tides and river flow.** Use identified
    [GA PTHA18 scenarios](https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha)
@@ -50,23 +54,25 @@ implemented. The following work is proposed, not completed:
    numerical damping. [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
    a useful reference for dry/wet shorelines and adaptive grids. Keep the
    browser worker responsive with bounded step batches and memory use.
-4. **Optional dispersive-wave method — research, not started.** Dispersion
+4. **Dispersive-wave method — uniform-depth experiment implemented; coastal coupling proposed.** Dispersion
    means different wavelengths travel at different speeds, so a pulse can
-   spread and change shape. The current shallow-water methods omit this
+   spread and change shape. The shallow-water methods omit this
    wavelength-dependent physics; numerical diffusion in a solver is a
-   different effect. Evaluate a Boussinesq-type solver in Rust/WASM alongside
-   the existing methods, using [JAGURS](https://github.com/jagurs-admin/jagurs)
+   different effect. A linearised Boussinesq/Peregrine comparison now runs in Rust/WASM on a
+   uniform-depth ocean, with analytical frequency/long-wave-limit and volume
+   checks. It is available through **Try dispersive ocean**. Next evaluate
+   variable-depth and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
    and published formulations as references. It may improve shorter-wave
    propagation and waveform detail within its valid depth/wavelength range;
    it does not automatically improve inundation, terrain accuracy or source
-   reconstruction. Document the extra computational cost and the formulation's
-   limitations before exposing it as an experimental picker option.
+   reconstruction. Keep its uniform-depth restriction explicit. Measure computational cost
+   and validate each extension before enabling it on coastal terrain.
 5. **Sensitivity runs.** Compare bounded ensembles of source strength, water
    level, friction and terrain uncertainty. Report ranges of arrival time,
    water depth and speed, with their assumptions. Parameter sweeps alone do
    not supply hazard probabilities.
 
-**Acceptance for a dispersive option:** recover the long-wave limit; check
+**Acceptance for extending the dispersive option:** preserve the checked long-wave limit; check
 phase speed and pulse spreading against an appropriate analytical dispersion
 relation within the formulation's stated validity range; compare arrival time,
 waveform and energy behaviour with published benchmarks; retain water balance

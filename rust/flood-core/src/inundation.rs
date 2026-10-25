@@ -19,6 +19,7 @@ pub struct Solver {
     pub dt: f64,
     pub boundary_volume: f64,
     pub initial_volume: f64,
+    valid: Vec<bool>,
     mx: Vec<f64>,
     my: Vec<f64>,
     sponge: Vec<f64>,
@@ -55,9 +56,18 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
             speed: vec![0.0; n], time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
-            mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness };
+            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness };
         s.dt = s.stable_dt();
         Ok(s)
+    }
+
+    pub fn set_valid(&mut self, mask: Vec<u8>) -> Result<(), String> {
+        if mask.len() != self.water.len() || mask.iter().any(|v| *v > 1) || !mask.contains(&1)
+            || mask.iter().enumerate().any(|(i, v)| *v == 0 && (self.water[i] != 0.0 || self.reference[i] != 0.0 || self.eta[i] != 0.0)) {
+            return Err("invalid inundation mask; excluded cells must contain no water".into());
+        }
+        self.valid = mask.iter().map(|v| *v == 1).collect();
+        Ok(())
     }
 
     fn stable_dt(&self) -> f64 {
@@ -121,14 +131,16 @@ impl Solver {
                 let index = |col: usize| if axis == 1 { row * self.w + col } else { col * self.w + row };
                 let li = index(face.saturating_sub(1));
                 let ri = index(face.min(across - 1));
+                if !self.valid[li] && !self.valid[ri] { continue; }
+                let (mut zl, mut zr) = (self.bed[li], self.bed[ri]);
                 let mut left = self.state(li);
                 let mut right = self.state(ri);
-                if face == 0 { left[axis] = -right[axis]; }
-                if face == across { right[axis] = -left[axis]; }
-                let (flux, cl, cr) = Self::face(left, right, self.bed[li], self.bed[ri], axis);
+                if face == 0 || !self.valid[li] { left = right; left[axis] = -right[axis]; zl = zr; }
+                if face == across || !self.valid[ri] { right = left; right[axis] = -left[axis]; zr = zl; }
+                let (flux, cl, cr) = Self::face(left, right, zl, zr, axis);
                 for k in 0..3 {
-                    if face > 0 { delta[li][k] -= ratio * (flux[k] + if k == axis { cl } else { 0.0 }); }
-                    if face < across { delta[ri][k] += ratio * (flux[k] + if k == axis { cr } else { 0.0 }); }
+                    if face > 0 && self.valid[li] { delta[li][k] -= ratio * (flux[k] + if k == axis { cl } else { 0.0 }); }
+                    if face < across && self.valid[ri] { delta[ri][k] += ratio * (flux[k] + if k == axis { cr } else { 0.0 }); }
                 }
             } }
         }
@@ -229,6 +241,20 @@ mod tests {
         assert!(s.peak.iter().enumerate().any(|(i, v)| depth[i] == 0.0 && *v > 0.05));
         assert!(receded, "the run-up must subsequently drain below 1 cm");
         assert!(s.volume_error().abs() < 1e-7);
+    }
+    #[test]
+    fn excluded_terrain_cells_remain_impermeable_and_conservative() {
+        let (w, h) = (30, 12);
+        let mut reference = vec![3.0; w*h];
+        let mut mask = vec![1; w*h];
+        for y in 0..h { mask[y*w+15] = 0; reference[y*w+15] = 0.0; }
+        let eta = (0..w*h).map(|i| if i % w < 15 { 0.5 } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, 25.0, vec![-3.0; w*h], reference, eta, false, 0.025).unwrap();
+        s.set_valid(mask.clone()).unwrap();
+        s.advance(200).unwrap();
+        assert!(s.water.iter().enumerate().all(|(i, v)| if mask[i] == 0 { *v == 0.0 } else if i % w > 15 { (*v - 3.0).abs() < 1e-12 } else { v.is_finite() && *v >= 0.0 }));
+        assert!(s.volume_error().abs() < 1e-7);
+        assert!(s.set_valid(vec![0; w*h]).is_err());
     }
     #[test]
     fn invalid_water_and_inputs_are_rejected() {

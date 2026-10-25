@@ -681,10 +681,11 @@ The next modelling work is recorded under
 [Tsunami: data, coastal coupling and dispersive waves](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026):
 verified bed/land data and vertical datums; identified offshore scenarios and
 boundary time series; tide and upstream river flow; coastal grid refinement;
-an optional Boussinesq-type dispersive solver; and sensitivity ensembles.
+coastal extensions to the Boussinesq-type dispersive solver; and sensitivity ensembles.
 
 Dispersive modelling means wavelengths can travel at different speeds, changing
-pulse shape as it propagates. It is a proposed additional physical model, not
-another name for the existing linear finite-volume method or its numerical
-damping. No dispersive solver has been implemented. The roadmap lists the
-physics, wet/dry coupling and runtime checks required before offering it.
+pulse shape as it propagates. It adds physical dispersion; the linear
+finite-volume method instead has numerical damping. A linearised Boussinesq/Peregrine uniform-ocean comparison is now
+implemented in Rust/WASM and selectable through **Try dispersive ocean**.
+Variable-depth and wet/dry coupling remain proposed. The roadmap lists the
+physics and runtime checks needed before extending it to coastal terrain.

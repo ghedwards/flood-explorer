@@ -21,3 +21,5 @@ pub mod inertial;
 pub mod tsunami;
 
 pub mod inundation;
+
+mod dispersion;

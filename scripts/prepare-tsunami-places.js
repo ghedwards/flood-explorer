@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const groups = {
   moreton: ['Brisbane', 'Redcliffe', 'Cleveland', 'Ipswich'],
+  'gold-coast-seaway': ['Southport', 'Main Beach', 'Gold Coast Seaway', 'Wave Break Island', 'The Spit'],
   'gold-coast': ['Gold Coast', 'Surfers Paradise', 'Tweed Heads', 'Coolangatta'],
   coffs: ['Coffs Harbour', 'Woolgoolga', 'Urunga'],
   newcastle: ['Newcastle', 'Nelson Bay', 'Maitland'],
@@ -29,7 +30,7 @@ async function main() {
   };
   const [geographic, projected] = await Promise.all([query(4326), query(7856)]);
   const xy = new Map(projected.map(f => [f.attributes.id, f.geometry]));
-  const rank = ['POPULATION CENTRE', 'LOCALITY', 'WATERCOURSE', 'POINT', 'ROCK', 'BEACH', 'ISLAND GROUP'];
+  const rank = ['POPULATION CENTRE', 'LOCALITY', 'WATERCOURSE', 'POINT', 'ROCK', 'BEACH', 'ISLAND GROUP', 'ISLAND', 'SPIT', 'PASSAGE'];
   const eligible = geographic.filter(f => rank.includes(f.attributes.feature) && f.geometry.x > 149 && f.geometry.y < -25 && f.geometry.y > -36);
   const output = {};
   for (const [id, wanted] of Object.entries(groups)) {

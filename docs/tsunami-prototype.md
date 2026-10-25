@@ -62,6 +62,49 @@ reflect. The peak layer records maximum absolute surface displacement,
 including the initial source; it is not inundation depth. Colour saturation
 is fixed at 1.5 times the source amplitude; gauge traces autoscale.
 
+## Dispersive uniform-ocean comparison
+
+Choose **Try dispersive ocean**, or open
+`tsunami.html?scene=flat&method=dispersive`. The **Dispersive · uniform ocean only**
+method is a linearised Boussinesq/Peregrine experiment for constant positive
+depth. It adds wavelength-dependent speed: shorter waves travel more slowly
+than long waves. The linear model is based on the flat-bottom
+[Boussinesq–Peregrine system](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/evolution-of-perturbed-long-nonlinear-plane-ring-and-hybrid-surface-waves/5A777B7412A3346C7F0EA4ACD2B65A88).
+This version has no nonlinear advection, variable-depth effects, shoreline
+coupling, wetting/drying or breaking. It cannot be selected on coastal terrain.
+
+For uniform still-water depth H, the implementation advances:
+
+```
+(I - H²/3 Laplacian) phi = eta
+q_t = -g H grad(phi)
+eta_t = -div(q)
+omega² = g H k² / (1 + H² k²/3)
+```
+
+The scalar Helmholtz operator uses Neumann walls; the staggered transports and
+leapfrog stepping are shared with the reference linear solver. A warm-started
+conjugate-gradient solve uses reused arrays, a relative residual tolerance of
+1e-9 and a 200-iteration limit, reporting failure rather than continuing with
+an unconverged pressure field. The worker sends at most 16 dispersive steps
+per batch to keep controls responsive. The optional sponge remains an
+approximate damping boundary, not an open-ocean radiation condition.
+
+This is a **weak-dispersion approximation**. Its dispersion tends to
+`sqrt(g H)` as kH tends to zero; it does not reproduce the full gravity-wave
+relation `omega² = g k tanh(k H)` at arbitrary wavelengths. The displayed
+source-scale depth/spread ratio uses k approximately equal to 1/source spread,
+not the full pulse spectrum. Prefer kH below about 1 for comparisons; shorter
+spectral components are less reliable. Check the selected depth and spread
+when comparing the three uniform-ocean numerical methods.
+
+Rust checks verify the Neumann Helmholtz transfer function, two cosine-mode
+frequencies against the fully discrete dispersion relation, the long-wave
+limit, still water, mass conservation and rejection of non-uniform depth.
+WASM checks compare finite waveforms against the shallow-water solver. These
+are numerical checks, not coastal or field validation. The remaining work is
+recorded in the [tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026).
+
 ## Prefetched Australian east coast
 
 The regional picker includes Moreton Bay/Brisbane, Gold Coast/Tweed, Coffs
@@ -106,7 +149,8 @@ experimentally, with different terrain and initialisation requirements.
 ## Nonlinear land, river and lake experiments
 
 Choose **Idealised estuary, river and lake**, **Pine River / Moreton Bay**,
-**Brisbane River mouth** or **Currumbin Creek / Gold Coast**.
+**Brisbane River mouth**, **Currumbin Creek / Gold Coast** or
+**Gold Coast / Broadwater & Seaway**.
 These local scenes select a separate nonlinear Rust solver automatically;
 the regional 1.5 km grids remain propagation-only. A `?scene=estuary` or
 `?scene=pine-estuary` URL opens the corresponding local scene directly.
@@ -123,7 +167,9 @@ Outer walls reflect. The optional sponge relaxes initially wet edge cells
 towards their initial reference depth, with its water exchange included in
 the volume balance. It is not an open-ocean radiation boundary.
 
-Both local scenes are 160 × 96 cells at 25 m spacing (4 × 2.4 km). The
+All local scenes have 160 × 96 cells. Most use 25 m spacing (4 × 2.4 km);
+the Gold Coast Broadwater/Seaway case uses 50 m spacing (8 × 4.8 km) to include
+Southport and the inlet. The
 idealised case has a sloping beach, a low floodplain, a curving channel and
 an enclosed lake with an independently adjustable initial water elevation.
 There is no imposed upstream river discharge, rainfall, breach or sediment
@@ -133,23 +179,52 @@ is confined to the connected waterbody containing the source. The imposed
 local dipole is initially at rest and is tapered in shallow water to retain non-negative depth. Its
 width can be 0.1–0.8 km, rather than the regional 5–20 km source width.
 
-The three local Queensland subsets are numeric terrain from the [Queensland QldDem mosaic](https://spatial-img.information.qld.gov.au/arcgis/rest/services/Elevation/QldDem/ImageServer),
+Pine River, Brisbane River mouth and Currumbin use numeric terrain from the
+[Queensland QldDem mosaic](https://spatial-img.information.qld.gov.au/arcgis/rest/services/Elevation/QldDem/ImageServer),
 clipped in GDA2020 / MGA zone 56 (EPSG:7856) and bilinearly resampled to 25 m.
-Recreate it with `node scripts/prepare-tsunami-estuary.js`. Source resolution
-and survey age vary; resampling does not turn lower-resolution bathymetry
-into a 25 m survey. Missing elevation samples are rejected, not filled or
-channel-carved. The export does not specify a vertical datum. Initial sea
-level is therefore a hypothetical elevation in source terrain units,
-**not a verified tide or MSL/AHD conversion**. Submerged bed coverage and
-shoreline connectivity have not been independently verified. This is a
-local terrain/solver experiment, not a calibrated estuary inundation model.
+Recreate these with `node scripts/prepare-tsunami-estuary.js`. Source resolution
+and survey age vary; resampling does not turn coarse bathymetry into a survey.
+The export does not specify a vertical datum, so the initial water level is a
+hypothetical elevation in source units, not a verified tide or MSL/AHD conversion.
+
+Gold Coast Broadwater/Seaway instead uses the [CSIRO Queensland estuaries
+composite topography-bathymetry v1](https://data.csiro.au/collection/csiro:72113),
+DOI 10.25919/1xzm-pw88, CC BY 4.0. It retains the **Australian Vertical Working
+Surface (AVWS, EPSG:9458)** for the entire grid; values are not patched into the
+Queensland mosaic of an unspecified datum. Recreate with
+`node scripts/prepare-tsunami-csiro.js`. The script projects each 50 m model
+cell centre into the source Australian Albers projection (EPSG:9473), samples
+the nearest 5 m source pixel and retains its provenance flag. HTTP range reads
+retrieve only a small crop of the 15 GB statewide cloud-optimised GeoTIFF.
+Centre sampling can miss narrow channels; it is not an area-average or a 5 m
+simulation. Initial sea level zero means a hypothetical AVWS plane, not local
+mean sea level; calibrated tides and surveys remain future work.
+
+The original Gold Coast QldDem export had six NoData cells. Underlying source
+rasters had numeric values at five of those locations, suggesting mosaic or
+coverage-selection gaps; the exact mosaic cause is unconfirmed. CSIRO has
+values at all six, and the replacement grid has no missing sampled cells.
+However, its 15,360 samples include 7,320 interpolated, 7,095 LiDAR-derived,
+774 modelled-creek, 168 coarse-base-water and 3 satellite-intertidal cells.
+This is improved completeness, not uniformly surveyed bathymetry. Source
+percentages appear below the map, individual flags appear on inspection,
+and an optional amber overlay marks interpolated, modelled or coarse cells.
+These flags are provenance classes, not quantitative error estimates.
+
+Any missing elevation samples remain null with a validity mask. Excluded cells
+act as impermeable computational boundaries and contain no water; magenta
+hatching marks them even with terrain colours disabled. Their count and
+percentage appear below the map, and inspection reports unavailable elevation.
+This can obstruct channels. Prefetch scripts reject more than 1% missing data;
+the application does not invent elevations or carve channels. Source-supplied
+interpolation in CSIRO is retained and identified separately.
 
 Initial water is flood-filled through cells below the chosen level, starting
 from each grid's declared ocean-facing edges: east for Pine, north for Brisbane
-River mouth, and north/east for Currumbin. Source and virtual-gauge cells are
+River mouth, and north/east for Currumbin and Gold Coast Seaway. Source and virtual-gauge cells are
 chosen from this connected water, rather than from arbitrary negative terrain. Disconnected depressions start dry; lake levels
 are unknown there. The idealised scene demonstrates separately initialised
-lakes. These local terrain subsets have their own **CC BY-SA** terms, retained attribution,
+lakes. The three QldDem subsets have **CC BY-SA** terms; CSIRO is **CC BY 4.0**. All retain attribution,
 modification notice and required acknowledgements (see the adjacent data
 README and JSON). The application code remains MIT licensed.
 
@@ -217,8 +292,8 @@ assign real city names to synthetic geography.
 
 See [the tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026)
 for proposed data improvements, offshore/river coupling, refinement, sensitivity
-runs and an optional **dispersive-wave (Boussinesq-type)** solver. Dispersion
-means wavelength-dependent propagation speed; it has not been implemented.
+runs and the next stage of the **dispersive-wave (Boussinesq-type)** solver. Its
+uniform-ocean comparison is implemented; coastal coupling remains future work.
 
 ## Checks and limits
 

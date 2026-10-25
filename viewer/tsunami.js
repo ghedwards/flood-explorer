@@ -46,27 +46,37 @@ function labels() {
   $('sourceValue').textContent = bathymetry ? coordinates(source) : `${(source[0] * grid.cell / 1000).toFixed(2)} km E · ${(source[1] * grid.cell / 1000).toFixed(2)} km S`;
   $('waveSpeed').textContent = `${(Math.sqrt(9.81 * sourceDepth) * 3.6).toFixed(0)} km/h`;
   $('scenarioName').textContent = $('preset').selectedOptions[0].textContent;
-  $('methodHint').textContent = localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
+  $('tryDispersive').hidden = $('method').value === 'dispersive';
+  $('methodHint').textContent = $('method').value === 'dispersive' ? `Experimental linear Boussinesq waves: shorter wavelengths travel more slowly. Uniform depth only; no land, breaking or inundation. Source-scale depth/spread ratio: ${(grid.depth[0] / (+$('width').value * 1000)).toFixed(2)}. Weak-dispersion approximation, not a complete gravity-wave model.` : localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
     ? 'Staggered-grid propagation with low numerical damping. Both methods solve linear shallow-water equations; neither models onshore flooding.'
     : 'Finite-volume acoustic fluxes with RK2 time stepping. This first-order spatial method damps short waves more. It solves the same linear equations; it does not add inundation physics.';
   $('mapHint').textContent = `${grid.W * grid.cell / 1000} × ${grid.H * grid.cell / 1000} km ${bathymetry ? 'Australian coastal subset' : 'idealised basin'} · ${grid.cell / 1000} km cells · ${localScene() ? ($('preset').value === 'estuary' ? 'Click water to move the local source; the idealised lake can have its own wave.' : 'Click connected bay water to move the local wave source.') : 'Click the ocean to move the hypothetical source.'} Markers 1–3 are virtual gauges.`;
   $('seaHeightRange').textContent = `Bed below zero: ${terrain.low.toFixed(1)} to 0 m`;
+  $('missingTerrainLegend').hidden = !bathymetry?.missing;
+  $('missingTerrainLegend').textContent = bathymetry?.missing ? `Magenta hatch: ${bathymetry.missing} missing terrain cells` : '';
+  $('terrainQualityControl').hidden = !bathymetry?.terrainSource;
+  $('terrainSources').hidden = !bathymetry?.sourceCounts;
+  $('terrainSources').textContent = bathymetry?.sourceCounts ? `Terrain provenance: ${bathymetry.sourceCounts.filter(s => s.cells).map(s => `${s.label} ${(100*s.cells/(grid.W*grid.H)).toFixed(1)}%`).join(' · ')}. Amber overlay marks interpolated, modelled creek or coarse base cells when enabled. Inspect a cell for its source.` : '';
+  $('terrainCoverage').hidden = !bathymetry?.missing;
+  $('terrainCoverage').textContent = bathymetry?.missing ? `${bathymetry.missing} terrain cells missing (${(100*bathymetry.missing/(grid.W*grid.H)).toFixed(2)}% of this grid). Magenta hatching marks cells excluded from water flow; source heights are unavailable.` : '';
   $('landHeightRange').textContent = terrain.high > 0 ? `Ground above zero: 0 to ${terrain.high.toFixed(1)} m` : 'Land heights unavailable in this scene';
   updatePlaceContext();
   $('boundaryHint').textContent = localScene() ? 'Outer edges are reflecting walls. The optional sponge relaxes initially wet edge cells towards their starting water levels; it is not an offshore tsunami boundary or a river inflow.' : 'Turn off absorption to compare reflections in a closed basin. The coastline always reflects; water does not move onto land.';
-  $('dataNote').textContent = localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : 'Real local terrain resampled to 25 m, with a hypothetical local wave. Source bathymetry coverage and vertical datum are unverified. Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.') : bathymetry
+  $('dataNote').textContent = localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : `Real local terrain resampled to ${grid.cell} m, with a hypothetical local wave. ${bathymetry?.terrainSource ? 'AVWS elevations; initial water level is hypothetical, not calibrated local mean sea level. Terrain includes interpolation and modelled creek depths.' : 'Source bathymetry coverage and vertical datum are unverified.'} Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.`) : bathymetry
     ? 'Real coastal topography and bathymetry, with a hypothetical offshore pulse. This is not a historical earthquake reconstruction or a coastal hazard prediction. Land remains a reflecting wall: no river flow, run-up or inundation.'
     : 'Synthetic ocean depths and a prescribed uplift/subsidence pulse. This is not an earthquake scenario or a prediction for a real coast. It does not model wave breaking, shoreline run-up or inundation.';
+  if ($('method').value === 'dispersive') $('dataNote').textContent = 'Uniform synthetic ocean with linear Boussinesq/Peregrine dispersion. This is a numerical comparison case, not a coastal inundation or earthquake scenario.';
   $('dataCredit').hidden = !bathymetry;
-  $('terrainTerms').hidden = !bathymetry?.acknowledgement;
-  if (bathymetry?.acknowledgement) {
-    $('terrainAcknowledgement').textContent = bathymetry.acknowledgement;
-    $('hydrographicNotice').textContent = bathymetry.hydrographicNotice;
+  $('terrainTerms').hidden = !bathymetry?.licenseMetadataUrl;
+  if (bathymetry?.licenseMetadataUrl) {
+    $('terrainAcknowledgement').textContent = bathymetry.acknowledgement || `${bathymetry.license}. ${bathymetry.changes || ''}`;
+    $('hydrographicNotice').textContent = bathymetry.hydrographicNotice || '';
     $('terrainLicence').href = bathymetry.licenseMetadataUrl;
   }
   map.setAttribute('aria-label', 'Coastal water model. Click open water to move the source; arrow keys move one grid cell; Enter plays or pauses.');
   if (bathymetry) {
-    $('dataCredit').replaceChildren(document.createTextNode(`${bathymetry.source}. ${localScene() ? '25 m bilinear resampling; mixed source resolutions. ' + bathymetry.verticalDatum : 'Resampled to 1.5 km; wet cells shallower than 10 m are floored to 10 m.'} ${bathymetry.attribution}. `));
+    if (bathymetry.missing) $('dataNote').textContent += ` ${bathymetry.missing} hatched cells have no elevation data and are excluded from flow.`;
+    $('dataCredit').replaceChildren(document.createTextNode(`${bathymetry.source}. ${localScene() ? `${bathymetry.sampling || `${grid.cell} m bilinear resampling; mixed source resolutions`}. ${bathymetry.verticalDatum}` : 'Resampled to 1.5 km; wet cells shallower than 10 m are floored to 10 m.'} ${bathymetry.attribution}. `));
     const link = document.createElement('a'); link.href = bathymetry.metadataUrl; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Dataset metadata ↗'; $('dataCredit').append(link);
   }
 }
@@ -93,6 +103,8 @@ async function changeScene() {
   const local = localScene();
   $('method').querySelector('[value="nonlinear"]').disabled = !local;
   for (const option of $('method').options) if (option.value !== 'nonlinear') option.disabled = local;
+  $('method').querySelector('[value="dispersive"]').disabled = id !== 'flat';
+  if (id !== 'flat' && $('method').value === 'dispersive') $('method').value = 'staggered';
   if (local) $('method').value = 'nonlinear';
   else if ($('method').value === 'nonlinear') $('method').value = 'staggered';
   for (const id of ['depth', 'speed']) $('view').querySelector(`[value="${id}"]`).disabled = !local;
@@ -111,7 +123,7 @@ async function changeScene() {
     const response = await fetch(new URL(`tsunami-data/${id}.json`, document.baseURI), { signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`Coastal grid: HTTP ${response.status}`);
     const data = await response.json();
-    const referenceElevation = estuaryIds.includes(id) ? Array.from(connectedWaterDepth(data.elevation || [], 160, 96, +$('tide').value, data.seaEdges || ['east']), depth => -depth) : data.elevation || [];
+    const referenceElevation = estuaryIds.includes(id) ? Array.from(connectedWaterDepth(data.elevation || [], 160, 96, +$('tide').value, data.seaEdges || ['east'], data.valid), depth => -depth) : data.elevation || [];
     const nextSource = waterPoint(referenceElevation, estuaryIds.includes(id) ? data.sourceTarget || [142, 48] : [120, 48], estuaryIds.includes(id) ? 3.1 : 500);
     // Validate the entire numeric grid before accepting it into the UI.
     tsunamiGrid({ ...options(), bathymetry: data, source: nextSource });
@@ -169,6 +181,7 @@ function paint() {
   const peakView = $('view').value === 'peak';
   const terrainOnly = $('view').value === 'terrain';
   const terrainVisible = $('showTerrain').checked || terrainOnly;
+  const quality = $('showTerrainQuality').checked ? bathymetry?.terrainSource : null;
   $('terrainKey').hidden = !terrainVisible;
   const view = $('view').value;
   const values = view === 'depth' ? frame.water : view === 'speed' ? frame.speed : peakView ? frame.peak : frame.eta;
@@ -199,6 +212,8 @@ function paint() {
       const tint = view === 'depth' || view === 'speed' || (nonlinear() && grid.depth[i] === 0) ? [0, 153, 182] : values[i] < 0 ? [20, 136, 236] : [246, 90, 28];
       rgb = base.map((c, k) => Math.round(c + (tint[k] - c) * opacity));
     }
+    if (quality && (quality[i] === 0 || quality[i] >= 5)) rgb = rgb.map((c, k) => Math.round(.45*c + .55*[240, 167, 35][k]));
+    if (grid.valid?.[i] === 0) rgb = [110, 119, 107];
     image.data.set([...rgb, 255], i * 4);
   }
   pixelContext.putImageData(image, 0, 0);
@@ -218,6 +233,18 @@ function paint() {
     ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.strokeStyle = colours[n]; ctx.stroke();
     ctx.fillStyle = colours[n]; ctx.fillText(String(n + 1), (x + .5) * sx, (y + .5) * sy);
   });
+  // Missing data is a coverage overlay, independent of terrain/wave palette.
+  if (grid.valid) {
+    ctx.save(); ctx.strokeStyle = '#b00083'; ctx.fillStyle = '#f9d9f0'; ctx.lineWidth = 1.5*screen;
+    for (let i = 0; i < grid.valid.length; i++) if (!grid.valid[i]) {
+      const x = i % grid.W * sx, y = Math.floor(i / grid.W) * sy;
+      ctx.fillRect(x, y, sx, sy); ctx.strokeRect(x, y, sx, sy);
+      ctx.beginPath(); ctx.moveTo(x, y + sy); ctx.lineTo(x + sx, y); ctx.stroke();
+      // A wider outline makes even a single coarse cell visible on phones.
+      ctx.strokeRect(x - 2*screen, y - 2*screen, sx + 4*screen, sy + 4*screen);
+    }
+    ctx.restore();
+  }
   drawPlaces(screen);
   $('clock').textContent = `${timeLabel(frame.time)} simulated`;
   $('range').textContent = terrainOnly ? 'Terrain elevations (m)' : view === 'speed' ? `0 to ${scale.toFixed(1)} m/s` : view === 'depth' ? `0 to ${scale.toFixed(1)} m` : peakView ? `0 to ${scale.toFixed(2)} m` : `−${scale.toFixed(2)} to +${scale.toFixed(2)} m`;
@@ -316,7 +343,7 @@ function advance(steps) {
   if (!ready || busy || frame.time >= totalSeconds()) return;
   busy = true;
   const remaining = Math.ceil((totalSeconds() - frame.time) / frame.dt);
-  worker.postMessage({ type: 'step', steps: Math.min(200, steps, remaining) });
+  worker.postMessage({ type: 'step', steps: Math.min(grid.method === 3 ? 16 : 200, steps, remaining) });
   controls();
 }
 
@@ -325,7 +352,7 @@ function animate(now) {
   previousWall = now;
   if (ready && running) {
     budget += elapsed * +$('speed').value * 60;
-    const steps = Math.min(200, Math.floor(budget / frame.dt));
+    const steps = Math.min(grid.method === 3 ? 16 : 200, Math.floor(budget / frame.dt));
     if (steps > 0 && !busy) { budget -= steps * frame.dt; advance(steps); }
   } else budget = 0;
   requestAnimationFrame(animate);
@@ -340,17 +367,20 @@ $('play').addEventListener('click', () => {
 $('step').addEventListener('click', () => advance(8));
 $('reset').addEventListener('click', () => (coastIds.includes($('preset').value) || estuaryIds.includes($('preset').value)) && bathymetry?.id !== $('preset').value ? changeScene() : reset());
 $('preset').addEventListener('change', changeScene);
+$('tryDispersive').addEventListener('click', () => { $('preset').value = 'flat'; $('method').value = 'dispersive'; changeScene(); });
 for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel']) $(id).addEventListener('change', () => reset());
 for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel']) $(id).addEventListener('input', labels);
 $('view').addEventListener('change', paint);
 $('showTerrain').addEventListener('change', paint);
+$('showTerrainQuality').addEventListener('change', paint);
 $('showPlaces').addEventListener('change', () => { updatePlaceContext(); paint(); });
 function inspectTerrain() {
   if (!terrain || !frame || !inspected) { $('terrainReadout').textContent = 'Move over the map to inspect terrain and water depth. Touch a cell to inspect it; tapping wet cells also moves the source.'; return; }
   const [x, y] = inspected, i = y * grid.W + x, z = terrain.elevation[i];
+  if (grid.valid?.[i] === 0) { $('terrainReadout').textContent = 'Elevation data unavailable: this cell is excluded from the flow model.'; return; }
   const height = Number.isFinite(z) ? `Terrain elevation ${z >= 0 ? '+' : ''}${z.toFixed(2)} m` : 'Land height unavailable (mask only)';
   const water = nonlinear() ? `Water depth now ${frame.water[i].toFixed(2)} m · Surface elevation ${(z + frame.water[i]).toFixed(2)} m` : `Wave change ${frame.eta[i].toFixed(2)} m`;
-  $('terrainReadout').textContent = `${height} · Initial model water depth ${grid.depth[i].toFixed(2)} m · ${water}`;
+  $('terrainReadout').textContent = `${height}${bathymetry?.terrainSource ? ` · Source: ${bathymetry.sourceLabels[bathymetry.terrainSource[i]]}` : ''} · Initial model water depth ${grid.depth[i].toFixed(2)} m · ${water}`;
 }
 function inspectPointer(event) {
   if (!grid) return;
@@ -391,6 +421,7 @@ window.__tsunamiStatus = () => ({ ready, running, time: frame?.time || 0, engine
 window.addEventListener('pagehide', () => { if (worker) worker.terminate(); });
 window.addEventListener('resize', paint);
 const initialScene = new URLSearchParams(location.search).get('scene');
+if (initialScene === 'flat' && new URLSearchParams(location.search).get('method') === 'dispersive') $('method').value = 'dispersive';
 if (initialScene && [...$('preset').options].some(option => option.value === initialScene)) { $('preset').value = initialScene; changeScene(); }
 else reset();
 requestAnimationFrame(animate);

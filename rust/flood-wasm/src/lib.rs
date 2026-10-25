@@ -498,13 +498,14 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             TSUNAMI.with(|s| *s.borrow_mut() = None);
             INUNDATION.with(|s| *s.borrow_mut() = None);
             if b.num("method") == 2.0 {
-                let solver = inundation::Solver::new(
+                let mut solver = inundation::Solver::new(
                     b.num("W") as usize, b.num("H") as usize, b.num("cell"),
                     b.f64s("bed").ok_or("missing bed elevations")?,
                     b.f64s("depth").ok_or("missing initial water depths")?,
                     b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
                     b.num("roughness"),
                 )?;
+                if let Some(valid) = b.u8s("valid") { solver.set_valid(valid)?; }
                 o.num("dt", solver.dt);
                 INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
             } else {
@@ -514,6 +515,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
                 )?;
                 if b.num("method") == 1.0 { solver.method = tsunami::Method::FiniteVolume; }
+                if b.num("method") == 3.0 { solver.method = tsunami::Method::Dispersive; solver.advance(0)?; }
                 o.num("dt", solver.dt);
                 TSUNAMI.with(|s| *s.borrow_mut() = Some(solver));
             }
