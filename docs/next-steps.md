@@ -633,16 +633,16 @@ Phase 1 started (`b75b5fac` + scaffold in `desktop/`):
   select local mode; refresh loop runs in-process (as it already did for
   in-memory). Verified locally: broker serves on 8787 and writes readings.json.
 - Tauri 2 scaffold in `desktop/`: `Cargo.toml`, `tauri.conf.json`,
-  `src/main.rs` + `src/lib.rs` (launches the broker sidecar in local mode),
+  `src/main.rs` + `src/lib.rs` (runs the broker in-process in local mode),
   `desktop/README.md` with build steps. `beforeBuildCommand` sets
   `FLOOD_BROKER_URL=http://127.0.0.1:8787` so the webview points at the
   local broker; national data bundled via `bundle.resources`.
 
-Still to do in phase 1: Tauri sidecar port discovery (currently assumes 8787)
-and an elevation proxy in the broker (today the webview fetches GA directly).
-Tauri CLI is not installed on the dev machine, so the shell is scaffolded
-but not yet built/tested. Phases 2-3 (bundled data, offline badge,
-signed installers + updater) are untouched. See `ROADMAP.md`.
+The broker now runs in-process on loopback port 8787; a bind failure stops
+startup. Desktop elevation uses the local `/v1/elev` proxy. The frontend build
+uses `DATA_SOURCE=runtime` for live readings. See `desktop/README.md` for
+current build steps. Phases 2-3 (bundled data, offline badge, signed installers
+and updater) remain follow-ups. See `ROADMAP.md`.
 
 ### 11. Rendering pipeline in Rust (WASM for web, native for desktop) — in progress
 
@@ -653,24 +653,19 @@ instead of `toBlob`+PNG+`setUrl`, removing the encode step. Step 3 (desktop
 reuse) comes with the desktop version; step 4's WebGL texture upload remains
 an optional follow-up (canvas is now fast enough that WebGL is not urgent).
 
-### 12. Settings: cloud settings.ini + desktop settings page (open)
+### 12. Settings: cloud settings.ini + desktop settings page
 
-Cloud (deployable server, `main.rs`): a `settings.ini` next to the binary (or
-`/etc/flood-broker/settings.ini`, or `--settings <path>`) with `key = value`
-lines, read at startup. Env vars take precedence (so Lambda keeps using its
-env), and the file fills in gaps — so a host can change a key without a
-redeploy and without env-var plumbing. Keys:
-- `QLD_TRAFFIC_API_KEY`, `NSW_TRAFFIC_API_KEY` (and, later, `VIC_TRAFFIC_API_KEY`)
-- `ALLOWED_ORIGINS`, `BROKER_MAX_CONCURRENCY`, `BROKER_REFRESH_MINUTES`
-- `STATIONS_URL`, `READINGS_BUCKET`, `AWS_REGION` (cloud only)
-- `FLOOD_DATA_DIR`, `FLOOD_STORAGE` (desktop only)
+The standalone broker reads `--settings <path>`, `FLOOD_SETTINGS`, or
+`./settings.ini`, in that order. Non-empty environment variables take
+precedence. Host configuration is loaded at startup; traffic keys are re-read
+when road feeds refresh. Supported configuration uses the names in
+`rust/flood-broker/src/main.rs` (including `WORKERS`, `CACHE_MINUTES`, and
+`READINGS_REFRESH_MINUTES`).
 
-Desktop: a settings page in the viewer (opened from a gear icon) that writes
-the API keys to `~/.flood-explorer/settings.json` (or `settings.ini`); the
-in-process broker reads them on startup and on a "reload settings" action.
-No restart needed for key changes if the broker re-reads per refresh.
+The desktop gear button saves QLD and NSW traffic keys to `settings.ini` in
+its data directory (default `~/.flood-explorer/`), or `FLOOD_SETTINGS` when set.
+The in-process broker reads that same file on road-feed refresh, without
+restarting. The web build leaves key management to the broker host.
 
-Work order: (1) broker reads a settings file in local/standalone mode;
-(2) settings page in the viewer that persists keys; (3) (optional) reload
-without restart; (4) (optional) per-source status in the settings page
-(lastGood/lastError from `/health`).
+Optional follow-ups: immediate refresh after saving and per-source status
+in the Settings panel (`/health` exposes lastGood/lastError).

@@ -5,6 +5,9 @@ node_modules/
 smoke*.png
 .DS_Store
 rust/target/
+desktop/target/
+desktop/binaries/
+settings.ini
 work-*
 *.node
 

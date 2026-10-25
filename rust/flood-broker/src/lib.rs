@@ -12,10 +12,12 @@
 //! [`Broker::handle`] is the whole service minus the socket, so tests drive
 //! it with a stand-in portal and clock; `main.rs` puts it on a socket.
 
+mod elevation;
 pub mod history;
 pub mod lambda;
 pub mod readings;
 pub mod s3;
+pub mod settings;
 pub mod wmip;
 
 use serde_json::{json, Map, Value};
@@ -361,6 +363,21 @@ impl Broker {
         }
     }
 
+    fn serve_elevation(&self, req: &Request, url: &str, fetch: impl FnOnce(&str) -> Result<(String, Vec<u8>), String>) -> Response {
+        if !url.starts_with("https://services.ga.gov.au/") {
+            return self.reply(req, 400, &json!({"error": "url must be a services.ga.gov.au WCS URL"}), &[]);
+        }
+        match fetch(url) {
+            Ok((content_type, bytes)) => {
+                let mut response = self.reply_raw(req, 200, bytes, &[("Cache-Control", "public, max-age=86400")]);
+                response.headers.retain(|(key, _)| key != "Content-Type");
+                response.headers.push(("Content-Type".into(), content_type));
+                response
+            }
+            Err(error) => self.reply(req, 502, &json!({"error": error}), &[("Cache-Control", "no-store")]),
+        }
+    }
+
     pub fn handle(&self, req: &Request) -> Response {
         lock(&self.st).requests += 1;
         let (path, query) = req.target.split_once('?').unwrap_or((req.target, ""));
@@ -403,30 +420,8 @@ impl Broker {
             return self.serve_history(req, query);
         }
         if path == "/v1/elev" {
-            // proxy for Geoscience Australia elevation (WCS GetCoverage).
-            // Returns the raw GeoTIFF bytes. Used by the desktop build to
-            // avoid CORS and to share the SW's tile cache; on Lambda the
-            // web app fetches GA directly, so this is a best-effort passthrough.
             let url = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "url").map(|(_, v)| wmip::decode(v)).unwrap_or_default();
-            if !url.starts_with("https://services.ga.gov.au/") {
-                return self.reply(req, 400, &json!({"error": "url must be a services.ga.gov.au WCS URL"}), &[]);
-            }
-            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(Some(std::time::Duration::from_secs(30))).timeout_recv_response(Some(std::time::Duration::from_secs(60))).timeout_recv_body(Some(std::time::Duration::from_secs(60))).http_status_as_error(false).build().into();
-            let mut r = match agent.get(&url).header("User-Agent", "flood-explorer-broker").call() {
-                Ok(r) => r,
-                Err(e) => return self.reply(req, 502, &json!({"error": e.to_string()}), &[]),
-            };
-            let code = r.status().as_u16();
-            let mut b = Vec::new();
-            use std::io::Read;
-            if r.body_mut().as_reader().take(64 << 20).read_to_end(&mut b).is_err() {
-                return self.reply(req, 502, &json!({"error": "read body failed"}), &[]);
-            }
-            if code >= 400 {
-                return self.reply(req, code, &json!({"error": format!("upstream HTTP {}", code)}), &[]);
-            }
-            let ct = r.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
-            return Response { status: 200, headers: vec![("Content-Type".into(), ct), ("Cache-Control".into(), "public, max-age=86400".into())], body: b };
+            return self.serve_elevation(req, &url, elevation::fetch);
         }
         if path == "/v1/now" {
             return self.serve_doc(req, true);
@@ -561,9 +556,16 @@ pub fn http_fetch(url: &str) -> Result<Value, String> {
 
 /// Run the broker as a plain HTTP/1.1 server on `addr` (blocking).
 /// Used by the standalone binary (main.rs) and by the desktop build (in-process).
-pub fn run_server(broker: std::sync::Arc<Broker>, addr: &str, workers: usize, trust_proxy: bool) {
+pub fn run_server(broker: Arc<Broker>, addr: &str, workers: usize, trust_proxy: bool) -> std::io::Result<()> {
+    let listener = std::net::TcpListener::bind(addr)?;
+    serve_listener(broker, listener, workers, trust_proxy);
+    Ok(())
+}
+
+/// Serve an already-bound socket so desktop startup can report bind failures.
+pub fn serve_listener(broker: Arc<Broker>, listener: std::net::TcpListener, workers: usize, trust_proxy: bool) {
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpStream;
     use std::sync::mpsc;
     const MAX_HEAD: usize = 16 * 1024;
     fn reason(code: u16) -> &'static str {
@@ -591,8 +593,9 @@ pub fn run_server(broker: std::sync::Arc<Broker>, addr: &str, workers: usize, tr
         let mut buf = Vec::with_capacity(2048);
         let mut chunk = [0u8; 2048];
         loop {
-            if buf.windows(4).any(|w| w == b"\r\n\r\n") { break; }
-            if buf.len() > MAX_HEAD { return write_response(&mut s, &plain(413, "request too large")); }
+            let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+            if head_end.unwrap_or(buf.len()) > MAX_HEAD { return write_response(&mut s, &plain(413, "request too large")); }
+            if head_end.is_some() { break; }
             match s.read(&mut chunk) {
                 Ok(0) | Err(_) => return,
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
@@ -619,13 +622,7 @@ pub fn run_server(broker: std::sync::Arc<Broker>, addr: &str, workers: usize, tr
         })).unwrap_or_else(|_| plain(500, "broker error"));
         write_response(&mut s, &r);
     }
-    let listener = match TcpListener::bind(addr) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("flood-broker: can't listen on {}: {}", addr, e);
-            return;
-        }
-    };
+    let workers = workers.clamp(1, 256);
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(workers * 16);
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..workers {
@@ -638,7 +635,7 @@ pub fn run_server(broker: std::sync::Arc<Broker>, addr: &str, workers: usize, tr
             serve(&broker, s, trust_proxy);
         });
     }
-    println!("flood-broker listening on http://{} ({} workers)", addr, workers);
+    println!("flood-broker listening on {:?} ({} workers)", listener.local_addr(), workers);
     for s in listener.incoming().flatten() {
         if let Err(mpsc::TrySendError::Full(mut s)) = tx.try_send(s) {
             write_response(&mut s, &plain(503, "busy"));
@@ -695,6 +692,35 @@ mod tests {
 
     fn header<'a>(h: &'a [(String, String)], k: &str) -> Option<&'a str> {
         h.iter().find(|(a, _)| a.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn elevation_binary_responses_have_cors_and_head_semantics() {
+        let (_, _, broker) = setup(0);
+        let mut req = Request { method: "GET", target: "/v1/elev", origin: Some("https://ghedwards.github.io"), client: "test", gzip: false, if_none_match: None };
+        let url = "https://services.ga.gov.au/elevation?request=GetCoverage";
+        let response = broker.serve_elevation(&req, url, |_| Ok(("image/tiff".into(), vec![1, 2, 3, 4])));
+        assert_eq!(response.body, [1, 2, 3, 4]);
+        assert_eq!(header(&response.headers, "access-control-allow-origin"), req.origin);
+        assert_eq!(header(&response.headers, "content-type"), Some("image/tiff"));
+        assert_eq!(response.headers.iter().filter(|(k, _)| k == "Content-Type").count(), 1);
+        req.method = "HEAD";
+        assert!(broker.serve_elevation(&req, url, |_| Ok(("image/tiff".into(), vec![1]))).body.is_empty());
+        req.method = "GET";
+        let response = broker.serve_elevation(&req, url, |_| Err("upstream unavailable".into()));
+        assert_eq!(response.status, 502);
+        assert_eq!(header(&response.headers, "cache-control"), Some("no-store"));
+        for invalid in ["http://services.ga.gov.au/", "https://services.ga.gov.au.evil.test/", "https://localhost/"] {
+            assert_eq!(broker.serve_elevation(&req, invalid, |_| panic!("invalid host fetched")).status, 400);
+        }
+    }
+
+    #[test]
+    fn occupied_server_port_returns_an_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (_, _, broker) = setup(0);
+        let error = run_server(broker, &listener.local_addr().unwrap().to_string(), 1, false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     }
 
     #[test]

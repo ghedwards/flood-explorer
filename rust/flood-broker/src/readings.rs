@@ -961,40 +961,13 @@ pub fn http_json(url: &str, params: &[(String, String)]) -> Result<Value, String
     Err(format!("{}: {}", &full[..full.len().min(120)], last))
 }
 
-/// Read a setting from the environment first, then from a settings file
-/// (`FLOOD_SETTINGS`, or `./settings.ini`, or `~/.flood-explorer/settings.ini`),
-/// so a host (or the desktop app) can change keys without a redeploy.
-fn setting_value(key: &str) -> Option<String> {
-    if let Ok(v) = std::env::var(key) {
-        let v = v.trim().to_string();
-        if !v.is_empty() { return Some(v); }
-    }
-    let paths = [
-        std::env::var("FLOOD_SETTINGS").ok(),
-        Some("settings.ini".to_string()),
-        std::env::var("HOME").ok().map(|h| format!("{}/.flood-explorer/settings.ini", h)),
-        std::env::var("USERPROFILE").ok().map(|h| format!("{}/.flood-explorer/settings.ini", h)),
-    ];
-    for p in paths.into_iter().flatten() {
-        if let Ok(txt) = std::fs::read_to_string(&p) {
-            for line in txt.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') || line.starts_with(';') { continue; }
-                if let Some((k, v)) = line.split_once('=') {
-                    if k.trim() == key {
-                        let v = v.trim().to_string();
-                        if !v.is_empty() { return Some(v); }
-                    }
-                }
-            }
-        }
-    }
-    None
+/// Official traffic feeds using the standalone broker's settings file.
+pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
+    fetch_roads_with_settings(iso_now, errors, &crate::settings::path("settings.ini"))
 }
 
-/// Official road closures from QLDTraffic (and Live Traffic NSW when
-/// `NSW_TRAFFIC_API_KEY` is set in the environment or settings file).
-pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
+/// Re-read keys on each refresh, using the same path as the settings editor.
+pub fn fetch_roads_with_settings(iso_now: &str, errors: &mut Vec<String>, path: &std::path::Path) -> Value {
     use std::io::Read;
     let get_json = |url: &str, auth: Option<&str>| -> Result<Value, String> {
         let t = Some(std::time::Duration::from_secs(30));
@@ -1014,8 +987,8 @@ pub fn fetch_roads(iso_now: &str, errors: &mut Vec<String>) -> Value {
     };
     let mut items = Vec::new();
     let mut sources = serde_json::Map::new();
-    let qld_key = setting_value("QLD_TRAFFIC_API_KEY").unwrap_or_else(|| feeds::QLD_TRAFFIC_PUBLIC_KEY.into());
-    let nsw_key = std::env::var("NSW_TRAFFIC_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let qld_key = crate::settings::value(path, "QLD_TRAFFIC_API_KEY").unwrap_or_else(|| feeds::QLD_TRAFFIC_PUBLIC_KEY.into());
+    let nsw_key = crate::settings::value(path, "NSW_TRAFFIC_API_KEY");
 
     // Run the per-state fetches sequentially: each body is capped at 2 MB
     // (above) and the refresh already holds ~100 MB, so doing them one at a

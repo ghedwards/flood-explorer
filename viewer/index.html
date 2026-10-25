@@ -27,7 +27,7 @@
     <button type="submit" class="icon-btn" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg></button>
   </form>
   <button type="button" class="icon-btn" id="shareBtn" aria-label="Copy a link to this view" title="Copy a link to this view"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></button>
-  <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.26.6.8 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+  <button type="button" class="icon-btn" id="settingsBtn" hidden aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.26.6.8 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   <button type="button" class="pill" id="noticePill" data-open="panel-about">Screening only</button>
   <span class="pill offline-pill" id="offlinePill" role="status" hidden>Offline: saved data</span>
   <div class="search-results float" id="searchResults" aria-live="polite" hidden></div>
@@ -58,7 +58,7 @@
   <button type="button" class="tool" data-open="panel-forecast" aria-pressed="false">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 15a4 4 0 0 1-.6-8A5.5 5.5 0 0 1 17 7.5a3.8 3.8 0 0 1 .5 7.5H7Z"/><path d="m8 18-1 2M12 18l-1 2M16 18l-1 2"/></svg>
     Forecast
-    <span class="badge" id="forecastBadge" hidden></span>
+    <span class="count forecast-count" id="forecastBadge" hidden></span>
   </button>
   <button type="button" class="tool" data-open="panel-about" aria-pressed="false">
     <span class="count problems-count" id="problemsBadge" hidden title="New problems in the log"></span>
@@ -369,7 +369,7 @@
           <label class="check"><input type="checkbox" id="moveGauge"> Move the gauge by tapping the river</label>
         </fieldset>
         <fieldset id="overlaySet">
-          <legend class="label">More flood information</legend>
+          <legend class="label">Map overlays</legend>
           <div class="optlist" id="overlayList"></div>
         </fieldset>
       </div>
@@ -484,8 +484,8 @@
   <div class="modal-card">
     <h2>Settings</h2>
     <p class="hint">API keys for the live traffic feeds. Saved locally in the desktop app; on the web build they are set by the host.</p>
-    <div class="row"><label for="setQldKey">QLD traffic API key</label><input type="text" id="setQldKey" placeholder="3e83add325cbb69ac4d8e5bf433d770b"></div>
-    <div class="row"><label for="setNswKey">NSW traffic API key</label><input type="text" id="setNswKey" placeholder="from opendata.transport.nsw.gov.au"></div>
+    <div class="row"><label for="setQldKey">QLD traffic API key</label><input type="password" id="setQldKey" autocomplete="off" placeholder="Leave blank to use the public key"></div>
+    <div class="row"><label for="setNswKey">NSW traffic API key</label><input type="password" id="setNswKey" autocomplete="off" placeholder="from opendata.transport.nsw.gov.au"></div>
     <div class="link-row"><button type="button" class="btn small primary" id="settingsSave">Save</button> <button type="button" class="btn small" id="settingsClose">Close</button></div>
     <p class="hint" id="settingsStatus"></p>
   </div>

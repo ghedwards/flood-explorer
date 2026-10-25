@@ -41,8 +41,22 @@ pub fn to_lambda(r: &Response) -> Value {
     for (k, v) in &r.headers {
         h.insert(k.to_ascii_lowercase(), json!(v));
     }
-    // compressed bodies are bytes, which Lambda takes as base64
-    if r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-encoding")) {
+    // Lambda's JSON envelope must encode binary responses losslessly. TIFFs
+    // are binary even when they have no Content-Encoding header.
+    let content_type = h.get("content-type").and_then(Value::as_str).unwrap_or("");
+    let binary = content_type.starts_with("image/") || content_type.starts_with("application/octet-stream")
+        || r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+        || std::str::from_utf8(&r.body).is_err();
+    if binary {
+        // Leave headroom for base64 and headers in Lambda's 6 MiB response.
+        // Return an ordinary CORS-enabled error instead of a platform 502.
+        if r.body.len() > 4_500_000 {
+            h.insert("content-type".into(), json!("application/json; charset=utf-8"));
+            h.insert("cache-control".into(), json!("no-store"));
+            h.remove("content-encoding");
+            h.remove("content-length");
+            return json!({"statusCode": 413, "headers": Value::Object(h), "body": "{\"error\":\"elevation or binary response exceeds Lambda limit; request a smaller raster\"}", "isBase64Encoded": false});
+        }
         use base64::Engine;
         return json!({"statusCode": r.status, "headers": Value::Object(h), "body": base64::engine::general_purpose::STANDARD.encode(&r.body), "isBase64Encoded": true});
     }
@@ -124,6 +138,18 @@ mod tests {
         let v = to_lambda(&gz);
         assert_eq!(v["isBase64Encoded"], true);
         assert_eq!(v["body"], "H4sA/w==");
+        let tiff = Response { status: 200, headers: vec![("Content-Type".into(), "image/tiff".into()), ("Access-Control-Allow-Origin".into(), "https://x".into())], body: vec![b'I', b'I', 42, 0, 255, 128, 0] };
+        let v = to_lambda(&tiff);
+        assert_eq!(v["isBase64Encoded"], true);
+        use base64::Engine;
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(v["body"].as_str().unwrap()).unwrap(), tiff.body);
+        assert_eq!(v["headers"]["access-control-allow-origin"], "https://x");
+        let large = Response { body: vec![0; 4_500_001], ..tiff };
+        let v = to_lambda(&large);
+        assert_eq!(v["statusCode"], 413);
+        assert_eq!(v["headers"]["access-control-allow-origin"], "https://x");
+        assert_eq!(v["headers"]["content-type"], "application/json; charset=utf-8");
+        assert_eq!(v["isBase64Encoded"], false);
         let ev = parse_event(&json!({"rawPath": "/v1/readings", "headers": {"accept-encoding": "br, gzip", "if-none-match": "\"abc\""}, "requestContext": {"http": {"method": "GET"}}}));
         assert!(ev.gzip);
         assert_eq!(ev.if_none_match.as_deref(), Some("\"abc\""));

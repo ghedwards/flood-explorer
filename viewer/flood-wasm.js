@@ -347,7 +347,7 @@
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
       analyse, streamSurface, inundate, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
-      composeWater: (o) => call('composeWater', o || {}),
+      composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };
     // resident analyses: the worker keeps wasm handles for analyses it
     // computed, so later ops (timeline, calibration) don't re-upload them

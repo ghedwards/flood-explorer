@@ -37,20 +37,13 @@ fn main() {
         i += 1;
     }
     // settings file: --settings <path>, or FLOOD_SETTINGS, or ./settings.ini
-    let settings_file = std::env::args().skip(1).zip(std::env::args().skip(2)).find(|(a,_)| a == "--settings").map(|(_,v)| v)
-        .or_else(|| std::env::var("FLOOD_SETTINGS").ok().filter(|v| !v.trim().is_empty()))
-        .unwrap_or_else(|| "settings.ini".into());
-    let file_settings: std::collections::HashMap<String, String> = std::fs::read_to_string(&settings_file)
-        .ok()
-        .map(|txt| txt.lines().filter_map(|l| {
-            let l = l.trim();
-            if l.is_empty() || l.starts_with('#') || l.starts_with(';') { return None; }
-            let (k, v) = l.split_once('=')?;
-            Some((k.trim().to_string(), v.trim().to_string()))
-        }).collect())
-        .unwrap_or_default();
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty())
-        .or_else(|| file_settings.get(k).cloned().filter(|v| !v.trim().is_empty()));
+    let settings_file = args.windows(2).find(|pair| pair[0] == "--settings")
+        .map(|pair| std::path::PathBuf::from(&pair[1]))
+        .unwrap_or_else(|| flood_broker::settings::path("settings.ini"));
+    let file_settings = flood_broker::settings::read(&settings_file)
+        .unwrap_or_else(|e| { eprintln!("Could not read settings: {}", e); std::process::exit(1) });
+    let env = |k: &str| flood_broker::settings::env(k).or_else(|| file_settings.get(k).cloned());
+    let roads_settings = settings_file.clone();
     let origins = env("ALLOWED_ORIGINS").unwrap_or_else(|| "https://ghedwards.github.io".into());
     let cfg = Config {
         origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
@@ -72,7 +65,7 @@ fn main() {
         }
     };
     let in_memory = matches!(store, Store::Memory | Store::Local(_));
-    let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)).with_text(Box::new(readings::http_text)).with_rain_http(Box::new(readings::http_json_once)).with_ftp(Box::new(|| flood_feeds::ftp::Session::open(flood_feeds::BOM_FTP_HOST, 30).map(|s| Box::new(s) as Box<dyn flood_feeds::ftp::Dir>))).with_roads(Box::new(readings::fetch_roads)).with_emergency(Box::new(readings::fetch_emergency)));
+    let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)).with_text(Box::new(readings::http_text)).with_rain_http(Box::new(readings::http_json_once)).with_ftp(Box::new(|| flood_feeds::ftp::Session::open(flood_feeds::BOM_FTP_HOST, 30).map(|s| Box::new(s) as Box<dyn flood_feeds::ftp::Dir>))).with_roads(Box::new(move |now, errors| readings::fetch_roads_with_settings(now, errors, &roads_settings))).with_emergency(Box::new(readings::fetch_emergency)));
     // on AWS Lambda (a function URL): the runtime API loop instead of a socket
     if let Some(api) = env("AWS_LAMBDA_RUNTIME_API") {
         let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg).with_readings(rd);
@@ -94,5 +87,8 @@ fn main() {
     let workers = env("WORKERS").and_then(|v| v.parse::<usize>().ok()).unwrap_or(16).clamp(1, 256);
     let addr = format!("{}:{}", env("HOST").unwrap_or_else(|| "127.0.0.1".into()), env("PORT").unwrap_or_else(|| "8787".into()));
     let broker = Arc::new(Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg).with_readings(rd));
-    flood_broker::run_server(broker, &addr, workers, trust_proxy);
+    if let Err(e) = flood_broker::run_server(broker, &addr, workers, trust_proxy) {
+        eprintln!("flood-broker: cannot listen on {}: {}", addr, e);
+        std::process::exit(1);
+    }
 }

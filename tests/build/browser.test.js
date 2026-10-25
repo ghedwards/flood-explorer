@@ -88,6 +88,7 @@ test(
               reject(new Error(e.message));
             };
             worker.onmessage = (e) => {
+              if (e.data.id !== 1) return; // readiness is a separate message
               clearTimeout(timer);
               resolve({ error: e.data.error, cells: e.data.a?.N });
             };
@@ -102,6 +103,36 @@ test(
         }
       }, workerFile);
       assert.ok(!result.error && result.cells > 0, JSON.stringify(result));
+      await page.waitForFunction(() => window.__floodStatus?.national?.loaded);
+      await page.evaluate(() => window.__floodOpenPanel('panel-layers'));
+      const groups = page.locator('#overlayList .layer-group');
+      assert.equal(await groups.count(), 4);
+      const council = page.locator('#overlayList [data-group="council"]');
+      await council.locator('summary').click();
+      assert.equal(await council.evaluate(el => el.open), true);
+      const selected = await groups.evaluateAll(items => items.map(group => ({
+        count: group.querySelector('.layer-group-count').textContent,
+        expected: `${group.querySelectorAll('input:checked').length} of ${group.querySelectorAll('input').length} on`,
+      })));
+      assert.ok(selected.every(group => group.count === group.expected));
+      const appSource = fs.readFileSync(path.join(__dirname, '../../viewer/app.js'), 'utf8');
+      const ringStart = appSource.indexOf('  function warningGaugeMarker(');
+      const ringSource = appSource.slice(ringStart, appSource.indexOf('\n  }', ringStart) + 4);
+      const clicks = await page.evaluate(async fn => {
+        const box = document.createElement('div'); box.style.cssText = 'position:fixed;left:0;top:0;width:400px;height:300px;z-index:99999'; document.body.appendChild(box);
+        const map = window.L.map(box, { zoomControl: false }).setView([-27, 153], 10);
+        const calls = [];
+        const makeRing = new Function('onDotClick', `${fn}; return warningGaugeMarker`)((feature) => calls.push(feature.properties.name));
+        makeRing(window.L, window.L.canvas(), { geometry: { coordinates: [153, -27] }, properties: { name: 'Warned gauge' } }).addTo(map);
+        window.__ringAudit = { map, box, calls };
+        await new Promise(requestAnimationFrame);
+        return calls.length;
+      }, ringSource);
+      assert.equal(clicks, 0);
+      // Eight pixels from the centre hits the warning ring beyond a small gauge dot.
+      await page.mouse.click(208, 150);
+      assert.deepEqual(await page.evaluate(() => window.__ringAudit.calls), ['Warned gauge']);
+      await page.evaluate(() => { window.__ringAudit.map.remove(); window.__ringAudit.box.remove(); delete window.__ringAudit; });
       assert.deepEqual(cdn, []);
       assert.deepEqual(errors, []);
       await context.close();

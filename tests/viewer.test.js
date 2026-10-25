@@ -20,6 +20,37 @@ const plain = (x) => JSON.parse(JSON.stringify(x));
 const noop = () => {};
 const geo = { west: 0, east: 1, south: 0, north: 1 };
 
+test('web and desktop elevation retain proxy support, with hosted direct fallback', async () => {
+  const direct = 'https://services.ga.gov.au/test?request=GetCoverage';
+  const broker = 'http://127.0.0.1:8787';
+  const proxy = `${broker}/v1/elev?url=${encodeURIComponent(direct)}`;
+  for (const scenario of [
+    { desktop: false, broker, responses: [200], urls: [proxy] },
+    { desktop: true, broker, responses: [200], urls: [proxy] },
+    { desktop: false, broker: '', responses: [200], urls: [direct] },
+    { desktop: false, broker, responses: ['network', 200], urls: [proxy, direct] },
+    { desktop: false, broker, responses: [413, 200], urls: [proxy, direct] },
+    { desktop: false, broker, responses: [502, 'network', 200], urls: [proxy, direct, proxy] },
+    { desktop: true, broker, responses: ['network', 200], urls: [proxy, proxy] },
+  ]) {
+    const urls = [];
+    const ctx = viewer(['fetchRaster'], {
+      isTauri: () => scenario.desktop, BROKER: scenario.broker,
+      AbortSignal, RASTER_TIMEOUT_MS: 45000, setTimeout: resolve => resolve(),
+      fetch: async url => {
+        const result = scenario.responses[urls.length];
+        urls.push(url);
+        if (result === 'network') throw new TypeError('Failed to fetch');
+        return new Response(new ArrayBuffer(4), { status: result, headers: { 'Content-Type': 'image/tiff' } });
+      },
+      F: { parseSimpleTiff: () => ({ W: 1, H: 1, data: new Float32Array([12]), nodata: -9999 }) },
+    });
+    const raster = await ctx.fetchRaster(null, null, 1, 1, direct);
+    assert.deepEqual(urls, scenario.urls);
+    assert.equal(raster.data[0], 12);
+  }
+});
+
 test('timeline states retain dry gaps between two flood peaks', () => {
   const W = 60, H = 21, dem = new Float32Array(W * H);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) dem[y * W + x] = 2 + 0.01 * (W - x) + Math.abs(y - 10) * 0.2;
@@ -271,4 +302,133 @@ test('impact counts: floor height optional and heavy sweep cached per run', () =
   assert.equal(ctx.computeImpact(data, true).people, 1000, 'the heavy sweep is reused until the run changes');
   ctx.state.run = { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) };
   assert.equal(ctx.computeImpact(data, true).people, 100, 'a new run invalidates the cache');
+});
+
+test('canvas pixels accept worker bytes and ImageData without a typed-array constructor', () => {
+  const ctx = viewer(['canvasPixels'], {});
+  const canvas = { createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }) };
+  const storage = new Uint8Array([9, 9, 10, 20, 30, 255, 8]);
+  const pixels = storage.subarray(2, 6);
+  for (const input of [pixels, { data: pixels }, [10, 20, 30, 255]]) {
+    const img = ctx.canvasPixels(canvas, input, 1, 1);
+    assert.deepEqual(Array.from(img.data), [10, 20, 30, 255]);
+    assert.notEqual(img.data.buffer, storage.buffer);
+  }
+  assert.throws(() => ctx.canvasPixels(canvas, new Uint8Array(3), 1, 1), /needs 4 RGBA/);
+  assert.throws(() => ctx.canvasPixels(canvas, pixels, 0, 1), /positive integers/);
+});
+
+test('WASM water composition preserves fractional satellite frequency and returns a numeric count', () => {
+  const result = F.composeWater({
+    w: 2, h: 1, relief: 0, mode: 0, floodA: 255, streamA: 0,
+    cellKm2: 1, streamThr: 1,
+    valid: new Uint8Array([1, 1]), ocean: new Uint8Array(2), stream: new Uint8Array([1, 1]),
+    acc: new Float32Array([10, 10]), sat: new Float32Array([0.01, 0.05]),
+    baseWet: new Uint8Array(2), runWet: new Uint8Array(2), runDepth: new Float32Array(2),
+  });
+  assert.equal(result.count, 0);
+  assert.deepEqual(Array.from(result.rgba), [0, 0, 0, 0, 38, 166, 154, 180]);
+});
+
+test('failed national datasets replace the warnings loading placeholder', async () => {
+  const box = { innerHTML: 'Loading flood warnings…' };
+  const problems = [];
+  const ctx = viewer(['loadNationalData', 'renderWarnings'], {
+    nat: {}, status: {}, DATA_SOURCE: 'build',
+    fetch: async () => new Response('missing', { status: 404 }),
+    decodeCompact: value => value,
+    renderWatch() {},
+    logProblem: (...args) => problems.push(args),
+    $: () => box,
+  });
+  await ctx.loadNationalData();
+  assert.equal(ctx.status.national.loaded, true);
+  assert.equal(ctx.status.national.gauges, 0);
+  assert.match(box.innerHTML, /could not be loaded/);
+  assert.equal(problems.length, 1);
+});
+
+test('optional HTML fallbacks do not discard national gauges or live warnings', async () => {
+  const live = { level: {}, warnings: { ok: true, warnings: [] }, fetched: '2026-10-24T12:25:00Z' };
+  const ctx = viewer(['loadNationalData'], {
+    nat: {}, status: {}, DATA_SOURCE: 'runtime', BROKER: 'http://broker.test', AbortSignal,
+    fetch: async url => {
+      if (url.endsWith('/v1/now')) return Response.json(live);
+      if (url.endsWith('gauges-core.min.json')) return Response.json({ features: [{ properties: { kind: 'forecast' } }] });
+      if (url.endsWith('storages.geojson')) return Response.json({ features: [] });
+      if (url.endsWith('readings.json')) return Response.json({ level: {} });
+      if (url.endsWith('meta.json')) return Response.json({});
+      return new Response('<html>app fallback</html>', { headers: { 'Content-Type': 'text/html' } });
+    },
+    decodeCompact: value => value,
+    savedReadings: async () => null,
+    saveReadings() {}, setTimeout() {}, renderWarnings() {}, renderWatch() {},
+    logProblem() { assert.fail('optional files must not fail startup'); },
+  });
+  await ctx.loadNationalData();
+  assert.equal(ctx.status.national.gauges, 1);
+  assert.equal(ctx.nat.readingsSource, 'runtime');
+  assert.equal(ctx.nat.warnings.ok, true);
+});
+
+test('missing river subset falls back to the full gauge file without duplicating core gauges', async () => {
+  const ctx = viewer(['ensureRiverGauges'], {
+    riverP: null,
+    nat: { data: { gauges: [{ properties: { kind: 'forecast' } }] }, layers: {} }, status: { national: {} },
+    fetch: async url => url.endsWith('gauges-river.min.json')
+      ? new Response('<html>app fallback</html>')
+      : Response.json({ features: [{ properties: { kind: 'forecast' } }, { properties: { kind: 'river' } }] }),
+    decodeCompact: value => value,
+  });
+  await ctx.ensureRiverGauges();
+  assert.equal(ctx.status.national.gauges, 2);
+});
+
+test('warning gauge rings open the underlying gauge popup and stop map clicks', () => {
+  const feature = { geometry: { coordinates: [153, -27] }, properties: { name: 'Test gauge' } };
+  let handler, stopped, opened;
+  const marker = { bindTooltip() {}, on(_event, callback) { handler = callback; } };
+  const L = {
+    circleMarker(_point, options) { assert.equal(options.interactive, true); return marker; },
+    DomEvent: { stop(event) { stopped = event; } },
+  };
+  const ctx = viewer(['warningGaugeMarker'], { onDotClick: (...args) => { opened = args; } });
+  assert.equal(ctx.warningGaugeMarker(L, {}, feature), marker);
+  const event = { latlng: { lat: -27, lng: 153 } };
+  handler(event);
+  assert.equal(stopped, event);
+  assert.equal(opened[0], feature);
+  assert.equal(opened[1], event.latlng);
+});
+
+test('state dynamic-layer definitions stay JSON when used in image export URLs', () => {
+  let options;
+  const ctx = viewer(['makeStateOverlay'], {
+    window: { L: { esri: { dynamicMapLayer(value) { options = value; return { on() {} }; } } } },
+    status: { overlays: {} },
+  });
+  const definition = [{ id: 1, source: { type: 'mapLayer', mapLayerId: 1 }, minScale: 0, maxScale: 0 }];
+  ctx.makeStateOverlay({ name: 'State layer', url: 'https://example.test/MapServer', layers: [1], dynamicLayers: definition });
+  const query = new URLSearchParams({ dynamicLayers: options.dynamicLayers });
+  assert.deepEqual(JSON.parse(query.get('dynamicLayers')), definition);
+});
+
+test('late live readings update warning and tide markers without resetting layer groups', () => {
+  const makeGroup = () => ({ items: [], clearLayers() { this.items = []; }, addLayer(item) { this.items.push(item); } });
+  const seaGroup = makeGroup(), warningGroup = makeGroup();
+  const nat = { layers: { 'Storm tide gauges, live (Qld)': seaGroup, 'Gauges under a current flood warning (BoM)': warningGroup }, readings: {}, data: { gauges: [{ properties: { kind: 'forecast' } }] } };
+  let hasWarning = false;
+  const ctx = viewer(['updateLiveGaugeLayers'], {
+    nat, status: {}, warningsFor: () => hasWarning ? [{}] : [],
+    warningGaugeMarker: () => ({ warning: true }), seaPopupHtml() {},
+  });
+  const L = { layerGroup: makeGroup, circleMarker() { return { bindPopup() {} }; } };
+  ctx.updateLiveGaugeLayers(L, {});
+  assert.equal(warningGroup.items.length, 0);
+  nat.readings.sea = { gauge: { lat: -27, lon: 153, surge: 0.4 } }; hasWarning = true;
+  ctx.updateLiveGaugeLayers(L, {});
+  assert.equal(nat.layers['Storm tide gauges, live (Qld)'], seaGroup);
+  assert.equal(nat.layers['Gauges under a current flood warning (BoM)'], warningGroup);
+  assert.equal(seaGroup.items.length, 1);
+  assert.equal(warningGroup.items.length, 1);
 });

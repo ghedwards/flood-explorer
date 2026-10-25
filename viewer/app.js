@@ -341,7 +341,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   window.__floodProblemsReport = problemsReport;
 
   // Settings (API keys): desktop (Tauri) persists to ~/.flood-explorer/settings.ini
-  // via the in-process broker's save_settings command; web falls back to localStorage.
+  // via Tauri commands. Web feed credentials are configured by the host.
   const isTauri = () => !!(window.__TAURI__ && (window.__TAURI__.core || window.__TAURI__));
   const tauriInvoke = async (cmd, args) => {
     const t = window.__TAURI__;
@@ -361,9 +361,6 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         const s = await tauriInvoke('load_settings', {});
         qld = (s && s.QLD_TRAFFIC_API_KEY) || '';
         nsw = (s && s.NSW_TRAFFIC_API_KEY) || '';
-      } else {
-        qld = localStorage.getItem('floodExplorer.qldKey') || '';
-        nsw = localStorage.getItem('floodExplorer.nswKey') || '';
       }
       const qi = document.getElementById('setQldKey'); if (qi) qi.value = qld;
       const ni = document.getElementById('setNswKey'); if (ni) ni.value = nsw;
@@ -371,7 +368,10 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   };
   const closeSettings = () => { if (settingsModal) settingsModal.hidden = true; };
   const settingsBtn = document.getElementById('settingsBtn');
-  if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
+  if (settingsBtn) {
+    settingsBtn.hidden = !isTauri();
+    settingsBtn.addEventListener('click', openSettings);
+  }
   const settingsClose = document.getElementById('settingsClose');
   if (settingsClose) settingsClose.addEventListener('click', closeSettings);
   const settingsSave = document.getElementById('settingsSave');
@@ -382,8 +382,6 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     try {
       if (isTauri()) {
         await tauriInvoke('save_settings', { qldKey: qld.trim() || null, nswKey: nsw.trim() || null });
-      } else {
-        try { localStorage.setItem('floodExplorer.qldKey', qld.trim()); localStorage.setItem('floodExplorer.nswKey', nsw.trim()); } catch (e) { /* ignore */ }
       }
       if (status) status.textContent = 'Saved. The broker re-reads keys on its next refresh.';
       setTimeout(closeSettings, 1200);
@@ -897,7 +895,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     if (!state.a) { $('inertialStatus').textContent = 'Load a terrain model first.'; return; }
     if (!F.inertialStart) { $('inertialStatus').textContent = 'The 2D model needs WebAssembly. It is unavailable in JavaScript-only mode.'; return; }
     const inputs = [...$('inertialControls').querySelectorAll('input')];
-    if (inputs.some((input) => !input.reportValidity() || input.value.trim() === '')) return;
+    if (inputs.some((input) => !input.reportValidity() || (input.type === 'number' && input.value.trim() === ''))) return;
     runScenario(); // discard a previous dynamic result and restore the fast preview
     $('solver').value = 'inertial'; solverControls();
     const seq = inertialSequence, a = state.a, key = state.areaKey;
@@ -1959,9 +1957,9 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       legend: 'Queensland floodplain assessment: land that may be on a floodplain (statewide, broad scale)', swatch: '#4a7fc1' },
     { name: 'NSW flood planning areas (state)', state: 'NSW',
       url: 'https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/Planning/Hazard/MapServer',
-      layers: [1], opacity: 0.6, minZoom: 6,
-      // the service hides this layer beyond 1:50,000; dynamic layers lift that
-      dynamicLayers: [{ id: 1, source: { type: 'mapLayer', mapLayerId: 1 }, minScale: 0, maxScale: 0 }],
+      layers: [1], opacity: 0.6, minZoom: 14,
+      // The service's 1:50,000 limit still applies to dynamic exports.
+      // Offer a zoom hint instead of claiming an empty regional image is shown.
       attribution: 'Flood planning &copy; State of New South Wales (Department of Planning), from local environmental plans',
       legend: 'NSW flood planning areas from council planning schemes', swatch: '#3b6fb6' },
     { name: 'Queensland storm tide hazard areas (state)', state: 'QLD-TIDE',
@@ -2082,7 +2080,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     const layer = esri.dynamicMapLayer(Object.assign({
       url: o.url, layers: o.layers, opacity: o.opacity, attribution: o.attribution, f: 'image', format: 'png32',
       transparent: true, minZoom: o.minZoom || 0, zIndex: 4,
-    }, o.dynamicLayers ? { dynamicLayers: o.dynamicLayers } : {}));
+    }, o.dynamicLayers ? { dynamicLayers: JSON.stringify(o.dynamicLayers) } : {}));
     if (o.minZoom) layer.zoomNote = { min: o.minZoom, text: 'state-wide view' };
     layer.on('load', () => { st.features++; });
     layer.on('requesterror', () => { st.errors++; });
@@ -2363,6 +2361,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       for (const o of NATIONAL_OVERLAYS) overlays[o.name] = makeWmsOverlay(L, o);
       for (const o of STATE_OVERLAYS) { const l = makeStateOverlay(o); if (l) overlays[o.name] = l; }
       for (const o of COUNCIL_OVERLAYS) { const l = makeCouncilOverlay(o); if (l) overlays[o.name] = l; }
+      await loadCouncilImages();
+      for (const o of OVERLAYS) { const layer = makeOverlay(o); if (layer) overlays[o.name] = layer; }
       overlays['Victorian recorded floods (state)'] = L.tileLayer.wms('https://opendata.maps.vic.gov.au/geoserver/wms', {
         layers: VIC_LAYER, format: 'image/png', transparent: true, opacity: 0.55, zIndex: 4,
         attribution: 'Victorian flood history &copy; State of Victoria (DEECA), CC BY 4.0',
@@ -2446,12 +2446,6 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       m.on('locationerror', (e) => { say(`Couldn’t get your location: ${e.message}`, { error: true }); });
       state.lmap = m;
     }
-    // area-specific layers: Brisbane City Council's, once per session
-    if (state.areaMeta && state.areaMeta.brisbaneGauge && !state.councilAdded) {
-      await loadCouncilImages();
-      for (const o of OVERLAYS) { const l = makeOverlay(o); if (l) registerOverlay(o.name, l); }
-      state.councilAdded = true;
-    }
     if (state.areaMeta && !state.areaMeta.national && nat.data) addNationalLayers(state.lmap);
     state.lmap.invalidateSize();
     if (fit) state.lmap.fitBounds(bounds);
@@ -2502,6 +2496,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   // An image overlay whose element is a canvas: pixels are put straight on
   // it (no PNG encode and decode), positioned like subpixelImageOverlay.
   let fineCanvasOverlayClass = null;
+  // Allocate through the canvas so WebKit receives its own pixel storage,
+  // including when input comes from a worker or WebAssembly memory.
+  function canvasPixels(ctx, rgba, w, h) {
+    if (!Number.isSafeInteger(w) || !Number.isSafeInteger(h) || w <= 0 || h <= 0) {
+      throw new RangeError('Raster dimensions must be positive integers');
+    }
+    const src = rgba && rgba.data ? rgba.data : rgba;
+    if (!src || src.length !== w * h * 4) {
+      throw new RangeError(`Raster needs ${w * h * 4} RGBA values; received ${src && src.length}`);
+    }
+    const img = ctx.createImageData(w, h);
+    img.data.set(src);
+    return img;
+  }
+
   function fineCanvasOverlay(bounds, options) {
     const L = window.L;
     if (!fineCanvasOverlayClass) {
@@ -2517,10 +2526,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           if (!this._image) this._initImage();
           const c = this._image;
           if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-          const src = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba && rgba.data ? rgba.data : rgba);
-          const expected = w * h * 4;
-          const buf = src.length === expected ? src : (() => { const b = new Uint8ClampedArray(expected); b.set(src.subarray(0, Math.min(src.length, expected))); return b; })();
-          c.getContext('2d').putImageData(new ImageData(buf, w, h), 0, 0);
+          const ctx = c.getContext('2d');
+          ctx.putImageData(canvasPixels(ctx, rgba, w, h), 0, 0);
           return this;
         },
       });
@@ -2676,6 +2683,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       }, { once: true });
     })();
   }
+  function layerSection(name) {
+    if (name === 'Flooded (red) and cut-off (orange) roads') return 'model';
+    if ([...OVERLAYS, ...COUNCIL_OVERLAYS].some((o) => o.name === name)) return 'council';
+    if ([...NATIONAL_OVERLAYS, ...STATE_OVERLAYS].some((o) => o.name === name) || name === 'Victorian recorded floods (state)') return 'mapping';
+    return 'live';
+  }
+
+  function updateLayerGroupCounts() {
+    document.querySelectorAll('#overlayList .layer-group').forEach((group) => {
+      const inputs = [...group.querySelectorAll('input[data-layer]')];
+      const enabled = inputs.filter((input) => input.checked).length;
+      group.querySelector('.layer-group-count').textContent = `${enabled} of ${inputs.length} on`;
+    });
+  }
+
   function buildLayerLists(m, layers, overlays, first) {
     layerRegistry = { m, layers, overlays };
     const bl = $('basemapList');
@@ -2691,14 +2713,27 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       bl.appendChild(lab);
     });
     const ol = $('overlayList');
+    const expanded = new Map([...ol.querySelectorAll('.layer-group')].map((group) => [group.dataset.group, group.open]));
     ol.innerHTML = '';
+    const sections = new Map();
+    for (const [id, title] of [['live', 'Live conditions'], ['mapping', 'National and state mapping'], ['council', 'Council mapping'], ['model', 'Your flood model']]) {
+      if (!Object.keys(overlays).some((name) => layerSection(name) === id)) continue;
+      const group = document.createElement('details');
+      group.className = 'layer-group'; group.dataset.group = id;
+      group.open = expanded.has(id) ? expanded.get(id) : id !== 'council';
+      const summary = document.createElement('summary');
+      summary.innerHTML = `<span>${title}</span><span class="layer-group-count"></span>`;
+      const body = document.createElement('div'); body.className = 'layer-group-body';
+      group.append(summary, body); ol.appendChild(group); sections.set(id, body);
+    }
     const names = Object.keys(overlays);
     $('overlaySet').hidden = !names.length;
     names.forEach((name, i) => {
       const id = 'ov-' + i;
       const lab = document.createElement('label');
       lab.className = 'check';
-      lab.innerHTML = `<input type="checkbox" id="${id}"> <span class="layer-name">${escapeHtml(name)}</span>`;
+      const sourceNote = OVERLAYS.some((o) => o.name === name) ? '<small class="layer-source">Brisbane City Council</small>' : '';
+      lab.innerHTML = `<input type="checkbox" id="${id}"> <span class="layer-name">${escapeHtml(name)}${sourceNote}</span>`;
       const input = lab.querySelector('input');
       input.dataset.layer = name;
       const zn = overlays[name].zoomNote;
@@ -2721,9 +2756,11 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
         renderOverlayLegend();
         syncLayerLists();
       });
-      ol.appendChild(lab);
-      if (hint) ol.appendChild(hint);
+      const body = sections.get(layerSection(name));
+      body.appendChild(lab);
+      if (hint) body.appendChild(hint);
     });
+    updateLayerGroupCounts();
   }
 
   /* Per-layer feedback in the Layers list: loading, shown, nothing in view,
@@ -2827,6 +2864,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     document.querySelectorAll('#basemapList input').forEach((inp, i) => {
       inp.checked = Object.keys(layerRegistry.layers)[i] === status.basemap;
     });
+    updateLayerGroupCounts();
     renderLayerStates();
   }
 
@@ -3966,9 +4004,17 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   function ensureRiverGauges() {
     if (!riverP) {
       riverP = fetch('data/national/gauges-river.min.json', { cache: 'no-cache' })
-        .then((r) => (r.ok ? r.json() : null)).then((c) => {
+        .then((r) => { if (!r.ok) throw new Error('River gauge subset unavailable'); return r.json(); })
+        .then(decodeCompact)
+        .catch(async () => {
+          // Older/local datasets may only have the complete compact network.
+          const r = await fetch('data/national/gauges.min.json', { cache: 'no-cache' });
+          if (!r.ok) throw new Error('River gauge network unavailable');
+          const all = decodeCompact(await r.json());
+          return { features: all.features.filter((f) => f.properties.kind === 'river') };
+        }).then((c) => {
           if (!c || !nat.data) return;
-          const feats = decodeCompact(c).features;
+          const feats = c.features;
           nat.data.gauges.push(...feats);
           if (status.national) status.national.gauges = nat.data.gauges.length;
           const layer = nat.layers['Other river gauges (BoM)'];
@@ -4039,19 +4085,21 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       nat.data = { gauges: gauges.features || [], storages: storages.features || [], meta };
       nat.readings = readings;
       if (split) setTimeout(() => ensureRiverGauges(), 1500); else riverP = Promise.resolve();
-      const opt = async (f) => { try { const r = await fetch(`data/national/${f}`, { cache: 'no-cache' }); return r.ok ? r.json() : null; } catch (e) { return null; } };
+      const opt = async (f) => { try { const r = await fetch(`data/national/${f}`, { cache: 'no-cache' }); return r.ok ? await r.json() : null; } catch (e) { return null; } };
       [nat.floodclass, nat.warnings] = await Promise.all([opt('floodclass.json'), opt('warnings.json')]);
       // the broker's warnings (every 15 minutes) when readings come from it
       if (nat.readingsSource === 'runtime' && readings.warnings && readings.warnings.ok) nat.warnings = readings.warnings;
       // and its flood class levels (the Bureau's river height pages, hourly)
       if (nat.readingsSource === 'runtime' && readings.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, readings.floodclass);
       nat.floodclass = nat.floodclass || {};
-      renderWarnings();
-      renderWatch();
     } catch (e) {
       nat.data = { gauges: [], storages: [], meta: { errors: [String(e)] } };
       nat.readings = { level: {}, storage: {} };
+      logProblem('data', 'National map data could not be loaded', String(e && e.message || e));
     }
+    // Replace the loading placeholder even when a required dataset failed.
+    renderWarnings();
+    renderWatch();
     status.national = {
       loaded: true, gauges: nat.data.gauges.length, storages: nat.data.storages.length,
       levelReadings: Object.keys(nat.readings.level || {}).length,
@@ -4077,9 +4125,39 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     return '#c62828';
   }
 
+  function warningGaugeMarker(L, renderer, feature) {
+    const [lon, lat] = feature.geometry.coordinates;
+    const ring = L.circleMarker([lat, lon], { renderer, radius: 10, color: '#c62828', weight: 2.5, fill: false, interactive: true });
+    ring.bindTooltip(`${feature.properties.name || 'Gauge'}: current flood warning`, { direction: 'top', offset: [0, -4] });
+    ring.on('click', (event) => { L.DomEvent.stop(event); onDotClick(feature, event.latlng); });
+    return ring;
+  }
+
+  // Keep group identity stable so a feed refresh preserves the layer switches.
+  function updateLiveGaugeLayers(L, renderer) {
+    const seaName = 'Storm tide gauges, live (Qld)';
+    const seaLayer = nat.layers[seaName] || (nat.layers[seaName] = L.layerGroup());
+    seaLayer.clearLayers();
+    const sea = (nat.readings && nat.readings.sea) || {};
+    const surgeColor = (value) => (!Number.isFinite(value) ? '#9aa0a6' : value >= 0.3 ? '#c62828' : value >= 0.15 ? '#ef6c00' : value <= -0.15 ? '#1565c0' : '#2e7d32');
+    for (const gauge of Object.values(sea)) {
+      if (!Number.isFinite(gauge.lat) || !Number.isFinite(gauge.lon)) continue;
+      const marker = L.circleMarker([gauge.lat, gauge.lon], { renderer, radius: 7, color: '#ffffff', weight: 1.5, fillColor: surgeColor(gauge.surge), fillOpacity: 0.95 });
+      marker.bindPopup(() => seaPopupHtml(gauge));
+      seaLayer.addLayer(marker);
+    }
+    status.sea = { sites: Object.keys(sea).length, fetched: nat.readings && nat.readings.seaFetched || null };
+    const warnName = 'Gauges under a current flood warning (BoM)';
+    const warnLayer = nat.layers[warnName] || (nat.layers[warnName] = L.layerGroup());
+    warnLayer.clearLayers();
+    const warned = nat.data.gauges.filter((feature) => feature.properties.kind !== 'river' && warningsFor(feature.properties).length);
+    warned.forEach((feature) => warnLayer.addLayer(warningGaugeMarker(L, renderer, feature)));
+    status.warnedGauges = warned.length;
+  }
+
   function buildNationalLayers(L, m) {
     if (Object.keys(nat.layers).length) return nat.layers;
-    const renderer = L.canvas({ padding: 0.3 });
+    const renderer = nat.renderer = L.canvas({ padding: 0.3 });
     const groups = {
       'Flood forecast gauges (BoM)': ['forecast'],
       'Tide gauges (BoM)': ['tide'],
@@ -4106,13 +4184,18 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     // 10-minute frames, played as a loop (pausing on the latest) so you can
     // see which way the rain is moving; to zoom 7, scaled up beyond that.
     const radar = L.layerGroup();
-    let radarFrames = [], radarShown = -1, radarT = 0, radarPlay = 0, radarPaused = false, radarCtl = null;
+    let radarFrames = [], radarShown = -1, radarT = 0, radarPlay = 0, radarPaused = true, radarCtl = null;
     status.radar = { ok: null };
     const radarTime = (t) => new Date(t * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
     const showRadarFrame = (i) => {
       if (!radarFrames.length) return;
       i = (i + radarFrames.length) % radarFrames.length;
-      radarFrames.forEach((f, k) => f.layer.setOpacity(k === i ? 0.65 : 0));
+      // A transparent tile layer still downloads tiles. Keep only the
+      // displayed frame on the map instead of fetching all twelve at once.
+      radarFrames.forEach((frame, k) => {
+        if (k === i) { if (!radar.hasLayer(frame.layer)) radar.addLayer(frame.layer); }
+        else if (radar.hasLayer(frame.layer)) radar.removeLayer(frame.layer);
+      });
       radarShown = i;
       if (radarCtl) {
         const last = i === radarFrames.length - 1;
@@ -4121,37 +4204,51 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     };
     const radarStep = () => {
       // dwell on the latest frame, then run the loop again
-      const atEnd = radarShown === radarFrames.length - 1;
       showRadarFrame(radarShown + 1);
       clearTimeout(radarPlay);
-      if (!radarPaused) radarPlay = setTimeout(radarStep, radarShown === radarFrames.length - 1 ? 2000 : atEnd ? 700 : 500);
+      const size = m.getSize();
+      // RainViewer permits 100 tiles/IP/minute. Leave headroom for panning:
+      // https://www.rainviewer.com/api/transition-faq.html
+      const tileCount = (Math.ceil(size.x / 512) + 1) * (Math.ceil(size.y / 512) + 1);
+      if (!radarPaused) radarPlay = setTimeout(radarStep, Math.max(2000, Math.ceil(tileCount * 60000 / 80)));
     };
     const loadRadar = async () => {
       try {
-        const j = await (await fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-cache' })).json();
+        const response = await fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-cache', signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error(`radar metadata HTTP ${response.status}`);
+        const j = await response.json();
         const past = (j.radar && j.radar.past) || [];
         if (!past.length) throw new Error('no radar frames');
         radar.clearLayers();
+        const fr = past[past.length - 1];
+        status.radar = { ok: true, time: fr.time, age: Math.round(Date.now() / 60000 - fr.time / 60), frames: past.slice(-12).length, loaded: 0, errors: 0 };
         radarFrames = past.slice(-12).map((fr) => ({
           time: fr.time,
-          layer: L.tileLayer(`${j.host}${fr.path}/256/{z}/{x}/{y}/2/1_1.png`, {
-            opacity: 0, maxNativeZoom: 7, maxZoom: 20, zIndex: 9,
+          layer: L.tileLayer(`${j.host}${fr.path}/512/{z}/{x}/{y}/2/1_1.png`, {
+            opacity: 0.65, tileSize: 512, zoomOffset: -1, maxNativeZoom: 8, maxZoom: 20, zIndex: 9,
             attribution: 'Rain radar &copy; <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>',
           }),
         }));
-        radarFrames.forEach((f) => radar.addLayer(f.layer));
+        radarFrames.forEach((frame) => {
+          frame.layer.on('tileload', () => {
+            status.radar.loaded++;
+            setLayerState('Rain radar, last 2 hours (RainViewer)', 'done', status.radar.errors ? 'Shown (some radar tiles failed)' : 'Shown');
+          });
+          frame.layer.on('tileerror', () => {
+            status.radar.errors++;
+            setLayerState('Rain radar, last 2 hours (RainViewer)', status.radar.loaded ? 'done' : 'error', 'Radar tiles could not load; the service may be rate limiting requests.');
+          });
+        });
         showRadarFrame(radarFrames.length - 1);
-        const fr = past[past.length - 1];
-        status.radar = { ok: true, time: fr.time, age: Math.round(Date.now() / 60000 - fr.time / 60), frames: radarFrames.length };
         clearTimeout(radarPlay);
         if (!radarPaused) radarPlay = setTimeout(radarStep, 2000);
-      } catch (err) { status.radar = { ok: false, error: String(err.message || err) }; }
+      } catch (err) { status.radar = { ok: false, error: String(err.message || err) }; setLayerState('Rain radar, last 2 hours (RainViewer)', 'error', 'Radar could not be loaded. Try again later.'); }
     };
     const RadarControl = L.Control.extend({
       options: { position: 'bottomleft' },
       onAdd() {
         const d = L.DomUtil.create('div', 'radar-ctl');
-        d.innerHTML = '<button type="button" class="radar-play" aria-label="Pause the radar loop" title="Pause">❚❚</button><span class="radar-time">Loading radar…</span>';
+        d.innerHTML = '<button type="button" class="radar-play" aria-label="Play the radar loop" title="Play">▶</button><span class="radar-time">Loading radar…</span>';
         L.DomEvent.disableClickPropagation(d);
         d.querySelector('.radar-play').addEventListener('click', (e) => {
           radarPaused = !radarPaused;
@@ -4174,26 +4271,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       if (radarCtl) { radarCtl._ctl.remove(); radarCtl = null; }
     });
     nat.layers['Rain radar, last 2 hours (RainViewer)'] = radar;
-    // Queensland's storm tide gauges, live from the broker: how far the sea
-    // is above or below the predicted tide (a storm surge shows as red)
-    const sea = nat.readings && nat.readings.sea;
-    if (sea && Object.keys(sea).length) {
-      const surgeColor = (r) => (!Number.isFinite(r) ? '#9aa0a6' : r >= 0.3 ? '#c62828' : r >= 0.15 ? '#ef6c00' : r <= -0.15 ? '#1565c0' : '#2e7d32');
-      nat.layers['Storm tide gauges, live (Qld)'] = L.layerGroup(Object.values(sea).filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon)).map((x) => {
-        const m = L.circleMarker([x.lat, x.lon], { renderer, radius: 7, color: '#ffffff', weight: 1.5, fillColor: surgeColor(Number.isFinite(x.surge) ? x.surge : NaN), fillOpacity: 0.95 });
-        m.bindPopup(() => seaPopupHtml(x));
-        return m;
-      }));
-      status.sea = { sites: Object.keys(sea).length, fetched: nat.readings.seaFetched || null };
-    }
-    const warned = nat.data.gauges.filter((f) => f.properties.kind !== 'river' && warningsFor(f.properties).length);
-    status.warnedGauges = warned.length;
-    if (warned.length) {
-      nat.layers['Gauges under a current flood warning (BoM)'] = L.layerGroup(warned.map((f) => {
-        const [lo, la] = f.geometry.coordinates;
-        return L.circleMarker([la, lo], { renderer, radius: 10, color: '#c62828', weight: 2.5, fill: false, interactive: false });
-      }));
-    }
+    updateLiveGaugeLayers(L, renderer);
     // warning areas: the Bureau's own outline where its warning has one,
     // otherwise around the gauges on the warned rivers (redrawn when the
     // warnings update)
@@ -5715,7 +5793,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
     box.querySelectorAll('[data-watch]').forEach((b) => b.addEventListener('click', () => openWatchItem(shown[+b.dataset.watch])));
     const n = list.length;
     const badge = $('forecastBadge');
-    if (n) { badge.hidden = false; badge.textContent = String(n); }
+    badge.hidden = !n;
+    badge.textContent = n > 99 ? '99+' : String(n);
   }
   async function openWatchItem(w) {
     if (!w) return;
@@ -5781,6 +5860,10 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       }
       if (fresh.warnings && fresh.warnings.ok) nat.warnings = fresh.warnings;
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
+      if (state.lmap && nat.renderer) {
+        updateLiveGaugeLayers(window.L, nat.renderer);
+        scaleDots(); orderDots(); scheduleClusters();
+      }
       renderWarnings();
       renderWatch();
       try { renderInfo(); } catch (e) { /* the panel isn't built yet */ }
@@ -7804,16 +7887,19 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
   const RASTER_TIMEOUT_MS = 45000;
   async function fetchRaster(base, box, W, H, url0) {
     const direct = url0 || wcsUrl(base, box, W, H);
-    // on desktop (or whenever a broker is configured) route through the
-    // broker so the request shares its cache and avoids CORS
-    const url = BROKER ? `${BROKER}/v1/elev?url=${encodeURIComponent(direct)}` : direct;
+    // Preserve the broker path for browsers whose direct GA request is blocked
+    // by CORS. Hosted builds can fall back to GA if the proxy is unavailable
+    // or the raster exceeds Lambda's response limit.
+    const proxy = BROKER ? `${BROKER}/v1/elev?url=${encodeURIComponent(direct)}` : direct;
+    const urls = BROKER && !isTauri() ? [proxy, direct, proxy] : [proxy, proxy, proxy];
     // GA's service occasionally drops a request (its error replies carry no
     // CORS header, so the browser reports a network failure): try again
     let r = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await new Promise((ok) => setTimeout(ok, 1500 * attempt));
-      try { r = await fetch(url, { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw new Error(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', { cause: err }); continue; }
-      if (r.ok || r.status < 500) break;
+      try { r = await fetch(urls[attempt], { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw new Error(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', { cause: err }); continue; }
+      if (r.ok) break;
+      if (r.status < 500 && !(BROKER && !isTauri())) break;
     }
     if (!r.ok) throw new Error(`the elevation service returned ${r.status}`);
     const type = r.headers.get('content-type') || '';

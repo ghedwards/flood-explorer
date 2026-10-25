@@ -32,6 +32,8 @@ test('2D WASM worker, browser model switching, cancellation and input changes', 
     }),file);
     assert.ok(Math.abs(result.volume-6.4)<1e-9);assert.ok(Math.abs(result.balanceError)<1e-9);
     assert.ok(result.depth.every(d=>Math.abs(d-.001)<1e-12));
+    // Startup can still be loading the national view after WASM is ready.
+    await page.waitForFunction(()=>window.__floodStatus?.national?.loaded);
     // Use the existing illustrative terrain path without network datasets.
     await page.evaluate(()=>{const s=document.getElementById('area');if(!s.querySelector('option[value="sample"]'))s.add(new Option('Sample','sample'));});
     await page.selectOption('#area','sample');
@@ -40,7 +42,7 @@ test('2D WASM worker, browser model switching, cancellation and input changes', 
     await page.selectOption('#solver','inertial');
     await page.fill('#inertialMinutes','1');await page.fill('#inertialRain','600');await page.selectOption('#inertialResolution','96');
     await page.click('#inertialRun');
-    await page.waitForFunction(()=>window.__floodStatus?.inertial?.done===1);
+    await page.waitForFunction(()=>window.__floodStatus?.inertial?.running===false && window.__floodStatus.inertial.time===60);
     assert.match(await page.locator('#summaryLine').innerText(),/Local-inertial 2D/);
     assert.ok(Math.abs(await page.evaluate(()=>window.__floodStatus.inertial.balanceError))<1e-4);
     assert.equal(await page.locator('#gaugeLevel').isDisabled(),true);

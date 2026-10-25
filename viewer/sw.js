@@ -136,6 +136,10 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   let url;
   try { url = new URL(req.url); } catch (err) { return; }
+  if (url.pathname === '/v1/elev') {
+    e.respondWith(cacheFirst(req, TERRAIN));
+    return;
+  }
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
     e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));

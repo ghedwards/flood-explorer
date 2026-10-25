@@ -114,3 +114,22 @@ test('tiles: a healthy cache serves its copy, storage failures still answer', as
   w = tileWorker({ open: async () => { throw new Error('Storage quota exceeded'); } }, async () => new Response('net tile'));
   assert.equal(await (await w.ask(url, 'cors')).text(), 'net tile');
 });
+
+test('proxied elevation uses the terrain cache when offline', async () => {
+  const handlers = {};
+  const names = [];
+  const context = vm.createContext({
+    self: { addEventListener(t, f) { handlers[t] = f; }, location: { origin: 'tauri://localhost' } },
+    fetch: async () => { throw new Error('offline'); },
+    caches: { open: async (name) => {
+      names.push(name);
+      return { match: async () => new Response('cached GeoTIFF') };
+    } },
+    setTimeout() {}, URL,
+  });
+  vm.runInContext(source, context);
+  let answer;
+  handlers.fetch({ request: new Request('http://127.0.0.1:8787/v1/elev?url=encoded'), respondWith(p) { answer = p; } });
+  assert.equal(await (await answer).text(), 'cached GeoTIFF');
+  assert.deepEqual(names, ['terrain-v1']);
+});
