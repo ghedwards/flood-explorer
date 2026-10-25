@@ -11,6 +11,10 @@ on:
         description: 'Build and test installers without signing keys or creating a release'
         type: boolean
         default: true
+      create_preview:
+        description: 'Create a draft prerelease from verification installers without an update feed'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -213,7 +217,7 @@ jobs:
           retention-days: 14
 
   draft-release:
-    if: ${{ !inputs.verify_only }}
+    if: ${{ !inputs.verify_only || inputs.create_preview }}
     needs: [data, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -225,6 +229,8 @@ jobs:
           pattern: desktop-*
           path: downloads
       - name: Collect installers and checksums
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
           mkdir release-assets
           while IFS= read -r -d '' file; do
@@ -233,19 +239,39 @@ jobs:
             cp "$file" "release-assets/$name"
           done < <(find downloads -type f ! -path '*/update-assets/*' \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
           test "$(find release-assets -type f | wc -l)" -eq 5
-          node scripts/desktop-release.js manifest downloads release-assets
+          if [ "$VERIFY_ONLY" != "true" ]; then
+            node scripts/desktop-release.js manifest downloads release-assets
+          fi
           cd release-assets
           sha256sum * > SHA256SUMS.txt
       - name: Create or update draft prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.data.outputs.tag }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
+          if [ "$VERIFY_ONLY" = "true" ]; then
+            cat > preview-notes.md <<'NOTES'
+          Desktop preview of Flood Explorer 0.2.0.
+
+          Download the installer for your computer: macOS Apple Silicon (`aarch64.dmg`), macOS Intel (`x64.dmg`), Windows 64-bit (`x64-setup.exe`), or Linux 64-bit (`.deb` / `.AppImage`).
+
+          These preview installers are not signed with trusted platform certificates. macOS uses ad-hoc signing; Windows builds are unsigned. Your operating system may warn or block installation.
+
+          This preview does not include a signed update feed. Automatic updates are not configured; download future installers manually.
+
+          The app bundles the viewer, flood engine, broker and national gauge catalogue. Internet access is required for new terrain, live readings and external map layers. Optional API keys can be entered in Settings.
+
+          Verify downloads using `SHA256SUMS.txt`. This is a screening model; do not use it for emergency or property decisions.
+          NOTES
+          else
+            cp desktop/RELEASE_NOTES.md preview-notes.md
+          fi
           if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > release-state.json 2>/dev/null; then
             jq -e '.isDraft == true and .targetCommitish == env.GITHUB_SHA' release-state.json
           else
             gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --prerelease \
               --title "Flood Explorer ${RELEASE_TAG#desktop-v} (desktop preview)" \
-              --notes-file desktop/RELEASE_NOTES.md
+              --notes-file preview-notes.md
           fi
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
