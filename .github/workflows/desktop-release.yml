@@ -4,6 +4,15 @@ on:
   push:
     tags: ['desktop-v*']
   workflow_dispatch:
+    inputs:
+      verify_only:
+        description: 'Build and test installers without signing keys or creating a release'
+        type: boolean
+        default: true
+      prepare_lockfile:
+        description: 'Update the desktop Cargo lockfile on this feature branch (no release)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,7 +22,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  lockfile:
+    if: github.event_name == 'workflow_dispatch' && inputs.prepare_lockfile
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Update desktop lockfile on feature branch
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          test "$BRANCH" = 'feat/desktop-self-update'
+          if test -f desktop/self-update.patch; then
+            git apply --check desktop/self-update.patch
+            git apply desktop/self-update.patch
+            rm desktop/self-update.patch
+          fi
+          cargo generate-lockfile --manifest-path desktop/Cargo.toml
+          cargo fmt --manifest-path desktop/Cargo.toml --all
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add desktop viewer scripts tests
+          git diff --cached --quiet || git commit -m 'Update desktop updater dependency lockfile'
+          git push origin "HEAD:$BRANCH"
+
   data:
+    if: ${{ !inputs.prepare_lockfile }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     outputs:
@@ -24,6 +61,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Validate updater signing setup
+        if: ${{ !inputs.verify_only }}
+        env:
+          FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          node -e "for (const key of ['FLOOD_UPDATER_PUBLIC_KEY', 'TAURI_SIGNING_PRIVATE_KEY']) if (!process.env[key]?.trim()) throw new Error('Configure ' + key + ' before building an update-enabled release (desktop/README.md)')"
       - name: Validate desktop version
         id: version
         run: |
@@ -136,12 +180,25 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_ENV, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
           }
           JS
+      - name: Enable signed updater artifacts
+        shell: bash
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+        run: |
+          node -e "require('node:fs').writeFileSync('desktop/updater.conf.json', JSON.stringify({bundle:{createUpdaterArtifacts:process.env.VERIFY_ONLY !== 'true'}}))"
       - name: Build installers
+        env:
+          FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         uses: tauri-apps/tauri-action@v1
         with:
           projectPath: desktop
           tauriScript: npx --yes --package @tauri-apps/cli@2.12.4 tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater.conf.json --ci
+      - name: Collect signed update bundle
+        if: ${{ !inputs.verify_only }}
+        run: node scripts/desktop-release.js collect ${{ matrix.target }} desktop/target/${{ matrix.target }}/release/bundle update-assets
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.target }}
@@ -150,10 +207,12 @@ jobs:
             desktop/target/**/bundle/nsis/*.exe
             desktop/target/**/bundle/deb/*.deb
             desktop/target/**/bundle/appimage/*.AppImage
+            update-assets/
           if-no-files-found: error
           retention-days: 14
 
   draft-release:
+    if: ${{ !inputs.verify_only }}
     needs: [data, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -171,8 +230,9 @@ jobs:
             name=$(basename "$file")
             test ! -e "release-assets/$name" || { echo "Duplicate installer: $name"; exit 1; }
             cp "$file" "release-assets/$name"
-          done < <(find downloads -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
+          done < <(find downloads -type f ! -path '*/update-assets/*' \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
           test "$(find release-assets -type f | wc -l)" -eq 5
+          node scripts/desktop-release.js manifest downloads release-assets
           cd release-assets
           sha256sum * > SHA256SUMS.txt
       - name: Create or update draft prerelease
