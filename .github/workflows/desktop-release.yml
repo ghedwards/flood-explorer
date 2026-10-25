@@ -1,277 +1,62 @@
 name: Desktop installers
 
 on:
-  push:
-    tags: ['desktop-v*']
-  pull_request:
-    paths: ['desktop/**', 'viewer/desktop-updates.js', 'scripts/desktop-release.js', '.github/workflows/desktop-release.yml']
   workflow_dispatch:
-    inputs:
-      verify_only:
-        description: 'Build and test installers without signing keys or creating a release'
-        type: boolean
-        default: true
-      create_preview:
-        description: 'Create a draft prerelease from verification installers without an update feed'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
-
-concurrency:
-  group: desktop-release-${{ github.ref }}
-  cancel-in-progress: false
+  actions: read
 
 jobs:
-  native-check:
-    if: github.event_name == 'pull_request' || inputs.verify_only
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/target
-          key: desktop-check-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock') }}
-          restore-keys: desktop-${{ runner.os }}-
-      - name: Check desktop Rust code
-        shell: bash
-        run: |
-          mkdir -p site
-          printf '<!doctype html><title>Compile check</title>' > site/index.html
-          cargo check --locked --manifest-path desktop/Cargo.toml
-
-  data:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      - name: Validate updater signing setup
-        if: ${{ !inputs.verify_only }}
-        env:
-          FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          node -e "for (const key of ['FLOOD_UPDATER_PUBLIC_KEY', 'TAURI_SIGNING_PRIVATE_KEY']) if (!process.env[key]?.trim()) throw new Error('Configure ' + key + ' before building an update-enabled release (desktop/README.md)')"
-      - name: Validate desktop version
-        id: version
-        run: |
-          node <<'JS'
-          const fs = require('node:fs');
-          const version = JSON.parse(fs.readFileSync('desktop/tauri.conf.json')).version;
-          const cargo = fs.readFileSync('desktop/Cargo.toml', 'utf8').match(/^version = "([^"]+)"/m)[1];
-          if (cargo !== version) throw new Error('Desktop Cargo and Tauri versions differ');
-          const tag = `desktop-v${version}`;
-          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== tag)
-            throw new Error(`Release tag must be ${tag}`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
-          JS
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: desktop-data-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock', 'rust/**/*.rs') }}
-          restore-keys: desktop-data-${{ runner.os }}-
-      - run: npm ci
-      - name: Check frontend and flood model
-        run: |
-          npm run build:wasm
-          npm run lint
-          npm test
-          cargo test --locked --manifest-path rust/Cargo.toml -p flood-core -p flood-wasm -p flood-broker
-      - name: Prepare national data for every installer
-        run: |
-          cargo build --locked --release --manifest-path rust/Cargo.toml -p flood-pipeline
-          rust/target/release/flood national viewer/data/national
-          rust/target/release/flood floodinfo viewer/data/national
-      - uses: actions/upload-artifact@v7
-        with:
-          name: desktop-data
-          path: viewer/data/
-          if-no-files-found: error
-          retention-days: 7
-
-  build:
-    needs: data
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            bundles: dmg
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            bundles: dmg
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundles: nsis
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            bundles: deb,appimage
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
-      - name: Install Rust target
-        run: rustup target add ${{ matrix.target }} wasm32-unknown-unknown
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/target
-            rust/target
-          key: desktop-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml', 'desktop/Cargo.lock', 'rust/Cargo.lock', 'desktop/**/*.rs', 'rust/**/*.rs') }}
-          restore-keys: desktop-${{ matrix.target }}-
-      - run: npm ci
-      - uses: actions/download-artifact@v8
-        with:
-          name: desktop-data
-          path: viewer/data
-      - name: Prepare Apple signing environment
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && (secrets.APPLE_SIGNING_IDENTITY || '-') || '' }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          node <<'JS'
-          const fs = require('node:fs');
-          const { randomUUID } = require('node:crypto');
-          // Tauri treats present-but-empty variables as real credentials.
-          // Export only configured values; an imported P12 may have an empty password.
-          const names = ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD',
-            'APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'];
-          for (const name of names) {
-            const value = process.env[name] || '';
-            if (!value && !(name === 'APPLE_CERTIFICATE_PASSWORD' && process.env.APPLE_CERTIFICATE)) continue;
-            const delimiter = randomUUID();
-            fs.appendFileSync(process.env.GITHUB_ENV, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
-          }
-          JS
-      - name: Enable signed updater artifacts
-        shell: bash
-        env:
-          VERIFY_ONLY: ${{ inputs.verify_only }}
-          FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
-        run: |
-          node -e "require('node:fs').writeFileSync('desktop/updater.conf.json', JSON.stringify({bundle:{createUpdaterArtifacts:process.env.VERIFY_ONLY !== 'true'},plugins:{updater:{pubkey:process.env.FLOOD_UPDATER_PUBLIC_KEY || ''}}}))"
-      - name: Build installers
-        env:
-          FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        uses: tauri-apps/tauri-action@v1
-        with:
-          projectPath: desktop
-          tauriScript: npx --yes --package @tauri-apps/cli@2.12.4 tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater.conf.json --ci
-      - name: Collect signed update bundle
-        if: ${{ !inputs.verify_only }}
-        run: node scripts/desktop-release.js collect ${{ matrix.target }} desktop/target/${{ matrix.target }}/release/bundle update-assets
-      - uses: actions/upload-artifact@v7
-        with:
-          name: desktop-${{ matrix.target }}
-          path: |
-            desktop/target/**/bundle/dmg/*.dmg
-            desktop/target/**/bundle/nsis/*.exe
-            desktop/target/**/bundle/deb/*.deb
-            desktop/target/**/bundle/appimage/*.AppImage
-            update-assets/
-          if-no-files-found: error
-          retention-days: 14
-
-  draft-release:
-    if: ${{ !inputs.verify_only || inputs.create_preview }}
-    needs: [data, build]
+  assemble-preview:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: 9e41c7c751d536ea5f8adc9eb3bebfab2c110adf
       - uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           path: downloads
-      - name: Collect installers and checksums
-        env:
-          VERIFY_ONLY: ${{ inputs.verify_only }}
+          run-id: 40177489644
+          github-token: ${{ github.token }}
+      - name: Collect only version 0.2.0 installers
+        shell: bash
         run: |
+          find downloads -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' \) -print
           mkdir release-assets
           while IFS= read -r -d '' file; do
             name=$(basename "$file")
             test ! -e "release-assets/$name" || { echo "Duplicate installer: $name"; exit 1; }
             cp "$file" "release-assets/$name"
-          done < <(find downloads -type f ! -path '*/update-assets/*' \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
+          done < <(find downloads -type f \( -name '*_0.2.0_*.dmg' -o -name '*_0.2.0_*.exe' -o -name '*_0.2.0_*.deb' -o -name '*_0.2.0_*.AppImage' \) -print0)
+          ls -lh release-assets
           test "$(find release-assets -type f | wc -l)" -eq 5
-          if [ "$VERIFY_ONLY" != "true" ]; then
-            node scripts/desktop-release.js manifest downloads release-assets
-          fi
           cd release-assets
           sha256sum * > SHA256SUMS.txt
-      - name: Create or update draft prerelease
+      - name: Create draft prerelease from verified build
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.data.outputs.tag }}
-          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
-          if [ "$VERIFY_ONLY" = "true" ]; then
-            cat > preview-notes.md <<'NOTES'
+          cat > preview-notes.md <<'NOTES'
           Desktop preview of Flood Explorer 0.2.0.
 
-          Download the installer for your computer: macOS Apple Silicon (`aarch64.dmg`), macOS Intel (`x64.dmg`), Windows 64-bit (`x64-setup.exe`), or Linux 64-bit (`.deb` / `.AppImage`).
+          Download the installer for your computer: macOS Apple Silicon (aarch64.dmg), macOS Intel (x64.dmg), Windows 64-bit (x64-setup.exe), or Linux 64-bit (.deb / .AppImage).
 
           These preview installers are not signed with trusted platform certificates. macOS uses ad-hoc signing; Windows builds are unsigned. Your operating system may warn or block installation.
 
-          This preview does not include a signed update feed. Automatic updates are not configured; download future installers manually.
+          Automatic updates are not configured in this preview. Download future installers manually.
 
           The app bundles the viewer, flood engine, broker and national gauge catalogue. Internet access is required for new terrain, live readings and external map layers. Optional API keys can be entered in Settings.
 
-          Verify downloads using `SHA256SUMS.txt`. This is a screening model; do not use it for emergency or property decisions.
+          Verify downloads using SHA256SUMS.txt. This is a screening model; do not use it for emergency or property decisions.
           NOTES
+          if gh release view desktop-v0.2.0 --json isDraft,targetCommitish > release-state.json 2>/dev/null; then
+            jq -e '.isDraft == true and .targetCommitish == "9e41c7c751d536ea5f8adc9eb3bebfab2c110adf"' release-state.json
           else
-            cp desktop/RELEASE_NOTES.md preview-notes.md
+            gh release create desktop-v0.2.0 --target 9e41c7c751d536ea5f8adc9eb3bebfab2c110adf --draft --prerelease --title "Flood Explorer 0.2.0 (desktop preview)" --notes-file preview-notes.md
           fi
-          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > release-state.json 2>/dev/null; then
-            jq -e '.isDraft == true and .targetCommitish == env.GITHUB_SHA' release-state.json
-          else
-            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --prerelease \
-              --title "Flood Explorer ${RELEASE_TAG#desktop-v} (desktop preview)" \
-              --notes-file preview-notes.md
-          fi
-          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release upload desktop-v0.2.0 release-assets/* --clobber
