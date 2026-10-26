@@ -131,7 +131,45 @@ a few depths wide over a shoaling bottom (4000 m to 2000 m) loses speed and
 height relative to shallow water (crest at least three cells behind, under 90%
 of the height).
 
-What it does **not** establish: agreement with a published dispersive benchmark
+Against exact linear theory (`tests/dispersion-benchmark.test.js`): in a closed,
+uniform-depth basin the exact solution is a sum of cosine modes with
+`omega² = g k tanh(k H)`, so the solver can be compared with it directly. For the
+bundled dipole pulse after 83, 132 and 186 s (a few pulse widths of travel), the relative RMS error of
+the solver and of shallow water is:
+
+| depth / pulse width (about kH) | dispersive | shallow water |
+|---|---|---|
+| 5000 m / 5 km (1.0) | 0.21 | 1.08 |
+| 2000 m / 5 km (0.4) | 0.029 | 0.36 |
+| 1000 m / 10 km (0.1) | 0.002 | 0.013 |
+
+The error rises with kH as the weak-dispersion approximation predicts, and stays
+several times below shallow water throughout. Longer runs, to 400 s at kH = 1,
+reach errors of 0.4 to 0.8, so keep kH below about 1 and treat long runs with caution. This is a
+check on uniform depth only.
+
+Shoaling over a ramp (same test file): a 50 km wavelength packet, centred on the
+left wall so it travels one way, crosses a 30 km depth ramp. For a conservative
+wave system the integral of eta² over the packet is conserved as it shoals or
+deepens (the packet lengthens or shortens with its group speed and its height
+compensates), so the integral is measured while the packet lies wholly in the
+upstream depth and again wholly in the downstream depth. Ratios (after / before):
+
+| Ramp | shallow water | dispersive |
+|---|---|---|
+| 4000 m to 2500 m (shoaling) | 1.000 | 0.998 |
+| 2500 m to 4000 m (deepening) | 1.002 | 0.986 |
+| 4000 m, no ramp (control) | 1.000 | 1.003 |
+
+The dispersive solver conserves packet energy over a ramp to about 1.5%, so its
+variable-depth operator shoals consistently. An earlier gauge-based version of this test
+(energy passing two gauges against the ratio of group speeds) suggested the dispersive
+solver delivered about 7% too little energy when shoaling. That was an artefact of
+the gauge time window: it moved a lot with the window, and swapping in an
+energy-conserving form of the operator changed nothing. This is a
+conservation check, not a comparison with a published shoaling benchmark.
+
+What it does **not** establish: agreement with a published variable-depth benchmark
 or with observations over real bathymetry, or the correctness of the
 variable-depth terms beyond those checks. The formulation is a weak-dispersion
 form (kH below about 1) with no extra variable-depth terms, no nonlinearity,

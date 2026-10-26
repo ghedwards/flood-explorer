@@ -71,7 +71,8 @@ comparison from proposed coastal extensions:
    uniform-depth ocean, with analytical frequency/long-wave-limit and volume
    checks. It is available through **Try dispersive ocean**. A variable-depth linear
    Peregrine form now runs on the regional grids (equivalence, rest, volume and
-   long-wave/short-wave checks only; not benchmarked). Next compare against published
+   long-wave/short-wave checks only; not benchmarked). Uniform depth is now checked against exact linear dispersion
+   (relative error 0.2 at kH = 1, 0.03 at 0.4) and its energy conservation over a depth ramp (within 1.5%; see the prototype notes). Next compare variable depth against published
    benchmarks and evaluate nonlinear and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
    and published formulations as references. It may improve shorter-wave
    propagation and waveform detail within its valid depth/wavelength range;
