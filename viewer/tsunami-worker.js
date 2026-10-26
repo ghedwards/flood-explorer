@@ -1,33 +1,9 @@
 import './runtime-paths.js';
 import './flood-core.js';
 import './flood-wasm.js';
-import { forcingFromRecording, forcingFromSeries, levelSeries } from './tsunami-coupling.js';
+import { runMember, startRun } from './tsunami-runner.js';
 
-// Start a run, first computing any nested forcing. Returns what the page shows
-// about the coupling, or null for an ordinary run.
-function begin(data, report) {
-  let grid = data.grid, coupling = null;
-  if (data.coupling) {
-    const { plan, parentGrid, seconds, localSeconds, series, scene, tide } = data.coupling;
-    let forcing;
-    if (series) {
-      // A supplied wave series replaces the regional model.
-      forcing = forcingFromSeries(scene, series, { maxLocalSeconds: localSeconds });
-      coupling = { source: 'series', arrival: forcing.arrival, offset: 0, peak: forcing.peak, edges: forcing.edges, rows: series.times.length };
-    } else {
-      // Regional run first (about a second), then the local model starts
-      // with its recorded wave as boundary forcing.
-      report({ stage: 'regional' });
-      const recording = self.FloodCore.tsunamiParent(parentGrid, plan.points, seconds);
-      forcing = forcingFromRecording(plan, recording, { maxLocalSeconds: localSeconds });
-      coupling = { source: 'regional', arrival: forcing.arrival, offset: forcing.offset, peak: forcing.peak, edges: forcing.edges, regionalSeconds: seconds, regionalPeak: Math.max(...recording.peak) };
-    }
-    grid = { ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))), ...levelSeries(localSeconds, tide) };
-    coupling.tide = tide || 0;
-  }
-  self.FloodCore.tsunamiStart(grid);
-  return { coupling, batch: grid.method === 3 ? 16 : 200 };
-}
+const begin = (data, report) => startRun(self.FloodCore, data, report);
 
 const buffers = frames => [...new Set(frames.flatMap(frame => [frame.eta, frame.peak, frame.water, frame.speed]).filter(Boolean).map(v => v.buffer))];
 
@@ -35,6 +11,19 @@ self.onmessage = async ({ data }) => {
   try {
     await self.FloodCoreReady;
     if (!self.FloodCore.tsunamiStart) throw new Error('The tsunami prototype requires WebAssembly.');
+    if (data.type === 'ensemble') {
+      // Run each member to completion in turn, reporting each as it finishes.
+      const cache = new Map(), started = Date.now();
+      for (let index = 0; index < data.members.length; index++) {
+        const member = data.members[index];
+        const result = runMember(self.FloodCore, member, {
+          ...data, cache, onProgress: progress => self.postMessage({ progress: { ...progress, index, count: data.members.length, elapsed: Date.now() - started, overall: (index + (progress.fraction || 0)) / data.members.length } }),
+        });
+        self.postMessage({ result: { id: member.id, ...result }, index });
+      }
+      self.postMessage({ done: true });
+      return;
+    }
     if (data.type === 'precompute') {
       // Run the whole simulation now, keeping evenly spaced frames, and report
       // progress so the page can show how far along it is.

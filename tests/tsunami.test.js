@@ -286,3 +286,53 @@ test('variable-depth dispersion runs on shelf and real coastal grids, conserves 
     assert.ok(dispersive.eta.some((e, i) => Math.abs(e - shallow.eta[i]) > 1e-4), `${preset} should differ from shallow water`);
   }
 });
+
+test('an ensemble plan brackets each input on its own and in combination, without duplicates', async () => {
+  const { ensemblePlan, summarise } = await import('../viewer/tsunami-runner.js');
+  const base = { amplitude: 2.5, tide: 0, roughness: .025 };
+  const plan = ensemblePlan(base, { amplitudePercent: 50, tideMetres: .5, roughnessPercent: 40, terrainMetres: .5 });
+  assert.equal(plan.length, 11);
+  assert.deepEqual(plan[0].factors, { amplitude: 2.5, tide: 0, roughness: .025, terrain: 0 });
+  assert.equal(new Set(plan.map(m => JSON.stringify(m.factors))).size, plan.length);
+  // Every single-input run changes exactly one input.
+  for (const m of plan.filter(m => ['amplitude', 'tide', 'roughness', 'terrain'].includes(m.group)))
+    assert.equal(Object.keys(m.factors).filter(k => m.factors[k] !== plan[0].factors[k]).length, 1, m.label);
+  const severe = plan.find(m => m.id === 'severe').factors, mild = plan.find(m => m.id === 'mild').factors;
+  assert.ok(severe.amplitude > mild.amplitude && severe.tide > mild.tide && severe.roughness < mild.roughness && severe.terrain < mild.terrain);
+  // Clamping merges runs that would repeat: amplitude cannot exceed 3 m, tide stays within -1..2 m.
+  const clamped = ensemblePlan({ amplitude: 3, tide: 2, roughness: 0 }, {}, { terrain: false });
+  assert.equal(new Set(clamped.map(m => JSON.stringify(m.factors))).size, clamped.length);
+  assert.ok(clamped.every(m => m.factors.amplitude <= 3 && m.factors.tide <= 2 && m.factors.terrain === 0));
+  assert.ok(clamped.length < 11);
+  assert.ok(ensemblePlan(base, {}, { amplitude: false }).every(m => m.factors.amplitude === 2.5));
+  const ranges = summarise([{ arrival: [10, null], gaugePeak: [1, 2], landDepth: 0, floodedHectares: 3, maxSpeed: 1 }, { arrival: [20, null], gaugePeak: [3, 1], landDepth: 2, floodedHectares: 1, maxSpeed: 4 }]);
+  assert.deepEqual(ranges.arrival, [{ min: 10, max: 20, missing: 0 }, { min: null, max: null, missing: 2 }]);
+  assert.deepEqual([ranges.landDepth.min, ranges.landDepth.max, ranges.floodedHectares.min, ranges.maxSpeed.max], [0, 2, 1, 4]);
+});
+
+test('ensemble runs measure arrival, gauge peaks and flooding, and stronger sources give larger responses', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const C = await import('../viewer/tsunami-coupling.js');
+  const { runMember, ensemblePlan } = await import('../viewer/tsunami-runner.js');
+  const fine = readData('currumbin'), parentData = readData('gold-coast');
+  const cell = C.toParentCell(parentData, 154.3, -28.0).map(Math.floor);
+  const localSeconds = 300, cache = new Map();
+  const member = factors => {
+    const grid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: factors.amplitude, tide: factors.tide, roughness: factors.roughness, absorbing: true, width: .45, coupled: true });
+    const parentGrid = tsunamiGrid({ preset: 'gold-coast', bathymetry: parentData, source: cell, amplitude: factors.amplitude, width: 10 });
+    const plan = C.planCoupling({ fine, fineGrid: grid, parentData, parentGrid });
+    const seconds = C.parentSeconds({ plan, parentGrid, source: cell, localSeconds });
+    return { grid, coupling: { plan, parentGrid, seconds, localSeconds, tide: 0, cacheKey: `${factors.amplitude}|${Array.from(plan.points).join(',')}` } };
+  };
+  const plan = ensemblePlan({ amplitude: 2.5, tide: 0, roughness: .025 }, {}, { terrain: false });
+  const probes = [[130, 48], [100, 48], [60, 48]].map(([x, y]) => y * 160 + x);
+  const run = id => runMember(F, member(plan.find(m => m.id === id).factors), { seconds: localSeconds, probes, cache });
+  const base = run('base'), strong = run('amplitude-high'), again = run('tide-high');
+  assert.ok(base.arrival.some(t => t != null && t >= 0 && t <= localSeconds));
+  assert.ok(base.gaugePeak.every(Number.isFinite) && base.maxSpeed > 0);
+  assert.ok(strong.gaugePeak[0] > base.gaugePeak[0], `${strong.gaugePeak[0]} vs ${base.gaugePeak[0]}`);
+  assert.ok(strong.maxSpeed >= base.maxSpeed && strong.landDepth >= base.landDepth && strong.floodedHectares >= base.floodedHectares);
+  assert.ok([base, strong, again].every(r => Math.abs(r.volumeError) < 1e-3 && r.simulated >= localSeconds));
+  // The regional run is shared by members that differ only in local settings.
+  assert.equal(cache.size, 2);
+});

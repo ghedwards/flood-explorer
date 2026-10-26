@@ -6,7 +6,7 @@ const http = require('node:http');
 const { chromium } = require('playwright');
 const site = path.resolve(__dirname, '../../site');
 
-test('tsunami lab runs its Rust worker below a nested path, pauses, resets and exports', { timeout: 60000 }, async () => {
+test('tsunami lab runs its Rust worker below a nested path, pauses, resets and exports', { timeout: 180000 }, async () => {
   const prefix = '/nested/flood/';
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -86,6 +86,31 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
       await page.locator('#step').click();
       await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
     }
+    // A sensitivity ensemble runs on the idealised estuary and fills a table of ranges.
+    await page.locator('#preset').selectOption('estuary');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'nonlinear' && !window.__tsunamiStatus().coast);
+    await page.locator('#duration').selectOption('5');
+    assert.equal(await page.locator('#ensemble').isVisible(), true);
+    assert.equal(await page.locator('#ensTerrain').isDisabled(), true);
+    await page.locator('#runEnsemble').click();
+    assert.equal(await page.locator('#runEnsemble').innerText(), 'Cancel');
+    await page.waitForFunction(() => window.__tsunamiStatus().ensemble?.results > 0);
+    assert.equal(await page.locator('#ensembleBar').isVisible(), true);
+    await page.waitForFunction(() => window.__tsunamiStatus().ensemble?.done, null, { timeout: 120000 });
+    assert.equal(await page.locator('#ensembleBar').isVisible(), false);
+    assert.equal(await page.locator('#ensembleTable tbody tr').count(), 10);
+    assert.match(await page.locator('#ensembleTable tbody tr.range').innerText(), /Range over finished runs[\s\S]*ha/);
+    assert.match(await page.locator('#ensembleNote').innerText(), /not probabilities/);
+    const csv = page.waitForEvent('download');
+    await page.locator('#exportEnsemble').click();
+    assert.match(fs.readFileSync(await (await csv).path(), 'utf8'), /run,group,source_strength_m[\s\S]*Baseline/);
+    await page.locator('#amplitude').fill('1');
+    await page.locator('#amplitude').dispatchEvent('change');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    assert.match(await page.locator('#ensembleCaption').innerText(), /Settings have changed/);
+    await page.locator('#amplitude').fill('2.5');
+    await page.locator('#amplitude').dispatchEvent('change');
+    await page.locator('#duration').selectOption('10');
     await page.locator('#preset').selectOption('shelf');
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'staggered');
     assert.equal(await page.locator('#inundationControls').isVisible(), false);

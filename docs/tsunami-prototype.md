@@ -407,6 +407,39 @@ for proposed data improvements, offshore/river coupling, refinement, sensitivity
 runs and the next stage of the **dispersive-wave (Boussinesq-type)** solver. Its
 linear uniform- and variable-depth forms are implemented; nonlinear coastal coupling remains future work.
 
+## Sensitivity ensemble
+
+In any nonlinear local scene, **Sensitivity ensemble** (below the gauges) reruns the
+current scene, to the chosen simulation length, with its uncertain inputs moved
+in a fixed, small pattern: a baseline; each of **source strength**, **initial sea
+level**, **Manning n** and **terrain height** (a uniform vertical shift of the
+bed) pushed low and high on its own; and two combined runs, all inputs towards
+more flooding and all towards less. The offsets are editable (defaults ±50% source
+strength, ±0.5 m sea level, ±50% Manning n, ±0.5 m terrain); values that clamp
+to the same setting are merged, and terrain is skipped in the idealised scene
+and source strength when a CSV series drives the run. That is up to 11 runs,
+executed one after another in a separate worker with a progress bar, results
+appearing as each run finishes. Nested runs share one regional run between
+members with the same source strength.
+
+For each run it reports, per gauge, the **arrival time** (first change above 5 cm
+at the gauge, to about 20 solver steps) and **peak** change; the **deepest water
+on initially dry land**; the **flooded land** area (above 1 cm); and the **fastest
+current**, sampled at those steps and therefore a lower bound. A final row gives
+the minimum and maximum over runs, noting runs in which a gauge was not reached.
+The table can be exported as CSV. If settings change afterwards, the table says it
+no longer matches them.
+
+What it is and is not: a bracketing exercise on chosen inputs. It is **not** a
+probabilistic ensemble: the ranges are not confidence intervals or hazard
+probabilities, there is no sampling of source location, shape, rupture physics,
+bathymetry error beyond the uniform shift, or numerical error, and the first-order
+solver's known under-prediction of run-up (see Checks) applies to every run.
+Arrival times in a nested run are on the local clock, which starts shortly before
+the wave reaches the edges, so an ensemble length that is too short shows
+"not reached" and zero flooding. Runtime is about the sum of the individual
+runs (for example, five or ten simulated minutes at 25–50 m take a few seconds each).
+
 ## Pre-calculating a run
 
 Tick **Pre-calculate the whole run first** (or open `tsunami.html?precompute=1`)

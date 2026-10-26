@@ -35,6 +35,20 @@
           <div id="gaugeValues" class="gauge-values"></div>
           <p class="hint">Computed water-level changes from the initial state at markers 1–3. The equations are described in “Equations and next steps”; these traces show the model outputs.</p>
         </section>
+        <section id="ensemble" class="gauge-card ensemble" hidden>
+          <div class="chart-heading"><h2>Sensitivity ensemble</h2><span><button id="runEnsemble" type="button">Run ensemble</button> <button id="exportEnsemble" type="button" disabled>Export CSV</button></span></div>
+          <p class="hint" id="ensembleIntro">Runs the current scene several times with one input changed at a time, then all inputs together towards more and less flooding. It uses the simulation length chosen below, so make it long enough for the wave to arrive. It shows how far the results move; it does not give probabilities.</p>
+          <div class="ensemble-ranges">
+            <label>Source strength ± <input id="ensAmp" type="number" min="0" max="90" step="5" value="50"> %</label>
+            <label>Sea level ± <input id="ensTide" type="number" min="0" max="1.5" step=".25" value=".5"> m</label>
+            <label>Manning n ± <input id="ensRough" type="number" min="0" max="90" step="5" value="50"> %</label>
+            <label>Terrain height ± <input id="ensTerrain" type="number" min="0" max="2" step=".25" value=".5"> m</label>
+          </div>
+          <div id="ensembleBar" class="precompute" hidden><progress id="ensembleProgress" max="1" aria-labelledby="ensembleText"></progress><span id="ensembleText"></span></div>
+          <p class="hint" id="ensembleCaption" hidden></p>
+          <div class="table-wrap"><table id="ensembleTable" hidden><thead></thead><tbody></tbody></table></div>
+          <p class="hint" id="ensembleNote" hidden></p>
+        </section>
       </section>
       <aside class="controls" aria-label="Wave scenario controls">
         <h2>Set the scene</h2>

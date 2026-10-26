@@ -3,6 +3,7 @@ import '@fontsource/ibm-plex-mono/latin-400.css';
 import './tsunami.css';
 import { estuaryIds, estuaryLocations, regionalIds } from './tsunami-locations.js';
 import { parentSeconds, parseSeriesCsv, planCoupling, toParentCell } from './tsunami-coupling.js';
+import { ensemblePlan, summarise } from './tsunami-runner.js';
 import referencePlaces from './public/tsunami-data/places.json';
 import { terrainFor } from './tsunami-terrain.js';
 import { tsunamiGrid, connectedWaterDepth } from './tsunami-grid.js';
@@ -70,6 +71,10 @@ function labels() {
   $('inundationControls').hidden = $('inundationMetrics').hidden = !localScene();
   $('lakeControl').hidden = $('preset').value !== 'estuary';
   const coupled = coupledOn();
+  $('ensemble').hidden = !localScene();
+  $('ensTerrain').disabled = !bathymetry;
+  if (typeof ensemble !== 'undefined' && ensemble) renderEnsemble();
+  $('ensAmp').disabled = seriesOn();
   $('couplingControls').hidden = !parentOf($('preset').value);
   const series = seriesOn();
   $('offshoreWidthControl').hidden = !coupled || series;
@@ -371,25 +376,26 @@ function fail(message) {
   $('status').textContent = `${message} Reset to try again.`;
 }
 
+async function fetchParent(id) {
+  const response = await fetch(new URL(`tsunami-data/${id}.json`, document.baseURI), { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`Regional grid: HTTP ${response.status}`);
+  parents.set(id, await response.json());
+}
 async function loadParent(id, play) {
   ready = running = false; controls();
   $('status').textContent = 'Loading the regional grid for the offshore wave…';
-  try {
-    const response = await fetch(new URL(`tsunami-data/${id}.json`, document.baseURI), { signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`Regional grid: HTTP ${response.status}`);
-    parents.set(id, await response.json());
-  } catch (error) { fail(`${error.message}.`); return; }
+  try { await fetchParent(id); } catch (error) { fail(`${error.message}.`); return; }
   reset(play);
 }
 
 // Regional run and handover points for the current local scene.
-function buildCoupling(parent, fineGrid) {
+function buildCoupling(parent, fineGrid, amplitude = +$('amplitude').value) {
   const parentData = parents.get(parent.id);
   const cell = toParentCell(parentData, ...parent.source).map(Math.floor);
-  const parentGrid = tsunamiGrid({ preset: parent.id, bathymetry: parentData, source: cell, amplitude: +$('amplitude').value, width: +$('offshoreWidth').value, absorbing: true });
+  const parentGrid = tsunamiGrid({ preset: parent.id, bathymetry: parentData, source: cell, amplitude, width: +$('offshoreWidth').value, absorbing: true });
   const plan = planCoupling({ fine: bathymetry, fineGrid, parentData, parentGrid });
   const localSeconds = totalSeconds();
-  return { plan, parentGrid, localSeconds, tide: +$('tideRange').value, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }) };
+  return { plan, parentGrid, localSeconds, tide: +$('tideRange').value, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }), cacheKey: `${amplitude}|${$('offshoreWidth').value}|${Array.from(plan.points).join(',')}` };
 }
 
 function reset(play = false) {
@@ -543,8 +549,126 @@ $('export').addEventListener('click', () => {
   const link = document.createElement('a'); link.href = url; link.download = 'tsunami-lab-gauges.csv'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.__tsunamiStatus = () => ({ precomputed: !!frames, frames: frames?.length ?? 0, calculating, coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
-window.addEventListener('pagehide', () => { if (worker) worker.terminate(); });
+window.__tsunamiStatus = () => ({ ensemble: ensemble ? { done: ensemble.done, results: ensemble.results.filter(Boolean).length, runs: ensemble.plan.length } : null, precomputed: !!frames, frames: frames?.length ?? 0, calculating, coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
+// ---- Sensitivity ensemble -------------------------------------------------
+let ensembleWorker = null, ensemble = null;
+const minutes = seconds => `${(seconds / 60).toFixed(1)}`;
+const ensembleSignature = () => JSON.stringify([$('preset').value, options(), totalSeconds(), probes]);
+
+function ensembleMember(factors, parent) {
+  const shifted = bathymetry && factors.terrain ? { ...bathymetry, elevation: bathymetry.elevation.map(v => v == null ? v : v + factors.terrain) } : bathymetry;
+  const memberGrid = tsunamiGrid({ ...options(), amplitude: factors.amplitude, tide: factors.tide, roughness: factors.roughness, bathymetry: shifted });
+  let coupling = null;
+  if (seriesOn()) coupling = { series: uploaded, scene: { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: memberGrid.W, H: memberGrid.H, depth: memberGrid.depth } }, localSeconds: totalSeconds(), tide: +$('tideRange').value };
+  else if (parent) coupling = buildCoupling(parent, memberGrid, factors.amplitude);
+  return { grid: memberGrid, coupling };
+}
+
+async function runEnsemble() {
+  if (ensembleWorker) { stopEnsemble('Ensemble cancelled.'); return; }
+  const parent = coupledOn() ? parentOf($('preset').value) : null;
+  try {
+    if (seriesOn() && !uploaded) throw new Error('Choose a CSV file of incoming wave heights first.');
+    if (parent && !seriesOn() && !parents.has(parent.id)) { $('ensembleText').textContent = 'Loading the regional grid…'; $('ensembleBar').hidden = false; await fetchParent(parent.id); }
+    const plan = ensemblePlan({ amplitude: +$('amplitude').value, tide: +$('tide').value, roughness: +$('roughness').value },
+      { amplitudePercent: +$('ensAmp').value, tideMetres: +$('ensTide').value, roughnessPercent: +$('ensRough').value, terrainMetres: +$('ensTerrain').value },
+      { terrain: !!bathymetry, amplitude: !seriesOn() });
+    const members = [], skipped = [];
+    for (const entry of plan) {
+      try { members.push({ id: entry.id, ...ensembleMember(entry.factors, parent) }); } catch (error) { skipped.push({ entry, reason: error.message }); }
+    }
+    if (!members.some(m => m.id === 'base')) throw new Error(`The baseline cannot start: ${skipped[0]?.reason}`);
+    ensemble = { plan, results: new Array(plan.length).fill(null), skipped, signature: ensembleSignature(), seconds: totalSeconds(), gauges: probes.length, started: Date.now(), done: false };
+    const send = members.map(m => m);
+    const current = ensembleWorker = new Worker(new URL('./tsunami-worker.js', import.meta.url), { type: 'module' });
+    current.onerror = () => { if (ensembleWorker === current) stopEnsemble('The ensemble worker could not start.'); };
+    current.onmessage = ({ data }) => {
+      if (ensembleWorker !== current) return;
+      if (data.error) { stopEnsemble(`Ensemble stopped: ${data.error}`); return; }
+      if (data.progress) { showEnsembleProgress(data.progress); return; }
+      if (data.result) { ensemble.results[ensemble.plan.findIndex(m => m.id === data.result.id)] = data.result; renderEnsemble(); return; }
+      if (data.done) { current.terminate(); ensembleWorker = null; ensemble.done = true; $('ensembleBar').hidden = true; $('runEnsemble').textContent = 'Run ensemble'; renderEnsemble(); }
+    };
+    $('runEnsemble').textContent = 'Cancel';
+    $('exportEnsemble').disabled = true;
+    $('ensembleBar').hidden = false;
+    $('ensembleProgress').removeAttribute('value');
+    $('ensembleText').textContent = `Starting ${send.length} runs…`;
+    renderEnsemble();
+    current.postMessage({ type: 'ensemble', members: send, seconds: totalSeconds(), probes: probes.map(([x, y]) => y * grid.W + x), threshold: .05, step: 20 });
+  } catch (error) { stopEnsemble(error.message); }
+}
+function stopEnsemble(message) {
+  if (ensembleWorker) ensembleWorker.terminate();
+  ensembleWorker = null;
+  $('runEnsemble').textContent = 'Run ensemble';
+  $('ensembleBar').hidden = true;
+  if (message) { $('ensembleNote').hidden = false; $('ensembleNote').textContent = message; }
+  if (ensemble) renderEnsemble();
+}
+function showEnsembleProgress(progress) {
+  const bar = $('ensembleProgress');
+  if (progress.stage === 'regional' && !progress.overall) { bar.removeAttribute('value'); }
+  else bar.value = progress.overall ?? 0;
+  const done = Math.floor((progress.overall ?? 0) * progress.count);
+  const left = progress.overall > .03 ? Math.max(1, Math.round(progress.elapsed / progress.overall * (1 - progress.overall) / 1000)) : null;
+  $('ensembleText').textContent = `${progress.stage === 'regional' ? 'Regional model for' : 'Running'} run ${progress.index + 1} of ${progress.count}${progress.stage === 'regional' ? '' : ` · ${Math.round((progress.overall ?? 0) * 100)}% overall (${done} finished)`}${left ? ` · about ${left} s left` : ''}`;
+}
+
+function gaugeCell(arrival, peak) { return `${arrival == null ? 'not reached' : `${minutes(arrival)} min`} · ${peak.toFixed(2)} m`; }
+function span(range, digits, unit) { return range.min == null ? '—' : `${range.min.toFixed(digits)}–${range.max.toFixed(digits)}${unit}`; }
+
+function renderEnsemble() {
+  const table = $('ensembleTable'), head = table.tHead, body = table.tBodies[0];
+  if (!ensemble) { table.hidden = true; return; }
+  table.hidden = false;
+  const columns = ['Run', ...Array.from({ length: ensemble.gauges }, (_, k) => `Gauge ${k + 1}: arrival · peak`), 'Deepest water on dry land', 'Flooded land', 'Fastest current'];
+  head.replaceChildren(document.createElement('tr'));
+  for (const text of columns) { const th = document.createElement('th'); th.scope = 'col'; th.textContent = text; head.rows[0].append(th); }
+  const row = (cells, className) => {
+    const tr = document.createElement('tr'); if (className) tr.className = className;
+    cells.forEach((text, k) => { const cell = document.createElement(k === 0 ? 'th' : 'td'); if (k === 0) cell.scope = 'row'; cell.textContent = text; tr.append(cell); });
+    return tr;
+  };
+  const rows = ensemble.plan.map((entry, i) => {
+    const r = ensemble.results[i];
+    if (!r) {
+      const skipped = ensemble.skipped.find(s => s.entry === entry);
+      return row([entry.label, ...Array(columns.length - 1).fill(skipped ? 'not run' : ensemble.done ? '—' : 'waiting')], 'pending');
+    }
+    return row([entry.label, ...r.arrival.map((t, k) => gaugeCell(t, r.gaugePeak[k])), `${r.landDepth.toFixed(2)} m`, `${r.floodedHectares.toFixed(2)} ha`, `${r.maxSpeed.toFixed(2)} m/s`], entry.id === 'base' ? 'baseline' : '');
+  });
+  const finished = ensemble.results.filter(Boolean);
+  if (finished.length > 1) {
+    const total = summarise(finished);
+    rows.push(row(['Range over finished runs', ...total.arrival.map((a, k) => `${a.min == null ? `not reached in ${a.missing} runs` : `${span({ min: a.min / 60, max: a.max / 60 }, 1, ' min')}${a.missing ? ` (not reached in ${a.missing})` : ''}`} · ${span(total.gaugePeak[k], 2, ' m')}`),
+      span(total.landDepth, 2, ' m'), span(total.floodedHectares, 2, ' ha'), span(total.maxSpeed, 2, ' m/s')], 'range'));
+  }
+  body.replaceChildren(...rows);
+  const stale = ensemble.signature !== ensembleSignature();
+  $('ensembleCaption').hidden = false;
+  $('ensembleCaption').textContent = `${ensemble.plan.length} runs of ${timeLabel(ensemble.seconds)} each${coupledOn() ? ' (local clock; see the nested-run offset above)' : ''}. Arrival: first change above 5 cm at the gauge, to the nearest ~20 solver steps. Fastest current is sampled at those steps, so it is a lower bound.${stale ? ' Settings have changed since this ensemble was started.' : ''}`;
+  $('exportEnsemble').disabled = ensemble.done !== true && finished.length === 0;
+  const note = $('ensembleNote');
+  note.hidden = false;
+  note.textContent = ensemble.skipped.length ? `${ensemble.skipped.length} run(s) could not be set up: ${ensemble.skipped.map(s => `${s.entry.label} (${s.reason})`).join('; ')}.`
+    : `${finished.length && finished.every(r => r.landDepth === 0 && r.arrival.every(t => t == null)) ? 'Nothing reached the gauges or flooded land in any run: lengthen the simulation. ' : ''}Each run changes only the inputs named. Ranges show sensitivity to these chosen inputs and to nothing else (not source location or shape, rupture physics, bathymetry error beyond a uniform shift, or numerical error), and are not probabilities.`;
+}
+
+$('runEnsemble').addEventListener('click', runEnsemble);
+$('exportEnsemble').addEventListener('click', () => {
+  const lines = ['run,group,source_strength_m,sea_level_m,manning_n,terrain_shift_m,' + Array.from({ length: ensemble.gauges }, (_, k) => `gauge_${k + 1}_arrival_s,gauge_${k + 1}_peak_m`).join(',') + ',deepest_dry_land_m,flooded_ha,fastest_current_m_s,volume_error_m3'];
+  ensemble.plan.forEach((entry, i) => {
+    const r = ensemble.results[i];
+    if (!r) return;
+    lines.push([`"${entry.label}"`, entry.group, entry.factors.amplitude, entry.factors.tide, entry.factors.roughness, entry.factors.terrain, ...r.arrival.flatMap((t, k) => [t ?? '', r.gaugePeak[k]]), r.landDepth, r.floodedHectares, r.maxSpeed, r.volumeError].join(','));
+  });
+  const metadata = `# Sensitivity ensemble; ${JSON.stringify({ scene: $('preset').value, seconds: ensemble.seconds, coupled: coupledOn(), arrivalThresholdM: .05, note: 'bracketing runs, not probabilities' })}\n`;
+  const url = URL.createObjectURL(new Blob([metadata + lines.join('\n')], { type: 'text/csv' }));
+  const link = document.createElement('a'); link.href = url; link.download = 'tsunami-sensitivity-ensemble.csv'; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+window.addEventListener('pagehide', () => { if (worker) worker.terminate(); if (ensembleWorker) ensembleWorker.terminate(); });
 window.addEventListener('resize', paint);
 const initialScene = new URLSearchParams(location.search).get('scene');
 if (new URLSearchParams(location.search).get('precompute') === '1') $('precompute').checked = true;

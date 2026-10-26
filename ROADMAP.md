@@ -74,7 +74,10 @@ comparison from proposed coastal extensions:
    it does not automatically improve inundation, terrain accuracy or source
    reconstruction. Keep its restriction to the linear regional grids explicit. Measure computational cost
    and validate each extension before enabling it on coastal terrain.
-5. **Sensitivity runs.** Compare bounded ensembles of source strength, water
+5. **Sensitivity runs** (a first version is built for the local scenes: one-at-a-time and combined
+   bracketing runs over source strength, sea level, friction and a uniform terrain shift,
+   reporting ranges of arrival, depth, area and speed; source location and shape, bathymetry
+   error beyond a shift, and a proper ensemble design remain). Compare bounded ensembles of source strength, water
    level, friction and terrain uncertainty. Report ranges of arrival time,
    water depth and speed, with their assumptions. Parameter sweeps alone do
    not supply hazard probabilities.

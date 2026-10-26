@@ -31,6 +31,17 @@ button:disabled { opacity: .5; cursor: wait; }
 .precompute progress { flex: 0 1 280px; width: 100%; height: 10px; accent-color: var(--accent); }
 .scrub { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--muted); }
 .scrub input { flex: 1; accent-color: var(--accent); }
+.ensemble { margin-top: 24px; }
+.ensemble-ranges { display: flex; flex-wrap: wrap; gap: 12px 20px; font-size: 12px; color: var(--muted); margin: 12px 0; }
+.ensemble-ranges input { width: 4.5em; font: inherit; padding: 5px 6px; border: 1px solid #bdcfd4; border-radius: 6px; }
+.table-wrap { overflow-x: auto; margin-top: 12px; }
+#ensembleTable { border-collapse: collapse; width: 100%; font-size: 12px; }
+#ensembleTable caption { text-align: left; padding-bottom: 6px; }
+#ensembleTable th, #ensembleTable td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e0eaec; white-space: nowrap; }
+#ensembleTable td:not(:first-child) { font-family: 'IBM Plex Mono', monospace; }
+#ensembleTable tr.pending td { color: #8aa0aa; }
+#ensembleTable tr.baseline th, #ensembleTable tr.baseline td { background: #eef6f7; }
+#ensembleTable tr.range th, #ensembleTable tr.range td { font-weight: 700; border-top: 2px solid var(--accent); }
 #status { font-size: 13px; min-height: 22px; color: var(--muted); }
 .controls, .gauge-card { background: white; border: 1px solid #d4e0e3; border-radius: 12px; padding: 20px; }
 h2 { font-size: 16px; margin: 0 0 20px; }
