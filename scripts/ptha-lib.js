@@ -78,6 +78,7 @@ function relativePath(path) {
 const eventsFile = (zone, slipType) => `SOURCE_ZONES/${zone}/TSUNAMI_EVENTS/all_${slipType}_slip_earthquake_events_${zone}.nc`;
 const unitFile = zone => `SOURCE_ZONES/${zone}/TSUNAMI_EVENTS/unit_source_statistics_${zone}.nc`;
 const STATIONS = 'EVENT_RATES/STATIONS_ONLY_lon_lat_elev_gaugeID.nc';
+const RATES = 'EVENT_RATES/revised1_tsunami_stage_exceedance_rates_sum_over_all_source_zones.nc';
 
 function checkZone(zone) {
   if (!/^[a-z0-9_]+$/.test(String(zone))) throw new Error('A source zone name is lower-case letters, digits and underscores (for example puysegur2 or southamerica).');
@@ -113,6 +114,52 @@ function pointByGaugeID(points, gaugeID) {
   const index = points.gaugeID.indexOf(wanted);
   if (index < 0) throw new Error(`No hazard point has gauge ID ${gaugeID}.`);
   return { index, gaugeID: wanted, lon: points.lon[index], lat: points.lat[index], depth: -points.elev[index] };
+}
+
+// PTHA18's own hazard curve at a hazard point: the annual rate at which the peak
+// stage exceeds each of 100 stages (0.02 to 20 m), summed over every source zone
+// (`index` is the 0-based position of the point in the station list). Besides the
+// logic-tree mean rate there are the 16th, 50th and 84th percentiles of its
+// uncertainty. Stage is above mean sea level, without tide.
+async function exceedanceCurve(get, index, slipType = 'stochastic') {
+  checkSlipType(slipType);
+  if (!Number.isInteger(index) || index < 0) throw new Error('The hazard point index is a whole number from 0.');
+  const names = [`${slipType}_slip_rate`, `${slipType}_slip_rate_16pc`, `${slipType}_slip_rate_median`, `${slipType}_slip_rate_84pc`];
+  const query = ['stage[0:1:99]', ...names.map(n => `${n}${range(index, index)}[0:1:99]`)].join(',');
+  const data = parseDapAscii(await get(ascii(RATES, query)));
+  const rows = names.map(n => data[`${n}.${n}`]?.[0]);
+  if (!data.stage || data.stage.length !== 100 || rows.some(r => !r || r.length !== 100)) throw new Error('The exceedance-rate curve is not the expected 100 stages.');
+  const station = data[`${names[0]}.station`]?.[0];
+  if (station !== undefined && station !== index + 1) throw new Error('The exceedance-rate curve belongs to a different hazard point.');
+  const [rate, p16, median, p84] = rows;
+  return { slipType, stage: data.stage, rate, p16, median, p84 };
+}
+
+// Annual exceedance rate of `stage` on one of the curve's rate series, by
+// interpolating log(rate) between the tabulated stages. Below the first stage
+// the rate is a lower bound (`atLeast`); above the last, or where the curve has
+// fallen to zero, there is no estimate (`rate` 0 means below PTHA18's resolution).
+function exceedanceRate(curve, stage, which = 'rate') {
+  const { stage: axis } = curve, rates = curve[which];
+  if (!rates) throw new Error(`Unknown rate series ${which}.`);
+  if (!(stage >= 0)) throw new Error('The stage must be a non-negative number of metres.');
+  if (stage <= axis[0]) return { rate: rates[0], atLeast: true };
+  const last = axis.length - 1;
+  if (stage > axis[last]) return { rate: null, beyond: true };
+  let k = 1;
+  while (axis[k] < stage) k++;
+  const [lo, hi] = [rates[k - 1], rates[k]], f = (stage - axis[k - 1]) / (axis[k] - axis[k - 1]);
+  if (lo > 0 && hi > 0) return { rate: Math.exp(Math.log(lo) + f * (Math.log(hi) - Math.log(lo))) };
+  return { rate: hi > 0 ? hi * f : lo * (1 - f) };
+}
+
+// Words for the rate: "about 1 in 17 years" (return period = 1 / rate).
+function describeRate({ rate, atLeast, beyond }) {
+  if (beyond) return 'above the largest stage PTHA18 tabulates (20 m)';
+  if (!(rate > 0)) return 'too rare for PTHA18 to give a rate';
+  const years = 1 / rate;
+  const text = years < 10 ? years.toFixed(1) : years < 1000 ? String(Math.round(years)) : String(Math.round(years / 100) * 100);
+  return `${atLeast ? 'at least as often as ' : ''}about 1 in ${text} years`;
 }
 
 // One scenario (1-based table row, as in the R code) of a source zone.
@@ -282,6 +329,7 @@ function toCsv(series, meta) {
     `# source zone ${meta.zone}, ${meta.slipType} slip, scenario row ${meta.row}: Mw ${meta.mw}, annual rate ${Number(meta.rateAnnual).toExponential(2)} (a scenario rate, not a hazard estimate)`,
     `# hazard point ${meta.gaugeID} at ${meta.lon.toFixed(4)} E ${meta.lat.toFixed(4)} N, ocean depth ${meta.depth.toFixed(0)} m, stage above mean sea level (no tide)`,
     `# t = 0 is ${(series.offset / 60).toFixed(1)} min after the earthquake (window aligned to the ${series.align}); the wave first exceeds 2% of its whole-series peak ${(series.arrival / 60).toFixed(1)} min after it, and the largest wave (${series.peak.toFixed(3)} m) is ${(series.peakTime / 60).toFixed(1)} min after it; this file's largest is ${series.windowPeak.toFixed(3)} m`,
+    ...(meta.hazard ? [`# PTHA18 hazard at this point: ${meta.hazard}`] : []),
     `# frictionless linear model, 1 arc-minute grid: not reliable nearshore or for late arrivals${meta.friction ? '; delayed linear friction applied (12 h delay, 1e-5 drag)' : ''}${meta.scale && meta.scale !== 1 ? `; scaled by ${meta.scale.toFixed(3)} (Green's law, to ${meta.localDepth} m)` : ''}`,
     '# Geoscience Australia PTHA18, CC BY 4.0, (c) Commonwealth of Australia (Geoscience Australia); https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha ; report http://dx.doi.org/10.11636/Record.2018.041',
     'seconds,metres',
@@ -292,5 +340,5 @@ function toCsv(series, meta) {
 
 module.exports = {
   DAP_BASE, SLIP_TYPES, parseDapAscii, parseIndices, parseSlips, relativePath, hazardPoints, nearestPoints, pointByGaugeID,
-  scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
+  exceedanceCurve, exceedanceRate, describeRate, scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
 };

@@ -12,7 +12,8 @@
 // before the first wave; peak: start 30 min before the largest wave, which often
 // arrives hours later; none: keep time since the earthquake),
 // --friction (delayed linear friction), --local-depth M (Green's-law scaling
-// from the hazard point's depth to M metres), --out FILE.
+// from the hazard point's depth to M metres), --hazard (say how often PTHA18
+// expects a peak this large at the hazard point, from its own exceedance-rate curve), --out FILE.
 // Behind a proxy set NODE_USE_ENV_PROXY=1. The data are GA's PTHA18 (CC BY 4.0).
 'use strict';
 const fs = require('node:fs');
@@ -75,7 +76,15 @@ async function main(options) {
   const scale = localDepth ? lib.greenScale(point.depth, localDepth) : 1;
   if (scale !== 1) values = Float64Array.from(values, v => v * scale);
   const series = lib.trimSeries(time, values, { hours: options.hours ? +options.hours : 6, align: options.align || 'arrival' });
-  const csv = lib.toCsv(series, { zone, slipType, row, mw: event.mw, rateAnnual: event.rateAnnual, gaugeID: point.gaugeID, lon: point.lon, lat: point.lat, depth: point.depth, friction: !!options.friction, scale, localDepth });
+  let hazard = null;
+  if (options.hazard) {
+    const curve = await lib.exceedanceCurve(get, point.index, slipType);
+    const peak = Math.max(...stage);
+    const at = which => lib.exceedanceRate(curve, peak, which);
+    hazard = `this scenario's peak at the point, ${peak.toFixed(3)} m, is exceeded ${lib.describeRate(at('rate'))} (16th-84th percentile of the uncertainty: ${lib.describeRate(at('p84'))} to ${lib.describeRate(at('p16'))}), summed over all source zones`;
+    console.log(`PTHA18 hazard at ${point.gaugeID}: ${hazard}.`);
+  }
+  const csv = lib.toCsv(series, { hazard, zone, slipType, row, mw: event.mw, rateAnnual: event.rateAnnual, gaugeID: point.gaugeID, lon: point.lon, lat: point.lat, depth: point.depth, friction: !!options.friction, scale, localDepth });
   const out = options.out || `ptha18-${zone}-${slipType}-${row}-gauge${point.gaugeID}.csv`;
   fs.writeFileSync(out, csv);
   console.log(`Wrote ${out}: Mw ${event.mw}, ${event.indices.length} unit sources at hazard point ${point.gaugeID} (${point.depth.toFixed(0)} m deep); ${series.times.length} rows from ${(series.offset / 60).toFixed(1)} min after the earthquake, largest ${series.windowPeak.toFixed(3)} m.`);

@@ -9,7 +9,7 @@ const couplingModule = import('../viewer/tsunami-coupling.js');
 
 // A small stand-in for the NCI THREDDS OPeNDAP server, answering the same
 // .ascii requests in the same format, so the importer is tested offline.
-function fakeServer({ zone = 'zz', stations, events, unitStage }) {
+function fakeServer({ zone = 'zz', stations, events, unitStage, rates }) {
   const requests = [];
   const fmt = v => typeof v === 'string' ? JSON.stringify(v) : String(v);
   const block = (name, values) => `${name}[${values.length}]\n${values.map(fmt).join(', ')}\n`;
@@ -20,6 +20,14 @@ function fakeServer({ zone = 'zz', stations, events, unitStage }) {
     const [file, query] = rel.split('.ascii?');
     if (file === 'EVENT_RATES/STATIONS_ONLY_lon_lat_elev_gaugeID.nc') {
       return wrap(['lon', 'lat', 'elev', 'gaugeID'].map(n => block(n, stations[n])).join('\n'));
+    }
+    if (file === 'EVENT_RATES/revised1_tsunami_stage_exceedance_rates_sum_over_all_source_zones.nc' && rates) {
+      const parts = ['stage' + `[${rates.stage.length}]\n${rates.stage.join(', ')}\n`];
+      for (const name of query.split(',').slice(1).map(q => q.replace(/\[.*$/, ''))) {
+        const index = Number(new RegExp(`${name}\\[(\\d+):1:`).exec(query)[1]);
+        parts.push(`${name}.${name}[1][${rates.stage.length}]\n[0], ${rates[name][index].join(', ')}\n`, `${name}.station[1]\n${index + 1}\n`);
+      }
+      return wrap(parts.join('\n'));
     }
     if (file.endsWith(`all_stochastic_slip_earthquake_events_${zone}.nc`) || file.endsWith(`all_uniform_slip_earthquake_events_${zone}.nc`)) {
       const m = /\[(\d+):1:(\d+)\]/.exec(query);
@@ -161,4 +169,43 @@ test('the example PTHA18 series loads in the lab and drives the nested local mod
   assert.ok(frame.water.every(h => Number.isFinite(h) && h >= 0));
   assert.ok(Math.max(...frame.peak) > .05, 'the PTHA18 wave entered the local model');
   assert.ok(Math.abs(frame.volumeError) < 1e-4 && frame.boundaryVolume !== 0);
+});
+
+// PTHA18's own hazard curve at a point, against which a scenario's peak is placed.
+test('exceedance-rate curves are read, interpolated in log rate and put into words', async () => {
+  const stage = Array.from({ length: 100 }, (_, i) => 0.02 * 1000 ** (i / 99));
+  const curve = scale => stage.map(h => scale * 0.5 * Math.exp(-h / 0.5));
+  const names = ['stochastic_slip_rate', 'stochastic_slip_rate_16pc', 'stochastic_slip_rate_median', 'stochastic_slip_rate_84pc'];
+  const rates = { stage, ...Object.fromEntries(names.map((n, k) => [n, [curve(1), curve(1 + k)]])) };
+  const { get, requests } = fakeServer({ rates, stations: {}, events: {}, unitStage: {} });
+  const result = await lib.exceedanceCurve(get, 1);
+  assert.equal(result.stage.length, 100);
+  assert.deepEqual(Array.from(result.p16.slice(0, 2)), [curve(2)[0], curve(2)[1]]);
+  assert.match(requests[0], /stochastic_slip_rate_84pc\[1:1:1\]\[0:1:99\]/);
+  const tabulated = lib.exceedanceRate(result, stage[40]).rate;
+  assert.ok(Math.abs(tabulated / curve(1)[40] - 1) < 1e-9);
+  // Between two tabulated stages the log of the rate is interpolated.
+  const mid = lib.exceedanceRate(result, (stage[40] + stage[41]) / 2).rate;
+  assert.ok(Math.abs(mid - Math.sqrt(result.rate[40] * result.rate[41])) < 1e-9 * result.rate[40]);
+  assert.equal(lib.exceedanceRate(result, 0.001).atLeast, true);
+  assert.equal(lib.exceedanceRate(result, 25).beyond, true);
+  assert.throws(() => lib.exceedanceRate(result, -1), /non-negative/);
+  assert.throws(() => lib.exceedanceRate(result, 1, 'nope'), /Unknown/);
+  assert.equal(lib.describeRate({ rate: 0.04 }), 'about 1 in 25 years');
+  assert.equal(lib.describeRate({ rate: 0.4 }), 'about 1 in 2.5 years');
+  assert.equal(lib.describeRate({ rate: 0.0004, atLeast: true }), 'at least as often as about 1 in 2500 years');
+  assert.match(lib.describeRate({ rate: 0 }), /too rare/);
+  assert.match(lib.describeRate({ rate: null, beyond: true }), /20 m/);
+  await assert.rejects(lib.exceedanceCurve(get, -1), /whole number/);
+  await assert.rejects(lib.exceedanceCurve(get, 0, 'wrong'), /Slip type/);
+  // The server answering for a different station is caught.
+  const shifted = async url => (await get(url)).replace(/station\[1\]\n\d+/g, 'station[1]\n99');
+  await assert.rejects(lib.exceedanceCurve(shifted, 1), /different hazard point/);
+});
+
+test('the hazard sentence is written into the series file', () => {
+  const series = { times: [0, 30], values: [0, 0.05], offset: 0, align: 'arrival', arrival: 0, peak: 0.05, peakTime: 30, windowPeak: 0.05 };
+  const meta = { zone: 'zz', slipType: 'stochastic', row: 1, mw: 9, rateAnnual: 1e-5, gaugeID: 1.1, lon: 150, lat: -30, depth: 100 };
+  assert.ok(!lib.toCsv(series, meta).includes('PTHA18 hazard at this point'));
+  assert.match(lib.toCsv(series, { ...meta, hazard: 'peak 0.05 m is exceeded about 1 in 25 years' }), /# PTHA18 hazard at this point: peak 0\.05 m is exceeded about 1 in 25 years\n/);
 });

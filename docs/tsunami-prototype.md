@@ -367,11 +367,17 @@ the tool reports when the whole-series peak is outside the window it wrote.
 `--friction` applies PTHA18's delayed linear friction (12 h delay, 1e-5 drag),
 `--local-depth M` scales by Green's law from the hazard point's depth to M metres
 (capped at 0.5 to 2), and `--slip` chooses stochastic (default), variable-uniform or
-uniform scenarios. The output carries its provenance as `#` comment lines. A real
+uniform scenarios. `--hazard` also reads PTHA18's own exceedance-rate curve at the hazard
+point (summed over every source zone, with its 16th to 84th percentile uncertainty) and says
+how often a peak as large as this scenario's is expected there, in the console and in the file.
+The output carries its provenance as `#` comment lines. A real
 example, a Mw 9.4 South American scenario at the 667 m hazard point off the Gold
 Coast (peak 9 cm after friction), is in
 `docs/examples/ptha18-southamerica-142847-gauge1450.5.csv`; a test runs it through the
-nested Gold Coast Seaway model.
+nested Gold Coast Seaway model. Its frictionless peak at the point is 13 cm, which PTHA18
+expects to be exceeded about once in 28 years (16th to 84th percentile: 1 in 17 to 1 in 83) from
+all sources combined. So this very large, very rare scenario produces a wave there that is common
+in PTHA18's terms: its rate says how rare the earthquake is, not how rare the wave is at this point.
 
 How well PTHA18's deep-water waves match reality is tested in
 [docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
@@ -386,7 +392,9 @@ reads, not the lab's own solvers, and it is one event in deep water.
 What this is and is not:
 
 - **One scenario, not a hazard.** A scenario's annual rate is recorded in the file but
-  a single run says nothing about how likely a given inundation is. PTHA18's use is to
+  a single run says nothing about how likely a given inundation is. `--hazard` places the
+  scenario's peak on PTHA18's published offshore curve, which is deep-water stage (above mean
+  sea level, no tide), not inundation. PTHA18's use is to
   supply many such scenarios with rates for site studies; this lab runs one at a time
   (the sensitivity ensemble varies other inputs, not the scenario).
 - **PTHA18's waves are from a frictionless linear model on a 1 arc-minute grid.** They are
