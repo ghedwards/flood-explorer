@@ -303,6 +303,64 @@ pulse is removed and the water starts at rest. Instead:
    in the mass-balance error. The local clock starts at that trimmed time, and
    the page reports how many minutes after the offshore source it stands.
 
+### Waves from PTHA18 scenarios
+
+`scripts/prepare-ptha-series.js` builds an incoming-wave file from a scenario in
+Geoscience Australia's [PTHA18](https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha)
+(CC BY 4.0), reading the NCI THREDDS server over OPeNDAP so only the needed
+values are downloaded. PTHA18 stores, per source zone, one linear-model wave
+for each unit source (1 m of slip on one fault patch); a scenario is a set of
+unit sources with slips, and its wave at a "hazard point" is their slip-weighted
+sum, as in GA's own R code. Behind a proxy set `NODE_USE_ENV_PROXY=1`.
+
+```
+node scripts/prepare-ptha-series.js --near 153.9,-27.95 --min-depth 80   # hazard points near a place
+node scripts/prepare-ptha-series.js --zone southamerica --find --mw 9.3,9.5   # scenario rows (1-based)
+node scripts/prepare-ptha-series.js --zone southamerica --event 142847 --gauge 1450.5 \
+    --friction --align peak --hours 3 --out wave.csv
+```
+
+Load the file under **Incoming wave → Uploaded series · CSV** in a local scene.
+`--align arrival` (default) starts the series just before the first wave,
+`--align peak` starts 30 minutes before the largest wave of the whole series, and
+`--align none` keeps time since the earthquake. The lab runs at most two hours,
+so the window matters: the biggest waves often arrive hours after the first, and
+the tool reports when the whole-series peak is outside the window it wrote.
+`--friction` applies PTHA18's delayed linear friction (12 h delay, 1e-5 drag),
+`--local-depth M` scales by Green's law from the hazard point's depth to M metres
+(capped at 0.5 to 2), and `--slip` chooses stochastic (default), variable-uniform or
+uniform scenarios. The output carries its provenance as `#` comment lines. A real
+example, a Mw 9.4 South American scenario at the 667 m hazard point off the Gold
+Coast (peak 9 cm after friction), is in
+`docs/examples/ptha18-southamerica-142847-gauge1450.5.csv`; a test runs it through the
+nested Gold Coast Seaway model.
+
+How well PTHA18's deep-water waves match reality is tested in
+[docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
+315 PTHA18 scenarios of the 2011 Tohoku earthquake with NOAA DART records at 16 buoys
+(`scripts/validate-ptha-dart.js`, which needs the network). The observed peak lies inside the
+scenarios' 10th to 90th percentile range at 15 of 16 buoys, including the Coral Sea buoy 55012
+that sits on the path to eastern Australia (at the 14th percentile: the scenarios' median is
+about 1.5 times the observed 4 cm). Observed waves tend to sit below the scenarios' median, and
+observed arrivals are later than modelled in the east Pacific. This tests the series the importer
+reads, not the lab's own solvers, and it is one event in deep water.
+
+What this is and is not:
+
+- **One scenario, not a hazard.** A scenario's annual rate is recorded in the file but
+  a single run says nothing about how likely a given inundation is. PTHA18's use is to
+  supply many such scenarios with rates for site studies; this lab runs one at a time
+  (the sensitivity ensemble varies other inputs, not the scenario).
+- **PTHA18's waves are from a frictionless linear model on a 1 arc-minute grid.** They are
+  reliable in deep water and for early arrivals, not nearshore or for late arrivals
+  (overstated without friction), which is why deep hazard points and `--friction` are
+  suggested. The local model then starts from that wave at its open edges, with no
+  scaling unless you ask for it, no tide, and PTHA18's mean-sea-level reference against
+  the local terrain's own (unreconciled) datum.
+- It reads only PTHA18's published hazard-point series. The scenario's initial seabed
+  deformation is not used (the lab has no source physics), and the regional model
+  is not run for these scenarios.
+
 ### Your own incoming wave, and a tide
 
 Under the nested option, **Incoming wave → Uploaded series · CSV** replaces the

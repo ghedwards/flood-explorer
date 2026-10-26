@@ -1,0 +1,569 @@
+{
+ "event": "2011 Tohoku, Japan",
+ "generated": "2026-10-26",
+ "scenarios": 315,
+ "summary": {
+  "stations": 16,
+  "insideP10P90": 15,
+  "medianObservedPercentile": 37.142857142857146,
+  "medianObservedPercentileWithFriction": 37.142857142857146,
+  "medianModelToObservedPeakWithFriction": 1.163051480289407,
+  "medianModelToObservedPeak": 1.1670584046449477,
+  "onsetMedianByGroup": {
+   "near field, off Japan": -5.500046682098766,
+   "north-west Pacific": 6.500055169753086,
+   "towards eastern Australia": 9.500080632716049,
+   "south-west Pacific": -0.5000042438271605,
+   "central Pacific (Hawaii)": -5.000042438271605,
+   "north-east Pacific": -17.500148533950618,
+   "east Pacific": -46.500394675925925
+  },
+  "medianBestCorrelation": 0.6379202210460588
+ },
+ "stations": [
+  {
+   "id": "21401",
+   "group": "near field, off Japan",
+   "depth": 5334.9844,
+   "window": {
+    "fromHours": 0,
+    "toHours": 8.000067901234567
+   },
+   "observedPeak": 0.6802968046500002,
+   "modelPeak": {
+    "p10": 0.41658381591194893,
+    "p50": 0.7491937978440343,
+    "p90": 1.3984642945862686
+   },
+   "observedPercentile": 42.22222222222222,
+   "withFriction": {
+    "p50": 0.7491937978440343,
+    "observedPercentile": 42.22222222222222
+   },
+   "observedOnsetHours": 1.016675295781893,
+   "onsetDifferenceMinutes": {
+    "p10": -44.500377700617285,
+    "p50": -13.000110339506172,
+    "p90": -5.000042438271605,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47680,
+    "correlation": 0.6694166899221138,
+    "lagMinutes": -18.000152777777778,
+    "peakRatio": 1.086873161324205
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "21413",
+   "group": "near field, off Japan",
+   "depth": 5879.9756,
+   "window": {
+    "fromHours": 0.2666689300411523,
+    "toHours": 8.26673683127572
+   },
+   "observedPeak": 0.7845994120833331,
+   "modelPeak": {
+    "p10": 0.4898438749583074,
+    "p50": 0.8953338719984589,
+    "p90": 1.6389592839638851
+   },
+   "observedPercentile": 40.95238095238095,
+   "withFriction": {
+    "p50": 0.8953338719984589,
+    "observedPercentile": 40.95238095238095
+   },
+   "observedOnsetHours": 1.2833442258230452,
+   "onsetDifferenceMinutes": {
+    "p10": -4.000033950617284,
+    "p50": 0,
+    "p90": 16.000135802469135,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 48374,
+    "correlation": 0.8279758451614669,
+    "lagMinutes": -22.500190972222224,
+    "peakRatio": 2.6662877195045973
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "21418",
+   "group": "near field, off Japan",
+   "depth": 5727.997,
+   "window": {
+    "fromHours": 0,
+    "toHours": 8.000067901234567
+   },
+   "observedPeak": 0.8632473441666683,
+   "modelPeak": {
+    "p10": 0.8657506534203091,
+    "p50": 1.7724385972910526,
+    "p90": 3.457340849579711
+   },
+   "observedPercentile": 9.841269841269842,
+   "withFriction": {
+    "p50": 1.7724385972910526,
+    "observedPercentile": 9.841269841269842
+   },
+   "observedOnsetHours": 0.5750048804012347,
+   "onsetDifferenceMinutes": {
+    "p10": -6.000050925925925,
+    "p50": -5.500046682098766,
+    "p90": -2.5000212191358027,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47011,
+    "correlation": 0.4967180328235669,
+    "lagMinutes": 2.5000212191358027,
+    "peakRatio": 1.4954652760911187
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "21419",
+   "group": "near field, off Japan",
+   "depth": 5347.9966,
+   "window": {
+    "fromHours": 0,
+    "toHours": 8.000067901234567
+   },
+   "observedPeak": 0.5556332153333327,
+   "modelPeak": {
+    "p10": 0.2950182029538599,
+    "p50": 0.48194943002224044,
+    "p90": 0.9062655197958005
+   },
+   "observedPercentile": 63.17460317460318,
+   "withFriction": {
+    "p50": 0.48194943002224044,
+    "observedPercentile": 63.17460317460318
+   },
+   "observedOnsetHours": 1.3666782664609054,
+   "onsetDifferenceMinutes": {
+    "p10": -61.00051774691358,
+    "p50": -34.50029282407408,
+    "p90": -5.000042438271605,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 46988,
+    "correlation": 0.6764878154902385,
+    "lagMinutes": 12.500106095679012,
+    "peakRatio": 0.8509150162060942
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "52402",
+   "group": "north-west Pacific",
+   "depth": 5924,
+   "window": {
+    "fromHours": 2.5583550475823045,
+    "toHours": 10.558422948816872
+   },
+   "observedPeak": 0.3264024,
+   "modelPeak": {
+    "p10": 0.16060358690953652,
+    "p50": 0.2916138282662716,
+    "p90": 0.5582795790684791
+   },
+   "observedPercentile": 54.92063492063492,
+   "withFriction": {
+    "p50": 0.2916138282662716,
+    "observedPercentile": 54.92063492063492
+   },
+   "observedOnsetHours": 3.6000305555555556,
+   "onsetDifferenceMinutes": {
+    "p10": -15.000127314814815,
+    "p50": 0,
+    "p90": 23.000195216049384,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 48333,
+    "correlation": 0.7322234195435918,
+    "lagMinutes": 14.500123070987655,
+    "peakRatio": 1.5448677306181706
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "52403",
+   "group": "north-west Pacific",
+   "depth": 4476.991,
+   "window": {
+    "fromHours": 3.866699485596708,
+    "toHours": 11.866767386831276
+   },
+   "observedPeak": 0.13914518000000003,
+   "modelPeak": {
+    "p10": 0.0901864755809092,
+    "p50": 0.16183300757413602,
+    "p90": 0.2970275431459014
+   },
+   "observedPercentile": 37.142857142857146,
+   "withFriction": {
+    "p50": 0.16183300757413602,
+    "observedPercentile": 37.142857142857146
+   },
+   "observedOnsetHours": 4.800040740740741,
+   "onsetDifferenceMinutes": {
+    "p10": -14.000118827160493,
+    "p50": 6.500055169753086,
+    "p90": 26.000220679012344,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47049,
+    "correlation": 0.7784267943494606,
+    "lagMinutes": 14.000118827160493,
+    "peakRatio": 1.2926842125864684
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "52406",
+   "group": "towards eastern Australia",
+   "depth": 1793.004,
+   "window": {
+    "fromHours": 5.625047743055555,
+    "toHours": 13.625115644290124
+   },
+   "observedPeak": 0.1776356266666666,
+   "modelPeak": {
+    "p10": 0.12481518728625089,
+    "p50": 0.20731115106570544,
+    "p90": 0.3556311561777215
+   },
+   "observedPercentile": 34.285714285714285,
+   "withFriction": {
+    "p50": 0.20624309057438808,
+    "observedPercentile": 34.285714285714285
+   },
+   "observedOnsetHours": 6.650056442901235,
+   "onsetDifferenceMinutes": {
+    "p10": -14.500123070987655,
+    "p50": 0,
+    "p90": 17.500148533950618,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47049,
+    "correlation": 0.6124487726265091,
+    "lagMinutes": 9.000076388888889,
+    "peakRatio": 1.0146470443561255
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "55012",
+   "group": "towards eastern Australia",
+   "depth": 3253.9922,
+   "window": {
+    "fromHours": 7.550064081790124,
+    "toHours": 15.550131983024691
+   },
+   "observedPeak": 0.04188904099999992,
+   "modelPeak": {
+    "p10": 0.03942225504703865,
+    "p50": 0.06349430899535083,
+    "p90": 0.10942601775191678
+   },
+   "observedPercentile": 14.285714285714286,
+   "withFriction": {
+    "p50": 0.06178289109742754,
+    "observedPercentile": 15.555555555555555
+   },
+   "observedOnsetHours": 8.43340491255144,
+   "onsetDifferenceMinutes": {
+    "p10": -4.5000381944444445,
+    "p50": 9.500080632716049,
+    "p90": 25.000212191358024,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 48343,
+    "correlation": 0.6439191676605647,
+    "lagMinutes": -16.000135802469135,
+    "peakRatio": 1.819648939570748
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "51425",
+   "group": "south-west Pacific",
+   "depth": 4763.0254,
+   "window": {
+    "fromHours": 7.108393666409466,
+    "toHours": 15.108461567644031
+   },
+   "observedPeak": 0.13241930399999996,
+   "modelPeak": {
+    "p10": 0.10001933338515082,
+    "p50": 0.1613507353271809,
+    "p90": 0.26840673473274834
+   },
+   "observedPercentile": 33.01587301587302,
+   "withFriction": {
+    "p50": 0.15967117025241676,
+    "observedPercentile": 33.333333333333336
+   },
+   "observedOnsetHours": 8.133402366255144,
+   "onsetDifferenceMinutes": {
+    "p10": -8.50007214506173,
+    "p50": 0,
+    "p90": 6.000050925925925,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 48336,
+    "correlation": 0.531256595975271,
+    "lagMinutes": -19.000161265432098,
+    "peakRatio": 1.945520412832477
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "51426",
+   "group": "south-west Pacific",
+   "depth": 5556.0146,
+   "window": {
+    "fromHours": 9.416746592078189,
+    "toHours": 17.416814493312756
+   },
+   "observedPeak": 0.06711895199999972,
+   "modelPeak": {
+    "p10": 0.05938902430712778,
+    "p50": 0.10041866739183206,
+    "p90": 0.193744559012589
+   },
+   "observedPercentile": 17.46031746031746,
+   "withFriction": {
+    "p50": 0.10011533251941411,
+    "observedPercentile": 17.46031746031746
+   },
+   "observedOnsetHours": 10.433421887860083,
+   "onsetDifferenceMinutes": {
+    "p10": -8.50007214506173,
+    "p50": -0.5000042438271605,
+    "p90": 5.000042438271605,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47051,
+    "correlation": 0.5224363718291569,
+    "lagMinutes": 2.000016975308642,
+    "peakRatio": 1.1731273124618882
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "54401",
+   "group": "south-west Pacific",
+   "depth": 5684.001,
+   "window": {
+    "fromHours": 10.716757626028807,
+    "toHours": 18.716825527263374
+   },
+   "observedPeak": 0.06479394666666682,
+   "modelPeak": {
+    "p10": 0.04833933076057565,
+    "p50": 0.0814195160627096,
+    "p90": 0.13833963921021497
+   },
+   "observedPercentile": 30.158730158730158,
+   "withFriction": {
+    "p50": 0.07918400673607673,
+    "observedPercentile": 34.285714285714285
+   },
+   "observedOnsetHours": 11.825100366512347,
+   "onsetDifferenceMinutes": {
+    "p10": -12.00010185185185,
+    "p50": -5.000042438271605,
+    "p90": 2.000016975308642,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47731,
+    "correlation": 0.6264787071424317,
+    "lagMinutes": -11.500097608024692,
+    "peakRatio": 1.8921535118286885
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "51407",
+   "group": "central Pacific (Hawaii)",
+   "depth": 4809.984,
+   "window": {
+    "fromHours": 6.583389210390947,
+    "toHours": 14.583457111625515
+   },
+   "observedPeak": 0.31056385999999997,
+   "modelPeak": {
+    "p10": 0.2594067148759495,
+    "p50": 0.42605440922637355,
+    "p90": 0.7008374230712755
+   },
+   "observedPercentile": 23.174603174603174,
+   "withFriction": {
+    "p50": 0.42605440922637355,
+    "observedPercentile": 23.174603174603174
+   },
+   "observedOnsetHours": 7.675065142746914,
+   "onsetDifferenceMinutes": {
+    "p10": -25.500216435185184,
+    "p50": -5.000042438271605,
+    "p90": -2.000016975308642,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47689,
+    "correlation": 0.720025646031674,
+    "lagMinutes": 7.5000636574074075,
+    "peakRatio": 1.2158025121479412
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "46409",
+   "group": "north-east Pacific",
+   "depth": 4212.0205,
+   "window": {
+    "fromHours": 5.300044984567901,
+    "toHours": 13.30011288580247
+   },
+   "observedPeak": 0.0827432313333333,
+   "modelPeak": {
+    "p10": 0.05536583573499592,
+    "p50": 0.08909348536128937,
+    "p90": 0.15653525629870316
+   },
+   "observedPercentile": 41.58730158730159,
+   "withFriction": {
+    "p50": 0.08883256408697977,
+    "observedPercentile": 43.17460317460318
+   },
+   "observedOnsetHours": 6.641723038837449,
+   "onsetDifferenceMinutes": {
+    "p10": -62.50053047839506,
+    "p50": -17.500148533950618,
+    "p90": -6.000050925925925,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47662,
+    "correlation": 0.41876043395490015,
+    "lagMinutes": -1.000008487654321,
+    "peakRatio": 1.4223306292006606
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "43413",
+   "group": "east Pacific",
+   "depth": 3579.0083,
+   "window": {
+    "fromHours": 12.716774601337448,
+    "toHours": 20.716842502572014
+   },
+   "observedPeak": 0.17559894599999995,
+   "modelPeak": {
+    "p10": 0.09880920098494188,
+    "p50": 0.1792865914130452,
+    "p90": 0.36445409695908526
+   },
+   "observedPercentile": 48.57142857142857,
+   "withFriction": {
+    "p50": 0.16893550811691743,
+    "observedPercentile": 52.06349206349206
+   },
+   "observedOnsetHours": 14.933460082304526,
+   "onsetDifferenceMinutes": {
+    "p10": -111.5009463734568,
+    "p50": -48.50041165123457,
+    "p90": -13.000110339506172,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47006,
+    "correlation": 0.6379202210460588,
+    "lagMinutes": 14.500123070987655,
+    "peakRatio": 1.315571901521293
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "32411",
+   "group": "east Pacific",
+   "depth": 3188.0603,
+   "window": {
+    "fromHours": 14.75845859696502,
+    "toHours": 22.758526498199586
+   },
+   "observedPeak": 0.12393327866666666,
+   "modelPeak": {
+    "p10": 0.09212279603342494,
+    "p50": 0.16395954271760618,
+    "p90": 0.2970709299838927
+   },
+   "observedPercentile": 29.523809523809526,
+   "withFriction": {
+    "p50": 0.14807254820123283,
+    "observedPercentile": 35.23809523809524
+   },
+   "observedOnsetHours": 16.716808551954735,
+   "onsetDifferenceMinutes": {
+    "p10": -114.00096759259259,
+    "p50": -46.500394675925925,
+    "p90": -15.000127314814815,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 48322,
+    "correlation": 0.5489354651596737,
+    "lagMinutes": 15.500131558641977,
+    "peakRatio": 2.734264480593119
+   },
+   "scenarios": 315
+  },
+  {
+   "id": "32413",
+   "group": "east Pacific",
+   "depth": 3885.9978,
+   "window": {
+    "fromHours": 15.166795396090535,
+    "toHours": 23.166863297325104
+   },
+   "observedPeak": 0.1429025600000028,
+   "modelPeak": {
+    "p10": 0.08796618492276322,
+    "p50": 0.1556185177434793,
+    "p90": 0.28963284737261885
+   },
+   "observedPercentile": 42.53968253968254,
+   "withFriction": {
+    "p50": 0.1378590015335541,
+    "observedPercentile": 53.65079365079365
+   },
+   "observedOnsetHours": 17.300146836419753,
+   "onsetDifferenceMinutes": {
+    "p10": -104.00088271604938,
+    "p50": -37.50031828703704,
+    "p90": -13.000110339506172,
+    "scenarios": 315
+   },
+   "bestMatch": {
+    "row": 47002,
+    "correlation": 0.6347982547545842,
+    "lagMinutes": 12.00010185185185,
+    "peakRatio": 0.7224008824796972
+   },
+   "scenarios": 315
+  }
+ ]
+}
