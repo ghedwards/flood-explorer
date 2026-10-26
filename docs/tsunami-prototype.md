@@ -358,7 +358,17 @@ worker, nested deployment paths, controls and export. Nonlinear tests check
 resting water over a variable bed and a dry shore, separate lake levels,
 positive depths, mass balance including sponge exchange, beach run-up and
 subsequent drainage, and a dry-bed Ritter dam-break depth profile and contour
-position. These first-order tests are not tsunami run-up certification. Run:
+position. A NOAA/NCTR analytical benchmark is included: a non-breaking solitary wave
+(H/d = 0.05, below Synolakis' breaking limit) on a 1:10 beach, compared with
+the run-up law `R/d = 2.831 sqrt(cot beta) (H/d)^(5/4)`. The first-order solver
+reaches 71% of the analytical run-up with 1 m cells and 83% with 0.5 m cells
+(depth 6 m, about 60 cells per wave length scale), so it **under-predicts
+run-up**, converging at roughly first order as expected of a Rusanov scheme with
+hydrostatic reconstruction. The test requires the finer result to be within 20%.
+Treat run-up from this solver, at the grid sizes the browser can afford, as a
+lower bound. The solver accepts cells down to 0.05 m so such benchmarks can be
+run at laboratory scale.
+These first-order tests are not tsunami run-up certification. Run:
 
 ```
 cargo test --locked --manifest-path rust/Cargo.toml -p flood-core -p flood-wasm

@@ -65,7 +65,7 @@ impl Solver {
     #[allow(clippy::too_many_arguments)]
     pub fn new(w: usize, h: usize, cell: f64, bed: Vec<f64>, reference: Vec<f64>, eta: Vec<f64>, absorbing: bool, roughness: f64) -> Result<Self, String> {
         let n = w.checked_mul(h).ok_or("grid overflow")?;
-        if !(4..=512).contains(&w) || !(4..=512).contains(&h) || !cell.is_finite() || cell < 1.0
+        if !(4..=512).contains(&w) || !(4..=512).contains(&h) || !cell.is_finite() || cell < 0.05
             || bed.len() != n || reference.len() != n || eta.len() != n
             || !roughness.is_finite() || !(0.0..=0.2).contains(&roughness)
             || bed.iter().any(|v| !v.is_finite() || !(-12000.0..=9000.0).contains(v))
@@ -94,6 +94,20 @@ impl Solver {
             valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new() };
         s.dt = s.stable_dt();
         Ok(s)
+    }
+
+    /// Initial depth-integrated transport (m2/s), e.g. for a wave already
+    /// travelling. It must be zero on dry cells and on cells excluded by the mask.
+    pub fn set_momentum(&mut self, mx: Vec<f64>, my: Vec<f64>) -> Result<(), String> {
+        let n = self.water.len();
+        if mx.len() != n || my.len() != n || self.time != 0.0
+            || mx.iter().chain(&my).any(|v| !v.is_finite() || v.abs() > 1.0e5)
+            || (0..n).any(|i| self.water[i] <= DRY && (mx[i] != 0.0 || my[i] != 0.0)) {
+            return Err("invalid initial momentum; it must be finite, zero on dry cells and set before the run".into());
+        }
+        self.mx = mx; self.my = my;
+        self.dt = self.stable_dt();
+        Ok(())
     }
 
     pub fn set_valid(&mut self, mask: Vec<u8>) -> Result<(), String> {
@@ -456,6 +470,54 @@ mod tests {
             (0..64).map(|i| if i % 8 < 4 { 5.0 } else { 0.0 }).collect(), vec![0.0; 64], false, 0.0).unwrap();
         assert!(land.set_forcing(Edge::East, vec![0.0, 1.0], vec![0.0; 2], 1).is_err());
         assert!(land.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).is_ok());
+    }
+
+    // Run-up of a non-breaking solitary wave (height/depth ratio `ratio`) on a
+    // 1:`cot` beach, in units where the depth is 6 m and the cells are `cell` m.
+    fn solitary_runup(cell: f64, cot: f64, ratio: f64) -> (f64, f64) {
+        let (d, slope) = (6.0_f64, 1.0 / cot);
+        let height = ratio * d;
+        let k = (3.0 * height / (4.0 * d.powi(3))).sqrt();
+        // Start where the wave is 5% of its crest height, as in Synolakis (1987).
+        let ahead = (20.0_f64.sqrt()).acosh() / k;
+        let behind = 2.4 / k;
+        let toe = behind + ahead;
+        let length = toe + d * cot + 0.3 * d * cot + 5.0 * cell;
+        let w = (length / cell).ceil() as usize;
+        assert!(w <= 512, "{w} cells");
+        let h = 4;
+        let x_of = |i: usize| ((i % w) as f64 + 0.5) * cell;
+        let bed: Vec<f64> = (0..w*h).map(|i| { let x = x_of(i); if x < toe { -d } else { -d + (x - toe) * slope } }).collect();
+        let still: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+        let eta: Vec<f64> = (0..w*h).map(|i| if still[i] > 0.0 { height / (k * (x_of(i) - behind)).cosh().powi(2) } else { 0.0 }).collect();
+        let c = (G * (d + height)).sqrt();
+        // Right-going wave: u = c eta / (d + eta), transport = (d + eta) u.
+        let mx: Vec<f64> = (0..w*h).map(|i| if still[i] > 0.0 { c * eta[i] } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, cell, bed, still, eta, false, 0.0).unwrap();
+        s.set_momentum(mx, vec![0.0; w*h]).unwrap();
+        let mut run_up = 0.0_f64;
+        // Transit to the toe, up and down the beach, with margin.
+        while s.time < ahead / c + 3.0 * d * cot / c + 20.0 {
+            s.advance(1).unwrap();
+            for x in 0..w {
+                let i = 2 * w + x;
+                if s.water[i] > 0.003 * d { run_up = run_up.max(s.bed[i] + s.water[i]); }
+            }
+        }
+        assert!(s.volume_error().abs() < 1e-6);
+        (run_up, 2.831 * cot.sqrt() * ratio.powf(1.25) * d)
+    }
+
+    #[test]
+    fn solitary_wave_runup_follows_the_synolakis_law() {
+        // NOAA/NCTR analytical benchmark: R/d = 2.831 sqrt(cot beta) (H/d)^(5/4).
+        // Ratio 0.05 on 1:10 is below Synolakis' breaking limit
+        // 0.818 cot^(-10/9) (about 0.063), so the law applies.
+        let (coarse, expected) = solitary_runup(1.0, 10.0, 0.05);
+        let (fine, _) = solitary_runup(0.5, 10.0, 0.05);
+        eprintln!("run-up cell 1 m: {coarse:.3}, cell 0.5 m: {fine:.3}, Synolakis {expected:.3}");
+        assert!(fine > coarse, "refinement should raise the first-order solution");
+        assert!((fine - expected).abs() < 0.2 * expected, "run-up {fine:.4} m, Synolakis {expected:.4} m");
     }
 
     #[test]
