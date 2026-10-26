@@ -59,18 +59,20 @@ comparison from proposed coastal extensions:
    numerical damping. [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
    a useful reference for dry/wet shorelines and adaptive grids. Keep the
    browser worker responsive with bounded step batches and memory use.
-4. **Dispersive-wave method — uniform-depth experiment implemented; coastal coupling proposed.** Dispersion
+4. **Dispersive-wave method — uniform-depth and variable-depth linear versions implemented; nonlinear coastal coupling proposed.** Dispersion
    means different wavelengths travel at different speeds, so a pulse can
    spread and change shape. The shallow-water methods omit this
    wavelength-dependent physics; numerical diffusion in a solver is a
    different effect. A linearised Boussinesq/Peregrine comparison now runs in Rust/WASM on a
    uniform-depth ocean, with analytical frequency/long-wave-limit and volume
-   checks. It is available through **Try dispersive ocean**. Next evaluate
-   variable-depth and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
+   checks. It is available through **Try dispersive ocean**. A variable-depth linear
+   Peregrine form now runs on the regional grids (equivalence, rest, volume and
+   long-wave/short-wave checks only; not benchmarked). Next compare against published
+   benchmarks and evaluate nonlinear and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
    and published formulations as references. It may improve shorter-wave
    propagation and waveform detail within its valid depth/wavelength range;
    it does not automatically improve inundation, terrain accuracy or source
-   reconstruction. Keep its uniform-depth restriction explicit. Measure computational cost
+   reconstruction. Keep its restriction to the linear regional grids explicit. Measure computational cost
    and validate each extension before enabling it on coastal terrain.
 5. **Sensitivity runs.** Compare bounded ensembles of source strength, water
    level, friction and terrain uncertainty. Report ranges of arrival time,

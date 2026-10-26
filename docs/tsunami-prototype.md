@@ -65,13 +65,13 @@ is fixed at 1.5 times the source amplitude; gauge traces autoscale.
 ## Dispersive uniform-ocean comparison
 
 Choose **Try dispersive ocean**, or open
-`tsunami.html?scene=flat&method=dispersive`. The **Dispersive · uniform ocean only**
+`tsunami.html?scene=flat&method=dispersive`. The **Dispersive · linear Boussinesq**
 method is a linearised Boussinesq/Peregrine experiment for constant positive
 depth. It adds wavelength-dependent speed: shorter waves travel more slowly
 than long waves. The linear model is based on the flat-bottom
 [Boussinesq–Peregrine system](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/evolution-of-perturbed-long-nonlinear-plane-ring-and-hybrid-surface-waves/5A777B7412A3346C7F0EA4ACD2B65A88).
-This version has no nonlinear advection, variable-depth effects, shoreline
-coupling, wetting/drying or breaking. It cannot be selected on coastal terrain.
+The uniform-depth form has no nonlinear advection, variable-depth effects, shoreline
+coupling, wetting/drying or breaking; the variable-depth form is described below.
 
 For uniform still-water depth H, the implementation advances:
 
@@ -104,6 +104,43 @@ limit, still water, mass conservation and rejection of non-uniform depth.
 WASM checks compare finite waveforms against the shallow-water solver. These
 are numerical checks, not coastal or field validation. The remaining work is
 recorded in the [tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026).
+
+### Variable depth and land (regional grids)
+
+The same method now runs on the shelf, island and prefetched coastal grids.
+Where depth is not uniform, or land is present, the scalar solve is replaced by the
+linearised Peregrine momentum equation for the acceleration `w = u_t`:
+
+```
+w - (H/2) grad(div(H w)) + (H²/6) grad(div w) = -g grad(eta)
+q_t = H w,   eta_t = -div(q)
+```
+
+on the same staggered grid, with face depths averaged from the two adjacent
+wet cells and land and domain edges as walls. It is solved each step by
+Jacobi-preconditioned BiCGSTAB, warm-started from a linear extrapolation of the
+previous two solutions, to a relative residual of 1e-8 (at most 300
+iterations, otherwise the run stops with an error). In uniform depth the
+operator is algebraically the scalar one, and a Rust test confirms the two
+agree to 1e-7.
+
+Checks beyond that: still water stays still over uneven bathymetry and land;
+displacement volume is conserved on a shelf with land; a pulse 15 km wide on a
+1000 m shelf follows the shallow-water solver to 8% after 20 minutes; a pulse
+a few depths wide over a shoaling bottom (4000 m to 2000 m) loses speed and
+height relative to shallow water (crest at least three cells behind, under 90%
+of the height).
+
+What it does **not** establish: agreement with a published dispersive benchmark
+or with observations over real bathymetry, or the correctness of the
+variable-depth terms beyond those checks. The formulation is a weak-dispersion
+form (kH below about 1) with no extra variable-depth terms, no nonlinearity,
+no breaking and no wetting/drying. The regional 1.5 km grids floor coastal
+depths at 10 m, so shorter waves than about 4–5 cells (6–7 km) are not
+represented in any case. Cost on a 160 × 96 coastal grid is about 20 ms per
+step in the browser (roughly 25 solver iterations per step), around 50 times
+the shallow-water solver, so playback runs at a few simulated minutes per
+second whatever speed is selected. It is not available in the nonlinear local scenes.
 
 ## Prefetched Australian east coast
 
@@ -368,7 +405,7 @@ assign real city names to synthetic geography.
 See [the tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026)
 for proposed data improvements, offshore/river coupling, refinement, sensitivity
 runs and the next stage of the **dispersive-wave (Boussinesq-type)** solver. Its
-uniform-ocean comparison is implemented; coastal coupling remains future work.
+linear uniform- and variable-depth forms are implemented; nonlinear coastal coupling remains future work.
 
 ## Checks and limits
 

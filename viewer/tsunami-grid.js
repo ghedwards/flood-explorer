@@ -2,7 +2,7 @@ import { estuaryIds } from './tsunami-locations.js';
 // Regional propagation grids and a separate idealised nonlinear estuary test.
 export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, width = 10, source = [38, 48], absorbing = true, method = 'staggered', bathymetry = null, tide = 0, roughness = 0.025, lakeLevel = 1, coupled = false } = {}) {
   if (coupled && !estuaryIds.includes(preset)) throw new Error('Only the local terrain scenes can be driven by a regional offshore wave.');
-  if (method === 'dispersive' && (preset !== 'flat' || bathymetry)) throw new Error('Dispersive waves currently require a uniform ocean.');
+  if (method === 'dispersive' && (preset === 'estuary' || estuaryIds.includes(preset))) throw new Error('Dispersive waves are not available in the nonlinear local scenes.');
   if (estuaryIds.includes(preset)) return localEstuaryGrid({ preset, bathymetry, amplitude, width, source, absorbing, tide, roughness, coupled });
   if (preset === 'estuary') return estuaryGrid({ amplitude, width, source, absorbing, tide, roughness, lakeLevel });
   if ((!bathymetry && !['flat', 'shelf', 'island'].includes(preset)) || !['staggered', 'finite-volume', 'dispersive'].includes(method) || !Number.isFinite(deep) || deep < 500 || deep > 5000

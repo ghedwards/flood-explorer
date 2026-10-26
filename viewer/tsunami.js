@@ -77,7 +77,7 @@ function labels() {
   $('waveSpeed').textContent = coupled ? '—' : `${(Math.sqrt(9.81 * sourceDepth) * 3.6).toFixed(0)} km/h`;
   $('scenarioName').textContent = $('preset').selectedOptions[0].textContent;
   $('tryDispersive').hidden = $('method').value === 'dispersive';
-  $('methodHint').textContent = $('method').value === 'dispersive' ? `Experimental linear Boussinesq waves: shorter wavelengths travel more slowly. Uniform depth only; no land, breaking or inundation. Source-scale depth/spread ratio: ${(grid.depth[0] / (+$('width').value * 1000)).toFixed(2)}. Weak-dispersion approximation, not a complete gravity-wave model.` : localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
+  $('methodHint').textContent = $('method').value === 'dispersive' ? `Experimental linear Boussinesq (Peregrine) waves: shorter wavelengths travel more slowly. ${$('preset').value === 'flat' ? 'Uniform depth' : 'Variable depth with reflecting land'}; no breaking or inundation. Source-scale depth/spread ratio: ${(Math.max(...grid.depth) / (+$('width').value * 1000)).toFixed(2)}${$('preset').value === 'flat' ? '' : ' at the deepest water; aim for about 1 or less'}. Weak-dispersion approximation, not a complete gravity-wave model.${$('preset').value === 'flat' ? '' : ' It solves a coupled system every step, so playback may run slower than selected.'}` : localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
     ? 'Staggered-grid propagation with low numerical damping. Both methods solve linear shallow-water equations; neither models onshore flooding.'
     : 'Finite-volume acoustic fluxes with RK2 time stepping. This first-order spatial method damps short waves more. It solves the same linear equations; it does not add inundation physics.';
   $('mapHint').textContent = `${grid.W * grid.cell / 1000} × ${grid.H * grid.cell / 1000} km ${bathymetry ? 'Australian coastal subset' : 'idealised basin'} · ${grid.cell / 1000} km cells · ${coupled ? 'The wave enters from the open sea edges; there is no local source to move.' : localScene() ? ($('preset').value === 'estuary' ? 'Click water to move the local source; the idealised lake can have its own wave.' : 'Click connected bay water to move the local wave source.') : 'Click the ocean to move the hypothetical source.'} Markers 1–3 are virtual gauges.`;
@@ -95,7 +95,7 @@ function labels() {
   $('dataNote').textContent = coupled ? `Real local terrain at ${grid.cell} m driven by ${series ? 'a wave series you supplied' : 'a hypothetical offshore pulse propagated through the 1.5 km regional model (GA bathymetry v4, coastal depths floored at 10 m)'}${+$('tideRange').value ? `, with a hypothetical ${(+$('tideRange').value).toFixed(2)} m rising tide (not a forecast)` : ''}. Vertical datums are unreconciled and the sea level is a hypothetical plane. Not a PTHA18 scenario, calibrated inundation or hazard prediction.` : localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : `Real local terrain resampled to ${grid.cell} m, with a hypothetical local wave. ${bathymetry?.terrainSource ? 'AVWS elevations; initial water level is hypothetical, not calibrated local mean sea level. Terrain includes interpolation and modelled creek depths.' : 'Source bathymetry coverage and vertical datum are unverified.'} Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.`) : bathymetry
     ? 'Real coastal topography and bathymetry, with a hypothetical offshore pulse. This is not a historical earthquake reconstruction or a coastal hazard prediction. Land remains a reflecting wall: no river flow, run-up or inundation.'
     : 'Synthetic ocean depths and a prescribed uplift/subsidence pulse. This is not an earthquake scenario or a prediction for a real coast. It does not model wave breaking, shoreline run-up or inundation.';
-  if ($('method').value === 'dispersive') $('dataNote').textContent = 'Uniform synthetic ocean with linear Boussinesq/Peregrine dispersion. This is a numerical comparison case, not a coastal inundation or earthquake scenario.';
+  if ($('method').value === 'dispersive') $('dataNote').textContent = `${$('preset').value === 'flat' ? 'Uniform synthetic ocean' : bathymetry ? 'Real coastal bathymetry (coastal depths floored at 10 m)' : 'Synthetic bathymetry'} with linear Boussinesq/Peregrine dispersion. This is a numerical comparison, not a coastal inundation or earthquake scenario; the variable-depth form is checked against the uniform-depth solver and the long-wave limit only, not against field or benchmark data.`;
   $('dataCredit').hidden = !bathymetry;
   $('terrainTerms').hidden = !bathymetry?.licenseMetadataUrl;
   if (bathymetry?.licenseMetadataUrl) {
@@ -133,8 +133,6 @@ async function changeScene() {
   const local = localScene();
   $('method').querySelector('[value="nonlinear"]').disabled = !local;
   for (const option of $('method').options) if (option.value !== 'nonlinear') option.disabled = local;
-  $('method').querySelector('[value="dispersive"]').disabled = id !== 'flat';
-  if (id !== 'flat' && $('method').value === 'dispersive') $('method').value = 'staggered';
   if (local) $('method').value = 'nonlinear';
   else if ($('method').value === 'nonlinear') $('method').value = 'staggered';
   for (const id of ['depth', 'speed']) $('view').querySelector(`[value="${id}"]`).disabled = !local;
@@ -493,7 +491,7 @@ window.addEventListener('pagehide', () => { if (worker) worker.terminate(); });
 window.addEventListener('resize', paint);
 const initialScene = new URLSearchParams(location.search).get('scene');
 if (new URLSearchParams(location.search).get('coupled') === '1') $('coupled').checked = true;
-if (initialScene === 'flat' && new URLSearchParams(location.search).get('method') === 'dispersive') $('method').value = 'dispersive';
+if (new URLSearchParams(location.search).get('method') === 'dispersive') $('method').value = 'dispersive';
 if (initialScene && [...$('preset').options].some(option => option.value === initialScene)) { $('preset').value = initialScene; changeScene(); }
 else reset();
 requestAnimationFrame(animate);

@@ -97,6 +97,17 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     assert.match(await page.locator('#methodHint').innerText(), /Boussinesq/);
     await page.locator('#step').click();
     await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    // The dispersive method also runs over variable depth, including a real coast.
+    await page.locator('#preset').selectOption('shelf');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'dispersive' && window.__tsunamiStatus().time === 0);
+    assert.match(await page.locator('#methodHint').innerText(), /Variable depth with reflecting land/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    await page.locator('#preset').selectOption('moreton');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === 'moreton' && window.__tsunamiStatus().method === 'dispersive');
+    assert.match(await page.locator('#dataNote').innerText(), /Real coastal bathymetry.*Peregrine/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
     await page.locator('#preset').selectOption('gold-coast-seaway');
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === 'gold-coast-seaway');
     assert.equal((await page.evaluate(() => window.__tsunamiStatus())).method, 'nonlinear');

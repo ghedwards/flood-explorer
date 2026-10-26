@@ -141,8 +141,8 @@ test('dispersive WASM waves conserve volume and differ from shallow-water propag
   const shallow = F.tsunamiStep(160);
   const difference = dispersive.eta.reduce((s, v, i) => s + Math.abs(v - shallow.eta[i]), 0) / grid.eta.length;
   assert.ok(difference > .001, `waveform difference ${difference}`);
-  assert.throws(() => tsunamiGrid({ method: 'dispersive', preset: 'shelf' }), /uniform ocean/);
-  assert.throws(() => F.tsunamiStart({ ...tsunamiGrid({ preset: 'shelf' }), method: 3 }), /uniform ocean/);
+  assert.throws(() => tsunamiGrid({ method: 'dispersive', preset: 'estuary' }), /local scenes/);
+  assert.throws(() => tsunamiGrid({ method: 'dispersive', preset: 'currumbin', bathymetry: readData('currumbin') }), /local scenes/);
 });
 
 const dataDir = path.join(__dirname, '../viewer/public/tsunami-data');
@@ -266,4 +266,23 @@ test('wave series files parse strictly and drive the local model with an optiona
   assert.ok(Math.abs(withTide.volumeError) < 1e-4);
   assert.equal(C.levelSeries(600, 0), null);
   assert.throws(() => F.tsunamiStart({ ...start, levelTimes: [0, 1], level: [0, NaN] }), /invalid sea level/);
+});
+
+test('variable-depth dispersion runs on shelf and real coastal grids, conserves displacement volume and differs from shallow water', async () => {
+  const { tsunamiGrid } = await gridModule;
+  for (const [preset, bathymetry, source] of [['shelf', null, [38, 48]], ['moreton', readData('moreton'), (() => { const d = readData('moreton'); const i = d.elevation.findIndex((z, k) => z < -1500 && k % 160 > 100 && Math.floor(k / 160) === 48); return [i % 160, 48]; })()]]) {
+    const grid = tsunamiGrid({ preset, bathymetry, source, method: 'dispersive', width: 5, absorbing: false });
+    assert.equal(grid.method, 3);
+    const initial = grid.eta.reduce((a, b) => a + b, 0) * grid.cell ** 2;
+    F.tsunamiStart(grid);
+    let dispersive;
+    for (let i = 0; i < 4; i++) dispersive = F.tsunamiStep(16);
+    assert.ok(dispersive.eta.every(Number.isFinite));
+    assert.ok(dispersive.eta.every((e, i) => grid.depth[i] > 0 || e === 0));
+    assert.ok(Math.abs(dispersive.volume - initial) < 1e-3 * Math.max(1, Math.abs(initial)) + .01, `${preset}: ${dispersive.volume} vs ${initial}`);
+    F.tsunamiStart({ ...grid, method: 0 });
+    let shallow;
+    for (let i = 0; i < 4; i++) shallow = F.tsunamiStep(16);
+    assert.ok(dispersive.eta.some((e, i) => Math.abs(e - shallow.eta[i]) > 1e-4), `${preset} should differ from shallow water`);
+  }
 });
