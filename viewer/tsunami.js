@@ -2,7 +2,7 @@ import '@fontsource-variable/archivo/standard.css';
 import '@fontsource/ibm-plex-mono/latin-400.css';
 import './tsunami.css';
 import { estuaryIds, estuaryLocations, regionalIds } from './tsunami-locations.js';
-import { parentSeconds, planCoupling, toParentCell } from './tsunami-coupling.js';
+import { parentSeconds, parseSeriesCsv, planCoupling, toParentCell } from './tsunami-coupling.js';
 import referencePlaces from './public/tsunami-data/places.json';
 import { terrainFor } from './tsunami-terrain.js';
 import { tsunamiGrid, connectedWaterDepth } from './tsunami-grid.js';
@@ -19,14 +19,15 @@ let budget = 0, previousWall = 0, history = [];
 let bathymetry = null, sceneVersion = 0, terrain, inspected = null;
 // Regional grids used as offshore parents, and what the current nested run reports.
 const parents = new Map();
-let couplingInfo = null;
+let couplingInfo = null, uploaded = null;
 const parentOf = id => estuaryLocations.find(location => location.id === id)?.parent;
 const coupledOn = () => $('coupled').checked && !!parentOf($('preset').value);
+const seriesOn = () => coupledOn() && $('incoming').value === 'series';
 const localScene = () => $('preset').value === 'estuary' || estuaryIds.includes($('preset').value);
 const nonlinear = () => grid?.method === 2;
 const coastIds = regionalIds;
 const options = () => ({ preset: $('preset').value, deep: +$('deep').value, amplitude: +$('amplitude').value,
-  width: +$('width').value, source, absorbing: $('absorbing').checked, method: $('method').value, tide: +$('tide').value, roughness: +$('roughness').value, lakeLevel: +$('lakeLevel').value, coupled: coupledOn(), offshoreWidth: +$('offshoreWidth').value });
+  width: +$('width').value, source, absorbing: $('absorbing').checked, method: $('method').value, tide: +$('tide').value, roughness: +$('roughness').value, lakeLevel: +$('lakeLevel').value, coupled: coupledOn(), offshoreWidth: +$('offshoreWidth').value, incoming: $('incoming').value, tideRange: +$('tideRange').value });
 const totalSeconds = () => +$('duration').value * 60;
 const sample = (values, [x, y]) => (nonlinear() || grid.depth[y * grid.W + x] > 0) ? values[y * grid.W + x] : null;
 const timeLabel = seconds => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
@@ -43,27 +44,36 @@ function labels() {
   $('lakeControl').hidden = $('preset').value !== 'estuary';
   const coupled = coupledOn();
   $('couplingControls').hidden = !parentOf($('preset').value);
-  $('offshoreWidthControl').hidden = !coupled;
+  const series = seriesOn();
+  $('offshoreWidthControl').hidden = !coupled || series;
+  $('waveFileControl').hidden = !series;
+  $('amplitude').parentElement.hidden = series;
+  $('incoming').parentElement.hidden = !coupled;
+  $('tideRange').parentElement.hidden = !coupled;
+  $('tideRangeValue').textContent = `${(+$('tideRange').value).toFixed(2)} m`;
   $('offshoreWidthValue').textContent = `${$('offshoreWidth').value} km`;
   $('width').parentElement.hidden = coupled;
   $('absorbing').disabled = coupled;
   $('couplingMetrics').hidden = !coupled;
   if (coupled) {
     const parent = parentOf($('preset').value), c = couplingInfo;
-    $('couplingSource').textContent = `${parent.source[0].toFixed(2)}°E ${Math.abs(parent.source[1]).toFixed(2)}°S · ${(+$('amplitude').value).toFixed(2)} m nominal · ${$('offshoreWidth').value} km wide`;
-    $('couplingArrival').textContent = c ? `${(c.arrival / 60).toFixed(0)} min after the offshore source · local clock starts ${(c.offset / 60).toFixed(0)} min after it` : 'Running the regional model…';
-    $('couplingPeak').textContent = c ? `${c.peak.toFixed(2)} m (${Object.entries(c.edges).map(([name, e]) => `${name} ${e.peak.toFixed(2)}`).join(', ')}) · regional peak anywhere ${c.regionalPeak.toFixed(2)} m` : '—';
+    if (series) $('couplingSource').textContent = uploaded ? `${uploaded.name} · ${uploaded.times.length} rows · local seconds` : 'No file chosen';
+    else $('couplingSource').textContent = `${parent.source[0].toFixed(2)}°E ${Math.abs(parent.source[1]).toFixed(2)}°S · ${(+$('amplitude').value).toFixed(2)} m nominal · ${$('offshoreWidth').value} km wide`;
+    $('couplingArrival').textContent = !c ? (series ? 'Waiting for the series…' : 'Running the regional model…')
+      : c.source === 'series' ? `${(c.arrival / 60).toFixed(1)} min into the local run`
+      : `${(c.arrival / 60).toFixed(0)} min after the offshore source · local clock starts ${(c.offset / 60).toFixed(0)} min after it`;
+    $('couplingPeak').textContent = c ? `${c.peak.toFixed(2)} m (${Object.entries(c.edges).map(([name, e]) => `${name} ${e.peak.toFixed(2)}`).join(', ')}) ${c.source === 'series' ? '' : ` · regional peak anywhere ${c.regionalPeak.toFixed(2)} m`}${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : '—';
   }
   $('tideValue').textContent = `${(+$('tide').value).toFixed(2)} m`;
   $('roughnessValue').textContent = (+$('roughness').value).toFixed(3);
   $('lakeValue').textContent = `${(+$('lakeLevel').value).toFixed(2)} m`;
   $('deepValue').textContent = `${Math.round((bathymetry || localScene()) ? Math.max(...grid.depth) : +$('deep').value).toLocaleString('en-AU')} m`;
-  $('couplingHint').textContent = coupled ? 'The regional 1.5 km linear model runs first with the offshore source below; its wave at this scene\'s sea edges (scaled to local depth by Green\'s law) enters the nonlinear model as incoming-wave forcing. One-way: the local model does not feed back. Sheltered bays receive little because the regional grid barely resolves their entrances.' : 'Runs the 1.5 km regional model first, then feeds its wave in at this scene\'s open sea edges instead of the local pulse.';
-  $('waveSettingsHint').textContent = coupled ? 'Offshore source: exaggerated demonstration pulse in the regional model, not a calibrated tsunami scenario. It is not a PTHA18 scenario.' : `${+$('amplitude').value >= 2 ? 'Exaggerated demonstration wave' : 'Hypothetical demonstration wave'}, not a calibrated tsunami scenario. ${localScene() ? 'Shallow water reduces the initial pulse; the actual maximum appears below.' : 'Source strength is displacement from still water, not crest-to-trough wave height.'}`;
+  $('couplingHint').textContent = series ? 'Uses your wave series as the incoming wave on every open edge: two columns, seconds from the start of the run and metres above the initial sea level. Nothing is scaled or checked against a datum; the file\'s author owns that.' : coupled ? 'The regional 1.5 km linear model runs first with the offshore source below; its wave at this scene\'s sea edges (scaled to local depth by Green\'s law) enters the nonlinear model as incoming-wave forcing. One-way: the local model does not feed back. Sheltered bays receive little because the regional grid barely resolves their entrances.' : 'Runs the 1.5 km regional model first, then feeds its wave in at this scene\'s open sea edges instead of the local pulse.';
+  $('waveSettingsHint').textContent = series ? 'The wave comes from your series; source strength and width do not apply.' : coupled ? 'Offshore source: exaggerated demonstration pulse in the regional model, not a calibrated tsunami scenario. It is not a PTHA18 scenario.' : `${+$('amplitude').value >= 2 ? 'Exaggerated demonstration wave' : 'Hypothetical demonstration wave'}, not a calibrated tsunami scenario. ${localScene() ? 'Shallow water reduces the initial pulse; the actual maximum appears below.' : 'Source strength is displacement from still water, not crest-to-trough wave height.'}`;
   $('amplitudeValue').textContent = `${(+$('amplitude').value).toFixed(2)} m`;
   $('widthValue').textContent = `${(+$('width').value).toFixed(localScene() ? 2 : 0)} km`;
   const sourceDepth = grid.depth[source[1] * grid.W + source[0]];
-  $('sourceValue').textContent = coupled ? 'Offshore (see below)' : bathymetry ? coordinates(source) : `${(source[0] * grid.cell / 1000).toFixed(2)} km E · ${(source[1] * grid.cell / 1000).toFixed(2)} km S`;
+  $('sourceValue').textContent = coupled ? (series ? 'Uploaded series (see below)' : 'Offshore (see below)') : bathymetry ? coordinates(source) : `${(source[0] * grid.cell / 1000).toFixed(2)} km E · ${(source[1] * grid.cell / 1000).toFixed(2)} km S`;
   $('waveSpeed').textContent = coupled ? '—' : `${(Math.sqrt(9.81 * sourceDepth) * 3.6).toFixed(0)} km/h`;
   $('scenarioName').textContent = $('preset').selectedOptions[0].textContent;
   $('tryDispersive').hidden = $('method').value === 'dispersive';
@@ -82,7 +92,7 @@ function labels() {
   $('landHeightRange').textContent = terrain.high > 0 ? `Ground above zero: 0 to ${terrain.high.toFixed(1)} m` : 'Land heights unavailable in this scene';
   updatePlaceContext();
   $('boundaryHint').textContent = coupled ? 'Sea edges carry the incoming offshore wave and let outgoing waves leave (Flather-type radiation condition; no sponge). Any other edge is a reflecting wall.' : localScene() ? 'Outer edges are reflecting walls. The optional sponge relaxes initially wet edge cells towards their starting water levels; it is not an offshore tsunami boundary or a river inflow.' : 'Turn off absorption to compare reflections in a closed basin. The coastline always reflects; water does not move onto land.';
-  $('dataNote').textContent = coupled ? `Real local terrain at ${grid.cell} m driven by a hypothetical offshore pulse propagated through the 1.5 km regional model (GA bathymetry v4, coastal depths floored at 10 m). Vertical datums are unreconciled and the sea level is a hypothetical plane. Not a PTHA18 scenario, calibrated inundation or hazard prediction.` : localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : `Real local terrain resampled to ${grid.cell} m, with a hypothetical local wave. ${bathymetry?.terrainSource ? 'AVWS elevations; initial water level is hypothetical, not calibrated local mean sea level. Terrain includes interpolation and modelled creek depths.' : 'Source bathymetry coverage and vertical datum are unverified.'} Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.`) : bathymetry
+  $('dataNote').textContent = coupled ? `Real local terrain at ${grid.cell} m driven by ${series ? 'a wave series you supplied' : 'a hypothetical offshore pulse propagated through the 1.5 km regional model (GA bathymetry v4, coastal depths floored at 10 m)'}${+$('tideRange').value ? `, with a hypothetical ${(+$('tideRange').value).toFixed(2)} m rising tide (not a forecast)` : ''}. Vertical datums are unreconciled and the sea level is a hypothetical plane. Not a PTHA18 scenario, calibrated inundation or hazard prediction.` : localScene() ? ($('preset').value === 'estuary' ? 'Idealised 25 m terrain: ocean, low floodplain, a connected river and a lake starting at a separate water level. Includes flooding and drainage. Not a reconstruction of an Australian estuary.' : `Real local terrain resampled to ${grid.cell} m, with a hypothetical local wave. ${bathymetry?.terrainSource ? 'AVWS elevations; initial water level is hypothetical, not calibrated local mean sea level. Terrain includes interpolation and modelled creek depths.' : 'Source bathymetry coverage and vertical datum are unverified.'} Isolated inland depressions start dry because their water levels are unknown. Not a calibrated inundation or hazard model.`) : bathymetry
     ? 'Real coastal topography and bathymetry, with a hypothetical offshore pulse. This is not a historical earthquake reconstruction or a coastal hazard prediction. Land remains a reflecting wall: no river flow, run-up or inundation.'
     : 'Synthetic ocean depths and a prescribed uplift/subsidence pulse. This is not an earthquake scenario or a prediction for a real coast. It does not model wave breaking, shoreline run-up or inundation.';
   if ($('method').value === 'dispersive') $('dataNote').textContent = 'Uniform synthetic ocean with linear Boussinesq/Peregrine dispersion. This is a numerical comparison case, not a coastal inundation or earthquake scenario.';
@@ -353,16 +363,19 @@ function buildCoupling(parent, fineGrid) {
   const parentGrid = tsunamiGrid({ preset: parent.id, bathymetry: parentData, source: cell, amplitude: +$('amplitude').value, width: +$('offshoreWidth').value, absorbing: true });
   const plan = planCoupling({ fine: bathymetry, fineGrid, parentData, parentGrid });
   const localSeconds = totalSeconds();
-  return { plan, parentGrid, localSeconds, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }) };
+  return { plan, parentGrid, localSeconds, tide: +$('tideRange').value, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }) };
 }
 
 function reset(play = false) {
   const parent = coupledOn() ? parentOf($('preset').value) : null;
-  if (parent && !parents.has(parent.id)) { loadParent(parent.id, play); return; }
+  if (parent && !seriesOn() && !parents.has(parent.id)) { loadParent(parent.id, play); return; }
   let next, coupling = null;
   try {
     next = tsunamiGrid({ ...options(), bathymetry });
-    if (parent) coupling = buildCoupling(parent, next);
+    if (seriesOn()) {
+      if (!uploaded) throw new Error('Choose a CSV file of incoming wave heights first.');
+      coupling = { series: uploaded, scene: { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: next.W, H: next.H, depth: next.depth } }, localSeconds: totalSeconds(), tide: +$('tideRange').value };
+    } else if (parent) coupling = buildCoupling(parent, next);
   } catch (error) { fail(error.message); return; }
   if (worker) worker.terminate();
   couplingInfo = null;
@@ -416,8 +429,17 @@ $('step').addEventListener('click', () => advance(8));
 $('reset').addEventListener('click', () => (coastIds.includes($('preset').value) || estuaryIds.includes($('preset').value)) && bathymetry?.id !== $('preset').value ? changeScene() : reset());
 $('preset').addEventListener('change', changeScene);
 $('tryDispersive').addEventListener('click', () => { $('preset').value = 'flat'; $('method').value = 'dispersive'; changeScene(); });
-for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth']) $(id).addEventListener('change', () => reset());
-for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel', 'offshoreWidth']) $(id).addEventListener('input', labels);
+for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'tideRange']) $(id).addEventListener('change', () => reset());
+for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel', 'offshoreWidth', 'tideRange']) $(id).addEventListener('input', labels);
+$('waveFile').addEventListener('change', async () => {
+  const file = $('waveFile').files[0];
+  if (!file) return;
+  try {
+    if (file.size > 8e6) throw new Error('The file is larger than 8 MB.');
+    uploaded = { name: file.name, ...parseSeriesCsv(await file.text()) };
+  } catch (error) { uploaded = null; $('waveFile').value = ''; fail(`${error.message}`); return; }
+  reset();
+});
 $('view').addEventListener('change', paint);
 $('showTerrain').addEventListener('change', paint);
 $('showTerrainQuality').addEventListener('change', paint);
@@ -466,7 +488,7 @@ $('export').addEventListener('click', () => {
   const link = document.createElement('a'); link.href = url; link.download = 'tsunami-lab-gauges.csv'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.__tsunamiStatus = () => ({ coupled: !!grid?.coupled, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
+window.__tsunamiStatus = () => ({ coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
 window.addEventListener('pagehide', () => { if (worker) worker.terminate(); });
 window.addEventListener('resize', paint);
 const initialScene = new URLSearchParams(location.search).get('scene');

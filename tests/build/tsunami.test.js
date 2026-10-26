@@ -113,6 +113,23 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     assert.equal(await page.locator('#width').isVisible(), false);
     await page.locator('#step').click();
     await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    // Replace the regional model with an uploaded wave series, plus a tide.
+    await page.locator('#incoming').selectOption('series');
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Choose a CSV'));
+    await page.locator('#waveFile').setInputFiles({ name: 'dart.csv', mimeType: 'text/csv', buffer: Buffer.from('seconds,metres\n' + Array.from({ length: 31 }, (_, i) => `${i * 20},${(.4 * Math.exp(-(((i * 20 - 200) / 80) ** 2))).toFixed(4)}`).join('\n')) });
+    await page.locator('#tideRange').fill('0.5');
+    await page.locator('#tideRange').dispatchEvent('change');
+    await page.waitForFunction(() => window.__tsunamiStatus().couplingSource === 'series' && window.__tsunamiStatus().couplingTide === .5 && window.__tsunamiStatus().ready);
+    assert.match(await page.locator('#couplingSource').innerText(), /dart\.csv · 31 rows/);
+    assert.match(await page.locator('#couplingArrival').innerText(), /into the local run/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    await page.locator('#waveFile').setInputFiles({ name: 'bad.csv', mimeType: 'text/csv', buffer: Buffer.from('0,0\n5,abc\n') });
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('not "seconds, metres"'));
+    await page.locator('#incoming').selectOption('regional');
+    await page.locator('#tideRange').fill('0');
+    await page.locator('#tideRange').dispatchEvent('change');
+    await page.waitForFunction(() => window.__tsunamiStatus().couplingSource === 'regional' && window.__tsunamiStatus().ready);
     await page.locator('#coupled').uncheck();
     await page.waitForFunction(() => !window.__tsunamiStatus().coupled && window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
     assert.equal(await page.locator('#couplingMetrics').isVisible(), false);

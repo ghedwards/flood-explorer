@@ -235,3 +235,35 @@ test('coupling refuses scenes outside the regional model and runs that never del
   assert.throws(() => C.forcingFromRecording(plan, { ...rec, points: 3 }), /does not match/);
   assert.throws(() => C.planCoupling({ fine: { ...fine, seaEdges: [] }, fineGrid, parentData: goldData, parentGrid: goldGrid }), /no open sea edges/);
 });
+
+test('wave series files parse strictly and drive the local model with an optional rising tide', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const C = await import('../viewer/tsunami-coupling.js');
+  const parsed = C.parseSeriesCsv('# DART-style export\nseconds,metres\n0,0\n60;0.5\n120\t1.0\n180 0.5\n240,0\n');
+  assert.deepEqual([...parsed.times], [0, 60, 120, 180, 240]);
+  assert.deepEqual([...parsed.values], [0, .5, 1, .5, 0]);
+  for (const bad of ['0,0', '0,0\n0,1', '0,0\n5,abc', '0,0\n5,99', '0,0\n10,1\n5,1']) assert.throws(() => C.parseSeriesCsv(bad), /series|Times|not "seconds|Wave heights/);
+  const fine = readData('currumbin');
+  const fineGrid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: 0, width: .45, coupled: true });
+  const scene = { fine, fineGrid };
+  assert.deepEqual(C.openEdges(scene), ['north', 'east']);
+  assert.throws(() => C.forcingFromSeries(scene, { times: Float64Array.of(0, 60), values: Float64Array.of(0, 0) }), /no wave/);
+  const times = Float64Array.from({ length: 31 }, (_, i) => i * 20);
+  const values = Float64Array.from(times, t => .3 * Math.exp(-(((t - 200) / 80) ** 2)));
+  const forcing = C.forcingFromSeries(scene, { times, values }, { maxLocalSeconds: 600 });
+  assert.ok(Math.abs(forcing.arrival - 80) <= 40 && Math.abs(forcing.peak - .3) < 1e-9);
+  assert.deepEqual(Object.keys(forcing.edges), ['north', 'east']);
+  const start = { ...fineGrid, ...Object.fromEntries(Object.entries(forcing).filter(([k]) => k.startsWith('force'))) };
+  F.tsunamiStart(start);
+  let waveOnly;
+  while (!waveOnly || waveOnly.time < 600) waveOnly = F.tsunamiStep(200);
+  assert.ok(Math.max(...waveOnly.peak) > .1 && Math.abs(waveOnly.volumeError) < 1e-4);
+  // A rising tide adds water at the edges on top of the wave, all of it accounted for.
+  F.tsunamiStart({ ...start, ...C.levelSeries(600, 1.0, 4800) });
+  let withTide;
+  while (!withTide || withTide.time < 600) withTide = F.tsunamiStep(200);
+  assert.ok(withTide.volume > waveOnly.volume && withTide.boundaryVolume > waveOnly.boundaryVolume);
+  assert.ok(Math.abs(withTide.volumeError) < 1e-4);
+  assert.equal(C.levelSeries(600, 0), null);
+  assert.throws(() => F.tsunamiStart({ ...start, levelTimes: [0, 1], level: [0, NaN] }), /invalid sea level/);
+});

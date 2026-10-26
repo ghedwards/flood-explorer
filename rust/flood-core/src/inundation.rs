@@ -59,6 +59,7 @@ pub struct Solver {
     sponge: Vec<f64>,
     roughness: f64,
     forcing: Vec<Forcing>,
+    level: Option<(Vec<f64>, Vec<f64>)>,
 }
 
 impl Solver {
@@ -91,7 +92,7 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
             speed: vec![0.0; n], time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
-            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new() };
+            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), level: None };
         s.dt = s.stable_dt();
         Ok(s)
     }
@@ -144,6 +145,28 @@ impl Solver {
         Ok(())
     }
 
+    /// External sea level change (m) at all forced edges, e.g. a tide. Unlike
+    /// the incoming wave it is a total level with no external current, so a
+    /// closed basin settles at this level rather than at twice it. It is the
+    /// change from the initial sea level, interpolated in time and held
+    /// beyond its ends.
+    pub fn set_level(&mut self, times: Vec<f64>, values: Vec<f64>) -> Result<(), String> {
+        if times.len() < 2 || times.len() > 1_000_000 || values.len() != times.len()
+            || times.iter().any(|t| !t.is_finite()) || times.windows(2).any(|p| p[1] <= p[0])
+            || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            return Err("invalid sea level series".into());
+        }
+        self.level = Some((times, values));
+        Ok(())
+    }
+
+    fn level_at(&self) -> f64 {
+        let Some((times, values)) = &self.level else { return 0.0 };
+        let k = times.partition_point(|t| *t <= self.time).clamp(1, times.len() - 1);
+        let f = ((self.time - times[k - 1]) / (times[k] - times[k - 1])).clamp(0.0, 1.0);
+        values[k - 1] * (1.0 - f) + values[k] * f
+    }
+
     /// Last time covered by any forcing series.
     pub fn forcing_end(&self) -> Option<f64> {
         self.forcing.iter().map(|f| *f.times.last().unwrap()).reduce(f64::min)
@@ -177,7 +200,7 @@ impl Solver {
         let still = self.reference[i].max(h);
         let eta_in = f.at((k as f64 + 0.5) / self.edge_len(edge) as f64, self.time);
         let c = (G * still).sqrt();
-        let outward = ((G / still).sqrt() * (h - self.reference[i] - 2.0 * eta_in)).clamp(-2.0 * c, 2.0 * c);
+        let outward = ((G / still).sqrt() * (h - self.reference[i] - self.level_at() - 2.0 * eta_in)).clamp(-2.0 * c, 2.0 * c);
         let u = sign * outward;
         let tangent = 3 - axis;
         let mut flux = [h * u, 0.0, 0.0];
@@ -452,6 +475,24 @@ mod tests {
         let largest = |s: &Solver| s.eta.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         assert!(largest(&wall) > 0.02, "{}", largest(&wall));
         assert!(largest(&open) < 0.1 * largest(&wall), "open {} vs wall {}", largest(&open), largest(&wall));
+    }
+
+    #[test]
+    fn sea_level_forcing_raises_a_closed_basin_to_the_new_level_and_accounts_for_the_water() {
+        // A rising tide: external level ramps 0 -> 0.5 m over 600 s, then holds.
+        // The open edge must pass the water in, so the basin settles at the new
+        // level (not at twice it) and the volume balance includes the inflow.
+        let w = 60;
+        let mut s = strip(w, 100.0, vec![0.0; w * 6]);
+        s.set_forcing(Edge::West, vec![0.0, 1.0e5], vec![0.0; 2], 1).unwrap();
+        s.set_level(vec![0.0, 600.0, 1.0e5], vec![0.0, 0.5, 0.5]).unwrap();
+        while s.time < 3000.0 { s.advance(1).unwrap(); }
+        let mean = s.eta.iter().sum::<f64>() / s.eta.len() as f64;
+        assert!((mean - 0.5).abs() < 0.03, "basin level {mean}");
+        assert!(s.volume_error().abs() < 1e-5);
+        assert!((s.boundary_volume - 0.5 * (w * 6) as f64 * 100.0 * 100.0).abs() < 0.06 * s.boundary_volume);
+        assert!(s.set_level(vec![0.0], vec![0.0]).is_err());
+        assert!(s.set_level(vec![0.0, 1.0], vec![0.0, f64::NAN]).is_err());
     }
 
     #[test]

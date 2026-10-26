@@ -1,7 +1,7 @@
 import './runtime-paths.js';
 import './flood-core.js';
 import './flood-wasm.js';
-import { forcingFromRecording } from './tsunami-coupling.js';
+import { forcingFromRecording, forcingFromSeries, levelSeries } from './tsunami-coupling.js';
 
 self.onmessage = async ({ data }) => {
   try {
@@ -11,13 +11,21 @@ self.onmessage = async ({ data }) => {
     if (data.type === 'start') {
       let grid = data.grid;
       if (data.coupling) {
-        // Regional run first (about a second), then the local model starts
-        // with its recorded wave as boundary forcing.
-        const { plan, parentGrid, seconds, localSeconds } = data.coupling;
-        const recording = self.FloodCore.tsunamiParent(parentGrid, plan.points, seconds);
-        const forcing = forcingFromRecording(plan, recording, { maxLocalSeconds: localSeconds });
-        grid = { ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))) };
-        coupling = { arrival: forcing.arrival, offset: forcing.offset, peak: forcing.peak, edges: forcing.edges, regionalSeconds: seconds, regionalPeak: Math.max(...recording.peak) };
+        const { plan, parentGrid, seconds, localSeconds, series, scene, tide } = data.coupling;
+        let forcing;
+        if (series) {
+          // A supplied wave series replaces the regional model.
+          forcing = forcingFromSeries(scene, series, { maxLocalSeconds: localSeconds });
+          coupling = { source: 'series', arrival: forcing.arrival, offset: 0, peak: forcing.peak, edges: forcing.edges, rows: series.times.length };
+        } else {
+          // Regional run first (about a second), then the local model starts
+          // with its recorded wave as boundary forcing.
+          const recording = self.FloodCore.tsunamiParent(parentGrid, plan.points, seconds);
+          forcing = forcingFromRecording(plan, recording, { maxLocalSeconds: localSeconds });
+          coupling = { source: 'regional', arrival: forcing.arrival, offset: forcing.offset, peak: forcing.peak, edges: forcing.edges, regionalSeconds: seconds, regionalPeak: Math.max(...recording.peak) };
+        }
+        grid = { ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))), ...levelSeries(localSeconds, tide) };
+        coupling.tide = tide || 0;
       }
       self.FloodCore.tsunamiStart(grid);
     }

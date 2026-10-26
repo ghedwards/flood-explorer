@@ -516,6 +516,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                         solver.set_forcing(edge, times.clone(), values.clone(), values.len() / times.len())?;
                     }
                 }
+                if let (Some(times), Some(level)) = (b.f64s("levelTimes"), b.f64s("level")) { solver.set_level(times, level)?; }
                 if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
                 o.num("dt", solver.dt);
                 INUNDATION.with(|s| *s.borrow_mut() = Some(solver));

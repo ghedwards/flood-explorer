@@ -266,13 +266,35 @@ pulse is removed and the water starts at rest. Instead:
    in the mass-balance error. The local clock starts at that trimmed time, and
    the page reports how many minutes after the offshore source it stands.
 
+### Your own incoming wave, and a tide
+
+Under the nested option, **Incoming wave → Uploaded series · CSV** replaces the
+regional model with a series you supply, which is the route for a measured
+or scenario waveform (for example a tsunami gauge record, or an offshore time
+series you have extracted from a PTHA18 scenario). The file has two columns,
+**seconds from the start of the local run** and **metres above the initial sea
+level**, comma-, semicolon-, tab- or space-separated, with `#` comments and one
+header row allowed. Times must increase, heights must be within 20 m and the
+file at most 8 MB. The same wave is applied to every open edge with no depth
+scaling and no datum check; the file's author is responsible for the position,
+datum and any conversion to the local depth. PTHA18 files themselves (NetCDF)
+are not read.
+
+**Rising tide at the open edges** adds a sinusoidal M2 (12.42 h) sea level
+change rising from the initial level, to either source. It enters as a *total
+external level* with no external current, separate from the incoming wave: a
+closed basin therefore settles at the tide level, whereas a wave of the same
+height is treated as a progressive wave that reflects at a wall. It is
+hypothetical, not a forecast, and starts at the initial sea level whatever the
+true tidal phase.
+
 Checks: a Rust test records a pulse from a coarse linear run and feeds it to
 a finer nonlinear run, and the downstream waveform agrees with the coarse
 solution to within 8% of the peak; others cover still water on variable bed,
 exit of outgoing waves (under 10% of the closed-wall case remains), series
 validation, land edges and the recorder. JS tests run the whole chain for
 Currumbin and Pine River, including a no-forcing control that stays at rest,
-and a browser test switches the Gold Coast Seaway scene in and out of coupling.
+and a browser test switches the Gold Coast Seaway scene in and out of coupling, uploads a wave file and sets a tide. A Rust test checks that a rising external level raises a closed basin to that level, not twice it, with the inflow in the water balance.
 
 Limits, in order of importance:
 

@@ -49,6 +49,9 @@
           <label>Ground resistance (Manning n)<output id="roughnessValue">0.025</output><input id="roughness" type="range" min="0" max=".1" step=".005" value=".025"></label>
           <div id="couplingControls" hidden>
             <label class="check"><input id="coupled" type="checkbox"> Drive from an offshore wave (regional model)</label>
+            <label>Incoming wave<select id="incoming"><option value="regional">Regional model · offshore source</option><option value="series">Uploaded series · CSV</option></select></label>
+            <label id="waveFileControl" hidden>Wave series file (seconds, metres)<input id="waveFile" type="file" accept=".csv,.txt,text/csv,text/plain"></label>
+            <label>Rising tide at the open edges <output id="tideRangeValue">0.00 m</output><input id="tideRange" type="range" min="0" max="1.5" step=".25" value="0"></label>
             <label id="offshoreWidthControl" hidden>Offshore source width <output id="offshoreWidthValue">10 km</output><input id="offshoreWidth" type="range" min="5" max="20" step="1" value="10"></label>
             <p class="hint" id="couplingHint">Runs the 1.5 km regional model first, then feeds its wave in at this scene's open sea edges instead of the local pulse.</p>
           </div>

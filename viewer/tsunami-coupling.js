@@ -153,4 +153,77 @@ export function parentSeconds({ plan, parentGrid, source, localSeconds, lead = 1
   return Math.min(21600, Math.max(10800, Math.ceil((2 * farthest / meanSpeed + lead + localSeconds) / 60) * 60));
 }
 
+// Sea edges of a local scene that have open water to drive, in solver order.
+export function openEdges({ fine, fineGrid }) {
+  if (!fine || !Array.isArray(fine.seaEdges) || !fine.seaEdges.length) throw new Error('This local scene declares no open sea edges to drive.');
+  const edges = EDGES.filter(name => fine.seaEdges.includes(name)).filter(name => {
+    const horizontal = name === 'north' || name === 'south';
+    for (let k = 0; k < (horizontal ? fineGrid.W : fineGrid.H); k++) {
+      const x = horizontal ? k : name === 'west' ? 0 : fineGrid.W - 1, y = horizontal ? (name === 'north' ? 0 : fineGrid.H - 1) : k;
+      if (fineGrid.depth[y * fineGrid.W + x] > 0) return true;
+    }
+    return false;
+  });
+  if (!edges.length) throw new Error('No sea edge of this local scene has open water to drive.');
+  return edges;
+}
+
+// Parse a two-column "seconds, metres" series (comma, semicolon, tab or space
+// separated; '#' comments and one non-numeric header row allowed). Seconds
+// are measured from the start of the local run.
+export function parseSeriesCsv(text, { maxRows = 200000 } = {}) {
+  const times = [], values = [];
+  let header = true;
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.replace(/#.*/, '').trim();
+    if (!line) continue;
+    const cells = line.split(/[\s,;]+/);
+    const numbers = cells.slice(0, 2).map(Number);
+    if (cells.length < 2 || numbers.some(v => !Number.isFinite(v))) {
+      if (header && !times.length) { header = false; continue; }
+      throw new Error(`Line "${line.slice(0, 40)}" is not "seconds, metres".`);
+    }
+    header = false;
+    if (times.length && numbers[0] <= times.at(-1)) throw new Error('Times must increase down the file.');
+    if (Math.abs(numbers[1]) > 20) throw new Error('Wave heights above 20 m are not accepted.');
+    if (times.length >= maxRows) throw new Error(`Too many rows (limit ${maxRows}).`);
+    times.push(numbers[0]); values.push(numbers[1]);
+  }
+  if (times.length < 2) throw new Error('The series needs at least two rows of "seconds, metres".');
+  return { times: Float64Array.from(times), values: Float64Array.from(values) };
+}
+
+// Boundary forcing from a user-supplied incoming-wave series: the same wave on
+// every open edge, at local seconds. No regional model or depth scaling is
+// applied; the file's author owns the datum and the position.
+export function forcingFromSeries({ fine, fineGrid }, series, { maxLocalSeconds = 7200, threshold = .02 } = {}) {
+  const edges = openEdges({ fine, fineGrid });
+  const keep = [];
+  for (let s = 0; s < series.times.length; s++) {
+    keep.push(s);
+    if (series.times[s] > maxLocalSeconds) break;
+  }
+  if (keep.length < 2) throw new Error('The series needs at least two rows within the run.');
+  let peak = 0, arrival = null;
+  for (const s of keep) peak = Math.max(peak, Math.abs(series.values[s]));
+  if (!(peak > 1e-4)) throw new Error('The series contains no wave larger than 0.1 mm.');
+  for (const s of keep) if (arrival == null && Math.abs(series.values[s]) > threshold * peak) arrival = series.times[s];
+  const out = { forceTimes: Float64Array.from(keep, s => series.times[s]), offset: 0, arrival, peak, edges: {}, source: 'series' };
+  for (const name of edges) {
+    out[FORCE_KEYS[name]] = Float64Array.from(keep, s => series.values[s]);
+    out.edges[name] = { points: 1, peak, snapped: 0 };
+  }
+  return out;
+}
+
+// External sea level change at the open edges: a tide rising from the initial
+// level as a sinusoid of the given period (default M2, 12.42 h). Total level,
+// not a wave: the solver passes it through with no external current.
+export function levelSeries(seconds, amplitude, period = 44712, step = 60) {
+  if (!(amplitude > 0)) return null;
+  const rows = Math.max(2, Math.ceil(seconds / step) + 2);
+  const levelTimes = Float64Array.from({ length: rows }, (_, i) => i * step);
+  return { levelTimes, level: Float64Array.from(levelTimes, t => amplitude * Math.sin(2 * Math.PI * t / period)) };
+}
+
 export { FORCE_KEYS };
