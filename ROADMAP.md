@@ -29,8 +29,10 @@ The Rust/WASM prototype has two linear propagation methods and a separate
 nonlinear local wetting/drying solver,
 plus a uniform-depth dispersive comparison. Bundled terrain, reference labels
 and display overlays are described in [the prototype notes](docs/tsunami-prototype.md).
-The present local pulse is hypothetical; offshore-to-estuary coupling is not
-implemented. The priorities below distinguish the working uniform-depth dispersive
+The local scenes can be driven one-way by a wave from the regional model
+(Flather-type open boundary, Green's-law depth scaling; see the prototype notes), but
+the source is still a hypothetical dipole, and the regional grid is too coarse for
+sheltered bays such as Moreton Bay. The priorities below distinguish the working uniform-depth dispersive
 comparison from proposed coastal extensions:
 
 1. **Verify terrain and water references.** Prefetch finer coastal LiDAR and
@@ -41,33 +43,42 @@ comparison from proposed coastal extensions:
    now bundles a consistent AVWS CSIRO grid with source flags and optional
    provenance overlay; tide calibration and bed validation remain outstanding. Replace the single Manning
    resistance with supported land-cover classes only where resolution permits.
-2. **Defined offshore forcing, tides and river flow.** Use identified
+2. **Defined offshore forcing, tides and river flow.** (A CSV incoming-wave series and a hypothetical
+   M2 tide level now drive the local model; PTHA18 NetCDF import, a verified datum conversion,
+   tide predictions and river discharge remain.) Use identified
    [GA PTHA18 scenarios](https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha)
    or validated historical waveforms; drive local coastal boundaries with
    consistent time series instead of an arbitrary local dipole. Add tide levels
    with a verified datum conversion, upstream discharge and observed gauge
    series for validation. Preserve scenario IDs and distinguish illustrative
    runs from hazard estimates.
-3. **Finer grids where needed.** Evaluate nested/coastal refinement with
+3. **Finer grids where needed.** One-way fixed nesting is done. Evaluate two-way and
+   adaptive refinement with
    conservative exchange between offshore and estuary domains, plus a higher
    order, well-balanced, positivity-preserving nonlinear scheme to reduce
-   numerical damping. [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
+   numerical damping (a second-order option now exists for the local solver and removes most of the
+   run-up deficit in the Synolakis benchmark; a higher-order shoreline treatment remains). [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
    a useful reference for dry/wet shorelines and adaptive grids. Keep the
    browser worker responsive with bounded step batches and memory use.
-4. **Dispersive-wave method — uniform-depth experiment implemented; coastal coupling proposed.** Dispersion
+4. **Dispersive-wave method — uniform-depth and variable-depth linear versions implemented; nonlinear coastal coupling proposed.** Dispersion
    means different wavelengths travel at different speeds, so a pulse can
    spread and change shape. The shallow-water methods omit this
    wavelength-dependent physics; numerical diffusion in a solver is a
    different effect. A linearised Boussinesq/Peregrine comparison now runs in Rust/WASM on a
    uniform-depth ocean, with analytical frequency/long-wave-limit and volume
-   checks. It is available through **Try dispersive ocean**. Next evaluate
-   variable-depth and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
+   checks. It is available through **Try dispersive ocean**. A variable-depth linear
+   Peregrine form now runs on the regional grids (equivalence, rest, volume and
+   long-wave/short-wave checks only; not benchmarked). Next compare against published
+   benchmarks and evaluate nonlinear and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
    and published formulations as references. It may improve shorter-wave
    propagation and waveform detail within its valid depth/wavelength range;
    it does not automatically improve inundation, terrain accuracy or source
-   reconstruction. Keep its uniform-depth restriction explicit. Measure computational cost
+   reconstruction. Keep its restriction to the linear regional grids explicit. Measure computational cost
    and validate each extension before enabling it on coastal terrain.
-5. **Sensitivity runs.** Compare bounded ensembles of source strength, water
+5. **Sensitivity runs** (a first version is built for the local scenes: one-at-a-time and combined
+   bracketing runs over source strength, sea level, friction and a uniform terrain shift,
+   reporting ranges of arrival, depth, area and speed; source location and shape, bathymetry
+   error beyond a shift, and a proper ensemble design remain). Compare bounded ensembles of source strength, water
    level, friction and terrain uncertainty. Report ranges of arrival time,
    water depth and speed, with their assumptions. Parameter sweeps alone do
    not supply hazard probabilities.
@@ -79,7 +90,10 @@ waveform and energy behaviour with published benchmarks; retain water balance
 and non-negative depth at the coastal coupling; define how dispersion is
 handled near breaking and wet/dry cells; measure browser runtime and memory.
 Validate the baseline coastal solver first using
-[NOAA benchmark cases](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html).
+[NOAA benchmark cases](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html)
+(solitary-wave run-up on a plane beach is done: the solver reaches 83% of the
+analytical run-up at 60 cells per wavelength, and 98% with the new second-order option; more cases,
+such as the conical island, remain).
 A future solver option must state which physical effects it adds and remain
 labelled experimental until its own checks pass.
 

@@ -1,9 +1,11 @@
 import { estuaryIds } from './tsunami-locations.js';
 // Regional propagation grids and a separate idealised nonlinear estuary test.
-export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, width = 10, source = [38, 48], absorbing = true, method = 'staggered', bathymetry = null, tide = 0, roughness = 0.025, lakeLevel = 1 } = {}) {
-  if (method === 'dispersive' && (preset !== 'flat' || bathymetry)) throw new Error('Dispersive waves currently require a uniform ocean.');
-  if (estuaryIds.includes(preset)) return localEstuaryGrid({ preset, bathymetry, amplitude, width, source, absorbing, tide, roughness });
-  if (preset === 'estuary') return estuaryGrid({ amplitude, width, source, absorbing, tide, roughness, lakeLevel });
+export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, width = 10, source = [38, 48], absorbing = true, method = 'staggered', bathymetry = null, tide = 0, roughness = 0.025, lakeLevel = 1, coupled = false, scheme = 'first' } = {}) {
+  if (!['first', 'second'].includes(scheme)) throw new Error('Unknown numerical scheme.');
+  if (coupled && !estuaryIds.includes(preset)) throw new Error('Only the local terrain scenes can be driven by a regional offshore wave.');
+  if (method === 'dispersive' && (preset === 'estuary' || estuaryIds.includes(preset))) throw new Error('Dispersive waves are not available in the nonlinear local scenes.');
+  if (estuaryIds.includes(preset)) return { ...localEstuaryGrid({ preset, bathymetry, amplitude, width, source, absorbing, tide, roughness, coupled }), order: scheme === 'second' ? 2 : 1 };
+  if (preset === 'estuary') return { ...estuaryGrid({ amplitude, width, source, absorbing, tide, roughness, lakeLevel }), order: scheme === 'second' ? 2 : 1 };
   if ((!bathymetry && !['flat', 'shelf', 'island'].includes(preset)) || !['staggered', 'finite-volume', 'dispersive'].includes(method) || !Number.isFinite(deep) || deep < 500 || deep > 5000
     || !Number.isFinite(amplitude) || Math.abs(amplitude) > 3 || !Number.isFinite(width) || width < 5 || width > 20
     || !Array.isArray(source) || source.length !== 2 || source.some(x => !Number.isFinite(x))) throw new Error('Invalid wave scenario.');
@@ -73,7 +75,7 @@ export function estuaryGrid({ amplitude = 1, width = .3, source = [38, 48], abso
   return { W, H, cell, bed, depth, eta, absorbing, roughness, method: 2 };
 }
 
-export function localEstuaryGrid({ preset = 'pine-estuary', bathymetry, amplitude = 1, width = .3, source = [140, 48], absorbing = true, tide = 0, roughness = .025 } = {}) {
+export function localEstuaryGrid({ preset = 'pine-estuary', bathymetry, amplitude = 1, width = .3, source = [140, 48], absorbing = true, tide = 0, roughness = .025, coupled = false } = {}) {
   const data = bathymetry, W = 160, H = 96, cell = data?.cell;
   if (!Number.isFinite(cell) || cell < 10 || cell > 100 || !data || !estuaryIds.includes(preset) || data.id !== preset || data.W !== W || data.H !== H || data.cell !== cell
     || (data.valid != null && (!Array.isArray(data.valid) || data.valid.length !== W * H || data.valid.some(v => v !== 0 && v !== 1)))
@@ -88,13 +90,14 @@ export function localEstuaryGrid({ preset = 'pine-estuary', bathymetry, amplitud
   const valid = data.valid ? Uint8Array.from(data.valid) : undefined;
   const bed = Float64Array.from(data.elevation, v => v ?? 0), eta = new Float64Array(W * H);
   const depth = connectedWaterDepth(bed, W, H, tide, data.seaEdges || ['east'], valid);
-  if (depth[source[1] * W + source[0]] < 2) throw new Error('Choose a source in connected bay water at least 2 m deep.');
-  for (let i = 0; i < eta.length; i++) if (depth[i] > 0) {
+  // Driven by a regional wave: still water at the start, the wave enters at the open edges.
+  if (!coupled && depth[source[1] * W + source[0]] < 2) throw new Error('Choose a source in connected bay water at least 2 m deep.');
+  for (let i = 0; i < eta.length; i++) if (!coupled && depth[i] > 0) {
     const dx = (i % W - source[0]) * cell / 1000 / width, dy = (Math.floor(i / W) - source[1]) * cell / 1000 / width;
     // Crest faces west towards the river. Depth taper keeps drawdown positive.
     eta[i] = -amplitude * dx * Math.exp(.5 - .5 * (dx * dx + dy * dy)) * Math.min(1, depth[i] / 5);
   }
-  return { W, H, cell, bed, depth, eta, valid, absorbing, roughness, method: 2 };
+  return { W, H, cell, bed, depth, eta, valid, absorbing: absorbing && !coupled, roughness, method: 2, coupled };
 }
 
 // Only ocean-facing edges seed the initial sea level; each cropped estuary

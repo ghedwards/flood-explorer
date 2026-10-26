@@ -65,13 +65,13 @@ is fixed at 1.5 times the source amplitude; gauge traces autoscale.
 ## Dispersive uniform-ocean comparison
 
 Choose **Try dispersive ocean**, or open
-`tsunami.html?scene=flat&method=dispersive`. The **Dispersive · uniform ocean only**
+`tsunami.html?scene=flat&method=dispersive`. The **Dispersive · linear Boussinesq**
 method is a linearised Boussinesq/Peregrine experiment for constant positive
 depth. It adds wavelength-dependent speed: shorter waves travel more slowly
 than long waves. The linear model is based on the flat-bottom
 [Boussinesq–Peregrine system](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/evolution-of-perturbed-long-nonlinear-plane-ring-and-hybrid-surface-waves/5A777B7412A3346C7F0EA4ACD2B65A88).
-This version has no nonlinear advection, variable-depth effects, shoreline
-coupling, wetting/drying or breaking. It cannot be selected on coastal terrain.
+The uniform-depth form has no nonlinear advection, variable-depth effects, shoreline
+coupling, wetting/drying or breaking; the variable-depth form is described below.
 
 For uniform still-water depth H, the implementation advances:
 
@@ -104,6 +104,43 @@ limit, still water, mass conservation and rejection of non-uniform depth.
 WASM checks compare finite waveforms against the shallow-water solver. These
 are numerical checks, not coastal or field validation. The remaining work is
 recorded in the [tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026).
+
+### Variable depth and land (regional grids)
+
+The same method now runs on the shelf, island and prefetched coastal grids.
+Where depth is not uniform, or land is present, the scalar solve is replaced by the
+linearised Peregrine momentum equation for the acceleration `w = u_t`:
+
+```
+w - (H/2) grad(div(H w)) + (H²/6) grad(div w) = -g grad(eta)
+q_t = H w,   eta_t = -div(q)
+```
+
+on the same staggered grid, with face depths averaged from the two adjacent
+wet cells and land and domain edges as walls. It is solved each step by
+Jacobi-preconditioned BiCGSTAB, warm-started from a linear extrapolation of the
+previous two solutions, to a relative residual of 1e-8 (at most 300
+iterations, otherwise the run stops with an error). In uniform depth the
+operator is algebraically the scalar one, and a Rust test confirms the two
+agree to 1e-7.
+
+Checks beyond that: still water stays still over uneven bathymetry and land;
+displacement volume is conserved on a shelf with land; a pulse 15 km wide on a
+1000 m shelf follows the shallow-water solver to 8% after 20 minutes; a pulse
+a few depths wide over a shoaling bottom (4000 m to 2000 m) loses speed and
+height relative to shallow water (crest at least three cells behind, under 90%
+of the height).
+
+What it does **not** establish: agreement with a published dispersive benchmark
+or with observations over real bathymetry, or the correctness of the
+variable-depth terms beyond those checks. The formulation is a weak-dispersion
+form (kH below about 1) with no extra variable-depth terms, no nonlinearity,
+no breaking and no wetting/drying. The regional 1.5 km grids floor coastal
+depths at 10 m, so shorter waves than about 4–5 cells (6–7 km) are not
+represented in any case. Cost on a 160 × 96 coastal grid is about 20 ms per
+step in the browser (roughly 25 solver iterations per step), around 50 times
+the shallow-water solver, so playback runs at a few simulated minutes per
+second whatever speed is selected. It is not available in the nonlinear local scenes.
 
 ## Prefetched Australian east coast
 
@@ -237,10 +274,85 @@ sea/lake levels. Gauge traces and CSV report water-depth change from initial
 reference (equivalent to surface elevation change at continuously wet gauges).
 The mass error subtracts both initial water volume and sponge exchange.
 
+## Offshore-to-local coupling (one-way nesting)
+
+For the four local terrain scenes, tick **Drive from an offshore wave (regional
+model)** (or open `tsunami.html?scene=pine-estuary&coupled=1`). The local
+pulse is removed and the water starts at rest. Instead:
+
+1. The 1.5 km linear regional model (Moreton Bay / Brisbane for Pine River and
+   the Brisbane River mouth; Gold Coast / Tweed for Currumbin and the Seaway)
+   runs first, in the same worker, from a hypothetical offshore source at
+   154.30°E (27.30°S or 28.00°S). Source strength and width are the regional
+   settings, not a PTHA18 scenario.
+2. It records surface displacement at 16 points along each declared sea edge.
+   The local edge cells are converted from MGA zone 56 to longitude/latitude
+   (inverse transverse Mercator, checked against Geoscience Australia's worked
+   example) and mapped onto the regional grid. A point that falls on regional
+   land is moved to the nearest wet regional cell within 12 km; the count is
+   kept in the run record. A scene lying outside the regional grid is refused.
+3. Each series is scaled by Green's law, `(H_regional / H_local)^(1/4)`, bounded
+   to 0.5–2, from the regional depth (floored at 10 m) to the local edge depth.
+4. The series, trimmed to start two minutes before the wave first exceeds 2% of
+   its peak, becomes the **incoming wave** of a Flather-type open boundary on
+   each sea edge of the nonlinear solver: outward velocity
+   `sqrt(g/H) (eta - 2 eta_in)`, where `eta` is the local surface displacement
+   and `eta_in` the forcing. Outgoing waves leave with little reflection; with
+   no forcing the edge is a resting wall. The sponge is switched off. Cells
+   that are dry at the start stay walls, and boundary water exchange is included
+   in the mass-balance error. The local clock starts at that trimmed time, and
+   the page reports how many minutes after the offshore source it stands.
+
+### Your own incoming wave, and a tide
+
+Under the nested option, **Incoming wave → Uploaded series · CSV** replaces the
+regional model with a series you supply, which is the route for a measured
+or scenario waveform (for example a tsunami gauge record, or an offshore time
+series you have extracted from a PTHA18 scenario). The file has two columns,
+**seconds from the start of the local run** and **metres above the initial sea
+level**, comma-, semicolon-, tab- or space-separated, with `#` comments and one
+header row allowed. Times must increase, heights must be within 20 m and the
+file at most 8 MB. The same wave is applied to every open edge with no depth
+scaling and no datum check; the file's author is responsible for the position,
+datum and any conversion to the local depth. PTHA18 files themselves (NetCDF)
+are not read.
+
+**Rising tide at the open edges** adds a sinusoidal M2 (12.42 h) sea level
+change rising from the initial level, to either source. It enters as a *total
+external level* with no external current, separate from the incoming wave: a
+closed basin therefore settles at the tide level, whereas a wave of the same
+height is treated as a progressive wave that reflects at a wall. It is
+hypothetical, not a forecast, and starts at the initial sea level whatever the
+true tidal phase.
+
+Checks: a Rust test records a pulse from a coarse linear run and feeds it to
+a finer nonlinear run, and the downstream waveform agrees with the coarse
+solution to within 8% of the peak; others cover still water on variable bed,
+exit of outgoing waves (under 10% of the closed-wall case remains), series
+validation, land edges and the recorder. JS tests run the whole chain for
+Currumbin and Pine River, including a no-forcing control that stays at rest,
+and a browser test switches the Gold Coast Seaway scene in and out of coupling, uploads a wave file and sets a tide. A Rust test checks that a rising external level raises a closed basin to that level, not twice it, with the inflow in the water balance.
+
+Limits, in order of importance:
+
+- **One-way and linear upstream.** The local model never feeds back. The
+  regional model is linear and its coastal depths are floored at 10 m, so
+  amplitudes near the coast are only indicative; Green's law is a
+  correction for slowly varying depth, not a substitute for nesting.
+- **Sheltered bays.** The regional grid barely resolves the entrances to Moreton
+  Bay, so Pine River and the Brisbane River mouth receive a small, late wave (a
+  few cm, more than an hour after the source) with the default 2.5 m source,
+  while the open-coast Gold Coast scenes receive metres within half an hour.
+  Treat that as a statement about the 1.5 km grid, not about the bay.
+- **Vertical datums** of the regional (GA, 2009) and local grids are not
+  reconciled, and the local sea level is the same hypothetical plane as before.
+- **Not a scenario.** The source is the same demonstration dipole; no PTHA18
+  scenario, tide or river flow is applied.
+
 Next: independently verified bed surveys and datum conversions, prescribed
 river inflow, a physically consistent offshore boundary time series, local
-refinement and published run-up/inundation benchmarks. The current local pulse
-is not coupled to the regional offshore solver or to an earthquake scenario.
+refinement and published run-up/inundation benchmarks. The local pulse can now be replaced by a one-way offshore wave from the regional solver (see above);
+it is still not tied to an earthquake scenario.
 
 ## Recent mathematical work to evaluate
 
@@ -293,7 +405,88 @@ assign real city names to synthetic geography.
 See [the tsunami roadmap](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026)
 for proposed data improvements, offshore/river coupling, refinement, sensitivity
 runs and the next stage of the **dispersive-wave (Boussinesq-type)** solver. Its
-uniform-ocean comparison is implemented; coastal coupling remains future work.
+linear uniform- and variable-depth forms are implemented; nonlinear coastal coupling remains future work.
+
+## Numerical scheme: first or second order
+
+The nonlinear local solver has two schemes, chosen by **Numerical scheme** (or
+`?scheme=second`). **First-order** (the default) is a Rusanov flux with hydrostatic
+reconstruction and a forward-Euler step: robust, but it smooths waves and
+under-predicts run-up. **Second-order** keeps the same face fluxes and
+hydrostatic pressure corrections, applied to reconstructed face states, and adds
+limited linear (generalised minmod, θ = 1.5) reconstruction of depth, bed and
+velocity along each axis, a centred bed-slope source from the reconstructed bed,
+and a two-stage Heun time step with CFL 0.3. A cell reconstructs only if it and
+both neighbours are valid and wet (depth above 1 cm) and its depth comfortably exceeds the
+bed and surface variation across it; everywhere else, including every shoreline
+cell, it is first-order. Reconstructing the bed linearly keeps the face and cell
+bed values consistent, so lake-at-rest states remain exact (a Rust test checks
+1e-12 under both schemes, with dry shores, separate lakes, masks, sponge,
+forced edges and tides).
+
+Evidence: in the solitary-wave run-up benchmark above, second order reaches 90%
+of the analytical run-up with 1 m cells and 98% with 0.5 m cells (first order: 71% and 83%).
+On the four real terrains and a nested run it stayed positive and conservative (water
+balance error below 2e-6 m³ over 15–20 simulated minutes) and produced stronger currents
+and more flooding than first order, as less numerical damping implies. The
+shoreline itself remains first-order, so run-up at very coarse resolution is
+still approximate, and the scheme is newer and less tested on rough terrain
+than the default. It costs about three times the CPU per simulated second (two
+stages plus reconstruction), so live playback runs slower; the pre-calculation
+option helps. The mass and boundary accounting are unchanged.
+
+## Sensitivity ensemble
+
+In any nonlinear local scene, **Sensitivity ensemble** (below the gauges) reruns the
+current scene, to the chosen simulation length, with its uncertain inputs moved
+in a fixed, small pattern: a baseline; each of **source strength**, **initial sea
+level**, **Manning n** and **terrain height** (a uniform vertical shift of the
+bed) pushed low and high on its own; and two combined runs, all inputs towards
+more flooding and all towards less. The offsets are editable (defaults ±50% source
+strength, ±0.5 m sea level, ±50% Manning n, ±0.5 m terrain); values that clamp
+to the same setting are merged, and terrain is skipped in the idealised scene
+and source strength when a CSV series drives the run. That is up to 11 runs,
+executed one after another in a separate worker with a progress bar, results
+appearing as each run finishes. Nested runs share one regional run between
+members with the same source strength.
+
+For each run it reports, per gauge, the **arrival time** (first change above 5 cm
+at the gauge, to about 20 solver steps) and **peak** change; the **deepest water
+on initially dry land**; the **flooded land** area (above 1 cm); and the **fastest
+current**, sampled at those steps and therefore a lower bound. A final row gives
+the minimum and maximum over runs, noting runs in which a gauge was not reached.
+The table can be exported as CSV. If settings change afterwards, the table says it
+no longer matches them.
+
+What it is and is not: a bracketing exercise on chosen inputs. It is **not** a
+probabilistic ensemble: the ranges are not confidence intervals or hazard
+probabilities, there is no sampling of source location, shape, rupture physics,
+bathymetry error beyond the uniform shift, or numerical error, and the first-order
+solver's known under-prediction of run-up (see Checks) applies to every run.
+Arrival times in a nested run are on the local clock, which starts shortly before
+the wave reaches the edges, so an ensemble length that is too short shows
+"not reached" and zero flooding. Runtime is about the sum of the individual
+runs (for example, five or ten simulated minutes at 25–50 m take a few seconds each).
+
+## Pre-calculating a run
+
+Tick **Pre-calculate the whole run first** (or open `tsunami.html?precompute=1`)
+to run the entire simulation in the worker before playback. A progress bar
+shows the percentage, the simulated time reached and an estimate of the seconds
+left; a nested run first shows "Running the regional offshore model…" while that
+step has no measurable progress. Play is disabled until it finishes. Changing any
+setting, or pressing Reset after an error, recalculates (the page is not
+blocked: the work is in the worker, and changing a setting cancels it).
+
+The result is 200 evenly spaced frames, held as 32-bit floats: roughly 12 MB for
+a linear run and 50 MB for a nonlinear one. Playback then simply steps through
+them at the selected speed, so it is smooth even for the slow variable-depth
+dispersive method and nested runs, and a **Simulated time** bar lets you drag to
+any moment. Pause, Step (one frame), Replay and Reset (rewinds without recomputing)
+work as usual, and gauge traces and the CSV export cover the whole run. Frames
+are 1/200 of the run apart (18 s for 60 minutes), so playback and gauge traces
+are sampled at that spacing rather than at every solver step; peak and mass-balance
+figures are unaffected. Without the option, runs compute live as before.
 
 ## Checks and limits
 
@@ -305,7 +498,17 @@ worker, nested deployment paths, controls and export. Nonlinear tests check
 resting water over a variable bed and a dry shore, separate lake levels,
 positive depths, mass balance including sponge exchange, beach run-up and
 subsequent drainage, and a dry-bed Ritter dam-break depth profile and contour
-position. These first-order tests are not tsunami run-up certification. Run:
+position. A NOAA/NCTR analytical benchmark is included: a non-breaking solitary wave
+(H/d = 0.05, below Synolakis' breaking limit) on a 1:10 beach, compared with
+the run-up law `R/d = 2.831 sqrt(cot beta) (H/d)^(5/4)`. The first-order solver
+reaches 71% of the analytical run-up with 1 m cells and 83% with 0.5 m cells
+(depth 6 m, about 60 cells per wave length scale), so it **under-predicts
+run-up**, converging at roughly first order as expected of a Rusanov scheme with
+hydrostatic reconstruction. The test requires the finer result to be within 20%.
+Treat first-order run-up at the grid sizes the browser can afford as a
+lower bound; the second-order scheme (below) is much closer. The solver accepts cells down to 0.05 m so such benchmarks can be
+run at laboratory scale.
+These first-order tests are not tsunami run-up certification. Run:
 
 ```
 cargo test --locked --manifest-path rust/Cargo.toml -p flood-core -p flood-wasm

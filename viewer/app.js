@@ -4,6 +4,7 @@ import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { classifyDemGaps } from './dem-voids.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
+import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -2531,6 +2532,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
           if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
           const ctx = c.getContext('2d');
           ctx.putImageData(canvasPixels(ctx, rgba, w, h), 0, 0);
+          this[PIXELS_DRAWN] = true;
           return this;
         },
       });
@@ -3339,7 +3341,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 
   window.__floodActivateArea = (key) => activateArea(key, { fit: true });
   window.__floodAreaInfo = () => Array.from(areaReg.values()).map((a) => ({
-    key: a.key, name: a.name, drawn: !!a.overlay._floodUrl, active: a.key === state.areaKey,
+    key: a.key, name: a.name, drawn: overlayDrawn(a.overlay), active: a.key === state.areaKey,
   }));
 
   function cellLatLng(i) {
@@ -6545,7 +6547,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
       return `<h3>${escapeHtml(rec ? rec.name : id)}</h3>${html.replace(/<button[\s\S]*?<\/button>/g, '')}`;
     }).join('') : '';
     const storm = ctl.floodType.value !== 'river' ? `<p>${escapeHtml($('summaryLine').textContent)}</p><p>${$('stormSummary').innerHTML}</p>` : '';
-    const g = state.geo, img = area.overlay && area.overlay._floodUrl;
+    const g = state.geo, img = overlayImageUrl(area.overlay);
     const w = window.open('', '_blank');
     if (!w) { say('Allow pop-ups to open the printable report.'); return false; }
     w.document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Flood report: ${escapeHtml(area.name)}</title>

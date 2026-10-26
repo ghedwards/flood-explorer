@@ -6,7 +6,7 @@ const http = require('node:http');
 const { chromium } = require('playwright');
 const site = path.resolve(__dirname, '../../site');
 
-test('tsunami lab runs its Rust worker below a nested path, pauses, resets and exports', { timeout: 60000 }, async () => {
+test('tsunami lab runs its Rust worker below a nested path, pauses, resets and exports', { timeout: 180000 }, async () => {
   const prefix = '/nested/flood/';
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -86,6 +86,42 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
       await page.locator('#step').click();
       await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
     }
+    // The second-order scheme can be selected for the nonlinear scenes.
+    await page.locator('#preset').selectOption('estuary');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'nonlinear' && !window.__tsunamiStatus().coast);
+    await page.locator('#scheme').selectOption('second');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    assert.match(await page.locator('#schemeHint').innerText(), /two-stage/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    assert.ok(Math.abs((await page.evaluate(() => window.__tsunamiStatus())).volumeError) < 1e-4);
+    await page.locator('#scheme').selectOption('first');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    // A sensitivity ensemble runs on the idealised estuary and fills a table of ranges.
+    await page.locator('#preset').selectOption('estuary');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'nonlinear' && !window.__tsunamiStatus().coast);
+    await page.locator('#duration').selectOption('5');
+    assert.equal(await page.locator('#ensemble').isVisible(), true);
+    assert.equal(await page.locator('#ensTerrain').isDisabled(), true);
+    await page.locator('#runEnsemble').click();
+    assert.equal(await page.locator('#runEnsemble').innerText(), 'Cancel');
+    await page.waitForFunction(() => window.__tsunamiStatus().ensemble?.results > 0);
+    assert.equal(await page.locator('#ensembleBar').isVisible(), true);
+    await page.waitForFunction(() => window.__tsunamiStatus().ensemble?.done, null, { timeout: 120000 });
+    assert.equal(await page.locator('#ensembleBar').isVisible(), false);
+    assert.equal(await page.locator('#ensembleTable tbody tr').count(), 10);
+    assert.match(await page.locator('#ensembleTable tbody tr.range').innerText(), /Range over finished runs[\s\S]*ha/);
+    assert.match(await page.locator('#ensembleNote').innerText(), /not probabilities/);
+    const csv = page.waitForEvent('download');
+    await page.locator('#exportEnsemble').click();
+    assert.match(fs.readFileSync(await (await csv).path(), 'utf8'), /run,group,source_strength_m[\s\S]*Baseline/);
+    await page.locator('#amplitude').fill('1');
+    await page.locator('#amplitude').dispatchEvent('change');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    assert.match(await page.locator('#ensembleCaption').innerText(), /Settings have changed/);
+    await page.locator('#amplitude').fill('2.5');
+    await page.locator('#amplitude').dispatchEvent('change');
+    await page.locator('#duration').selectOption('10');
     await page.locator('#preset').selectOption('shelf');
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'staggered');
     assert.equal(await page.locator('#inundationControls').isVisible(), false);
@@ -97,12 +133,80 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     assert.match(await page.locator('#methodHint').innerText(), /Boussinesq/);
     await page.locator('#step').click();
     await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    // The dispersive method also runs over variable depth, including a real coast.
+    await page.locator('#preset').selectOption('shelf');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'dispersive' && window.__tsunamiStatus().time === 0);
+    assert.match(await page.locator('#methodHint').innerText(), /Variable depth with reflecting land/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    await page.locator('#preset').selectOption('moreton');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === 'moreton' && window.__tsunamiStatus().method === 'dispersive');
+    assert.match(await page.locator('#dataNote').innerText(), /Real coastal bathymetry.*Peregrine/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
     await page.locator('#preset').selectOption('gold-coast-seaway');
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().coast === 'gold-coast-seaway');
     assert.equal((await page.evaluate(() => window.__tsunamiStatus())).method, 'nonlinear');
     assert.match(await page.locator('#terrainSources').innerText(), /Interpolated.*LiDAR/);
     await page.locator('#showTerrainQuality').check();
     assert.equal(await page.locator('#terrainCoverage').isVisible(), false);
+    // Nest the local model in the regional one: a recorded offshore wave replaces the local pulse.
+    assert.equal(await page.locator('#couplingControls').isVisible(), true);
+    await page.locator('#coupled').check();
+    await page.waitForFunction(() => window.__tsunamiStatus().coupled && window.__tsunamiStatus().ready && window.__tsunamiStatus().couplingArrival > 0);
+    assert.match(await page.locator('#couplingArrival').innerText(), /min after the offshore source/);
+    assert.match(await page.locator('#couplingPeak').innerText(), /north .*east /);
+    assert.equal(await page.locator('#absorbing').isDisabled(), true);
+    assert.equal(await page.locator('#width').isVisible(), false);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    // Pre-calculate the whole nested run: a progress bar shows, then playback and scrubbing use stored frames.
+    await page.locator('#duration').selectOption('5');
+    await page.locator('#precompute').check();
+    await page.waitForFunction(() => window.__tsunamiStatus().calculating);
+    assert.equal(await page.locator('#precomputeBar').isVisible(), true);
+    assert.match(await page.locator('#precomputeText').innerText(), /regional|Calculating/);
+    assert.equal(await page.locator('#play').isDisabled(), true);
+    await page.waitForFunction(() => window.__tsunamiStatus().precomputed && window.__tsunamiStatus().ready, null, { timeout: 90000 });
+    assert.equal(await page.locator('#precomputeBar').isVisible(), false);
+    assert.equal(await page.locator('#scrubControl').isVisible(), true);
+    const stored = await page.evaluate(() => window.__tsunamiStatus());
+    assert.ok(stored.frames >= 100 && stored.time === 0);
+    await page.locator('#scrub').fill('120');
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 100);
+    const scrubbed = await page.evaluate(() => window.__tsunamiStatus());
+    assert.ok(scrubbed.peak > 0 && scrubbed.samples > 100);
+    await page.locator('#step').click();
+    await page.waitForFunction(t => window.__tsunamiStatus().time > t, scrubbed.time);
+    await page.locator('#speed').selectOption('15');
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().running === false && window.__tsunamiStatus().time >= 299);
+    assert.equal(await page.locator('#play').innerText(), 'Replay');
+    await page.locator('#reset').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time === 0 && window.__tsunamiStatus().precomputed);
+    await page.locator('#precompute').uncheck();
+    await page.waitForFunction(() => !window.__tsunamiStatus().precomputed && window.__tsunamiStatus().ready && !window.__tsunamiStatus().calculating);
+    await page.locator('#duration').selectOption('10');
+    // Replace the regional model with an uploaded wave series, plus a tide.
+    await page.locator('#incoming').selectOption('series');
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Choose a CSV'));
+    await page.locator('#waveFile').setInputFiles({ name: 'dart.csv', mimeType: 'text/csv', buffer: Buffer.from('seconds,metres\n' + Array.from({ length: 31 }, (_, i) => `${i * 20},${(.4 * Math.exp(-(((i * 20 - 200) / 80) ** 2))).toFixed(4)}`).join('\n')) });
+    await page.locator('#tideRange').fill('0.5');
+    await page.locator('#tideRange').dispatchEvent('change');
+    await page.waitForFunction(() => window.__tsunamiStatus().couplingSource === 'series' && window.__tsunamiStatus().couplingTide === .5 && window.__tsunamiStatus().ready);
+    assert.match(await page.locator('#couplingSource').innerText(), /dart\.csv · 31 rows/);
+    assert.match(await page.locator('#couplingArrival').innerText(), /into the local run/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    await page.locator('#waveFile').setInputFiles({ name: 'bad.csv', mimeType: 'text/csv', buffer: Buffer.from('0,0\n5,abc\n') });
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('not "seconds, metres"'));
+    await page.locator('#incoming').selectOption('regional');
+    await page.locator('#tideRange').fill('0');
+    await page.locator('#tideRange').dispatchEvent('change');
+    await page.waitForFunction(() => window.__tsunamiStatus().couplingSource === 'regional' && window.__tsunamiStatus().ready);
+    await page.locator('#coupled').uncheck();
+    await page.waitForFunction(() => !window.__tsunamiStatus().coupled && window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    assert.equal(await page.locator('#couplingMetrics').isVisible(), false);
     // Exercise unavailable terrain separately from CSIRO's complete source grid.
     const incomplete = JSON.parse(fs.readFileSync(path.join(site, 'tsunami-data/gold-coast-seaway.json')));
     incomplete.elevation[1382] = null; incomplete.valid[1382] = 0; incomplete.missing = 1;

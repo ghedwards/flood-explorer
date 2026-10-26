@@ -505,7 +505,20 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
                     b.num("roughness"),
                 )?;
+                if b.num("order") == 2.0 { solver.set_order(2)?; }
                 if let Some(valid) = b.u8s("valid") { solver.set_valid(valid)?; }
+                // One-way coupling: each edge carries a series of incoming
+                // surface displacement (samples x points) at shared times.
+                if let Some(times) = b.f64s("forceTimes") {
+                    for (code, key) in ["forceNorth", "forceEast", "forceSouth", "forceWest"].into_iter().enumerate() {
+                        let Some(values) = b.f64s(key) else { continue };
+                        if times.is_empty() || values.len() % times.len() != 0 { return Err("boundary forcing does not match its times".into()); }
+                        let edge = inundation::Edge::from_code(code).unwrap();
+                        solver.set_forcing(edge, times.clone(), values.clone(), values.len() / times.len())?;
+                    }
+                }
+                if let (Some(times), Some(level)) = (b.f64s("levelTimes"), b.f64s("level")) { solver.set_level(times, level)?; }
+                if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
                 o.num("dt", solver.dt);
                 INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
             } else {
@@ -519,6 +532,30 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 o.num("dt", solver.dt);
                 TSUNAMI.with(|s| *s.borrow_mut() = Some(solver));
             }
+        }
+        "tsunamiParent" => {
+            // Run a regional propagation model to completion without keeping
+            // it, recording eta at the requested points (x, y pairs in cell
+            // coordinates) as boundary forcing for a nested local model.
+            let seconds = b.num("seconds");
+            if !seconds.is_finite() || seconds <= 0.0 || seconds > 21_600.0 { return Err("invalid parent run length".into()); }
+            let xy = b.f64s("points").ok_or("missing recording points")?;
+            if xy.len() % 2 != 0 { return Err("recording points must be x, y pairs".into()); }
+            let points: Vec<(f64, f64)> = xy.chunks(2).map(|p| (p[0], p[1])).collect();
+            let mut solver = tsunami::Solver::new(
+                b.num("W") as usize, b.num("H") as usize, b.num("cell"),
+                b.f64s("depth").ok_or("missing ocean depths")?,
+                b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
+            )?;
+            if b.num("method") == 1.0 { solver.method = tsunami::Method::FiniteVolume; }
+            if b.num("method") == 3.0 { solver.method = tsunami::Method::Dispersive; solver.advance(0)?; }
+            if (seconds / solver.dt) > 40_000.0 { return Err("parent run needs too many steps".into()); }
+            solver.record(&points)?;
+            while solver.time < seconds { solver.advance(200)?; }
+            let r = solver.recorded().ok_or("no recording")?;
+            o.num("dt", solver.dt).num("time", solver.time).num("points", r.points as f64);
+            o.f64s("times", &r.times).f64s("values", &r.values);
+            o.f32s("peak", &solver.peak.iter().map(|v| *v as f32).collect::<Vec<_>>());
         }
         "tsunamiStep" => {
             let steps = b.num("steps");

@@ -342,7 +342,13 @@
     }
 
     const rust = {
-      tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt) }; },
+      tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
+      // Run a regional model to the end, returning surface displacement at the
+      // requested (x, y) cell coordinates for use as nested boundary forcing.
+      tsunamiParent: (grid, points, seconds) => {
+        const o = call('tsunamiParent', { ...grid, points, seconds });
+        return { times: o.times, values: o.values, points: Math.round(num(o.points)), time: num(o.time), dt: num(o.dt), peak: o.peak };
+      },
       tsunamiStep: (steps) => { const o = call('tsunamiStep', { steps }); return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume) }; },
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },

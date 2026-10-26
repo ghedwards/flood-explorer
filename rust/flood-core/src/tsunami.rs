@@ -26,7 +26,25 @@ pub struct Solver {
     qy: Vec<f64>,
     damping: Vec<f64>,
     filter: Option<crate::dispersion::Filter>,
+    variable: Option<crate::dispersion::Variable>,
+    /// Use the variable-depth dispersive operator even where the depth is
+    /// uniform (it is selected automatically otherwise).
+    pub force_variable_dispersion: bool,
+    recorder: Option<Recorder>,
 }
+
+/// Surface displacement sampled at fixed points (fractional cell coordinates,
+/// cell centres at i + 0.5) after every step. Used as one-way boundary
+/// forcing for a finer nested model.
+pub struct Recorder {
+    taps: Vec<[(usize, f64); 4]>,
+    pub times: Vec<f64>,
+    /// Row-major [sample][point].
+    pub values: Vec<f64>,
+    pub points: usize,
+}
+
+const MAX_RECORDED_VALUES: usize = 8_000_000;
 
 impl Solver {
     pub fn new(w: usize, h: usize, cell: f64, depth: Vec<f64>, eta: Vec<f64>, absorbing: bool) -> Result<Self, String> {
@@ -54,47 +72,85 @@ impl Solver {
             } }
         }
         Ok(Self { w, h, cell, peak: eta.iter().map(|v| v.abs()).collect(), depth, eta, time: 0.0, dt, steps: 0,
-            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping, filter: None,
-            method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
+            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping, filter: None, variable: None, force_variable_dispersion: false,
+            recorder: None, method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
     }
+
+    /// Start recording eta at the given points, including the current state.
+    /// A point's value is the bilinear mean over its wet neighbouring cells,
+    /// so coastal points do not read the zero of reflecting land.
+    pub fn record(&mut self, points: &[(f64, f64)]) -> Result<(), String> {
+        if points.is_empty() || points.len() > 1024 { return Err("record between 1 and 1024 points".into()); }
+        let mut taps = Vec::with_capacity(points.len());
+        for &(px, py) in points {
+            if !px.is_finite() || !py.is_finite() || px < 0.5 || py < 0.5 || px > self.w as f64 - 0.5 || py > self.h as f64 - 0.5 {
+                return Err("recording point outside the propagation grid".into());
+            }
+            let (fx, fy) = (px - 0.5, py - 0.5);
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (tx, ty) = (fx - x0 as f64, fy - y0 as f64);
+            let mut tap = [(0, 0.0); 4];
+            let mut total = 0.0;
+            for (k, (dx, dy, weight)) in [(0, 0, (1.0 - tx) * (1.0 - ty)), (1, 0, tx * (1.0 - ty)), (0, 1, (1.0 - tx) * ty), (1, 1, tx * ty)].into_iter().enumerate() {
+                let (x, y) = ((x0 + dx).min(self.w - 1), (y0 + dy).min(self.h - 1));
+                let i = y * self.w + x;
+                let weight = if self.depth[i] > 0.0 { weight } else { 0.0 };
+                total += weight;
+                tap[k] = (i, weight);
+            }
+            if total < 1e-9 { return Err("recording point is on land in the propagation grid".into()); }
+            for t in &mut tap { t.1 /= total; }
+            taps.push(tap);
+        }
+        let mut recorder = Recorder { points: taps.len(), taps, times: Vec::new(), values: Vec::new() };
+        recorder.sample(self.time, &self.eta);
+        self.recorder = Some(recorder);
+        Ok(())
+    }
+
+    pub fn recorded(&self) -> Option<&Recorder> { self.recorder.as_ref() }
 
     pub fn advance(&mut self, steps: usize) -> Result<(), String> {
         if steps > 200 { return Err("advance at most 200 steps per call".into()); }
+        let mut variable = false;
         if self.method == Method::Dispersive {
             let uniform = self.depth[0];
-            if uniform <= 0.0 || self.depth.iter().any(|d| (*d-uniform).abs() > 1e-9) {
-                return Err("dispersive prototype requires a uniform ocean with no land".into());
-            }
-            if self.filter.is_none() { self.filter = Some(crate::dispersion::Filter::new(self.w,self.h,uniform,self.cell)); }
+            variable = self.force_variable_dispersion || uniform <= 0.0 || self.depth.iter().any(|d| (*d-uniform).abs() > 1e-9);
+            if variable {
+                if self.variable.is_none() { self.variable = Some(crate::dispersion::Variable::new(self.w, self.h, self.cell, &self.depth)); }
+            } else if self.filter.is_none() { self.filter = Some(crate::dispersion::Filter::new(self.w,self.h,uniform,self.cell)); }
         }
         for _ in 0..steps {
             if self.method == Method::FiniteVolume {
                 self.finite_volume_step()?;
+                self.sample_recorder()?;
                 continue;
             }
-            if self.method == Method::Dispersive { self.filter.as_mut().unwrap().solve(&self.eta)?; }
-            let surface = if self.method == Method::Dispersive { &self.filter.as_ref().unwrap().surface } else { &self.eta };
-            // Initial transport is zero at t=0: the first kick reaches dt/2.
-            let kick = if self.steps == 0 { self.dt * 0.5 } else { self.dt } * G / self.cell;
-            for y in 0..self.h { for x in 1..self.w {
-                let right = y * self.w + x;
-                let left = right - 1;
-                let face = y * (self.w + 1) + x;
-                if self.depth[left] > 0.0 && self.depth[right] > 0.0 {
-                    let depth = (self.depth[left] + self.depth[right]) * 0.5;
-                    self.qx[face] = (self.qx[face] - kick * depth * (surface[right] - surface[left]))
-                        * (self.damping[left] * self.damping[right]).sqrt();
-                }
-            } }
-            for y in 1..self.h { for x in 0..self.w {
-                let below = y * self.w + x;
-                let above = below - self.w;
-                if self.depth[above] > 0.0 && self.depth[below] > 0.0 {
-                    let depth = (self.depth[above] + self.depth[below]) * 0.5;
-                    self.qy[below] = (self.qy[below] - kick * depth * (surface[below] - surface[above]))
-                        * (self.damping[above] * self.damping[below]).sqrt();
-                }
-            } }
+            if variable { self.variable_momentum()?; } else {
+                if self.method == Method::Dispersive { self.filter.as_mut().unwrap().solve(&self.eta)?; }
+                let surface = if self.method == Method::Dispersive { &self.filter.as_ref().unwrap().surface } else { &self.eta };
+                // Initial transport is zero at t=0: the first kick reaches dt/2.
+                let kick = if self.steps == 0 { self.dt * 0.5 } else { self.dt } * G / self.cell;
+                for y in 0..self.h { for x in 1..self.w {
+                    let right = y * self.w + x;
+                    let left = right - 1;
+                    let face = y * (self.w + 1) + x;
+                    if self.depth[left] > 0.0 && self.depth[right] > 0.0 {
+                        let depth = (self.depth[left] + self.depth[right]) * 0.5;
+                        self.qx[face] = (self.qx[face] - kick * depth * (surface[right] - surface[left]))
+                            * (self.damping[left] * self.damping[right]).sqrt();
+                    }
+                } }
+                for y in 1..self.h { for x in 0..self.w {
+                    let below = y * self.w + x;
+                    let above = below - self.w;
+                    if self.depth[above] > 0.0 && self.depth[below] > 0.0 {
+                        let depth = (self.depth[above] + self.depth[below]) * 0.5;
+                        self.qy[below] = (self.qy[below] - kick * depth * (surface[below] - surface[above]))
+                            * (self.damping[above] * self.damping[below]).sqrt();
+                    }
+                } }
+            }
             for y in 0..self.h { for x in 0..self.w {
                 let i = y * self.w + x;
                 if self.depth[i] == 0.0 { continue; }
@@ -106,9 +162,46 @@ impl Solver {
             } }
             self.steps += 1;
             self.time += self.dt;
+            self.sample_recorder()?;
         }
         Ok(())
     }
+
+    // Leapfrog momentum update with the variable-depth Peregrine acceleration.
+    fn variable_momentum(&mut self) -> Result<(), String> {
+        let v = self.variable.as_mut().unwrap();
+        v.solve(&self.eta, G)?;
+        let kick = if self.steps == 0 { self.dt * 0.5 } else { self.dt };
+        let nx = (self.w + 1) * self.h;
+        for y in 0..self.h { for x in 1..self.w {
+            let face = y * (self.w + 1) + x;
+            let depth = v.depth_x(face);
+            if depth > 0.0 {
+                self.qx[face] = (self.qx[face] + kick * depth * v.accel[face])
+                    * (self.damping[y * self.w + x - 1] * self.damping[y * self.w + x]).sqrt();
+            }
+        } }
+        for y in 1..self.h { for x in 0..self.w {
+            let below = y * self.w + x;
+            let depth = v.depth_y(below);
+            if depth > 0.0 {
+                self.qy[below] = (self.qy[below] + kick * depth * v.accel[nx + below])
+                    * (self.damping[below - self.w] * self.damping[below]).sqrt();
+            }
+        } }
+        Ok(())
+    }
+
+    fn sample_recorder(&mut self) -> Result<(), String> {
+        if let Some(r) = self.recorder.as_mut() {
+            if r.values.len() + r.points > MAX_RECORDED_VALUES { return Err("boundary recording is too long; shorten the run".into()); }
+            r.sample(self.time, &self.eta);
+        }
+        Ok(())
+    }
+
+    /// Total momentum-solver iterations so far (variable-depth dispersion only).
+    pub fn dispersion_iterations(&self) -> usize { self.variable.as_ref().map_or(0, |v| v.total_iterations) }
 
     pub fn volume(&self) -> f64 { self.eta.iter().sum::<f64>() * self.cell * self.cell }
 
@@ -161,6 +254,13 @@ impl Solver {
         self.steps += 1;
         self.time += self.dt;
         Ok(())
+    }
+}
+
+impl Recorder {
+    fn sample(&mut self, time: f64, eta: &[f64]) {
+        self.times.push(time);
+        for tap in &self.taps { self.values.push(tap.iter().map(|(i, w)| eta[*i] * w).sum()); }
     }
 }
 
@@ -270,13 +370,107 @@ mod tests {
         }
     }
     #[test]
-    fn dispersive_rest_and_restrictions() {
-        let mut s = Solver::new(20,12,1000.0,vec![1000.0;240],vec![0.0;240],false).unwrap();
-        s.method = Method::Dispersive;
-        s.advance(200).unwrap();
-        assert!(s.eta.iter().all(|v| *v==0.0));
-        s.depth[10]=500.0;
-        assert!(s.advance(1).is_err());
+    fn recorder_samples_wet_neighbours_and_rejects_land_and_outside_points() {
+        let (w, h) = (20, 10);
+        let depth: Vec<f64> = (0..w*h).map(|i| if i % w >= 10 { 0.0 } else { 100.0 }).collect();
+        let eta: Vec<f64> = depth.iter().map(|d| if *d > 0.0 { 0.2 } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, 1000.0, depth, eta, false).unwrap();
+        // 9.9 lies between the last wet cell (centre 9.5) and land (10.5):
+        // the land cell must not dilute the reading.
+        s.record(&[(9.9, 5.0), (4.0, 4.0)]).unwrap();
+        s.advance(10).unwrap();
+        let r = s.recorded().unwrap();
+        assert_eq!(r.times.len(), 11);
+        assert_eq!(r.values.len(), 22);
+        assert!(r.times.windows(2).all(|p| p[1] > p[0]));
+        assert!((r.values[0] - 0.2).abs() < 1e-12 && (r.values[1] - 0.2).abs() < 1e-12);
+        assert!(s.record(&[(15.0, 5.0)]).is_err());
+        assert!(s.record(&[(0.2, 5.0)]).is_err());
+        assert!(s.record(&[(5.0, f64::NAN)]).is_err());
+        assert!(s.record(&[]).is_err());
     }
 
+    #[test]
+    fn dispersive_rest_over_uneven_bathymetry_and_land() {
+        let (w, h) = (40, 20);
+        let depth: Vec<f64> = (0..w*h).map(|i| if i % w > 34 { 0.0 } else { 100.0 + (i % w) as f64 * 90.0 }).collect();
+        let mut s = Solver::new(w, h, 1000.0, depth, vec![0.0; w*h], false).unwrap();
+        s.method = Method::Dispersive;
+        s.advance(200).unwrap();
+        assert!(s.eta.iter().all(|v| *v == 0.0));
+    }
+
+    fn shelf(w: usize, h: usize, deep: f64) -> Vec<f64> {
+        // Deep ocean on the left, a sloping shelf, then land on the right.
+        (0..w*h).map(|i| {
+            let x = (i % w) as f64;
+            if x >= w as f64 - 4.0 { 0.0 } else { (deep * ((w as f64 - 4.0 - x) / (w as f64 * 0.6)).min(1.0)).max(30.0) }
+        }).collect()
+    }
+    fn pulse(w: usize, h: usize, x0: f64, sigma: f64) -> Vec<f64> {
+        (0..w*h).map(|i| if i % w >= w - 4 { 0.0 } else { 0.5 * (-0.5 * (((i % w) as f64 - x0).powi(2) + ((i / w) as f64 - h as f64 / 2.0).powi(2)) / (sigma * sigma)).exp() }).collect()
+    }
+
+    #[test]
+    fn variable_depth_operator_matches_the_uniform_solver_in_uniform_depth() {
+        let (w, h) = (96, 40);
+        let eta = pulse(w, h, 40.0, 3.0);
+        let mut scalar = Solver::new(w, h, 1000.0, vec![3000.0; w*h], eta.clone(), false).unwrap();
+        let mut variable = Solver::new(w, h, 1000.0, vec![3000.0; w*h], eta, false).unwrap();
+        scalar.method = Method::Dispersive;
+        variable.method = Method::Dispersive;
+        variable.force_variable_dispersion = true;
+        for _ in 0..3 { scalar.advance(40).unwrap(); variable.advance(40).unwrap(); }
+        let worst = scalar.eta.iter().zip(&variable.eta).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        assert!(worst < 1e-7, "max difference {worst}");
+    }
+
+    #[test]
+    fn variable_depth_dispersion_conserves_displacement_volume_and_stays_bounded() {
+        let (w, h) = (60, 20);
+        let mut s = Solver::new(w, h, 1500.0, shelf(w, h, 4000.0), pulse(w, h, 20.0, 2.5), false).unwrap();
+        s.method = Method::Dispersive;
+        let initial = s.volume();
+        for _ in 0..8 { s.advance(50).unwrap(); }
+        assert!(s.eta.iter().all(|v| v.is_finite() && v.abs() < 1.0));
+        assert!((s.volume() - initial).abs() < 1e-3 * initial.abs(), "{} vs {initial}", s.volume());
+        assert!(s.eta.iter().zip(&s.depth).all(|(e, d)| *d > 0.0 || *e == 0.0));
+    }
+
+    #[test]
+    fn variable_depth_dispersion_reduces_to_shallow_water_for_long_waves() {
+        // A pulse 15 km wide on a 1000 m shelf (kH about 0.07) must travel like
+        // the shallow-water wave, within the small cumulative dispersion.
+        let (w, h) = (80, 8);
+        let run = |method: Method| {
+            let mut s = Solver::new(w, h, 1000.0, shelf(w, h, 1000.0), pulse(w, h, 15.0, 15.0), false).unwrap();
+            s.method = method;
+            while s.time < 1200.0 { s.advance(5).unwrap(); }
+            s.eta[(h / 2) * w..(h / 2 + 1) * w].to_vec()
+        };
+        let (swe, dispersive) = (run(Method::Staggered), run(Method::Dispersive));
+        let difference = (swe.iter().zip(&dispersive).map(|(p, q)| (p - q).powi(2)).sum::<f64>() / swe.iter().map(|p| p * p).sum::<f64>()).sqrt();
+        assert!(difference < 0.08, "long pulse differs by {difference}");
+    }
+
+    #[test]
+    fn variable_depth_dispersion_delays_and_reduces_short_waves() {
+        // Over a gently shoaling bottom (4000 m to 2000 m), a pulse only a few
+        // depths wide has lost speed and height to dispersion; the shallow-water
+        // solver has not.
+        let (w, h) = (120, 8);
+        let depth: Vec<f64> = (0..w*h).map(|i| 4000.0 - 2000.0 * (((i % w) as f64 - 60.0) / 40.0).clamp(0.0, 1.0)).collect();
+        let crest = |method: Method| {
+            let eta = (0..w*h).map(|i| 0.5 * (-0.5 * (((i % w) as f64 - 30.0).powi(2) + ((i / w) as f64 - 4.0).powi(2)) / 16.0).exp()).collect();
+            let mut s = Solver::new(w, h, 1000.0, depth.clone(), eta, false).unwrap();
+            s.method = method;
+            while s.time < 150.0 { s.advance(5).unwrap(); }
+            let row = &s.eta[(h / 2) * w..(h / 2 + 1) * w];
+            let at = (35..110).max_by(|a, b| row[*a].total_cmp(&row[*b])).unwrap();
+            (at, row[at])
+        };
+        let (swe, dispersive) = (crest(Method::Staggered), crest(Method::Dispersive));
+        assert!(dispersive.0 + 3 <= swe.0, "crest cells: shallow water {}, dispersive {}", swe.0, dispersive.0);
+        assert!(dispersive.1 < 0.9 * swe.1, "crest height: shallow water {}, dispersive {}", swe.1, dispersive.1);
+    }
 }

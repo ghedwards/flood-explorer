@@ -5,6 +5,40 @@
 const G: f64 = 9.81;
 const DRY: f64 = 1e-7;
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Edge { North, East, South, West }
+
+impl Edge {
+    pub fn from_code(code: usize) -> Option<Edge> {
+        [Edge::North, Edge::East, Edge::South, Edge::West].get(code).copied()
+    }
+}
+
+/// Incoming surface displacement (m) imposed along one outer edge as a
+/// function of time, from a coarser parent model. `values` is row-major
+/// [sample][point]; the points are evenly spread along the edge and the
+/// value is interpolated linearly in both time and position.
+struct Forcing {
+    edge: Edge,
+    times: Vec<f64>,
+    values: Vec<f64>,
+    points: usize,
+}
+
+impl Forcing {
+    fn at(&self, along: f64, time: f64) -> f64 {
+        let n = self.times.len();
+        let k = self.times.partition_point(|t| *t <= time).clamp(1, n - 1);
+        let f = ((time - self.times[k - 1]) / (self.times[k] - self.times[k - 1])).clamp(0.0, 1.0);
+        let p = (along * self.points as f64 - 0.5).clamp(0.0, (self.points - 1) as f64);
+        let (p0, pf) = (p.floor() as usize, p - p.floor());
+        let p1 = (p0 + 1).min(self.points - 1);
+        let v = |s: usize, q: usize| self.values[s * self.points + q];
+        let at = |s: usize| v(s, p0) * (1.0 - pf) + v(s, p1) * pf;
+        at(k - 1) * (1.0 - f) + at(k) * f
+    }
+}
+
 pub struct Solver {
     pub w: usize,
     pub h: usize,
@@ -24,13 +58,16 @@ pub struct Solver {
     my: Vec<f64>,
     sponge: Vec<f64>,
     roughness: f64,
+    forcing: Vec<Forcing>,
+    level: Option<(Vec<f64>, Vec<f64>)>,
+    order: u8,
 }
 
 impl Solver {
     #[allow(clippy::too_many_arguments)]
     pub fn new(w: usize, h: usize, cell: f64, bed: Vec<f64>, reference: Vec<f64>, eta: Vec<f64>, absorbing: bool, roughness: f64) -> Result<Self, String> {
         let n = w.checked_mul(h).ok_or("grid overflow")?;
-        if !(4..=512).contains(&w) || !(4..=512).contains(&h) || !cell.is_finite() || cell < 1.0
+        if !(4..=512).contains(&w) || !(4..=512).contains(&h) || !cell.is_finite() || cell < 0.05
             || bed.len() != n || reference.len() != n || eta.len() != n
             || !roughness.is_finite() || !(0.0..=0.2).contains(&roughness)
             || bed.iter().any(|v| !v.is_finite() || !(-12000.0..=9000.0).contains(v))
@@ -56,9 +93,23 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
             speed: vec![0.0; n], time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
-            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness };
+            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), level: None, order: 1 };
         s.dt = s.stable_dt();
         Ok(s)
+    }
+
+    /// Initial depth-integrated transport (m2/s), e.g. for a wave already
+    /// travelling. It must be zero on dry cells and on cells excluded by the mask.
+    pub fn set_momentum(&mut self, mx: Vec<f64>, my: Vec<f64>) -> Result<(), String> {
+        let n = self.water.len();
+        if mx.len() != n || my.len() != n || self.time != 0.0
+            || mx.iter().chain(&my).any(|v| !v.is_finite() || v.abs() > 1.0e5)
+            || (0..n).any(|i| self.water[i] <= DRY && (mx[i] != 0.0 || my[i] != 0.0)) {
+            return Err("invalid initial momentum; it must be finite, zero on dry cells and set before the run".into());
+        }
+        self.mx = mx; self.my = my;
+        self.dt = self.stable_dt();
+        Ok(())
     }
 
     pub fn set_valid(&mut self, mask: Vec<u8>) -> Result<(), String> {
@@ -70,6 +121,97 @@ impl Solver {
         Ok(())
     }
 
+    /// Drive one outer edge with an incoming wave from a parent model.
+    ///
+    /// Initially wet, valid cells on the edge use a Flather-type radiation
+    /// condition: outward normal velocity sqrt(g/H) (eta - 2 eta_in), where
+    /// eta is the interior surface displacement and eta_in the imposed
+    /// incoming wave. Outgoing waves leave with little reflection; with
+    /// eta_in = 0 it is a wall at rest. Cells that are dry at the start stay
+    /// walls. The relaxation sponge is switched off, since it would damp the
+    /// forced signal. The series is held at its last value after it ends.
+    pub fn set_forcing(&mut self, edge: Edge, times: Vec<f64>, values: Vec<f64>, points: usize) -> Result<(), String> {
+        if times.len() < 2 || times.len() > 1_000_000 || points == 0 || points > 1024
+            || values.len() != times.len().checked_mul(points).ok_or("forcing overflow")?
+            || times.iter().any(|t| !t.is_finite()) || times.windows(2).any(|p| p[1] <= p[0])
+            || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            return Err("invalid boundary forcing series".into());
+        }
+        if self.forcing.iter().any(|f| f.edge == edge) { return Err("this edge already has forcing".into()); }
+        if (0..self.edge_len(edge)).all(|k| !self.edge_wet(edge, k)) {
+            return Err("the forced edge has no initially wet cells".into());
+        }
+        self.sponge.iter_mut().for_each(|v| *v = 0.0);
+        self.forcing.push(Forcing { edge, times, values, points });
+        Ok(())
+    }
+
+    /// External sea level change (m) at all forced edges, e.g. a tide. Unlike
+    /// the incoming wave it is a total level with no external current, so a
+    /// closed basin settles at this level rather than at twice it. It is the
+    /// change from the initial sea level, interpolated in time and held
+    /// beyond its ends.
+    pub fn set_level(&mut self, times: Vec<f64>, values: Vec<f64>) -> Result<(), String> {
+        if times.len() < 2 || times.len() > 1_000_000 || values.len() != times.len()
+            || times.iter().any(|t| !t.is_finite()) || times.windows(2).any(|p| p[1] <= p[0])
+            || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            return Err("invalid sea level series".into());
+        }
+        self.level = Some((times, values));
+        Ok(())
+    }
+
+    fn level_at(&self, time: f64) -> f64 {
+        let Some((times, values)) = &self.level else { return 0.0 };
+        let k = times.partition_point(|t| *t <= time).clamp(1, times.len() - 1);
+        let f = ((time - times[k - 1]) / (times[k] - times[k - 1])).clamp(0.0, 1.0);
+        values[k - 1] * (1.0 - f) + values[k] * f
+    }
+
+    /// Last time covered by any forcing series.
+    pub fn forcing_end(&self) -> Option<f64> {
+        self.forcing.iter().map(|f| *f.times.last().unwrap()).reduce(f64::min)
+    }
+
+    fn edge_len(&self, edge: Edge) -> usize { if matches!(edge, Edge::North | Edge::South) { self.w } else { self.h } }
+
+    fn edge_cell(&self, edge: Edge, k: usize) -> usize {
+        match edge {
+            Edge::North => k,
+            Edge::South => (self.h - 1) * self.w + k,
+            Edge::West => k * self.w,
+            Edge::East => k * self.w + self.w - 1,
+        }
+    }
+
+    fn edge_wet(&self, edge: Edge, k: usize) -> bool {
+        let i = self.edge_cell(edge, k);
+        self.valid[i] && self.reference[i] > DRY
+    }
+
+    // Boundary flux along +axis for a forced edge cell, as (flux, outward
+    // normal sign). None leaves the cell as a reflecting wall.
+    fn forced_flux(&self, edge: Edge, k: usize, axis: usize, state: (&[f64], &[f64], &[f64]), time: f64) -> Option<[f64; 3]> {
+        let f = self.forcing.iter().find(|f| f.edge == edge)?;
+        if !self.edge_wet(edge, k) { return None; }
+        let i = self.edge_cell(edge, k);
+        let (water, mx, my) = state;
+        let h = water[i];
+        if h <= DRY { return None; }
+        let sign = if matches!(edge, Edge::East | Edge::South) { 1.0 } else { -1.0 };
+        let still = self.reference[i].max(h);
+        let eta_in = f.at((k as f64 + 0.5) / self.edge_len(edge) as f64, time);
+        let c = (G * still).sqrt();
+        let outward = ((G / still).sqrt() * (h - self.reference[i] - self.level_at(time) - 2.0 * eta_in)).clamp(-2.0 * c, 2.0 * c);
+        let u = sign * outward;
+        let tangent = 3 - axis;
+        let mut flux = [h * u, 0.0, 0.0];
+        flux[axis] = h * u * u + 0.5 * G * h * h;
+        // Tangential momentum leaves with outflow; inflow brings none.
+        flux[tangent] = if outward > 0.0 { u * [0.0, mx[i], my[i]][tangent] / h } else { 0.0 };
+        Some(flux)
+    }
+
     fn stable_dt(&self) -> f64 {
         let mut maximum = 0.0_f64;
         for i in 0..self.water.len() {
@@ -79,7 +221,7 @@ impl Solver {
             }
         }
         // Sum of directional characteristic speeds; conservative 2-D positivity CFL.
-        0.4 * self.cell / maximum.max(1e-6)
+        (if self.order == 2 { 0.3 } else { 0.4 }) * self.cell / maximum.max(1e-6)
     }
 
     fn state(&self, i: usize) -> [f64; 3] {
@@ -119,8 +261,19 @@ impl Solver {
         Ok(())
     }
 
-    fn step(&mut self) -> Result<(), String> {
-        let dt = self.stable_dt();
+    /// Choose the scheme: 1 is first-order (Rusanov with hydrostatic
+    /// reconstruction, forward Euler); 2 adds limited linear reconstruction in
+    /// the interior of wet regions and a two-stage Heun step. Both keep rest
+    /// states exact and mass conservative; shorelines stay first-order.
+    pub fn set_order(&mut self, order: u8) -> Result<(), String> {
+        if order != 1 && order != 2 { return Err("numerical order must be 1 or 2".into()); }
+        if self.time != 0.0 { return Err("choose the numerical order before the run starts".into()); }
+        self.order = order;
+        self.dt = self.stable_dt();
+        Ok(())
+    }
+
+    fn first_order_delta(&mut self, dt: f64) -> Vec<[f64; 3]> {
         let ratio = dt / self.cell;
         let mut delta = vec![[0.0; 3]; self.water.len()];
         // Include mirrored ghost states at outer walls. Each interior face is
@@ -137,13 +290,139 @@ impl Solver {
                 let mut right = self.state(ri);
                 if face == 0 || !self.valid[li] { left = right; left[axis] = -right[axis]; zl = zr; }
                 if face == across || !self.valid[ri] { right = left; right[axis] = -left[axis]; zr = zl; }
-                let (flux, cl, cr) = Self::face(left, right, zl, zr, axis);
+                let boundary = if face == 0 || face == across {
+                    let edge = match (axis, face == 0) {
+                        (1, true) => Edge::West, (1, false) => Edge::East,
+                        (_, true) => Edge::North, (_, false) => Edge::South,
+                    };
+                    self.forced_flux(edge, row, axis, (&self.water, &self.mx, &self.my), self.time).map(|f| (f, edge))
+                } else { None };
+                let (flux, cl, cr) = if let Some((f, edge)) = boundary {
+                    // Mass entering the domain, in m3, through this face.
+                    let inflow = if matches!(edge, Edge::West | Edge::North) { f[0] } else { -f[0] } * dt * self.cell;
+                    self.boundary_volume += inflow;
+                    (f, 0.0, 0.0)
+                } else {
+                    Self::face(left, right, zl, zr, axis)
+                };
                 for k in 0..3 {
                     if face > 0 && self.valid[li] { delta[li][k] -= ratio * (flux[k] + if k == axis { cl } else { 0.0 }); }
                     if face < across && self.valid[ri] { delta[ri][k] += ratio * (flux[k] + if k == axis { cr } else { 0.0 }); }
                 }
             } }
         }
+        delta
+    }
+
+    // Limited, interior-only reconstruction along `axis` (0 = x, 1 = y). For
+    // each cell: [h_in, h_out, u_in, u_out, v_in, v_out, z_in, z_out], the values
+    // at the faces towards lower and higher index. A cell reconstructs only if
+    // it and both neighbours are valid and wet, and its depth comfortably
+    // exceeds the bed and surface variation; otherwise it keeps its mean values,
+    // which is exactly the first-order scheme there.
+    fn reconstruct(&self, axis: usize, h: &[f64], mx: &[f64], my: &[f64]) -> Vec<[f64; 8]> {
+        const WET: f64 = 0.01;
+        let (w, rows) = (self.w, self.h);
+        let step = if axis == 0 { 1 } else { w };
+        let velocity = |i: usize| if h[i] > DRY { (mx[i] / h[i], my[i] / h[i]) } else { (0.0, 0.0) };
+        let minmod = |a: f64, b: f64, c: f64| if a > 0.0 && b > 0.0 && c > 0.0 { a.min(b).min(c) } else if a < 0.0 && b < 0.0 && c < 0.0 { a.max(b).max(c) } else { 0.0 };
+        let limited = |lo: f64, mid: f64, hi: f64| minmod(1.5 * (mid - lo), 0.5 * (hi - lo), 1.5 * (hi - mid));
+        (0..w * rows).map(|i| {
+            let (x, y) = (i % w, i / w);
+            let (u, v) = velocity(i);
+            let out = [h[i], h[i], u, u, v, v, self.bed[i], self.bed[i]];
+            let inside = if axis == 0 { x > 0 && x + 1 < w } else { y > 0 && y + 1 < rows };
+            if !inside { return out; }
+            let (a, b) = (i - step, i + step);
+            if !(self.valid[i] && self.valid[a] && self.valid[b]) || h[i] < WET || h[a] < WET || h[b] < WET { return out; }
+            let surface = |j: usize| h[j] + self.bed[j];
+            let s_eta = limited(surface(a), surface(i), surface(b));
+            let s_z = 0.5 * (self.bed[b] - self.bed[a]);
+            let s_h = s_eta - s_z;
+            // Keep both face depths positive with margin; otherwise stay first-order.
+            if s_h.abs() > 1.8 * h[i] || s_z.abs() > 1.8 * h[i] { return out; }
+            let (ua, ub) = (velocity(a), velocity(b));
+            let s_u = limited(ua.0, u, ub.0);
+            let s_v = limited(ua.1, v, ub.1);
+            [h[i] - 0.5 * s_h, h[i] + 0.5 * s_h, u - 0.5 * s_u, u + 0.5 * s_u, v - 0.5 * s_v, v + 0.5 * s_v, self.bed[i] - 0.5 * s_z, self.bed[i] + 0.5 * s_z]
+        }).collect()
+    }
+
+    // Time derivative of (h, mx, my) for the second-order scheme, and the water
+    // entering through forced edges (m3/s). Same face fluxes and pressure
+    // corrections as the first-order scheme, applied to reconstructed face
+    // states, plus a centred bed-slope source from the reconstructed bed.
+    fn rate(&self, h: &[f64], mx: &[f64], my: &[f64], time: f64) -> (Vec<[f64; 3]>, f64) {
+        let n = h.len();
+        let inv = 1.0 / self.cell;
+        let recon = [self.reconstruct(0, h, mx, my), self.reconstruct(1, h, mx, my)];
+        let mut rate = vec![[0.0; 3]; n];
+        let mut inflow = 0.0;
+        for axis in [1usize, 2] {
+            let (across, along) = if axis == 1 { (self.w, self.h) } else { (self.h, self.w) };
+            let r = &recon[axis - 1];
+            for row in 0..along { for face in 0..=across {
+                let index = |col: usize| if axis == 1 { row * self.w + col } else { col * self.w + row };
+                let li = index(face.saturating_sub(1));
+                let ri = index(face.min(across - 1));
+                if !self.valid[li] && !self.valid[ri] { continue; }
+                // Left state: the lower cell's outward face; right: the upper cell's inward face.
+                let pick = |c: &[f64; 8], outward: bool| {
+                    let o = usize::from(outward);
+                    ([c[o], c[o] * c[2 + o], c[o] * c[4 + o]], c[6 + o])
+                };
+                let (mut left, mut zl) = pick(&r[li], true);
+                let (mut right, mut zr) = pick(&r[ri], false);
+                if face == 0 || !self.valid[li] { left = right; left[axis] = -right[axis]; zl = zr; }
+                if face == across || !self.valid[ri] { right = left; right[axis] = -left[axis]; zr = zl; }
+                let boundary = if face == 0 || face == across {
+                    let edge = match (axis, face == 0) {
+                        (1, true) => Edge::West, (1, false) => Edge::East,
+                        (_, true) => Edge::North, (_, false) => Edge::South,
+                    };
+                    self.forced_flux(edge, row, axis, (h, mx, my), time).map(|f| (f, edge))
+                } else { None };
+                let (flux, cl, cr) = if let Some((f, edge)) = boundary {
+                    inflow += if matches!(edge, Edge::West | Edge::North) { f[0] } else { -f[0] } * self.cell;
+                    (f, 0.0, 0.0)
+                } else {
+                    Self::face(left, right, zl, zr, axis)
+                };
+                for k in 0..3 {
+                    if face > 0 && self.valid[li] { rate[li][k] -= inv * (flux[k] + if k == axis { cl } else { 0.0 }); }
+                    if face < across && self.valid[ri] { rate[ri][k] += inv * (flux[k] + if k == axis { cr } else { 0.0 }); }
+                }
+            } }
+        }
+        // Centred bed-slope source from the reconstructed bed: -g h dz/dx.
+        for i in 0..n {
+            if !self.valid[i] || h[i] <= DRY { continue; }
+            for axis in 0..2 {
+                let c = &recon[axis][i];
+                rate[i][1 + axis] -= G * h[i] * (c[7] - c[6]) * inv;
+            }
+        }
+        (rate, inflow)
+    }
+
+    fn second_order_delta(&mut self, dt: f64) -> Result<Vec<[f64; 3]>, String> {
+        let n = self.water.len();
+        let (r0, in0) = self.rate(&self.water, &self.mx, &self.my, self.time);
+        let (mut h1, mut m1, mut n1) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        for i in 0..n {
+            let h = self.water[i] + dt * r0[i][0];
+            if !h.is_finite() || h < -1e-9 { return Err("inundation solver lost positivity; reset the scene".into()); }
+            h1[i] = h.max(0.0);
+            if h1[i] > DRY { m1[i] = self.mx[i] + dt * r0[i][1]; n1[i] = self.my[i] + dt * r0[i][2]; }
+        }
+        let (r1, in1) = self.rate(&h1, &m1, &n1, self.time + dt);
+        self.boundary_volume += 0.5 * dt * (in0 + in1);
+        Ok((0..n).map(|i| [0, 1, 2].map(|k| 0.5 * dt * (r0[i][k] + r1[i][k]))).collect())
+    }
+
+    fn step(&mut self) -> Result<(), String> {
+        let dt = self.stable_dt();
+        let delta = if self.order == 2 { self.second_order_delta(dt)? } else { self.first_order_delta(dt) };
         for (i, d) in delta.iter().enumerate() {
             let h = self.water[i] + d[0];
             if !h.is_finite() || h < -1e-9 { return Err("inundation solver lost positivity; reset the scene".into()); }
@@ -178,84 +457,285 @@ mod tests {
     use super::*;
     #[test]
     fn uneven_lake_and_dry_shore_remain_at_rest() {
-        let bed: Vec<f64> = (0..40*12).map(|i| -2.0 + (i % 40) as f64 * 0.12).collect();
-        let h: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
-        let mut s = Solver::new(40, 12, 25.0, bed, h.clone(), vec![0.0; h.len()], false, 0.025).unwrap();
-        s.advance(200).unwrap();
-        assert!(s.water.iter().zip(h).all(|(a, b)| (a - b).abs() < 1e-12));
-        assert!(s.speed.iter().all(|v| *v < 1e-12));
+        for order in [1u8, 2] {
+            let bed: Vec<f64> = (0..40*12).map(|i| -2.0 + (i % 40) as f64 * 0.12).collect();
+            let h: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+            let mut s = Solver::new(40, 12, 25.0, bed, h.clone(), vec![0.0; h.len()], false, 0.025).unwrap();
+            s.set_order(order).unwrap();
+            s.advance(200).unwrap();
+            assert!(s.water.iter().zip(h).all(|(a, b)| (a - b).abs() < 1e-12));
+            assert!(s.speed.iter().all(|v| *v < 1e-12));
+        }
     }
     #[test]
     fn dry_bed_dam_break_is_positive_conservative_and_moves_at_expected_speed() {
-        // Ritter's solution: x(h) = (2 sqrt(g H) - 3 sqrt(g h)) t.
-        // Compare the 1 cm contour, not the mathematically zero-depth front.
-        let (w, h) = (240, 8);
-        let initial: Vec<f64> = (0..w*h).map(|i| if i % w < 60 { 1.0 } else { 0.0 }).collect();
-        let mut s = Solver::new(w, h, 1.0, vec![0.0; w*h], initial, vec![0.0; w*h], false, 0.0).unwrap();
-        while s.time < 8.0 { s.advance(1).unwrap(); }
-        assert!(s.water.iter().all(|v| v.is_finite() && *v >= 0.0));
-        assert!(s.volume_error().abs() < 1e-9);
-        let front = (60..w).filter(|x| s.water[*x] > 0.01).max().unwrap();
-        let expected = 60.0 + (2.0 * G.sqrt() - 3.0 * (G * 0.01).sqrt()) * s.time;
-        assert!((front as f64 - expected).abs() < 10.0, "front {front}, expected {expected}");
-        assert!(s.water[75] > 0.1);
-        let c = G.sqrt();
-        let mean_error = (0..w).map(|x| {
-            let similarity = (x as f64 + 0.5 - 60.0) / s.time;
-            let exact = if similarity < -c { 1.0 } else if similarity > 2.0*c { 0.0 }
-                else { (2.0*c - similarity).powi(2) / (9.0*G) };
-            (s.water[x] - exact).abs()
-        }).sum::<f64>() / w as f64;
-        assert!(mean_error < 0.015, "Ritter depth mean absolute error {mean_error}");
+        for order in [1u8, 2] {
+            // Ritter's solution: x(h) = (2 sqrt(g H) - 3 sqrt(g h)) t.
+            // Compare the 1 cm contour, not the mathematically zero-depth front.
+            let (w, h) = (240, 8);
+            let initial: Vec<f64> = (0..w*h).map(|i| if i % w < 60 { 1.0 } else { 0.0 }).collect();
+            let mut s = Solver::new(w, h, 1.0, vec![0.0; w*h], initial, vec![0.0; w*h], false, 0.0).unwrap();
+            s.set_order(order).unwrap();
+            while s.time < 8.0 { s.advance(1).unwrap(); }
+            assert!(s.water.iter().all(|v| v.is_finite() && *v >= 0.0));
+            assert!(s.volume_error().abs() < 1e-9);
+            let front = (60..w).filter(|x| s.water[*x] > 0.01).max().unwrap();
+            let expected = 60.0 + (2.0 * G.sqrt() - 3.0 * (G * 0.01).sqrt()) * s.time;
+            assert!((front as f64 - expected).abs() < 10.0, "front {front}, expected {expected}");
+            assert!(s.water[75] > 0.1);
+            let c = G.sqrt();
+            let mean_error = (0..w).map(|x| {
+                let similarity = (x as f64 + 0.5 - 60.0) / s.time;
+                let exact = if similarity < -c { 1.0 } else if similarity > 2.0*c { 0.0 }
+                    else { (2.0*c - similarity).powi(2) / (9.0*G) };
+                (s.water[x] - exact).abs()
+            }).sum::<f64>() / w as f64;
+            assert!(mean_error < 0.015, "Ritter depth mean absolute error {mean_error}");
+        }
     }
     #[test]
     fn disconnected_lake_keeps_its_own_level() {
-        let bed: Vec<f64> = (0..60*8).map(|i| match i % 60 { 0..=19 => -5.0, 20..=39 => 8.0, _ => 1.0 }).collect();
-        let h: Vec<f64> = bed.iter().map(|z| if *z == -5.0 { 5.0 } else if *z == 1.0 { 2.0 } else { 0.0 }).collect();
-        let mut s = Solver::new(60, 8, 25.0, bed, h.clone(), vec![0.0; h.len()], false, 0.03).unwrap();
-        s.advance(200).unwrap();
-        assert!(s.water.iter().zip(h).all(|(a, b)| (a - b).abs() < 1e-12));
+        for order in [1u8, 2] {
+            let bed: Vec<f64> = (0..60*8).map(|i| match i % 60 { 0..=19 => -5.0, 20..=39 => 8.0, _ => 1.0 }).collect();
+            let h: Vec<f64> = bed.iter().map(|z| if *z == -5.0 { 5.0 } else if *z == 1.0 { 2.0 } else { 0.0 }).collect();
+            let mut s = Solver::new(60, 8, 25.0, bed, h.clone(), vec![0.0; h.len()], false, 0.03).unwrap();
+            s.set_order(order).unwrap();
+            s.advance(200).unwrap();
+            assert!(s.water.iter().zip(h).all(|(a, b)| (a - b).abs() < 1e-12));
+        }
     }
     #[test]
     fn sponge_water_exchange_is_accounted_for() {
-        let mut s = Solver::new(30, 20, 25.0, vec![-10.0; 600], vec![10.0; 600], vec![0.5; 600], true, 0.025).unwrap();
-        s.advance(200).unwrap();
-        assert!(s.boundary_volume < 0.0);
-        assert!(s.volume_error().abs() < 1e-6);
+        for order in [1u8, 2] {
+            let mut s = Solver::new(30, 20, 25.0, vec![-10.0; 600], vec![10.0; 600], vec![0.5; 600], true, 0.025).unwrap();
+            s.set_order(order).unwrap();
+            s.advance(200).unwrap();
+            assert!(s.boundary_volume < 0.0);
+            assert!(s.volume_error().abs() < 1e-6);
+        }
     }
     #[test]
     fn wave_runs_up_a_beach_and_recedes() {
-        let (w, h) = (80, 8);
-        let bed: Vec<f64> = (0..w*h).map(|i| {
-            let x = (i % w) as f64;
-            if x < 40.0 { (x - 40.0) * 0.2 } else { (x - 40.0) * 0.04 }
-        }).collect();
-        let depth: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
-        let eta = (0..w*h).map(|i| if depth[i] > 0.0 { 0.6 * (-((i % w) as f64 - 25.0).powi(2) / 16.0).exp() } else { 0.0 }).collect();
-        let mut s = Solver::new(w, h, 10.0, bed, depth.clone(), eta, false, 0.025).unwrap();
-        let mut receded = false;
-        for _ in 0..2000 {
-            s.advance(1).unwrap();
-            receded |= (0..w*h).any(|i| depth[i] == 0.0 && s.peak[i] > 0.05 && s.water[i] < 0.01);
+        for order in [1u8, 2] {
+            let (w, h) = (80, 8);
+            let bed: Vec<f64> = (0..w*h).map(|i| {
+                let x = (i % w) as f64;
+                if x < 40.0 { (x - 40.0) * 0.2 } else { (x - 40.0) * 0.04 }
+            }).collect();
+            let depth: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+            let eta = (0..w*h).map(|i| if depth[i] > 0.0 { 0.6 * (-((i % w) as f64 - 25.0).powi(2) / 16.0).exp() } else { 0.0 }).collect();
+            let mut s = Solver::new(w, h, 10.0, bed, depth.clone(), eta, false, 0.025).unwrap();
+            s.set_order(order).unwrap();
+            let mut receded = false;
+            for _ in 0..2000 {
+                s.advance(1).unwrap();
+                receded |= (0..w*h).any(|i| depth[i] == 0.0 && s.peak[i] > 0.05 && s.water[i] < 0.01);
+            }
+            assert!(s.peak.iter().enumerate().any(|(i, v)| depth[i] == 0.0 && *v > 0.05));
+            assert!(receded, "the run-up must subsequently drain below 1 cm");
+            assert!(s.volume_error().abs() < 1e-7);
         }
-        assert!(s.peak.iter().enumerate().any(|(i, v)| depth[i] == 0.0 && *v > 0.05));
-        assert!(receded, "the run-up must subsequently drain below 1 cm");
-        assert!(s.volume_error().abs() < 1e-7);
     }
     #[test]
     fn excluded_terrain_cells_remain_impermeable_and_conservative() {
-        let (w, h) = (30, 12);
-        let mut reference = vec![3.0; w*h];
-        let mut mask = vec![1; w*h];
-        for y in 0..h { mask[y*w+15] = 0; reference[y*w+15] = 0.0; }
-        let eta = (0..w*h).map(|i| if i % w < 15 { 0.5 } else { 0.0 }).collect();
-        let mut s = Solver::new(w, h, 25.0, vec![-3.0; w*h], reference, eta, false, 0.025).unwrap();
-        s.set_valid(mask.clone()).unwrap();
-        s.advance(200).unwrap();
-        assert!(s.water.iter().enumerate().all(|(i, v)| if mask[i] == 0 { *v == 0.0 } else if i % w > 15 { (*v - 3.0).abs() < 1e-12 } else { v.is_finite() && *v >= 0.0 }));
-        assert!(s.volume_error().abs() < 1e-7);
-        assert!(s.set_valid(vec![0; w*h]).is_err());
+        for order in [1u8, 2] {
+            let (w, h) = (30, 12);
+            let mut reference = vec![3.0; w*h];
+            let mut mask = vec![1; w*h];
+            for y in 0..h { mask[y*w+15] = 0; reference[y*w+15] = 0.0; }
+            let eta = (0..w*h).map(|i| if i % w < 15 { 0.5 } else { 0.0 }).collect();
+            let mut s = Solver::new(w, h, 25.0, vec![-3.0; w*h], reference, eta, false, 0.025).unwrap();
+            s.set_order(order).unwrap();
+            s.set_valid(mask.clone()).unwrap();
+            s.advance(200).unwrap();
+            assert!(s.water.iter().enumerate().all(|(i, v)| if mask[i] == 0 { *v == 0.0 } else if i % w > 15 { (*v - 3.0).abs() < 1e-12 } else { v.is_finite() && *v >= 0.0 }));
+            assert!(s.volume_error().abs() < 1e-7);
+            assert!(s.set_valid(vec![0; w*h]).is_err());
+        }
     }
+    // A flat strip of still water, 50 m deep, for one-dimensional coupling tests.
+    fn strip(w: usize, cell: f64, eta: Vec<f64>) -> Solver {
+        let h = 6;
+        Solver::new(w, h, cell, vec![-50.0; w*h], vec![50.0; w*h], eta, false, 0.0).unwrap()
+    }
+
+    #[test]
+    fn forced_edge_at_rest_keeps_still_water_and_exact_balance() {
+        for order in [1u8, 2] {
+            let (w, h) = (40, 12);
+            let bed: Vec<f64> = (0..w*h).map(|i| -30.0 + (i % w) as f64 * 0.5).collect();
+            let depth: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+            let mut s = Solver::new(w, h, 50.0, bed, depth.clone(), vec![0.0; w*h], false, 0.0).unwrap();
+            s.set_order(order).unwrap();
+            s.set_forcing(Edge::West, vec![0.0, 1000.0], vec![0.0; 2], 1).unwrap();
+            s.set_forcing(Edge::North, vec![0.0, 1000.0], vec![0.0; 2 * 3], 3).unwrap();
+            s.advance(200).unwrap();
+            assert!(s.water.iter().zip(&depth).all(|(a, b)| (a - b).abs() < 1e-9));
+            assert!(s.volume_error().abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn forced_edge_admits_a_wave_that_matches_the_parent_model() {
+        for order in [1u8, 2] {
+            // Coarse linear model (400 m cells) records a pulse at x = 20 km; the
+            // finer nonlinear model (100 m cells) starts there and must reproduce
+            // the parent's waveform downstream at x = 26 km.
+            let (cw, cc) = (200, 400.0);
+            let eta: Vec<f64> = (0..cw*6).map(|i| 0.1 * (-0.5 * ((((i % cw) as f64 + 0.5) * cc - 10_000.0) / 3_200.0).powi(2)).exp()).collect();
+            let mut parent = crate::tsunami::Solver::new(cw, 6, cc, vec![50.0; cw*6], eta, false).unwrap();
+            parent.record(&[(20_000.0 / cc, 3.0), (26_000.0 / cc, 3.0)]).unwrap();
+            while parent.time < 900.0 { parent.advance(50).unwrap(); }
+            let r = parent.recorded().unwrap();
+            let inflow: Vec<f64> = (0..r.times.len()).map(|k| r.values[k * 2]).collect();
+            let truth: Vec<f64> = (0..r.times.len()).map(|k| r.values[k * 2 + 1]).collect();
+            let mut s = strip(240, 100.0, vec![0.0; 240*6]);
+            s.set_order(order).unwrap();
+            s.set_forcing(Edge::West, r.times.clone(), inflow, 1).unwrap();
+            let mut worst = 0.0_f64;
+            let mut peak_truth = 0.0_f64;
+            let mut k = 0;
+            while s.time < 900.0 {
+                s.advance(1).unwrap();
+                while k + 1 < r.times.len() && r.times[k + 1] < s.time { k += 1; }
+                let t = (s.time - r.times[k]) / (r.times[k + 1] - r.times[k]);
+                let expected = truth[k] * (1.0 - t) + truth[k + 1] * t;
+                let got = s.eta[3 * 240 + 60]; // 100 m cells: x = 20 km + 60.5 cells = 26.05 km
+                worst = worst.max((got - expected).abs());
+                peak_truth = peak_truth.max(expected.abs());
+            }
+            assert!(peak_truth > 0.04, "pulse never arrived: {peak_truth}");
+            assert!(worst < 0.08 * peak_truth, "waveform error {worst} vs peak {peak_truth}");
+            assert!(s.volume_error().abs() < 1e-3 * s.boundary_volume.abs().max(1.0));
+            assert!(s.boundary_volume > 0.0);
+        }
+    }
+
+    #[test]
+    fn forced_edge_lets_outgoing_waves_leave_with_little_reflection() {
+        for order in [1u8, 2] {
+            let w = 240;
+            let eta: Vec<f64> = (0..w*6).map(|i| 0.1 * (-0.5 * (((i % w) as f64 - 120.0) / 12.0).powi(2)).exp()).collect();
+            let mut open = strip(w, 100.0, eta.clone());
+            open.set_order(order).unwrap();
+            for edge in [Edge::West, Edge::East] { open.set_forcing(edge, vec![0.0, 1.0e5], vec![0.0; 2], 1).unwrap(); }
+            let mut wall = strip(w, 100.0, eta);
+            wall.set_order(order).unwrap();
+            // c = 22 m/s: both halves of the pulse reach an edge by 550 s and, if
+            // reflected, are back near the centre by 1100 s.
+            while open.time < 1200.0 { open.advance(1).unwrap(); wall.advance(1).unwrap(); }
+            let largest = |s: &Solver| s.eta.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            assert!(largest(&wall) > 0.02, "{}", largest(&wall));
+            assert!(largest(&open) < 0.1 * largest(&wall), "open {} vs wall {}", largest(&open), largest(&wall));
+        }
+    }
+
+    #[test]
+    fn sea_level_forcing_raises_a_closed_basin_to_the_new_level_and_accounts_for_the_water() {
+        for order in [1u8, 2] {
+            // A rising tide: external level ramps 0 -> 0.5 m over 600 s, then holds.
+            // The open edge must pass the water in, so the basin settles at the new
+            // level (not at twice it) and the volume balance includes the inflow.
+            let w = 60;
+            let mut s = strip(w, 100.0, vec![0.0; w * 6]);
+            s.set_order(order).unwrap();
+            s.set_forcing(Edge::West, vec![0.0, 1.0e5], vec![0.0; 2], 1).unwrap();
+            s.set_level(vec![0.0, 600.0, 1.0e5], vec![0.0, 0.5, 0.5]).unwrap();
+            while s.time < 3000.0 { s.advance(1).unwrap(); }
+            let mean = s.eta.iter().sum::<f64>() / s.eta.len() as f64;
+            assert!((mean - 0.5).abs() < 0.03, "basin level {mean}");
+            assert!(s.volume_error().abs() < 1e-5);
+            assert!((s.boundary_volume - 0.5 * (w * 6) as f64 * 100.0 * 100.0).abs() < 0.06 * s.boundary_volume);
+            assert!(s.set_level(vec![0.0], vec![0.0]).is_err());
+            assert!(s.set_level(vec![0.0, 1.0], vec![0.0, f64::NAN]).is_err());
+        }
+    }
+
+    #[test]
+    fn forcing_is_validated_and_dry_edges_stay_walls() {
+        let mut s = strip(20, 100.0, vec![0.0; 120]);
+        assert!(s.set_forcing(Edge::West, vec![0.0], vec![0.0], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![1.0, 0.5], vec![0.0; 2], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 3], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![f64::NAN, 0.0], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![99.0, 0.0], 1).is_err());
+        s.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).unwrap();
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).is_err());
+        assert_eq!(s.forcing_end(), Some(1.0));
+        // A land edge cannot be forced.
+        let mut land = Solver::new(8, 8, 25.0, (0..64).map(|i| if i % 8 < 4 { -5.0 } else { 5.0 }).collect(),
+            (0..64).map(|i| if i % 8 < 4 { 5.0 } else { 0.0 }).collect(), vec![0.0; 64], false, 0.0).unwrap();
+        assert!(land.set_forcing(Edge::East, vec![0.0, 1.0], vec![0.0; 2], 1).is_err());
+        assert!(land.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).is_ok());
+    }
+
+    // Run-up of a non-breaking solitary wave (height/depth ratio `ratio`) on a
+    // 1:`cot` beach, in units where the depth is 6 m and the cells are `cell` m.
+    fn solitary_runup(cell: f64, cot: f64, ratio: f64, order: u8) -> (f64, f64) {
+        let (d, slope) = (6.0_f64, 1.0 / cot);
+        let height = ratio * d;
+        let k = (3.0 * height / (4.0 * d.powi(3))).sqrt();
+        // Start where the wave is 5% of its crest height, as in Synolakis (1987).
+        let ahead = (20.0_f64.sqrt()).acosh() / k;
+        let behind = 2.4 / k;
+        let toe = behind + ahead;
+        let length = toe + d * cot + 0.3 * d * cot + 5.0 * cell;
+        let w = (length / cell).ceil() as usize;
+        assert!(w <= 512, "{w} cells");
+        let h = 4;
+        let x_of = |i: usize| ((i % w) as f64 + 0.5) * cell;
+        let bed: Vec<f64> = (0..w*h).map(|i| { let x = x_of(i); if x < toe { -d } else { -d + (x - toe) * slope } }).collect();
+        let still: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+        let eta: Vec<f64> = (0..w*h).map(|i| if still[i] > 0.0 { height / (k * (x_of(i) - behind)).cosh().powi(2) } else { 0.0 }).collect();
+        let c = (G * (d + height)).sqrt();
+        // Right-going wave: u = c eta / (d + eta), transport = (d + eta) u.
+        let mx: Vec<f64> = (0..w*h).map(|i| if still[i] > 0.0 { c * eta[i] } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, cell, bed, still, eta, false, 0.0).unwrap();
+        s.set_order(order).unwrap();
+        s.set_momentum(mx, vec![0.0; w*h]).unwrap();
+        let mut run_up = 0.0_f64;
+        // Transit to the toe, up and down the beach, with margin.
+        while s.time < ahead / c + 3.0 * d * cot / c + 20.0 {
+            s.advance(1).unwrap();
+            for x in 0..w {
+                let i = 2 * w + x;
+                if s.water[i] > 0.003 * d { run_up = run_up.max(s.bed[i] + s.water[i]); }
+            }
+        }
+        assert!(s.volume_error().abs() < 1e-6);
+        (run_up, 2.831 * cot.sqrt() * ratio.powf(1.25) * d)
+    }
+
+    #[test]
+    fn solitary_wave_runup_follows_the_synolakis_law() {
+        // NOAA/NCTR analytical benchmark: R/d = 2.831 sqrt(cot beta) (H/d)^(5/4).
+        // Ratio 0.05 on 1:10 is below Synolakis' breaking limit
+        // 0.818 cot^(-10/9) (about 0.063), so the law applies.
+        let (coarse, expected) = solitary_runup(1.0, 10.0, 0.05, 1);
+        let (fine, _) = solitary_runup(0.5, 10.0, 0.05, 1);
+        eprintln!("run-up cell 1 m: {coarse:.3}, cell 0.5 m: {fine:.3}, Synolakis {expected:.3}");
+        assert!(fine > coarse, "refinement should raise the first-order solution");
+        assert!((fine - expected).abs() < 0.2 * expected, "run-up {fine:.4} m, Synolakis {expected:.4} m");
+    }
+
+    #[test]
+    fn second_order_scheme_removes_most_of_the_run_up_deficit() {
+        // Same Synolakis benchmark as above. The first-order scheme reaches 83% of
+        // the analytical run-up at 0.5 m cells; the second-order scheme reaches 98%.
+        let (fine, expected) = solitary_runup(0.5, 10.0, 0.05, 2);
+        eprintln!("second order run-up at 0.5 m cells: {fine:.3}, Synolakis {expected:.3}");
+        assert!((fine - expected).abs() < 0.06 * expected, "0.5 m cells: {fine:.4} vs {expected:.4}");
+    }
+
+    #[test]
+    fn order_must_be_valid_and_set_before_the_run() {
+        let mut s = Solver::new(8, 8, 25.0, vec![-5.0; 64], vec![5.0; 64], vec![0.0; 64], false, 0.025).unwrap();
+        assert!(s.set_order(3).is_err());
+        s.set_order(2).unwrap();
+        s.advance(1).unwrap();
+        assert!(s.set_order(1).is_err());
+    }
+
     #[test]
     fn invalid_water_and_inputs_are_rejected() {
         assert!(Solver::new(4, 4, 25.0, vec![-1.0; 16], vec![1.0; 16], vec![-2.0; 16], false, 0.025).is_err());
