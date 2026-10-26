@@ -166,6 +166,68 @@ async function scenarioStage(get, zone, slipType, row, pointIndex, { concurrency
   return { event, time: Float64Array.from(time), stage };
 }
 
+// ---- many scenarios at one point (for validation against observations) ------
+
+// Every unit source's stage series at one hazard point, as Float32 arrays, plus
+// the shared time vector. A scenario at that point is then just a weighted sum
+// (see sumScenario), so thousands of scenarios can be tried after one download.
+async function unitSeriesAt(get, zone, pointIndex, { concurrency = 6, onProgress = () => {} } = {}) {
+  checkZone(zone);
+  const stats = parseDapAscii(await get(ascii(unitFile(zone), 'tide_gauge_file')));
+  const files = stats.tide_gauge_file;
+  const first = parseDapAscii(await get(ascii(relativePath(files[0]), 'time')));
+  const time = Float64Array.from(first.time);
+  const series = new Array(files.length);
+  let next = 0, done = 0;
+  const worker = async () => {
+    while (next < files.length) {
+      const k = next++;
+      const data = parseDapAscii(await get(ascii(relativePath(files[k]), `stage${range(pointIndex, pointIndex)}${range(0, time.length - 1)}`)));
+      const values = data.stage?.[0];
+      if (!values || values.length !== time.length) throw new Error(`Unit source ${k + 1} returned ${values ? values.length : 0} of ${time.length} time steps.`);
+      series[k] = Float32Array.from(values);
+      onProgress(++done, files.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+  return { time, series };
+}
+
+// Scenario rows `from`..`to` (1-based, inclusive) with their unit sources and slips.
+async function scenarioRange(get, zone, slipType, from, to) {
+  checkZone(zone); checkSlipType(slipType);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from) throw new Error('The scenario range is whole numbers from 1, in order.');
+  const varying = slipType !== 'uniform';
+  const names = ['Mw', 'rate_annual', 'event_index_string', varying ? 'event_slip_string' : 'slip'];
+  const data = parseDapAscii(await get(ascii(eventsFile(zone, slipType), names.map(n => `${n}${range(from - 1, to - 1)}`).join(','))));
+  return data.Mw.map((mw, i) => {
+    const indices = parseIndices(data.event_index_string[i]);
+    return { row: from + i, mw, rateAnnual: data.rate_annual[i], indices, slips: varying ? parseSlips(data.event_slip_string[i]) : indices.map(() => data.slip[i]) };
+  });
+}
+
+// Magnitude, rate and target (peak-slip) location of scenario rows `from`..`to`
+// (1-based, inclusive). Not available for uniform-slip tables.
+async function scenarioTargets(get, zone, slipType, from, to) {
+  checkZone(zone); checkSlipType(slipType);
+  if (slipType === 'uniform') throw new Error('Uniform-slip scenarios have no target location.');
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from) throw new Error('The scenario range is whole numbers from 1, in order.');
+  const data = parseDapAscii(await get(ascii(eventsFile(zone, slipType), ['Mw', 'rate_annual', 'target_lon', 'target_lat'].map(n => `${n}${range(from - 1, to - 1)}`).join(','))));
+  return data.Mw.map((mw, i) => ({ row: from + i, mw, rateAnnual: data.rate_annual[i], lon: data.target_lon[i], lat: data.target_lat[i] }));
+}
+
+// A scenario's stage at a point from per-unit-source series (arrays as from unitSeriesAt).
+function sumScenario(series, indices, slips, out = new Float64Array(series[0].length)) {
+  out.fill(0);
+  indices.forEach((unit, k) => {
+    const u = series[unit - 1];
+    if (!u) throw new Error(`Unit source ${unit} is not in this zone.`);
+    const slip = slips[k];
+    for (let t = 0; t < out.length; t++) out[t] += slip * u[t];
+  });
+  return out;
+}
+
 // ---- turning a long series into a lab input ---------------------------------
 
 // PTHA18's frictionless model overstates late waves; this slow decay after a
@@ -230,5 +292,5 @@ function toCsv(series, meta) {
 
 module.exports = {
   DAP_BASE, SLIP_TYPES, parseDapAscii, parseIndices, parseSlips, relativePath, hazardPoints, nearestPoints, pointByGaugeID,
-  scenario, findScenarios, scenarioStage, delayedLinearFriction, greenScale, trimSeries, toCsv,
+  scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
 };

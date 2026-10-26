@@ -335,6 +335,16 @@ Coast (peak 9 cm after friction), is in
 `docs/examples/ptha18-southamerica-142847-gauge1450.5.csv`; a test runs it through the
 nested Gold Coast Seaway model.
 
+How well PTHA18's deep-water waves match reality is tested in
+[docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
+315 PTHA18 scenarios of the 2011 Tohoku earthquake with NOAA DART records at 16 buoys
+(`scripts/validate-ptha-dart.js`, which needs the network). The observed peak lies inside the
+scenarios' 10th to 90th percentile range at 15 of 16 buoys, including the Coral Sea buoy 55012
+that sits on the path to eastern Australia (at the 14th percentile: the scenarios' median is
+about 1.5 times the observed 4 cm). Observed waves tend to sit below the scenarios' median, and
+observed arrivals are later than modelled in the east Pacific. This tests the series the importer
+reads, not the lab's own solvers, and it is one event in deep water.
+
 What this is and is not:
 
 - **One scenario, not a hazard.** A scenario's annual rate is recorded in the file but
