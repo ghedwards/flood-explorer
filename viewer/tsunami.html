@@ -63,6 +63,8 @@
         <div id="inundationControls" hidden>
           <label>Initial sea level <output id="tideValue">0.00 m</output><input id="tide" type="range" min="-1" max="2" step=".25" value="0"></label>
           <p class="hint">Hypothetical water elevation in terrain units; not a verified tide forecast.</p>
+          <label>Numerical scheme<select id="scheme"><option value="first">First-order · robust, diffusive</option><option value="second">Second-order · sharper waves</option></select></label>
+          <p class="hint" id="schemeHint"></p>
           <label>Ground resistance (Manning n)<output id="roughnessValue">0.025</output><input id="roughness" type="range" min="0" max=".1" step=".005" value=".025"></label>
           <div id="couplingControls" hidden>
             <label class="check"><input id="coupled" type="checkbox"> Drive from an offshore wave (regional model)</label>

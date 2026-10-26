@@ -32,7 +32,7 @@ const localScene = () => $('preset').value === 'estuary' || estuaryIds.includes(
 const nonlinear = () => grid?.method === 2;
 const coastIds = regionalIds;
 const options = () => ({ preset: $('preset').value, deep: +$('deep').value, amplitude: +$('amplitude').value,
-  width: +$('width').value, source, absorbing: $('absorbing').checked, method: $('method').value, tide: +$('tide').value, roughness: +$('roughness').value, lakeLevel: +$('lakeLevel').value, coupled: coupledOn(), offshoreWidth: +$('offshoreWidth').value, incoming: $('incoming').value, tideRange: +$('tideRange').value });
+  width: +$('width').value, source, absorbing: $('absorbing').checked, method: $('method').value, tide: +$('tide').value, roughness: +$('roughness').value, lakeLevel: +$('lakeLevel').value, coupled: coupledOn(), offshoreWidth: +$('offshoreWidth').value, incoming: $('incoming').value, tideRange: +$('tideRange').value, scheme: $('scheme').value });
 const totalSeconds = () => +$('duration').value * 60;
 const sample = (values, [x, y]) => (nonlinear() || grid.depth[y * grid.W + x] > 0) ? values[y * grid.W + x] : null;
 const timeLabel = seconds => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
@@ -71,6 +71,7 @@ function labels() {
   $('inundationControls').hidden = $('inundationMetrics').hidden = !localScene();
   $('lakeControl').hidden = $('preset').value !== 'estuary';
   const coupled = coupledOn();
+  $('schemeHint').textContent = $('scheme').value === 'second' ? 'Limited linear reconstruction and a two-stage time step in the interior of wet regions; shorelines stay first-order. Reaches about 98% of the analytical run-up in the Synolakis benchmark at 60 cells per wavelength (first-order: 83%), but is newer and less tested on rough terrain.' : 'Rusanov flux with hydrostatic reconstruction: robust, but it smooths waves and under-predicts run-up (83% of the analytical value in the Synolakis benchmark).';
   $('ensemble').hidden = !localScene();
   $('ensTerrain').disabled = !bathymetry;
   if (typeof ensemble !== 'undefined' && ensemble) renderEnsemble();
@@ -490,7 +491,7 @@ $('reset').addEventListener('click', () => {
 $('scrub').addEventListener('input', () => { running = false; seek(+$('scrub').value); playClock = frame.time; });
 $('preset').addEventListener('change', changeScene);
 $('tryDispersive').addEventListener('click', () => { $('preset').value = 'flat'; $('method').value = 'dispersive'; changeScene(); });
-for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'tideRange', 'precompute']) $(id).addEventListener('change', () => reset());
+for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'tideRange', 'precompute', 'scheme']) $(id).addEventListener('change', () => reset());
 for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel', 'offshoreWidth', 'tideRange']) $(id).addEventListener('input', labels);
 $('waveFile').addEventListener('change', async () => {
   const file = $('waveFile').files[0];
@@ -671,6 +672,7 @@ $('exportEnsemble').addEventListener('click', () => {
 window.addEventListener('pagehide', () => { if (worker) worker.terminate(); if (ensembleWorker) ensembleWorker.terminate(); });
 window.addEventListener('resize', paint);
 const initialScene = new URLSearchParams(location.search).get('scene');
+if (new URLSearchParams(location.search).get('scheme') === 'second') $('scheme').value = 'second';
 if (new URLSearchParams(location.search).get('precompute') === '1') $('precompute').checked = true;
 if (new URLSearchParams(location.search).get('coupled') === '1') $('coupled').checked = true;
 if (new URLSearchParams(location.search).get('method') === 'dispersive') $('method').value = 'dispersive';

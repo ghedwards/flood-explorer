@@ -505,6 +505,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     b.f64s("eta").ok_or("missing initial wave")?, b.num("absorbing") == 1.0,
                     b.num("roughness"),
                 )?;
+                if b.num("order") == 2.0 { solver.set_order(2)?; }
                 if let Some(valid) = b.u8s("valid") { solver.set_valid(valid)?; }
                 // One-way coupling: each edge carries a series of incoming
                 // surface displacement (samples x points) at shared times.

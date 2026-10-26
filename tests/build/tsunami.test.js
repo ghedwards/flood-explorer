@@ -86,6 +86,17 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
       await page.locator('#step').click();
       await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
     }
+    // The second-order scheme can be selected for the nonlinear scenes.
+    await page.locator('#preset').selectOption('estuary');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'nonlinear' && !window.__tsunamiStatus().coast);
+    await page.locator('#scheme').selectOption('second');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    assert.match(await page.locator('#schemeHint').innerText(), /two-stage/);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    assert.ok(Math.abs((await page.evaluate(() => window.__tsunamiStatus())).volumeError) < 1e-4);
+    await page.locator('#scheme').selectOption('first');
+    await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
     // A sensitivity ensemble runs on the idealised estuary and fills a table of ranges.
     await page.locator('#preset').selectOption('estuary');
     await page.waitForFunction(() => window.__tsunamiStatus().ready && window.__tsunamiStatus().method === 'nonlinear' && !window.__tsunamiStatus().coast);

@@ -407,6 +407,34 @@ for proposed data improvements, offshore/river coupling, refinement, sensitivity
 runs and the next stage of the **dispersive-wave (Boussinesq-type)** solver. Its
 linear uniform- and variable-depth forms are implemented; nonlinear coastal coupling remains future work.
 
+## Numerical scheme: first or second order
+
+The nonlinear local solver has two schemes, chosen by **Numerical scheme** (or
+`?scheme=second`). **First-order** (the default) is a Rusanov flux with hydrostatic
+reconstruction and a forward-Euler step: robust, but it smooths waves and
+under-predicts run-up. **Second-order** keeps the same face fluxes and
+hydrostatic pressure corrections, applied to reconstructed face states, and adds
+limited linear (generalised minmod, θ = 1.5) reconstruction of depth, bed and
+velocity along each axis, a centred bed-slope source from the reconstructed bed,
+and a two-stage Heun time step with CFL 0.3. A cell reconstructs only if it and
+both neighbours are valid and wet (depth above 1 cm) and its depth comfortably exceeds the
+bed and surface variation across it; everywhere else, including every shoreline
+cell, it is first-order. Reconstructing the bed linearly keeps the face and cell
+bed values consistent, so lake-at-rest states remain exact (a Rust test checks
+1e-12 under both schemes, with dry shores, separate lakes, masks, sponge,
+forced edges and tides).
+
+Evidence: in the solitary-wave run-up benchmark above, second order reaches 90%
+of the analytical run-up with 1 m cells and 98% with 0.5 m cells (first order: 71% and 83%).
+On the four real terrains and a nested run it stayed positive and conservative (water
+balance error below 2e-6 m³ over 15–20 simulated minutes) and produced stronger currents
+and more flooding than first order, as less numerical damping implies. The
+shoreline itself remains first-order, so run-up at very coarse resolution is
+still approximate, and the scheme is newer and less tested on rough terrain
+than the default. It costs about three times the CPU per simulated second (two
+stages plus reconstruction), so live playback runs slower; the pre-calculation
+option helps. The mass and boundary accounting are unchanged.
+
 ## Sensitivity ensemble
 
 In any nonlinear local scene, **Sensitivity ensemble** (below the gauges) reruns the
@@ -477,8 +505,8 @@ reaches 71% of the analytical run-up with 1 m cells and 83% with 0.5 m cells
 (depth 6 m, about 60 cells per wave length scale), so it **under-predicts
 run-up**, converging at roughly first order as expected of a Rusanov scheme with
 hydrostatic reconstruction. The test requires the finer result to be within 20%.
-Treat run-up from this solver, at the grid sizes the browser can afford, as a
-lower bound. The solver accepts cells down to 0.05 m so such benchmarks can be
+Treat first-order run-up at the grid sizes the browser can afford as a
+lower bound; the second-order scheme (below) is much closer. The solver accepts cells down to 0.05 m so such benchmarks can be
 run at laboratory scale.
 These first-order tests are not tsunami run-up certification. Run:
 

@@ -56,7 +56,8 @@ comparison from proposed coastal extensions:
    adaptive refinement with
    conservative exchange between offshore and estuary domains, plus a higher
    order, well-balanced, positivity-preserving nonlinear scheme to reduce
-   numerical damping. [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
+   numerical damping (a second-order option now exists for the local solver and removes most of the
+   run-up deficit in the Synolakis benchmark; a higher-order shoreline treatment remains). [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
    a useful reference for dry/wet shorelines and adaptive grids. Keep the
    browser worker responsive with bounded step batches and memory use.
 4. **Dispersive-wave method — uniform-depth and variable-depth linear versions implemented; nonlinear coastal coupling proposed.** Dispersion
@@ -91,7 +92,7 @@ handled near breaking and wet/dry cells; measure browser runtime and memory.
 Validate the baseline coastal solver first using
 [NOAA benchmark cases](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html)
 (solitary-wave run-up on a plane beach is done: the solver reaches 83% of the
-analytical run-up at 60 cells per wavelength; a higher-order scheme and more cases,
+analytical run-up at 60 cells per wavelength, and 98% with the new second-order option; more cases,
 such as the conical island, remain).
 A future solver option must state which physical effects it adds and remain
 labelled experimental until its own checks pass.

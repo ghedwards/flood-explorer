@@ -1,10 +1,11 @@
 import { estuaryIds } from './tsunami-locations.js';
 // Regional propagation grids and a separate idealised nonlinear estuary test.
-export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, width = 10, source = [38, 48], absorbing = true, method = 'staggered', bathymetry = null, tide = 0, roughness = 0.025, lakeLevel = 1, coupled = false } = {}) {
+export function tsunamiGrid({ preset = 'shelf', deep = 3000, amplitude = 1, width = 10, source = [38, 48], absorbing = true, method = 'staggered', bathymetry = null, tide = 0, roughness = 0.025, lakeLevel = 1, coupled = false, scheme = 'first' } = {}) {
+  if (!['first', 'second'].includes(scheme)) throw new Error('Unknown numerical scheme.');
   if (coupled && !estuaryIds.includes(preset)) throw new Error('Only the local terrain scenes can be driven by a regional offshore wave.');
   if (method === 'dispersive' && (preset === 'estuary' || estuaryIds.includes(preset))) throw new Error('Dispersive waves are not available in the nonlinear local scenes.');
-  if (estuaryIds.includes(preset)) return localEstuaryGrid({ preset, bathymetry, amplitude, width, source, absorbing, tide, roughness, coupled });
-  if (preset === 'estuary') return estuaryGrid({ amplitude, width, source, absorbing, tide, roughness, lakeLevel });
+  if (estuaryIds.includes(preset)) return { ...localEstuaryGrid({ preset, bathymetry, amplitude, width, source, absorbing, tide, roughness, coupled }), order: scheme === 'second' ? 2 : 1 };
+  if (preset === 'estuary') return { ...estuaryGrid({ amplitude, width, source, absorbing, tide, roughness, lakeLevel }), order: scheme === 'second' ? 2 : 1 };
   if ((!bathymetry && !['flat', 'shelf', 'island'].includes(preset)) || !['staggered', 'finite-volume', 'dispersive'].includes(method) || !Number.isFinite(deep) || deep < 500 || deep > 5000
     || !Number.isFinite(amplitude) || Math.abs(amplitude) > 3 || !Number.isFinite(width) || width < 5 || width > 20
     || !Array.isArray(source) || source.length !== 2 || source.some(x => !Number.isFinite(x))) throw new Error('Invalid wave scenario.');

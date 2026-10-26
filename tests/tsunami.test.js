@@ -336,3 +336,32 @@ test('ensemble runs measure arrival, gauge peaks and flooding, and stronger sour
   // The regional run is shared by members that differ only in local settings.
   assert.equal(cache.size, 2);
 });
+
+test('the second-order scheme is selectable, stays positive and conservative, and is less diffusive on real terrain', async () => {
+  const { tsunamiGrid } = await gridModule;
+  assert.throws(() => tsunamiGrid({ preset: 'estuary', scheme: 'third' }), /numerical scheme/);
+  assert.equal(tsunamiGrid({ preset: 'estuary', width: .3 }).order, 1);
+  assert.equal(tsunamiGrid({ preset: 'estuary', width: .3, scheme: 'second' }).order, 2);
+  const fine = readData('currumbin');
+  const results = {};
+  for (const scheme of ['first', 'second']) {
+    const grid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, source: [135, 30], width: .45, amplitude: 2.5, absorbing: false, scheme });
+    F.tsunamiStart(grid);
+    let frame;
+    while (!frame || frame.time < 300) frame = F.tsunamiStep(200);
+    assert.ok(frame.water.every(h => Number.isFinite(h) && h >= 0));
+    assert.ok(frame.water.every((h, i) => grid.valid?.[i] !== 0 || h === 0));
+    assert.ok(Math.abs(frame.volumeError) < 1e-5, `${scheme}: ${frame.volumeError}`);
+    results[scheme] = frame;
+  }
+  const speed = f => Math.max(...f.speed);
+  assert.ok(speed(results.second) > speed(results.first), 'less numerical damping should keep currents stronger');
+  // Rest states stay exact under both schemes through the WASM bridge.
+  for (const scheme of ['first', 'second']) {
+    const grid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: 0, absorbing: false, width: .45, coupled: true, scheme });
+    F.tsunamiStart(grid);
+    const rest = F.tsunamiStep(200);
+    assert.ok(Math.max(...rest.peak) < 1e-9, scheme);
+    assert.ok(rest.speed.every(v => v < 1e-9), scheme);
+  }
+});
