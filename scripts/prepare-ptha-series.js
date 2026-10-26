@@ -12,7 +12,9 @@
 // before the first wave; peak: start 30 min before the largest wave, which often
 // arrives hours later; none: keep time since the earthquake),
 // --friction (delayed linear friction), --local-depth M (Green's-law scaling
-// from the hazard point's depth to M metres), --hazard (say how often PTHA18
+// from the hazard point's depth to M metres), --gauge ID --return-period YEARS (the
+// stage PTHA18 expects to be exceeded once in that many years at a hazard point, and
+// the source zones behind it), --hazard (say how often PTHA18
 // expects a peak this large at the hazard point, from its own exceedance-rate curve), --out FILE.
 // Behind a proxy set NODE_USE_ENV_PROXY=1. The data are GA's PTHA18 (CC BY 4.0).
 'use strict';
@@ -58,6 +60,21 @@ async function main(options) {
     return;
   }
   const zone = options.zone, slipType = options.slip || 'stochastic';
+  if (options['return-period']) {
+    const years = Number(options['return-period']);
+    if (!(years > 0) || !options.gauge) throw new Error('Give --gauge ID and --return-period YEARS (for example 500).');
+    const point = lib.pointByGaugeID(await lib.hazardPoints(get), +options.gauge);
+    const curve = await lib.exceedanceCurve(get, point.index, slipType);
+    const at = which => lib.stageAtRate(curve, 1 / years, which);
+    const fmt = h => h == null ? 'beyond the curve' : `${h.toFixed(2)} m`;
+    console.log(`Hazard point ${point.gaugeID} (${point.depth.toFixed(0)} m deep): stage exceeded about once in ${years} years is ${fmt(at('rate'))} (16th-84th percentile: ${fmt(at('p16'))} to ${fmt(at('p84'))}), above mean sea level without tide, summed over all source zones.`);
+    const stage = at('rate');
+    if (stage != null) {
+      const { rows } = await lib.zoneContributions(get, point.index, stage, { slipType });
+      console.log('Main source zones at that stage: ' + rows.slice(0, 5).filter(r => r.share >= .01).map(r => `${r.zone} ${Math.round(r.share * 100)}%`).join(', '));
+    }
+    return;
+  }
   if (!zone) throw new Error('Give --zone (a PTHA18 source zone such as southamerica), or --near lon,lat.');
   if (options.find) {
     const [mwMin, mwMax] = options.mw ? pair(options.mw, 'mw') : [0, 10];
@@ -82,7 +99,12 @@ async function main(options) {
     const peak = Math.max(...stage);
     const at = which => lib.exceedanceRate(curve, peak, which);
     hazard = `this scenario's peak at the point, ${peak.toFixed(3)} m, is exceeded ${lib.describeRate(at('rate'))} (16th-84th percentile of the uncertainty: ${lib.describeRate(at('p84'))} to ${lib.describeRate(at('p16'))}), summed over all source zones`;
+    const { rows, failed } = await lib.zoneContributions(get, point.index, peak, { slipType });
+    const main = rows.slice(0, 4).filter(r => r.share >= .01), own = rows.find(r => r.zone === zone);
+    const shown = own && !main.includes(own) ? [...main, own] : main;
+    hazard += `; main source zones for a peak this large: ${shown.map(r => `${r.zone} ${Math.round(r.share * 100)}%`).join(', ')}`;
     console.log(`PTHA18 hazard at ${point.gaugeID}: ${hazard}.`);
+    if (failed.length) console.error(`Note: no exceedance curve could be read for ${failed.join(', ')}; their share is missing.`);
   }
   const csv = lib.toCsv(series, { hazard, zone, slipType, row, mw: event.mw, rateAnnual: event.rateAnnual, gaugeID: point.gaugeID, lon: point.lon, lat: point.lat, depth: point.depth, friction: !!options.friction, scale, localDepth });
   const out = options.out || `ptha18-${zone}-${slipType}-${row}-gauge${point.gaugeID}.csv`;

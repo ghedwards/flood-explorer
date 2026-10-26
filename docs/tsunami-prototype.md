@@ -369,7 +369,12 @@ the tool reports when the whole-series peak is outside the window it wrote.
 (capped at 0.5 to 2), and `--slip` chooses stochastic (default), variable-uniform or
 uniform scenarios. `--hazard` also reads PTHA18's own exceedance-rate curve at the hazard
 point (summed over every source zone, with its 16th to 84th percentile uncertainty) and says
-how often a peak as large as this scenario's is expected there, in the console and in the file.
+how often a peak as large as this scenario's is expected there, and which source zones contribute
+most to exceeding it (each zone has its own curve), in the console and in the file.
+`--gauge ID --return-period YEARS` works the other way: the stage PTHA18 expects to be exceeded once in that
+many years at the point, with its uncertainty range and main source zones. At the Gold Coast point
+above that is 0.25 m for 1 in 100 years (mostly the New Hebrides, South America and Kermadec-Tonga zones)
+and 0.76 m for 1 in 2500 years (mostly Kermadec-Tonga and New Hebrides).
 The output carries its provenance as `#` comment lines. A real
 example, a Mw 9.4 South American scenario at the 667 m hazard point off the Gold
 Coast (peak 9 cm after friction), is in

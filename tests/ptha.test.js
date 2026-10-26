@@ -29,6 +29,13 @@ function fakeServer({ zone = 'zz', stations, events, unitStage, rates }) {
       }
       return wrap(parts.join('\n'));
     }
+    const zoneFile = /^SOURCE_ZONES\/(\w+)\/TSUNAMI_EVENTS\/(revised1_)?tsunami_stage_exceedance_rates_\1\.nc$/.exec(file);
+    if (zoneFile && rates?.zones) {
+      const curves = rates.zones[zoneFile[1]];
+      if (!curves || (rates.plainOnly?.includes(zoneFile[1]) && zoneFile[2])) return 'Error {\n    code = 2;\n    message = "not found";\n};\n';
+      const name = query.replace(/\[.*$/, ''), index = Number(/\[(\d+):1:/.exec(query)[1]);
+      return wrap(`${name}.${name}[1][${curves[index].length}]\n[0], ${curves[index].join(', ')}\n`);
+    }
     if (file.endsWith(`all_stochastic_slip_earthquake_events_${zone}.nc`) || file.endsWith(`all_uniform_slip_earthquake_events_${zone}.nc`)) {
       const m = /\[(\d+):1:(\d+)\]/.exec(query);
       if (!m) return wrap(['Mw', 'rate_annual'].map(n => block(n, events[n])).join('\n'));
@@ -208,4 +215,34 @@ test('the hazard sentence is written into the series file', () => {
   const meta = { zone: 'zz', slipType: 'stochastic', row: 1, mw: 9, rateAnnual: 1e-5, gaugeID: 1.1, lon: 150, lat: -30, depth: 100 };
   assert.ok(!lib.toCsv(series, meta).includes('PTHA18 hazard at this point'));
   assert.match(lib.toCsv(series, { ...meta, hazard: 'peak 0.05 m is exceeded about 1 in 25 years' }), /# PTHA18 hazard at this point: peak 0\.05 m is exceeded about 1 in 25 years\n/);
+});
+
+test('source-zone contributions rank the zones, fall back to the plain file and report unreadable zones', async () => {
+  const stage = Array.from({ length: 100 }, (_, i) => 0.02 * 1000 ** (i / 99));
+  const curve = scale => stage.map(h => scale * Math.exp(-h / 0.5));
+  const zones = { alpha: [curve(0.3), curve(0.3)], beta: [curve(0.1), curve(0.1)], gamma: [curve(0.6), curve(0.6)] };
+  const total = [curve(1), curve(1)];
+  const rates = { stage, stochastic_slip_rate: total, stochastic_slip_rate_16pc: total, stochastic_slip_rate_median: total, stochastic_slip_rate_84pc: total, zones, plainOnly: ['beta'] };
+  const { get } = fakeServer({ rates, stations: {}, events: {}, unitStage: {} });
+  const { rows, total: sum, failed } = await lib.zoneContributions(get, 1, 0.3, { zones: ['alpha', 'beta', 'gamma', 'missing'] });
+  assert.deepEqual(rows.map(r => r.zone), ['gamma', 'alpha', 'beta']);
+  assert.deepEqual(failed, ['missing']);
+  assert.ok(Math.abs(rows[0].share - 0.6) < 1e-6 && Math.abs(rows.reduce((s, r) => s + r.share, 0) - 1) < 1e-9);
+  assert.ok(Math.abs(sum - 1 * Math.exp(-0.6)) < 1e-6);
+  assert.ok(lib.ZONES.includes('southamerica') && lib.ZONES.length === new Set(lib.ZONES).size);
+  await assert.rejects(lib.zoneContributions(get, 1, 0.3, { zones: ['Bad Zone'] }).then(r => { if (r.failed.length) throw new Error('unreadable'); }), /unreadable/);
+});
+
+test('the stage for a given annual rate is the inverse of the exceedance rate', async () => {
+  const stage = Array.from({ length: 100 }, (_, i) => 0.02 * 1000 ** (i / 99));
+  const rate = stage.map(h => 0.5 * Math.exp(-h / 0.5));
+  const curve = { stage, rate, p16: rate, median: rate, p84: rate };
+  for (const target of [0.2, 0.01, 1e-4]) {
+    const h = lib.stageAtRate(curve, target);
+    assert.ok(Math.abs(lib.exceedanceRate(curve, h).rate / target - 1) < 1e-6, `rate ${target}`);
+  }
+  assert.equal(lib.stageAtRate(curve, 10), null);
+  assert.equal(lib.stageAtRate(curve, 1e-300), null);
+  assert.throws(() => lib.stageAtRate(curve, 0), /positive/);
+  assert.throws(() => lib.stageAtRate(curve, 0.1, 'nope'), /Unknown/);
 });
