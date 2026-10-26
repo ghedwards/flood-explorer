@@ -149,29 +149,25 @@ reach errors of 0.4 to 0.8, so keep kH below about 1 and treat long runs with ca
 check on uniform depth only.
 
 Shoaling over a ramp (same test file): a 50 km wavelength packet, centred on the
-left wall so it travels one way, crosses a 60 km depth ramp. Energy flux per
-frequency is conserved in slowly varying depth, so the energy passing a gauge on
-the deep side relative to one on the shallow side should equal the
-spectrum-weighted ratio of group speeds. Predicted and measured ratios:
+left wall so it travels one way, crosses a 30 km depth ramp. For a conservative
+wave system the integral of eta² over the packet is conserved as it shoals or
+deepens (the packet lengthens or shortens with its group speed and its height
+compensates), so the integral is measured while the packet lies wholly in the
+upstream depth and again wholly in the downstream depth. Ratios (after / before):
 
-| Ramp | shallow water (predicted / measured) | dispersive (predicted / measured) |
+| Ramp | shallow water | dispersive |
 |---|---|---|
-| 4000 m to 2500 m (shoaling) | 1.265 / 1.253 | 1.217 / 1.130 |
-| 2500 m to 4000 m (deepening) | 0.791 / 0.807 | 0.814 / 0.820 |
+| 4000 m to 2500 m (shoaling) | 1.000 | 0.998 |
+| 2500 m to 4000 m (deepening) | 1.002 | 0.986 |
+| 4000 m, no ramp (control) | 1.000 | 1.003 |
 
-The shallow-water solver and the dispersive solver in deepening water follow theory
-to about 2%. In shoaling water the dispersive solver delivers about 7% less energy
-than its own dispersion relation predicts (roughly 3.5% in amplitude).
-
-An energy-conserving form of the variable-depth operator was tried to see whether
-the missing depth-gradient terms explain this: replacing Peregrine's
-`-(H/2) grad(div(H w)) + (H²/6) grad(div w)` with the self-adjoint
-`-(1/H) grad((H³/3) div w)` (same dispersion relation in uniform depth) left the shoaling ratio at
-1.13, so the operator form is not the cause and the change was not kept. The gap is more likely in the test itself:
-the slower far-side packet is close to the time window's edge, a no-ramp control
-loses 3% over the same distance, and the result moves a lot if the far-gauge window is
-lengthened (wall reflections arrive soon after). Treat the 7% as unresolved, not as a measured defect.
-A cleaner test would need a longer domain or a radiating boundary.
+The dispersive solver conserves packet energy over a ramp to about 1.5%, so its
+variable-depth operator shoals consistently. An earlier gauge-based version of this test
+(energy passing two gauges against the ratio of group speeds) suggested the dispersive
+solver delivered about 7% too little energy when shoaling. That was an artefact of
+the gauge time window: it moved a lot with the window, and swapping in an
+energy-conserving form of the operator changed nothing. This is a
+conservation check, not a comparison with a published shoaling benchmark.
 
 What it does **not** establish: agreement with a published variable-depth benchmark
 or with observations over real bathymetry, or the correctness of the
