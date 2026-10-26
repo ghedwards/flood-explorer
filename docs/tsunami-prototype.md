@@ -237,10 +237,63 @@ sea/lake levels. Gauge traces and CSV report water-depth change from initial
 reference (equivalent to surface elevation change at continuously wet gauges).
 The mass error subtracts both initial water volume and sponge exchange.
 
+## Offshore-to-local coupling (one-way nesting)
+
+For the four local terrain scenes, tick **Drive from an offshore wave (regional
+model)** (or open `tsunami.html?scene=pine-estuary&coupled=1`). The local
+pulse is removed and the water starts at rest. Instead:
+
+1. The 1.5 km linear regional model (Moreton Bay / Brisbane for Pine River and
+   the Brisbane River mouth; Gold Coast / Tweed for Currumbin and the Seaway)
+   runs first, in the same worker, from a hypothetical offshore source at
+   154.30°E (27.30°S or 28.00°S). Source strength and width are the regional
+   settings, not a PTHA18 scenario.
+2. It records surface displacement at 16 points along each declared sea edge.
+   The local edge cells are converted from MGA zone 56 to longitude/latitude
+   (inverse transverse Mercator, checked against Geoscience Australia's worked
+   example) and mapped onto the regional grid. A point that falls on regional
+   land is moved to the nearest wet regional cell within 12 km; the count is
+   kept in the run record. A scene lying outside the regional grid is refused.
+3. Each series is scaled by Green's law, `(H_regional / H_local)^(1/4)`, bounded
+   to 0.5–2, from the regional depth (floored at 10 m) to the local edge depth.
+4. The series, trimmed to start two minutes before the wave first exceeds 2% of
+   its peak, becomes the **incoming wave** of a Flather-type open boundary on
+   each sea edge of the nonlinear solver: outward velocity
+   `sqrt(g/H) (eta - 2 eta_in)`, where `eta` is the local surface displacement
+   and `eta_in` the forcing. Outgoing waves leave with little reflection; with
+   no forcing the edge is a resting wall. The sponge is switched off. Cells
+   that are dry at the start stay walls, and boundary water exchange is included
+   in the mass-balance error. The local clock starts at that trimmed time, and
+   the page reports how many minutes after the offshore source it stands.
+
+Checks: a Rust test records a pulse from a coarse linear run and feeds it to
+a finer nonlinear run, and the downstream waveform agrees with the coarse
+solution to within 8% of the peak; others cover still water on variable bed,
+exit of outgoing waves (under 10% of the closed-wall case remains), series
+validation, land edges and the recorder. JS tests run the whole chain for
+Currumbin and Pine River, including a no-forcing control that stays at rest,
+and a browser test switches the Gold Coast Seaway scene in and out of coupling.
+
+Limits, in order of importance:
+
+- **One-way and linear upstream.** The local model never feeds back. The
+  regional model is linear and its coastal depths are floored at 10 m, so
+  amplitudes near the coast are only indicative; Green's law is a
+  correction for slowly varying depth, not a substitute for nesting.
+- **Sheltered bays.** The regional grid barely resolves the entrances to Moreton
+  Bay, so Pine River and the Brisbane River mouth receive a small, late wave (a
+  few cm, more than an hour after the source) with the default 2.5 m source,
+  while the open-coast Gold Coast scenes receive metres within half an hour.
+  Treat that as a statement about the 1.5 km grid, not about the bay.
+- **Vertical datums** of the regional (GA, 2009) and local grids are not
+  reconciled, and the local sea level is the same hypothetical plane as before.
+- **Not a scenario.** The source is the same demonstration dipole; no PTHA18
+  scenario, tide or river flow is applied.
+
 Next: independently verified bed surveys and datum conversions, prescribed
 river inflow, a physically consistent offshore boundary time series, local
-refinement and published run-up/inundation benchmarks. The current local pulse
-is not coupled to the regional offshore solver or to an earthquake scenario.
+refinement and published run-up/inundation benchmarks. The local pulse can now be replaced by a one-way offshore wave from the regional solver (see above);
+it is still not tied to an earthquake scenario.
 
 ## Recent mathematical work to evaluate
 

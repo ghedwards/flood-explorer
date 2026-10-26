@@ -103,6 +103,19 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     assert.match(await page.locator('#terrainSources').innerText(), /Interpolated.*LiDAR/);
     await page.locator('#showTerrainQuality').check();
     assert.equal(await page.locator('#terrainCoverage').isVisible(), false);
+    // Nest the local model in the regional one: a recorded offshore wave replaces the local pulse.
+    assert.equal(await page.locator('#couplingControls').isVisible(), true);
+    await page.locator('#coupled').check();
+    await page.waitForFunction(() => window.__tsunamiStatus().coupled && window.__tsunamiStatus().ready && window.__tsunamiStatus().couplingArrival > 0);
+    assert.match(await page.locator('#couplingArrival').innerText(), /min after the offshore source/);
+    assert.match(await page.locator('#couplingPeak').innerText(), /north .*east /);
+    assert.equal(await page.locator('#absorbing').isDisabled(), true);
+    assert.equal(await page.locator('#width').isVisible(), false);
+    await page.locator('#step').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    await page.locator('#coupled').uncheck();
+    await page.waitForFunction(() => !window.__tsunamiStatus().coupled && window.__tsunamiStatus().ready && window.__tsunamiStatus().time === 0);
+    assert.equal(await page.locator('#couplingMetrics').isVisible(), false);
     // Exercise unavailable terrain separately from CSIRO's complete source grid.
     const incomplete = JSON.parse(fs.readFileSync(path.join(site, 'tsunami-data/gold-coast-seaway.json')));
     incomplete.elevation[1382] = null; incomplete.valid[1382] = 0; incomplete.missing = 1;

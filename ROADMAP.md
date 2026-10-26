@@ -29,8 +29,10 @@ The Rust/WASM prototype has two linear propagation methods and a separate
 nonlinear local wetting/drying solver,
 plus a uniform-depth dispersive comparison. Bundled terrain, reference labels
 and display overlays are described in [the prototype notes](docs/tsunami-prototype.md).
-The present local pulse is hypothetical; offshore-to-estuary coupling is not
-implemented. The priorities below distinguish the working uniform-depth dispersive
+The local scenes can be driven one-way by a wave from the regional model
+(Flather-type open boundary, Green's-law depth scaling; see the prototype notes), but
+the source is still a hypothetical dipole, and the regional grid is too coarse for
+sheltered bays such as Moreton Bay. The priorities below distinguish the working uniform-depth dispersive
 comparison from proposed coastal extensions:
 
 1. **Verify terrain and water references.** Prefetch finer coastal LiDAR and
@@ -48,7 +50,8 @@ comparison from proposed coastal extensions:
    with a verified datum conversion, upstream discharge and observed gauge
    series for validation. Preserve scenario IDs and distinguish illustrative
    runs from hazard estimates.
-3. **Finer grids where needed.** Evaluate nested/coastal refinement with
+3. **Finer grids where needed.** One-way fixed nesting is done. Evaluate two-way and
+   adaptive refinement with
    conservative exchange between offshore and estuary domains, plus a higher
    order, well-balanced, positivity-preserving nonlinear scheme to reduce
    numerical damping. [GeoClaw](https://www.clawpack.org/geoclaw.html) provides

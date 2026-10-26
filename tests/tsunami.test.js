@@ -144,3 +144,94 @@ test('dispersive WASM waves conserve volume and differ from shallow-water propag
   assert.throws(() => tsunamiGrid({ method: 'dispersive', preset: 'shelf' }), /uniform ocean/);
   assert.throws(() => F.tsunamiStart({ ...tsunamiGrid({ preset: 'shelf' }), method: 3 }), /uniform ocean/);
 });
+
+const dataDir = path.join(__dirname, '../viewer/public/tsunami-data');
+const readData = id => JSON.parse(fs.readFileSync(path.join(dataDir, `${id}.json`)));
+
+test('MGA zone coordinates convert to geographic positions (Geoscience Australia worked example)', async () => {
+  const { mgaToGeographic } = await import('../viewer/tsunami-coupling.js');
+  // Flinders Peak, zone 55: E 273741.2966, N 5796489.7769.
+  const [lon, lat] = mgaToGeographic(273741.2966, 5796489.7769, 55);
+  assert.ok(Math.abs(lon - 144.4248678) < 1e-6 && Math.abs(lat + 37.9510334) < 1e-6, `${lon}, ${lat}`);
+});
+
+test('regional runs record their wave at requested points', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const grid = tsunamiGrid({ preset: 'flat', amplitude: 1, width: 5, source: [40, 48], absorbing: false });
+  const rec = F.tsunamiParent(grid, [60, 48.5, 100, 48.5], 600);
+  assert.equal(rec.points, 2);
+  assert.equal(rec.values.length, rec.times.length * 2);
+  assert.ok(rec.times[0] === 0 && rec.times.every((t, i) => i === 0 || t > rec.times[i - 1]));
+  assert.ok(rec.time >= 600);
+  // The positive lobe reaches the nearer point first.
+  const peakAt = p => rec.times[rec.values.filter((_, i) => i % 2 === p).reduce((best, v, k, a) => v > a[best] ? k : best, 0)];
+  assert.ok(peakAt(0) < peakAt(1));
+  assert.throws(() => F.tsunamiParent(grid, [500, 48], 600), /outside/);
+  assert.throws(() => F.tsunamiParent(grid, [60, 48, 70], 600), /pairs/);
+  assert.throws(() => F.tsunamiParent(grid, [60, 48], 1e9), /length/);
+});
+
+test('boundary forcing is validated at the WASM boundary', async () => {
+  const { tsunamiGrid, connectedWaterDepth } = await gridModule;
+  const bathymetry = readData('currumbin');
+  const grid = tsunamiGrid({ preset: 'currumbin', bathymetry, amplitude: 0, absorbing: false, width: .45, coupled: true });
+  assert.equal(grid.coupled, true);
+  assert.ok(grid.eta.every(e => e === 0));
+  assert.ok(connectedWaterDepth(grid.bed, 160, 96, 0, bathymetry.seaEdges, grid.valid).some(d => d > 2));
+  const times = [0, 100];
+  assert.throws(() => F.tsunamiStart({ ...grid, forceTimes: times, forceEast: [0, 0, 0] }), /does not match/);
+  assert.throws(() => F.tsunamiStart({ ...grid, forceTimes: times, forceEast: [0, NaN] }), /invalid boundary forcing/);
+  assert.throws(() => F.tsunamiStart({ ...grid, forceTimes: [5, 1], forceEast: [0, 0] }), /invalid boundary forcing/);
+  assert.throws(() => F.tsunamiStart({ ...grid, forceTimes: times, forceWest: [0, 0] }), /no initially wet/);
+  assert.equal(F.tsunamiStart({ ...grid, forceTimes: times, forceEast: [0, 0] }).forcingEnd, 100);
+  assert.throws(() => tsunamiGrid({ preset: 'shelf', coupled: true }), /local terrain/);
+});
+
+test('an offshore wave in the regional model drives the nested local model and conserves water', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const C = await import('../viewer/tsunami-coupling.js');
+  for (const [id, parentId, source] of [['currumbin', 'gold-coast', [154.3, -28.0]], ['pine-estuary', 'moreton', [154.3, -27.3]]]) {
+    const fine = readData(id), parentData = readData(parentId);
+    const cell = C.toParentCell(parentData, ...source).map(Math.floor);
+    const parentGrid = tsunamiGrid({ preset: parentId, bathymetry: parentData, source: cell, amplitude: 2.5, width: 10 });
+    const fineGrid = tsunamiGrid({ preset: id, bathymetry: fine, amplitude: 2.5, absorbing: true, width: .45, coupled: true });
+    assert.equal(fineGrid.absorbing, false, 'the sponge would damp the forced signal');
+    const plan = C.planCoupling({ fine, fineGrid, parentData, parentGrid });
+    assert.deepEqual(plan.edges.map(e => e.name), fine.seaEdges.filter(e => ['north', 'east', 'south', 'west'].includes(e)).sort((a, b) => ['north', 'east', 'south', 'west'].indexOf(a) - ['north', 'east', 'south', 'west'].indexOf(b)));
+    const localSeconds = 600;
+    const rec = F.tsunamiParent(parentGrid, plan.points, C.parentSeconds({ plan, parentGrid, source: cell, localSeconds }));
+    const forcing = C.forcingFromRecording(plan, rec, { maxLocalSeconds: localSeconds });
+    assert.ok(forcing.peak > .02 && forcing.arrival > 600 && forcing.offset >= 0 && forcing.offset <= forcing.arrival);
+    assert.ok(forcing.forceTimes[0] <= 0 && forcing.forceTimes.at(-1) >= localSeconds);
+    const start = { ...fineGrid, ...Object.fromEntries(Object.entries(forcing).filter(([k]) => k.startsWith('force'))) };
+    const { forcingEnd } = F.tsunamiStart(start);
+    assert.ok(forcingEnd >= localSeconds);
+    let result;
+    while (!result || result.time < localSeconds) result = F.tsunamiStep(200);
+    assert.ok(result.water.every(h => Number.isFinite(h) && h >= 0));
+    assert.ok(Math.max(...result.peak) > .005, 'forced wave entered the local model');
+    assert.ok(result.boundaryVolume !== 0);
+    assert.ok(Math.abs(result.volumeError) < 1e-4, `${id}: ${result.volumeError}`);
+    // Control: the same terrain without forcing stays exactly at rest.
+    F.tsunamiStart(fineGrid);
+    const rest = F.tsunamiStep(200);
+    assert.equal(Math.max(...rest.peak), 0);
+    assert.ok(rest.speed.every(v => v < 1e-9));
+  }
+});
+
+test('coupling refuses scenes outside the regional model and runs that never deliver a wave', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const C = await import('../viewer/tsunami-coupling.js');
+  const fine = readData('currumbin'), parentData = readData('moreton');
+  const fineGrid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: 0, width: .45, coupled: true });
+  const parentGrid = tsunamiGrid({ preset: 'moreton', bathymetry: parentData, source: [116, 36], width: 10 });
+  assert.throws(() => C.planCoupling({ fine, fineGrid, parentData, parentGrid }), /outside the regional/);
+  const goldData = readData('gold-coast');
+  const goldGrid = tsunamiGrid({ preset: 'gold-coast', bathymetry: goldData, source: [96, 40], amplitude: 0, width: 10 });
+  const plan = C.planCoupling({ fine, fineGrid, parentData: goldData, parentGrid: goldGrid });
+  const rec = F.tsunamiParent(goldGrid, plan.points, 1800);
+  assert.throws(() => C.forcingFromRecording(plan, rec), /never reaches/);
+  assert.throws(() => C.forcingFromRecording(plan, { ...rec, points: 3 }), /does not match/);
+  assert.throws(() => C.planCoupling({ fine: { ...fine, seaEdges: [] }, fineGrid, parentData: goldData, parentGrid: goldGrid }), /no open sea edges/);
+});

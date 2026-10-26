@@ -47,6 +47,11 @@
           <label>Initial sea level <output id="tideValue">0.00 m</output><input id="tide" type="range" min="-1" max="2" step=".25" value="0"></label>
           <p class="hint">Hypothetical water elevation in terrain units; not a verified tide forecast.</p>
           <label>Ground resistance (Manning n)<output id="roughnessValue">0.025</output><input id="roughness" type="range" min="0" max=".1" step=".005" value=".025"></label>
+          <div id="couplingControls" hidden>
+            <label class="check"><input id="coupled" type="checkbox"> Drive from an offshore wave (regional model)</label>
+            <label id="offshoreWidthControl" hidden>Offshore source width <output id="offshoreWidthValue">10 km</output><input id="offshoreWidth" type="range" min="5" max="20" step="1" value="10"></label>
+            <p class="hint" id="couplingHint">Runs the 1.5 km regional model first, then feeds its wave in at this scene's open sea edges instead of the local pulse.</p>
+          </div>
           <label id="lakeControl">Lake water level <output id="lakeValue">1.00 m</output><input id="lakeLevel" type="range" min=".5" max="2" step=".25" value="1"></label>
         </div>
         <label>Simulation length<select id="duration"><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="30">30 minutes</option><option value="60" selected>60 minutes</option><option value="120">120 minutes</option></select></label>
@@ -58,6 +63,7 @@
         <label class="check"><input id="absorbing" type="checkbox" checked> Absorb waves at outer edges</label>
         <p class="hint" id="boundaryHint">Turn off absorption to compare reflections in a closed basin. The coastline always reflects; water does not move onto land.</p>
         <dl class="metrics"><div><dt>Source</dt><dd id="sourceValue">38 km E · 48 km S</dd></div><div><dt>Long-wave speed at source</dt><dd id="waveSpeed">—</dd></div><div><dt>Largest displacement so far</dt><dd id="peakValue">—</dd></div></dl>
+        <dl id="couplingMetrics" class="metrics" hidden><div><dt>Offshore source</dt><dd id="couplingSource">—</dd></div><div><dt>Wave reaches this scene</dt><dd id="couplingArrival">—</dd></div><div><dt>Largest incoming wave at the edge</dt><dd id="couplingPeak">—</dd></div></dl>
         <dl id="inundationMetrics" class="metrics" hidden><div><dt>Currently flooded land</dt><dd id="floodArea">—</dd></div><div><dt>Deepest water on initially dry land</dt><dd id="landDepth">—</dd></div><div><dt>Fastest current</dt><dd id="currentSpeed">—</dd></div><div><dt>Water balance error</dt><dd id="massError">—</dd></div></dl>
         <div class="scope"><strong>An experimental prototype</strong><p id="dataNote">Synthetic ocean depths and a prescribed uplift/subsidence pulse. This is not an earthquake scenario or a prediction for a real coast. It does not model wave breaking, shoreline run-up or inundation.</p>
           <p id="dataCredit" hidden></p><details id="terrainTerms" hidden><summary>Terrain licence and acknowledgements</summary><p id="terrainAcknowledgement"></p><p id="hydrographicNotice"></p><a id="terrainLicence" target="_blank" rel="noopener">Source licence and terms ↗</a></details>

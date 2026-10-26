@@ -26,7 +26,21 @@ pub struct Solver {
     qy: Vec<f64>,
     damping: Vec<f64>,
     filter: Option<crate::dispersion::Filter>,
+    recorder: Option<Recorder>,
 }
+
+/// Surface displacement sampled at fixed points (fractional cell coordinates,
+/// cell centres at i + 0.5) after every step. Used as one-way boundary
+/// forcing for a finer nested model.
+pub struct Recorder {
+    taps: Vec<[(usize, f64); 4]>,
+    pub times: Vec<f64>,
+    /// Row-major [sample][point].
+    pub values: Vec<f64>,
+    pub points: usize,
+}
+
+const MAX_RECORDED_VALUES: usize = 8_000_000;
 
 impl Solver {
     pub fn new(w: usize, h: usize, cell: f64, depth: Vec<f64>, eta: Vec<f64>, absorbing: bool) -> Result<Self, String> {
@@ -55,8 +69,42 @@ impl Solver {
         }
         Ok(Self { w, h, cell, peak: eta.iter().map(|v| v.abs()).collect(), depth, eta, time: 0.0, dt, steps: 0,
             qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping, filter: None,
-            method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
+            recorder: None, method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
     }
+
+    /// Start recording eta at the given points, including the current state.
+    /// A point's value is the bilinear mean over its wet neighbouring cells,
+    /// so coastal points do not read the zero of reflecting land.
+    pub fn record(&mut self, points: &[(f64, f64)]) -> Result<(), String> {
+        if points.is_empty() || points.len() > 1024 { return Err("record between 1 and 1024 points".into()); }
+        let mut taps = Vec::with_capacity(points.len());
+        for &(px, py) in points {
+            if !px.is_finite() || !py.is_finite() || px < 0.5 || py < 0.5 || px > self.w as f64 - 0.5 || py > self.h as f64 - 0.5 {
+                return Err("recording point outside the propagation grid".into());
+            }
+            let (fx, fy) = (px - 0.5, py - 0.5);
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (tx, ty) = (fx - x0 as f64, fy - y0 as f64);
+            let mut tap = [(0, 0.0); 4];
+            let mut total = 0.0;
+            for (k, (dx, dy, weight)) in [(0, 0, (1.0 - tx) * (1.0 - ty)), (1, 0, tx * (1.0 - ty)), (0, 1, (1.0 - tx) * ty), (1, 1, tx * ty)].into_iter().enumerate() {
+                let (x, y) = ((x0 + dx).min(self.w - 1), (y0 + dy).min(self.h - 1));
+                let i = y * self.w + x;
+                let weight = if self.depth[i] > 0.0 { weight } else { 0.0 };
+                total += weight;
+                tap[k] = (i, weight);
+            }
+            if total < 1e-9 { return Err("recording point is on land in the propagation grid".into()); }
+            for t in &mut tap { t.1 /= total; }
+            taps.push(tap);
+        }
+        let mut recorder = Recorder { points: taps.len(), taps, times: Vec::new(), values: Vec::new() };
+        recorder.sample(self.time, &self.eta);
+        self.recorder = Some(recorder);
+        Ok(())
+    }
+
+    pub fn recorded(&self) -> Option<&Recorder> { self.recorder.as_ref() }
 
     pub fn advance(&mut self, steps: usize) -> Result<(), String> {
         if steps > 200 { return Err("advance at most 200 steps per call".into()); }
@@ -70,6 +118,7 @@ impl Solver {
         for _ in 0..steps {
             if self.method == Method::FiniteVolume {
                 self.finite_volume_step()?;
+                self.sample_recorder()?;
                 continue;
             }
             if self.method == Method::Dispersive { self.filter.as_mut().unwrap().solve(&self.eta)?; }
@@ -106,6 +155,15 @@ impl Solver {
             } }
             self.steps += 1;
             self.time += self.dt;
+            self.sample_recorder()?;
+        }
+        Ok(())
+    }
+
+    fn sample_recorder(&mut self) -> Result<(), String> {
+        if let Some(r) = self.recorder.as_mut() {
+            if r.values.len() + r.points > MAX_RECORDED_VALUES { return Err("boundary recording is too long; shorten the run".into()); }
+            r.sample(self.time, &self.eta);
         }
         Ok(())
     }
@@ -161,6 +219,13 @@ impl Solver {
         self.steps += 1;
         self.time += self.dt;
         Ok(())
+    }
+}
+
+impl Recorder {
+    fn sample(&mut self, time: f64, eta: &[f64]) {
+        self.times.push(time);
+        for tap in &self.taps { self.values.push(tap.iter().map(|(i, w)| eta[*i] * w).sum()); }
     }
 }
 
@@ -269,6 +334,27 @@ mod tests {
             assert!(s.volume().abs()<1e-4);
         }
     }
+    #[test]
+    fn recorder_samples_wet_neighbours_and_rejects_land_and_outside_points() {
+        let (w, h) = (20, 10);
+        let depth: Vec<f64> = (0..w*h).map(|i| if i % w >= 10 { 0.0 } else { 100.0 }).collect();
+        let eta: Vec<f64> = depth.iter().map(|d| if *d > 0.0 { 0.2 } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, 1000.0, depth, eta, false).unwrap();
+        // 9.9 lies between the last wet cell (centre 9.5) and land (10.5):
+        // the land cell must not dilute the reading.
+        s.record(&[(9.9, 5.0), (4.0, 4.0)]).unwrap();
+        s.advance(10).unwrap();
+        let r = s.recorded().unwrap();
+        assert_eq!(r.times.len(), 11);
+        assert_eq!(r.values.len(), 22);
+        assert!(r.times.windows(2).all(|p| p[1] > p[0]));
+        assert!((r.values[0] - 0.2).abs() < 1e-12 && (r.values[1] - 0.2).abs() < 1e-12);
+        assert!(s.record(&[(15.0, 5.0)]).is_err());
+        assert!(s.record(&[(0.2, 5.0)]).is_err());
+        assert!(s.record(&[(5.0, f64::NAN)]).is_err());
+        assert!(s.record(&[]).is_err());
+    }
+
     #[test]
     fn dispersive_rest_and_restrictions() {
         let mut s = Solver::new(20,12,1000.0,vec![1000.0;240],vec![0.0;240],false).unwrap();

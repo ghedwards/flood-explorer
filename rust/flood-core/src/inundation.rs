@@ -5,6 +5,40 @@
 const G: f64 = 9.81;
 const DRY: f64 = 1e-7;
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Edge { North, East, South, West }
+
+impl Edge {
+    pub fn from_code(code: usize) -> Option<Edge> {
+        [Edge::North, Edge::East, Edge::South, Edge::West].get(code).copied()
+    }
+}
+
+/// Incoming surface displacement (m) imposed along one outer edge as a
+/// function of time, from a coarser parent model. `values` is row-major
+/// [sample][point]; the points are evenly spread along the edge and the
+/// value is interpolated linearly in both time and position.
+struct Forcing {
+    edge: Edge,
+    times: Vec<f64>,
+    values: Vec<f64>,
+    points: usize,
+}
+
+impl Forcing {
+    fn at(&self, along: f64, time: f64) -> f64 {
+        let n = self.times.len();
+        let k = self.times.partition_point(|t| *t <= time).clamp(1, n - 1);
+        let f = ((time - self.times[k - 1]) / (self.times[k] - self.times[k - 1])).clamp(0.0, 1.0);
+        let p = (along * self.points as f64 - 0.5).clamp(0.0, (self.points - 1) as f64);
+        let (p0, pf) = (p.floor() as usize, p - p.floor());
+        let p1 = (p0 + 1).min(self.points - 1);
+        let v = |s: usize, q: usize| self.values[s * self.points + q];
+        let at = |s: usize| v(s, p0) * (1.0 - pf) + v(s, p1) * pf;
+        at(k - 1) * (1.0 - f) + at(k) * f
+    }
+}
+
 pub struct Solver {
     pub w: usize,
     pub h: usize,
@@ -24,6 +58,7 @@ pub struct Solver {
     my: Vec<f64>,
     sponge: Vec<f64>,
     roughness: f64,
+    forcing: Vec<Forcing>,
 }
 
 impl Solver {
@@ -56,7 +91,7 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
             speed: vec![0.0; n], time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
-            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness };
+            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new() };
         s.dt = s.stable_dt();
         Ok(s)
     }
@@ -68,6 +103,74 @@ impl Solver {
         }
         self.valid = mask.iter().map(|v| *v == 1).collect();
         Ok(())
+    }
+
+    /// Drive one outer edge with an incoming wave from a parent model.
+    ///
+    /// Initially wet, valid cells on the edge use a Flather-type radiation
+    /// condition: outward normal velocity sqrt(g/H) (eta - 2 eta_in), where
+    /// eta is the interior surface displacement and eta_in the imposed
+    /// incoming wave. Outgoing waves leave with little reflection; with
+    /// eta_in = 0 it is a wall at rest. Cells that are dry at the start stay
+    /// walls. The relaxation sponge is switched off, since it would damp the
+    /// forced signal. The series is held at its last value after it ends.
+    pub fn set_forcing(&mut self, edge: Edge, times: Vec<f64>, values: Vec<f64>, points: usize) -> Result<(), String> {
+        if times.len() < 2 || times.len() > 1_000_000 || points == 0 || points > 1024
+            || values.len() != times.len().checked_mul(points).ok_or("forcing overflow")?
+            || times.iter().any(|t| !t.is_finite()) || times.windows(2).any(|p| p[1] <= p[0])
+            || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            return Err("invalid boundary forcing series".into());
+        }
+        if self.forcing.iter().any(|f| f.edge == edge) { return Err("this edge already has forcing".into()); }
+        if (0..self.edge_len(edge)).all(|k| !self.edge_wet(edge, k)) {
+            return Err("the forced edge has no initially wet cells".into());
+        }
+        self.sponge.iter_mut().for_each(|v| *v = 0.0);
+        self.forcing.push(Forcing { edge, times, values, points });
+        Ok(())
+    }
+
+    /// Last time covered by any forcing series.
+    pub fn forcing_end(&self) -> Option<f64> {
+        self.forcing.iter().map(|f| *f.times.last().unwrap()).reduce(f64::min)
+    }
+
+    fn edge_len(&self, edge: Edge) -> usize { if matches!(edge, Edge::North | Edge::South) { self.w } else { self.h } }
+
+    fn edge_cell(&self, edge: Edge, k: usize) -> usize {
+        match edge {
+            Edge::North => k,
+            Edge::South => (self.h - 1) * self.w + k,
+            Edge::West => k * self.w,
+            Edge::East => k * self.w + self.w - 1,
+        }
+    }
+
+    fn edge_wet(&self, edge: Edge, k: usize) -> bool {
+        let i = self.edge_cell(edge, k);
+        self.valid[i] && self.reference[i] > DRY
+    }
+
+    // Boundary flux along +axis for a forced edge cell, as (flux, outward
+    // normal sign). None leaves the cell as a reflecting wall.
+    fn forced_flux(&self, edge: Edge, k: usize, axis: usize) -> Option<[f64; 3]> {
+        let f = self.forcing.iter().find(|f| f.edge == edge)?;
+        if !self.edge_wet(edge, k) { return None; }
+        let i = self.edge_cell(edge, k);
+        let h = self.water[i];
+        if h <= DRY { return None; }
+        let sign = if matches!(edge, Edge::East | Edge::South) { 1.0 } else { -1.0 };
+        let still = self.reference[i].max(h);
+        let eta_in = f.at((k as f64 + 0.5) / self.edge_len(edge) as f64, self.time);
+        let c = (G * still).sqrt();
+        let outward = ((G / still).sqrt() * (h - self.reference[i] - 2.0 * eta_in)).clamp(-2.0 * c, 2.0 * c);
+        let u = sign * outward;
+        let tangent = 3 - axis;
+        let mut flux = [h * u, 0.0, 0.0];
+        flux[axis] = h * u * u + 0.5 * G * h * h;
+        // Tangential momentum leaves with outflow; inflow brings none.
+        flux[tangent] = if outward > 0.0 { u * [0.0, self.mx[i], self.my[i]][tangent] / h } else { 0.0 };
+        Some(flux)
     }
 
     fn stable_dt(&self) -> f64 {
@@ -137,7 +240,21 @@ impl Solver {
                 let mut right = self.state(ri);
                 if face == 0 || !self.valid[li] { left = right; left[axis] = -right[axis]; zl = zr; }
                 if face == across || !self.valid[ri] { right = left; right[axis] = -left[axis]; zr = zl; }
-                let (flux, cl, cr) = Self::face(left, right, zl, zr, axis);
+                let boundary = if face == 0 || face == across {
+                    let edge = match (axis, face == 0) {
+                        (1, true) => Edge::West, (1, false) => Edge::East,
+                        (_, true) => Edge::North, (_, false) => Edge::South,
+                    };
+                    self.forced_flux(edge, row, axis).map(|f| (f, edge))
+                } else { None };
+                let (flux, cl, cr) = if let Some((f, edge)) = boundary {
+                    // Mass entering the domain, in m3, through this face.
+                    let inflow = if matches!(edge, Edge::West | Edge::North) { f[0] } else { -f[0] } * dt * self.cell;
+                    self.boundary_volume += inflow;
+                    (f, 0.0, 0.0)
+                } else {
+                    Self::face(left, right, zl, zr, axis)
+                };
                 for k in 0..3 {
                     if face > 0 && self.valid[li] { delta[li][k] -= ratio * (flux[k] + if k == axis { cl } else { 0.0 }); }
                     if face < across && self.valid[ri] { delta[ri][k] += ratio * (flux[k] + if k == axis { cr } else { 0.0 }); }
@@ -256,6 +373,91 @@ mod tests {
         assert!(s.volume_error().abs() < 1e-7);
         assert!(s.set_valid(vec![0; w*h]).is_err());
     }
+    // A flat strip of still water, 50 m deep, for one-dimensional coupling tests.
+    fn strip(w: usize, cell: f64, eta: Vec<f64>) -> Solver {
+        let h = 6;
+        Solver::new(w, h, cell, vec![-50.0; w*h], vec![50.0; w*h], eta, false, 0.0).unwrap()
+    }
+
+    #[test]
+    fn forced_edge_at_rest_keeps_still_water_and_exact_balance() {
+        let (w, h) = (40, 12);
+        let bed: Vec<f64> = (0..w*h).map(|i| -30.0 + (i % w) as f64 * 0.5).collect();
+        let depth: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+        let mut s = Solver::new(w, h, 50.0, bed, depth.clone(), vec![0.0; w*h], false, 0.0).unwrap();
+        s.set_forcing(Edge::West, vec![0.0, 1000.0], vec![0.0; 2], 1).unwrap();
+        s.set_forcing(Edge::North, vec![0.0, 1000.0], vec![0.0; 2 * 3], 3).unwrap();
+        s.advance(200).unwrap();
+        assert!(s.water.iter().zip(&depth).all(|(a, b)| (a - b).abs() < 1e-9));
+        assert!(s.volume_error().abs() < 1e-6);
+    }
+
+    #[test]
+    fn forced_edge_admits_a_wave_that_matches_the_parent_model() {
+        // Coarse linear model (400 m cells) records a pulse at x = 20 km; the
+        // finer nonlinear model (100 m cells) starts there and must reproduce
+        // the parent's waveform downstream at x = 26 km.
+        let (cw, cc) = (200, 400.0);
+        let eta: Vec<f64> = (0..cw*6).map(|i| 0.1 * (-0.5 * ((((i % cw) as f64 + 0.5) * cc - 10_000.0) / 3_200.0).powi(2)).exp()).collect();
+        let mut parent = crate::tsunami::Solver::new(cw, 6, cc, vec![50.0; cw*6], eta, false).unwrap();
+        parent.record(&[(20_000.0 / cc, 3.0), (26_000.0 / cc, 3.0)]).unwrap();
+        while parent.time < 900.0 { parent.advance(50).unwrap(); }
+        let r = parent.recorded().unwrap();
+        let inflow: Vec<f64> = (0..r.times.len()).map(|k| r.values[k * 2]).collect();
+        let truth: Vec<f64> = (0..r.times.len()).map(|k| r.values[k * 2 + 1]).collect();
+        let mut s = strip(240, 100.0, vec![0.0; 240*6]);
+        s.set_forcing(Edge::West, r.times.clone(), inflow, 1).unwrap();
+        let mut worst = 0.0_f64;
+        let mut peak_truth = 0.0_f64;
+        let mut k = 0;
+        while s.time < 900.0 {
+            s.advance(1).unwrap();
+            while k + 1 < r.times.len() && r.times[k + 1] < s.time { k += 1; }
+            let t = (s.time - r.times[k]) / (r.times[k + 1] - r.times[k]);
+            let expected = truth[k] * (1.0 - t) + truth[k + 1] * t;
+            let got = s.eta[3 * 240 + 60]; // 100 m cells: x = 20 km + 60.5 cells = 26.05 km
+            worst = worst.max((got - expected).abs());
+            peak_truth = peak_truth.max(expected.abs());
+        }
+        assert!(peak_truth > 0.04, "pulse never arrived: {peak_truth}");
+        assert!(worst < 0.08 * peak_truth, "waveform error {worst} vs peak {peak_truth}");
+        assert!(s.volume_error().abs() < 1e-3 * s.boundary_volume.abs().max(1.0));
+        assert!(s.boundary_volume > 0.0);
+    }
+
+    #[test]
+    fn forced_edge_lets_outgoing_waves_leave_with_little_reflection() {
+        let w = 240;
+        let eta: Vec<f64> = (0..w*6).map(|i| 0.1 * (-0.5 * (((i % w) as f64 - 120.0) / 12.0).powi(2)).exp()).collect();
+        let mut open = strip(w, 100.0, eta.clone());
+        for edge in [Edge::West, Edge::East] { open.set_forcing(edge, vec![0.0, 1.0e5], vec![0.0; 2], 1).unwrap(); }
+        let mut wall = strip(w, 100.0, eta);
+        // c = 22 m/s: both halves of the pulse reach an edge by 550 s and, if
+        // reflected, are back near the centre by 1100 s.
+        while open.time < 1200.0 { open.advance(1).unwrap(); wall.advance(1).unwrap(); }
+        let largest = |s: &Solver| s.eta.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        assert!(largest(&wall) > 0.02, "{}", largest(&wall));
+        assert!(largest(&open) < 0.1 * largest(&wall), "open {} vs wall {}", largest(&open), largest(&wall));
+    }
+
+    #[test]
+    fn forcing_is_validated_and_dry_edges_stay_walls() {
+        let mut s = strip(20, 100.0, vec![0.0; 120]);
+        assert!(s.set_forcing(Edge::West, vec![0.0], vec![0.0], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![1.0, 0.5], vec![0.0; 2], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 3], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![f64::NAN, 0.0], 1).is_err());
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![99.0, 0.0], 1).is_err());
+        s.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).unwrap();
+        assert!(s.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).is_err());
+        assert_eq!(s.forcing_end(), Some(1.0));
+        // A land edge cannot be forced.
+        let mut land = Solver::new(8, 8, 25.0, (0..64).map(|i| if i % 8 < 4 { -5.0 } else { 5.0 }).collect(),
+            (0..64).map(|i| if i % 8 < 4 { 5.0 } else { 0.0 }).collect(), vec![0.0; 64], false, 0.0).unwrap();
+        assert!(land.set_forcing(Edge::East, vec![0.0, 1.0], vec![0.0; 2], 1).is_err());
+        assert!(land.set_forcing(Edge::West, vec![0.0, 1.0], vec![0.0; 2], 1).is_ok());
+    }
+
     #[test]
     fn invalid_water_and_inputs_are_rejected() {
         assert!(Solver::new(4, 4, 25.0, vec![-1.0; 16], vec![1.0; 16], vec![-2.0; 16], false, 0.025).is_err());
