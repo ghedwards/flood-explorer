@@ -161,11 +161,17 @@ spectrum-weighted ratio of group speeds. Predicted and measured ratios:
 
 The shallow-water solver and the dispersive solver in deepening water follow theory
 to about 2%. In shoaling water the dispersive solver delivers about 7% less energy
-than its own dispersion relation predicts (roughly 3.5% in amplitude). A control with no ramp
-loses about 3% over the same distance, so part of that is numerical, but not all.
-The variable-depth operator has no extra depth-gradient terms, so it is not
-exactly energy-conserving on a slope; treat dispersive amplitudes after strong
-shoaling as slightly low until that is investigated.
+than its own dispersion relation predicts (roughly 3.5% in amplitude).
+
+An energy-conserving form of the variable-depth operator was tried to see whether
+the missing depth-gradient terms explain this: replacing Peregrine's
+`-(H/2) grad(div(H w)) + (H²/6) grad(div w)` with the self-adjoint
+`-(1/H) grad((H³/3) div w)` (same dispersion relation in uniform depth) left the shoaling ratio at
+1.13, so the operator form is not the cause and the change was not kept. The gap is more likely in the test itself:
+the slower far-side packet is close to the time window's edge, a no-ramp control
+loses 3% over the same distance, and the result moves a lot if the far-gauge window is
+lengthened (wall reflections arrive soon after). Treat the 7% as unresolved, not as a measured defect.
+A cleaner test would need a longer domain or a radiating boundary.
 
 What it does **not** establish: agreement with a published variable-depth benchmark
 or with observations over real bathymetry, or the correctness of the
