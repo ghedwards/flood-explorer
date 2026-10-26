@@ -272,6 +272,21 @@ function stageAtRate(curve, rate, which = 'rate') {
   return null;
 }
 
+// Candidate scenarios ({ row, mw, rateAnnual, peak }) ordered by how close their
+// peak at the hazard point is to `target` metres (compared as a ratio, so 0.5 m
+// and 2 m are equally far from 1 m). Candidates with no wave are dropped.
+function rankByPeak(candidates, target) {
+  if (!(target > 0)) throw new Error('The target stage must be positive.');
+  return candidates.filter(c => c.peak > 0).map(c => ({ ...c, off: Math.abs(Math.log(c.peak / target)) })).sort((a, b) => a.off - b.off || b.rateAnnual - a.rateAnnual);
+}
+
+// `count` rows spread evenly through a list of scenario rows (all of them if fewer).
+function sampleEvenly(rows, count) {
+  if (!Number.isInteger(count) || count < 1) throw new Error('The sample size is a whole number from 1.');
+  if (rows.length <= count) return rows.slice();
+  return Array.from({ length: count }, (_, i) => rows[Math.floor(i * rows.length / count)]);
+}
+
 // One scenario (1-based table row, as in the R code) of a source zone.
 async function scenario(get, zone, slipType, row) {
   checkZone(zone); checkSlipType(slipType);
@@ -450,5 +465,5 @@ function toCsv(series, meta) {
 
 module.exports = {
   DAP_BASE, SLIP_TYPES, parseDapAscii, parseIndices, parseSlips, relativePath, hazardPoints, nearestPoints, pointByGaugeID,
-  exceedanceCurve, exceedanceRate, describeRate, ZONES, zoneContributions, stageAtRate, scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
+  exceedanceCurve, exceedanceRate, describeRate, ZONES, zoneContributions, stageAtRate, rankByPeak, sampleEvenly, scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
 };

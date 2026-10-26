@@ -246,3 +246,31 @@ test('the stage for a given annual rate is the inverse of the exceedance rate', 
   assert.throws(() => lib.stageAtRate(curve, 0), /positive/);
   assert.throws(() => lib.stageAtRate(curve, 0.1, 'nope'), /Unknown/);
 });
+
+test('candidate scenarios are ranked by closeness of their peak to a level, as a ratio, and sampled evenly', () => {
+  const candidates = [
+    { row: 1, mw: 8, rateAnnual: 1e-4, peak: 0.5 }, { row: 2, mw: 9, rateAnnual: 1e-5, peak: 2.1 },
+    { row: 3, mw: 9, rateAnnual: 1e-6, peak: 0.9 }, { row: 4, mw: 7, rateAnnual: 1e-3, peak: 0 }, { row: 5, mw: 9, rateAnnual: 5e-6, peak: 0.9 },
+  ];
+  const ranked = lib.rankByPeak(candidates, 1);
+  assert.deepEqual(ranked.map(c => c.row), [5, 3, 1, 2]); // equal misses are ordered by rate; 0.5 m is nearer 1 m than 2.1 m is; the no-wave one is dropped
+  assert.equal(lib.rankByPeak([{ row: 1, rateAnnual: 1, peak: 0.5 }, { row: 2, rateAnnual: 1, peak: 2 }], 1).length, 2);
+  assert.ok(Math.abs(ranked[3].off - Math.log(2.1)) < 1e-12);
+  assert.throws(() => lib.rankByPeak(candidates, 0), /positive/);
+  const rows = Array.from({ length: 100 }, (_, i) => ({ row: i + 1 }));
+  assert.deepEqual(lib.sampleEvenly(rows, 4).map(r => r.row), [1, 26, 51, 76]);
+  assert.equal(lib.sampleEvenly(rows.slice(0, 3), 10).length, 3);
+  assert.throws(() => lib.sampleEvenly(rows, 0), /whole number/);
+});
+
+test('the batch runner reports each series through the nested model and rejects bad arguments', async () => {
+  const { main } = require('../scripts/run-series-local.js');
+  const lines = [], log = console.log;
+  console.log = line => lines.push(line);
+  try { await main(['--seconds', '300', path.join(__dirname, '../docs/examples/ptha18-southamerica-142847-gauge1450.5.csv')]); } finally { console.log = log; }
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /ptha18-southamerica-142847.*0\.09 m\s+\d+\.\d\d m\s+\d+\.\d\d m\s+\d+ ha$/);
+  await assert.rejects(main([]), /one or more series files/);
+  await assert.rejects(main(['--seconds', '99999', 'x.csv']), /up to 7200/);
+  await assert.rejects(main(['--tide', '1', 'x.csv']), /Unknown option/);
+});
