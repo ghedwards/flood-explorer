@@ -124,6 +124,33 @@ test('tsunami lab runs its Rust worker below a nested path, pauses, resets and e
     assert.equal(await page.locator('#width').isVisible(), false);
     await page.locator('#step').click();
     await page.waitForFunction(() => window.__tsunamiStatus().time > 0);
+    // Pre-calculate the whole nested run: a progress bar shows, then playback and scrubbing use stored frames.
+    await page.locator('#duration').selectOption('5');
+    await page.locator('#precompute').check();
+    await page.waitForFunction(() => window.__tsunamiStatus().calculating);
+    assert.equal(await page.locator('#precomputeBar').isVisible(), true);
+    assert.match(await page.locator('#precomputeText').innerText(), /regional|Calculating/);
+    assert.equal(await page.locator('#play').isDisabled(), true);
+    await page.waitForFunction(() => window.__tsunamiStatus().precomputed && window.__tsunamiStatus().ready, null, { timeout: 90000 });
+    assert.equal(await page.locator('#precomputeBar').isVisible(), false);
+    assert.equal(await page.locator('#scrubControl').isVisible(), true);
+    const stored = await page.evaluate(() => window.__tsunamiStatus());
+    assert.ok(stored.frames >= 100 && stored.time === 0);
+    await page.locator('#scrub').fill('120');
+    await page.waitForFunction(() => window.__tsunamiStatus().time > 100);
+    const scrubbed = await page.evaluate(() => window.__tsunamiStatus());
+    assert.ok(scrubbed.peak > 0 && scrubbed.samples > 100);
+    await page.locator('#step').click();
+    await page.waitForFunction(t => window.__tsunamiStatus().time > t, scrubbed.time);
+    await page.locator('#speed').selectOption('15');
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().running === false && window.__tsunamiStatus().time >= 299);
+    assert.equal(await page.locator('#play').innerText(), 'Replay');
+    await page.locator('#reset').click();
+    await page.waitForFunction(() => window.__tsunamiStatus().time === 0 && window.__tsunamiStatus().precomputed);
+    await page.locator('#precompute').uncheck();
+    await page.waitForFunction(() => !window.__tsunamiStatus().precomputed && window.__tsunamiStatus().ready && !window.__tsunamiStatus().calculating);
+    await page.locator('#duration').selectOption('10');
     // Replace the regional model with an uploaded wave series, plus a tide.
     await page.locator('#incoming').selectOption('series');
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Choose a CSV'));

@@ -17,6 +17,10 @@ let probes = [[65, 48], [105, 35], [122, 60]];
 let source = [38, 48], grid, frame, worker, ready = false, busy = false, running = false;
 let budget = 0, previousWall = 0, history = [];
 let bathymetry = null, sceneVersion = 0, terrain, inspected = null;
+// A pre-calculated run: evenly spaced frames computed before playback starts.
+let frames = null, frameIndex = 0, frameInterval = 0, historyAll = [], playClock = 0, calculating = false;
+const precomputeOn = () => $('precompute').checked;
+const PRECOMPUTED_FRAMES = 200;
 // Regional grids used as offshore parents, and what the current nested run reports.
 const parents = new Map();
 let couplingInfo = null, uploaded = null;
@@ -32,10 +36,33 @@ const totalSeconds = () => +$('duration').value * 60;
 const sample = (values, [x, y]) => (nonlinear() || grid.depth[y * grid.W + x] > 0) ? values[y * grid.W + x] : null;
 const timeLabel = seconds => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
+const finished = () => frames ? frameIndex >= frames.length - 1 : frame.time >= totalSeconds();
 function controls() {
   $('play').disabled = !ready;
-  $('step').disabled = !ready || running || busy || frame.time >= totalSeconds();
-  $('play').textContent = !ready ? 'Loading Rust…' : running ? 'Pause' : frame.time >= totalSeconds() ? 'Replay' : 'Play';
+  $('step').disabled = !ready || running || busy || finished();
+  $('play').textContent = calculating ? 'Calculating…' : !ready ? 'Loading Rust…' : running ? 'Pause' : finished() ? 'Replay' : 'Play';
+  $('precomputeBar').hidden = !calculating;
+  $('scrubControl').hidden = !frames;
+  $('reset').disabled = false;
+}
+
+function showProgress(progress) {
+  const bar = $('precomputeProgress'), text = $('precomputeText');
+  if (progress.stage === 'regional') { bar.removeAttribute('value'); text.textContent = 'Running the regional offshore model…'; return; }
+  bar.value = progress.fraction;
+  const left = progress.fraction > .03 && progress.elapsed ? Math.max(1, Math.round(progress.elapsed / progress.fraction * (1 - progress.fraction) / 1000)) : null;
+  text.textContent = `Calculating the local run · ${Math.round(progress.fraction * 100)}% (${timeLabel(progress.seconds)} of ${timeLabel(totalSeconds())} simulated)${left ? ` · about ${left} s left` : ''}`;
+}
+
+// Show stored frame `index` of a pre-calculated run.
+function seek(index) {
+  frameIndex = Math.max(0, Math.min(frames.length - 1, index));
+  frame = frames[frameIndex];
+  history = historyAll.slice(0, frameIndex + 1);
+  $('scrub').value = frameIndex;
+  if (finished()) running = false;
+  $('status').textContent = finished() ? 'Pre-calculated run complete. Replay, scrub the time bar, or adjust the scene.' : running ? 'Playing the pre-calculated run.' : 'Paused. Press Play, Step, or drag the time bar.';
+  paint(); controls();
 }
 
 function labels() {
@@ -336,7 +363,8 @@ function paintTraces() {
 }
 
 function fail(message) {
-  ready = running = busy = false;
+  ready = running = busy = calculating = false;
+  frames = null;
   if (worker) worker.terminate();
   controls();
   $('play').textContent = 'Unavailable';
@@ -378,13 +406,27 @@ function reset(play = false) {
   if (worker) worker.terminate();
   couplingInfo = null;
   grid = next; terrain = terrainFor(grid, bathymetry); inspected = null; frame = null; history = []; ready = running = busy = false; budget = 0;
+  frames = null; historyAll = []; playClock = 0; calculating = precomputeOn();
   labels(); controls();
-  $('status').textContent = coupling ? 'Running the regional offshore model, then starting the local simulation…' : 'Starting a fresh Rust wave simulation…';
+  $('status').textContent = calculating ? 'Pre-calculating the whole run; playback starts when it finishes.' : coupling ? 'Running the regional offshore model, then starting the local simulation…' : 'Starting a fresh Rust wave simulation…';
+  if (calculating) showProgress({ stage: coupling && !coupling.series ? 'regional' : 'local', fraction: 0, seconds: 0 });
   const current = worker = new Worker(new URL('./tsunami-worker.js', import.meta.url), { type: 'module' });
   current.onerror = () => { if (worker === current) fail('The wave worker could not start.'); };
   current.onmessage = ({ data }) => {
     if (worker !== current) return;
     if (data.error) { fail(data.error); return; }
+    if (data.progress) { showProgress(data.progress); return; }
+    if (data.frames) {
+      // Everything is computed; the worker is no longer needed.
+      current.terminate(); worker = null;
+      frames = data.frames; frameInterval = data.interval; calculating = false;
+      if (data.coupling) { couplingInfo = data.coupling; labels(); }
+      historyAll = frames.map(f => [f.time, ...probes.map(point => sample(f.eta, point))]);
+      $('scrub').max = frames.length - 1;
+      ready = true; running = play; playClock = 0;
+      seek(0);
+      return;
+    }
     frame = data.frame; busy = false;
     if (data.coupling) { couplingInfo = data.coupling; labels(); }
     if (!ready) { ready = true; running = play; }
@@ -395,7 +437,7 @@ function reset(play = false) {
       : running ? 'Running in a Rust / WASM worker. Controls remain responsive.' : 'Paused. Press Play, Step, or move the source.';
     paint(); controls();
   };
-  current.postMessage({ type: 'start', grid, coupling });
+  current.postMessage(calculating ? { type: 'precompute', grid, coupling, seconds: totalSeconds(), frames: PRECOMPUTED_FRAMES } : { type: 'start', grid, coupling });
 }
 
 function advance(steps) {
@@ -409,7 +451,11 @@ function advance(steps) {
 function animate(now) {
   const elapsed = Math.min(.1, Math.max(0, (now - previousWall) / 1000));
   previousWall = now;
-  if (ready && running) {
+  if (ready && running && frames) {
+    playClock += elapsed * +$('speed').value * 60;
+    const index = Math.min(frames.length - 1, Math.floor(playClock / frameInterval + 1e-9));
+    if (index !== frameIndex) seek(index);
+  } else if (ready && running) {
     budget += elapsed * +$('speed').value * 60;
     const steps = Math.min(grid.method === 3 ? 16 : 200, Math.floor(budget / frame.dt));
     if (steps > 0 && !busy) { budget -= steps * frame.dt; advance(steps); }
@@ -418,16 +464,27 @@ function animate(now) {
 }
 
 $('play').addEventListener('click', () => {
+  if (frames) {
+    if (finished()) { playClock = 0; running = true; seek(0); return; }
+    running = !running; playClock = frame.time; seek(frameIndex);
+    return;
+  }
   if (frame.time >= totalSeconds()) { reset(true); return; }
   running = !running;
   $('status').textContent = running ? 'Running in a Rust / WASM worker.' : 'Paused.';
   controls();
 });
-$('step').addEventListener('click', () => advance(8));
-$('reset').addEventListener('click', () => (coastIds.includes($('preset').value) || estuaryIds.includes($('preset').value)) && bathymetry?.id !== $('preset').value ? changeScene() : reset());
+$('step').addEventListener('click', () => { if (frames) { running = false; seek(frameIndex + 1); playClock = frame.time; } else advance(8); });
+const resetScene = () => (coastIds.includes($('preset').value) || estuaryIds.includes($('preset').value)) && bathymetry?.id !== $('preset').value ? changeScene() : reset();
+$('reset').addEventListener('click', () => {
+  // A finished pre-calculation is rewound, not recomputed; changing settings recomputes.
+  if (frames && ready) { running = false; playClock = 0; seek(0); return; }
+  resetScene();
+});
+$('scrub').addEventListener('input', () => { running = false; seek(+$('scrub').value); playClock = frame.time; });
 $('preset').addEventListener('change', changeScene);
 $('tryDispersive').addEventListener('click', () => { $('preset').value = 'flat'; $('method').value = 'dispersive'; changeScene(); });
-for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'tideRange']) $(id).addEventListener('change', () => reset());
+for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'tideRange', 'precompute']) $(id).addEventListener('change', () => reset());
 for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel', 'offshoreWidth', 'tideRange']) $(id).addEventListener('input', labels);
 $('waveFile').addEventListener('change', async () => {
   const file = $('waveFile').files[0];
@@ -481,15 +538,16 @@ map.addEventListener('keydown', event => {
 });
 $('export').addEventListener('click', () => {
   const metadata = `# Hypothetical tsunami propagation; ${JSON.stringify({ ...options(), bathymetry: bathymetry ? { source: bathymetry.source, bounds: bathymetry.bounds, extent: bathymetry.extent, attribution: bathymetry.attribution, license: bathymetry.license, licenseMetadataUrl: bathymetry.licenseMetadataUrl, acknowledgement: bathymetry.acknowledgement, hydrographicNotice: bathymetry.hydrographicNotice, verticalDatum: bathymetry.verticalDatum, cell: grid.cell } : 'synthetic', coupling: couplingInfo })}\n`;
-  const csv = metadata + 'seconds,gauge_1_m,gauge_2_m,gauge_3_m\n' + history.map(row => row.map(v => v == null ? '' : v).join(',')).join('\n');
+  const csv = metadata + 'seconds,gauge_1_m,gauge_2_m,gauge_3_m\n' + (frames ? historyAll : history).map(row => row.map(v => v == null ? '' : v).join(',')).join('\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   const link = document.createElement('a'); link.href = url; link.download = 'tsunami-lab-gauges.csv'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.__tsunamiStatus = () => ({ coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
+window.__tsunamiStatus = () => ({ precomputed: !!frames, frames: frames?.length ?? 0, calculating, coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
 window.addEventListener('pagehide', () => { if (worker) worker.terminate(); });
 window.addEventListener('resize', paint);
 const initialScene = new URLSearchParams(location.search).get('scene');
+if (new URLSearchParams(location.search).get('precompute') === '1') $('precompute').checked = true;
 if (new URLSearchParams(location.search).get('coupled') === '1') $('coupled').checked = true;
 if (new URLSearchParams(location.search).get('method') === 'dispersive') $('method').value = 'dispersive';
 if (initialScene && [...$('preset').options].some(option => option.value === initialScene)) { $('preset').value = initialScene; changeScene(); }

@@ -407,6 +407,26 @@ for proposed data improvements, offshore/river coupling, refinement, sensitivity
 runs and the next stage of the **dispersive-wave (Boussinesq-type)** solver. Its
 linear uniform- and variable-depth forms are implemented; nonlinear coastal coupling remains future work.
 
+## Pre-calculating a run
+
+Tick **Pre-calculate the whole run first** (or open `tsunami.html?precompute=1`)
+to run the entire simulation in the worker before playback. A progress bar
+shows the percentage, the simulated time reached and an estimate of the seconds
+left; a nested run first shows "Running the regional offshore model…" while that
+step has no measurable progress. Play is disabled until it finishes. Changing any
+setting, or pressing Reset after an error, recalculates (the page is not
+blocked: the work is in the worker, and changing a setting cancels it).
+
+The result is 200 evenly spaced frames, held as 32-bit floats: roughly 12 MB for
+a linear run and 50 MB for a nonlinear one. Playback then simply steps through
+them at the selected speed, so it is smooth even for the slow variable-depth
+dispersive method and nested runs, and a **Simulated time** bar lets you drag to
+any moment. Pause, Step (one frame), Replay and Reset (rewinds without recomputing)
+work as usual, and gauge traces and the CSV export cover the whole run. Frames
+are 1/200 of the run apart (18 s for 60 minutes), so playback and gauge traces
+are sampled at that spacing rather than at every solver step; peak and mass-balance
+figures are unaffected. Without the option, runs compute live as before.
+
 ## Checks and limits
 
 Rust tests check rest over variable bathymetry, propagation speed against
