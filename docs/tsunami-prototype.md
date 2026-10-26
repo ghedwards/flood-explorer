@@ -148,6 +148,25 @@ several times below shallow water throughout. Longer runs, to 400 s at kH = 1,
 reach errors of 0.4 to 0.8, so keep kH below about 1 and treat long runs with caution. This is a
 check on uniform depth only.
 
+Shoaling over a ramp (same test file): a 50 km wavelength packet, centred on the
+left wall so it travels one way, crosses a 60 km depth ramp. Energy flux per
+frequency is conserved in slowly varying depth, so the energy passing a gauge on
+the deep side relative to one on the shallow side should equal the
+spectrum-weighted ratio of group speeds. Predicted and measured ratios:
+
+| Ramp | shallow water (predicted / measured) | dispersive (predicted / measured) |
+|---|---|---|
+| 4000 m to 2500 m (shoaling) | 1.265 / 1.253 | 1.217 / 1.130 |
+| 2500 m to 4000 m (deepening) | 0.791 / 0.807 | 0.814 / 0.820 |
+
+The shallow-water solver and the dispersive solver in deepening water follow theory
+to about 2%. In shoaling water the dispersive solver delivers about 7% less energy
+than its own dispersion relation predicts (roughly 3.5% in amplitude). A control with no ramp
+loses about 3% over the same distance, so part of that is numerical, but not all.
+The variable-depth operator has no extra depth-gradient terms, so it is not
+exactly energy-conserving on a slope; treat dispersive amplitudes after strong
+shoaling as slightly low until that is investigated.
+
 What it does **not** establish: agreement with a published variable-depth benchmark
 or with observations over real bathymetry, or the correctness of the
 variable-depth terms beyond those checks. The formulation is a weak-dispersion

@@ -72,7 +72,8 @@ comparison from proposed coastal extensions:
    checks. It is available through **Try dispersive ocean**. A variable-depth linear
    Peregrine form now runs on the regional grids (equivalence, rest, volume and
    long-wave/short-wave checks only; not benchmarked). Uniform depth is now checked against exact linear dispersion
-   (relative error 0.2 at kH = 1, 0.03 at 0.4; see the prototype notes). Next compare variable depth against published
+   (relative error 0.2 at kH = 1, 0.03 at 0.4) and its shoaling over a ramp against group-speed energy conservation
+   (about 7% low in energy when shoaling, correct when deepening; see the prototype notes). Next compare variable depth against published
    benchmarks and evaluate nonlinear and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
    and published formulations as references. It may improve shorter-wave
    propagation and waveform detail within its valid depth/wavelength range;
