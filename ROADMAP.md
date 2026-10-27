@@ -96,8 +96,9 @@ handled near breaking and wet/dry cells; measure browser runtime and memory.
 Validate the baseline coastal solver first using
 [NOAA benchmark cases](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html)
 (solitary-wave run-up on a plane beach is done: the solver reaches 83% of the
-analytical run-up at 60 cells per wavelength, and 98% with the new second-order option; more cases,
-such as the conical island, remain).
+analytical run-up at 60 cells per wavelength, and 98% with the new second-order option; Thacker's oscillating
+bowl, an exact moving-shoreline case, is also checked (second order keeps the shape within 1.7% over five periods at 1 m cells,
+first order within 15%); more cases, such as the conical island, remain).
 A future solver option must state which physical effects it adds and remain
 labelled experimental until its own checks pass.
 

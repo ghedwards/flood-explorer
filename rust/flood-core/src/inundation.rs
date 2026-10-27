@@ -718,6 +718,77 @@ mod tests {
         assert!((fine - expected).abs() < 0.2 * expected, "run-up {fine:.4} m, Synolakis {expected:.4} m");
     }
 
+    // Thacker's sloshing water body in a parabolic bowl (bed z = h0 x^2 / a^2 - D, a one-
+    // dimensional strip): the exact nonlinear, frictionless solution is a parabolic body of water
+    // that slides back and forth without changing shape,
+    //   h(x, t) = max(0, D - h0 (x - xi(t))^2 / a^2),  u = xi'(t),  xi(t) = xi0 cos(omega t),
+    // omega = sqrt(2 g h0) / a, so both shorelines move through dry cells and back. Returns, for
+    // eight times a period, the worst error against that solution.
+    struct Bowl { l1: f64, shoreline: f64, volume: f64, amplitude: f64 }
+    fn thacker_bowl(cell: f64, order: u8, periods: f64) -> Bowl {
+        let (a, h0, depth, xi0) = (100.0_f64, 1.0_f64, 0.5_f64, 20.0_f64);
+        let omega = (2.0 * G * h0).sqrt() / a;
+        let period = 2.0 * std::f64::consts::PI / omega;
+        let half_width = a * (depth / h0).sqrt();
+        let w = (2.0 * (half_width + 2.0 * xi0 + 20.0) / cell).ceil() as usize;
+        let h = 4;
+        let x_of = |i: usize| ((i % w) as f64 + 0.5) * cell - w as f64 * cell / 2.0;
+        let bed: Vec<f64> = (0..w*h).map(|i| h0 * x_of(i).powi(2) / (a * a) - depth).collect();
+        let still: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+        let exact = |x: f64, t: f64| (depth - h0 * (x - xi0 * (omega * t).cos()).powi(2) / (a * a)).max(0.0);
+        let eta: Vec<f64> = (0..w*h).map(|i| exact(x_of(i), 0.0) - still[i]).collect();
+        let mut s = Solver::new(w, h, cell, bed, still, eta, false, 0.0).unwrap();
+        s.set_order(order).unwrap();
+        let (mut l1, mut mass, mut shoreline, mut amplitude) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        let mut next = period / 8.0;
+        let mut sampled = 0;
+        let mut start_volume = None;
+        while s.time < periods * period {
+            s.advance(1).unwrap();
+            if start_volume.is_none() { start_volume = Some((0..w).map(|x| s.water[2 * w + x]).sum::<f64>() * cell); }
+            if s.time >= next {
+                next += period / 8.0;
+                let (mut err, mut tot, mut right) = (0.0, 0.0, f64::NEG_INFINITY);
+                for x in 0..w {
+                    let (model, truth) = (s.water[2 * w + x], exact(x_of(x), s.time));
+                    err += (model - truth).abs(); tot += truth;
+                    if model > 0.003 { right = right.max(x_of(x)); }
+                }
+                l1 = l1.max(err / tot);
+                // the right shoreline against xi(t) + half_width
+                shoreline = shoreline.max((right - (xi0 * (omega * s.time).cos() + half_width)).abs());
+                mass = mass.max(((0..w).map(|x| s.water[2 * w + x]).sum::<f64>() * cell - start_volume.unwrap()).abs());
+                amplitude = amplitude.max(right - half_width);
+                sampled += 1;
+            }
+        }
+        assert!(sampled >= (8.0 * periods) as usize - 1);
+        Bowl { l1, shoreline, volume: mass, amplitude }
+    }
+
+    #[test]
+    fn thacker_bowl_tracks_two_moving_shorelines_and_second_order_keeps_the_oscillation() {
+        // Five periods of an exact nonlinear oscillation that wets and dries both shorelines.
+        // Measured: worst L1 depth error (of the water present) over the run, and the worst
+        // error of the right shoreline: first order 2 m cells 27% and 15 m, 1 m cells 15% and
+        // 8.4 m; second order 2 m cells 4.4% and 5.4 m, 1 m cells 1.7% and 1.8 m.
+        let (first_coarse, first_fine) = (thacker_bowl(2.0, 1, 5.0), thacker_bowl(1.0, 1, 5.0));
+        let (second_coarse, second_fine) = (thacker_bowl(2.0, 2, 5.0), thacker_bowl(1.0, 2, 5.0));
+        for (name, b) in [("first 2 m", &first_coarse), ("first 1 m", &first_fine), ("second 2 m", &second_coarse), ("second 1 m", &second_fine)] {
+            eprintln!("thacker {name}: worst L1 {:.4}, shoreline error {:.2} m, volume drift {:.2e}", b.l1, b.shoreline, b.volume);
+            // the water body is only ever moved around: no water made or lost
+            assert!(b.volume < 1e-9, "{name}: volume drift {}", b.volume);
+            // the shoreline reaches most of the way to its exact excursion (20 m)
+            assert!(b.amplitude > 15.0, "{name}: excursion {}", b.amplitude);
+        }
+        assert!(first_fine.l1 < first_coarse.l1 && second_fine.l1 < second_coarse.l1, "refinement should reduce the error");
+        assert!(first_fine.shoreline < first_coarse.shoreline && second_fine.shoreline < second_coarse.shoreline);
+        assert!(first_fine.l1 < 0.20, "first order, 1 m cells: {}", first_fine.l1);
+        assert!(second_fine.l1 < 0.03 && second_coarse.l1 < 0.06, "second order: {} and {}", second_fine.l1, second_coarse.l1);
+        assert!(second_fine.l1 < first_fine.l1 / 4.0, "second order should keep the shape several times better");
+        assert!(second_fine.shoreline < 3.0, "second order shoreline error {} m", second_fine.shoreline);
+    }
+
     #[test]
     fn second_order_scheme_removes_most_of_the_run_up_deficit() {
         // Same Synolakis benchmark as above. The first-order scheme reaches 83% of

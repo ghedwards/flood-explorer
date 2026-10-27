@@ -737,6 +737,25 @@ hydrostatic reconstruction. The test requires the finer result to be within 20%.
 Treat first-order run-up at the grid sizes the browser can afford as a
 lower bound; the second-order scheme (below) is much closer. The solver accepts cells down to 0.05 m so such benchmarks can be
 run at laboratory scale.
+A second analytical case tests the moving shoreline itself: Thacker's oscillating water body in a
+parabolic bowl (bed `z = h0 x²/a² - D`, a one-dimensional strip). Its exact, nonlinear, frictionless
+solution is a parabola of water that slides back and forth without changing shape, `h = max(0, D - h0 (x - ξ(t))²/a²)` with
+a uniform velocity `ξ'(t)` and `ξ = ξ0 cos ωt`, `ω = √(2 g h0) / a`, so both shorelines run across dry
+cells and back (here a = 100 m, h0 = 1 m, D = 0.5 m, ξ0 = 20 m, a period of 142 s). Over five periods, sampled eight
+times each, against the exact depth profile:
+
+| Scheme and cell size | Worst L1 depth error | Worst right-shoreline error |
+|---|---|---|
+| First order, 2 m | 27% | 15 m |
+| First order, 1 m | 15% | 8.4 m |
+| Second order, 2 m | 4.4% | 5.4 m |
+| Second order, 1 m | 1.7% | 1.8 m |
+
+Water is conserved to rounding (volume drift below 1e-13 m²). First order damps and lags the oscillation, and
+the error halves with the cell size, as for the run-up benchmark; second order keeps the shape
+about nine times better. The shoreline error is the lag of the wet edge behind the exact one, which grows
+with the number of periods: it is a resolution and scheme limit, not a conservation problem.
+
 These first-order tests are not tsunami run-up certification. Run:
 
 ```
