@@ -190,6 +190,25 @@ pub fn inundate(a: &Analysis, s: &Scenario) -> Run {
 }
 
 pub(crate) fn inundate_with(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: Vec<u8>) -> Run {
+    inundate_until(a, s, wse, on_path, None)
+}
+
+/// Is one cell flooded in this scenario, and how deep? The same fill as `inundate`, stopped the moment
+/// the cell is reached and without building the depth grid, so the answer is exactly the full run's.
+pub fn probe(a: &Analysis, s: &Scenario, cell: usize) -> Option<f32> {
+    if cell >= a.n {
+        return None;
+    }
+    let (wse, on_path) = match &s.wse {
+        Some(v) => (v.clone(), vec![0u8; a.n]),
+        None => stream_surface(a, s),
+    };
+    let r = inundate_until(a, s, wse, on_path, Some(cell));
+    (r.wet[cell] != 0).then(|| (r.level[cell] as f64 - a.dem[cell] as f64) as f32)
+}
+
+/// With `stop` set the fill ends as soon as that cell is wet, and `depth` is left empty.
+fn inundate_until(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: Vec<u8>, stop: Option<usize>) -> Run {
     let (w, h, n) = (a.w, a.h, a.n);
     let mut level = vec![f32::NAN; n];
     for c in 0..n {
@@ -235,7 +254,10 @@ pub(crate) fn inundate_with(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: 
         }
         if b > 0.0 { budget = b; }
     }
-    while qh < qt {
+    'fill: while qh < qt {
+        if stop.is_some_and(|t| wet[t] != 0) {
+            break;
+        }
         let c = q[qh];
         qh += 1;
         let (cx, cy) = ((c % w) as i64, (c / w) as i64);
@@ -268,8 +290,14 @@ pub(crate) fn inundate_with(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: 
                 }
                 q[qt] = nn;
                 qt += 1;
+                if stop == Some(nn) {
+                    break 'fill;
+                }
             }
         }
+    }
+    if stop.is_some() {
+        return Run { wet, depth: Vec::new(), level, wse, on_path, kind: None, summary: None };
     }
     let mut depth = vec![0f32; n];
     for c in 0..n {
@@ -476,4 +504,53 @@ pub fn compare_runs(a: &Analysis, now: &Run, pinned: &Run) -> Compare {
         }
     }
     Compare { diff, d_depth, both_km2: both, only_now_km2: only_now, only_pinned_km2: only_pinned, deeper_km2: deeper, shallower_km2: shallower }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use crate::grid::synthetic_terrain;
+    use crate::hydro::analyse;
+
+    /// The one-cell probe must say what the full run says, for every cell, with and without a levee.
+    #[test]
+    fn probe_matches_the_full_run_for_every_cell() {
+        let g = synthetic_terrain(120, 90, 50.0, 1974);
+        let a = analyse(&g, 4.0);
+        let mut levee = vec![0u8; a.n];
+        let mut c = a.default_gauge;
+        for _ in 0..40 {
+            if c < 0 { break; }
+            // a row of levee cells beside the river path
+            let x = (c as usize % a.w + 2).min(a.w - 1);
+            levee[(c as usize / a.w) * a.w + x] = 1;
+            c = a.rec[c as usize];
+        }
+        let mut checked = 0;
+        for (k, gauge_level) in [0.5, 2.0, 4.46, 7.0].into_iter().enumerate() {
+            for use_levee in [false, true] {
+                let s = Scenario {
+                    gauge: a.default_gauge,
+                    gauge_level: a.dem[a.default_gauge as usize] as f64 + gauge_level,
+                    bay_level: 1.0,
+                    upstream_gradient: 0.3,
+                    levee: use_levee.then(|| levee.clone()),
+                    ..Default::default()
+                };
+                let full = inundate(&a, &s);
+                for cell in (0..a.n).step_by(7 + k) {
+                    match probe(&a, &s, cell) {
+                        Some(d) => {
+                            assert_eq!(full.wet[cell], 1, "cell {cell} probed wet, full run dry");
+                            assert_eq!(d, full.depth[cell], "depth at {cell}");
+                        }
+                        None => assert_eq!(full.wet[cell], 0, "cell {cell} probed dry, full run wet"),
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 2000);
+        assert_eq!(probe(&a, &Scenario::default(), a.n + 5), None);
+    }
 }

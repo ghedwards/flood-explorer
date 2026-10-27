@@ -217,6 +217,13 @@
       return r;
     }
 
+    // Is one cell flooded in a scenario, and how deep? Stops as soon as the fill reaches it, and
+    // sends back two numbers instead of the grids; the answer is the full run's.
+    function inundateAt(a, s, cell) {
+      const out = call('inundateAt', Object.assign({ a: handleOf(a), cell }, scenarioBag(s)));
+      return { wet: num(out.wet) === 1, depth: num(out.depth) };
+    }
+
     function flashFlood(a, o) {
       o = o || {};
       const out = call('flashFlood', {
@@ -391,7 +398,7 @@
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
-      analyse, streamSurface, inundate, flashFlood, stats, hazard, compareRuns,
+      analyse, streamSurface, inundate, inundateAt, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
       composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };

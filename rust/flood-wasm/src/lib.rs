@@ -697,6 +697,12 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let r = with_analysis(b.num("a"), |a| inundate(a, &s))?;
             put_run(&mut o, &r, slim);
         }
+        "inundateAt" => {
+            let s = scenario_of(b);
+            let cell = b.num("cell");
+            let d = with_analysis(b.num("a"), |a| if cell >= 0.0 { probe(a, &s, cell as usize) } else { None })?;
+            o.num("wet", if d.is_some() { 1.0 } else { 0.0 }).num("depth", d.unwrap_or(0.0) as f64);
+        }
         "flashFlood" => {
             let st = Storm {
                 rain_mm: b.num("rainMm"),

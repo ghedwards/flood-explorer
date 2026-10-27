@@ -1190,6 +1190,13 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // at the normal level, and then its depth is counted from the normal
   // water surface: ground that is never wet can't really lie below the water
   // it connects to, so a terrain hole there isn't read as metres of flood.
+  // cell → position in base.low, built once per low-ground list
+  const lowIndexes = new WeakMap();
+  function lowIndexOf(low) {
+    let m = lowIndexes.get(low);
+    if (!m) { m = new Map(); for (let k = 0; k < low.idx.length; k++) if (!m.has(low.idx[k])) m.set(low.idx[k], k); lowIndexes.set(low, m); }
+    return m;
+  }
   function dryLowGround(run, base) {
     const low = base && base.low;
     if (!run || !low) return run;
@@ -8398,7 +8405,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     const a = state.a;
     if (state.gauge < 0 || ctl.floodType.value === 'flash') return null;
     const base = scenario(), lo0 = a.dem[state.gauge] + 0.3, hi0 = parseFloat(ctl.gaugeLevel.max) || lo0 + 10;
-    const wetAt = (L) => { const r = dryLowGround(F.inundate(a, withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }), state.base); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
+    const low = state.base && state.base.low, lowAt = low && lowIndexOf(low);
+    const wetAt = (L) => {
+      const s = withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta);
+      if (a.ocean && a.ocean[c] || state.base && state.base.wet[c]) return false;
+      if (!F.inundateAt) { const r = dryLowGround(F.inundate(a, s, { slim: 1 }), state.base); return Boolean(r.wet[c]); }
+      // one cell, no grids: what dryLowGround would leave of the full run at c
+      const p = F.inundateAt(a, s, c), k = lowAt ? lowAt.get(c) : undefined;
+      return p.wet && !(k !== undefined && p.depth - low.depth[k] <= 0.05);
+    };
     if (wetAt(lo0)) return { level: lo0, always: true };
     if (!wetAt(hi0)) return { above: hi0 };
     let lo = lo0, hi = hi0;
