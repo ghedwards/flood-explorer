@@ -46,7 +46,7 @@ comparison from proposed coastal extensions:
 2. **Defined offshore forcing, tides and river flow.** (A CSV incoming-wave series, a hypothetical
    M2 tide level and a PTHA18 scenario importer (`scripts/prepare-ptha-series.js`) now drive the local model;
    a verified datum conversion, tide predictions, river discharge, running many PTHA18 scenarios with their
-   rates (the importer can now place a scenario's peak on PTHA18's published exceedance curve at the hazard point and find scenarios of a given size; a rate-proportional sample of one zone can be run through the local model; all zones, tide as a distribution and larger samples are still to do), and re-simulating scenarios from their initial seabed deformation remain. PTHA18's deep-water
+   rates (the importer can now place a scenario's peak on PTHA18's published exceedance curve at the hazard point and find scenarios of a given size; a rate-proportional sample of one zone can be run through the local model; all zones and larger samples are still to do; the tide state at arrival changes the Gold Coast Seaway result by nearly a factor of 8 from lowest to highest tide, but its frequency distribution, the MSL-to-terrain datum offset and a check of the tidal planes remain), and re-simulating scenarios from their initial seabed deformation remain. PTHA18's deep-water
    waves have been checked blind against DART records for Tohoku 2011, `docs/validation/tohoku-2011-dart.md`;
    validating the lab's own solvers against observed tide-gauge records, and other events, remain.) Use identified
    [GA PTHA18 scenarios](https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha)

@@ -449,6 +449,56 @@ level, no tide), uncalibrated terrain and roughness, and sixty draws, which cann
 in 1,000 years. The interval covers sampling error only, not the model's error or PTHA18's own uncertainty. This is the
 structure of a scenario-based estimate, run on a small sample, not an estimate of the site's flood hazard.
 
+#### Tide state at arrival
+
+Every run above starts at mean sea level. `scripts/tide-sweep.js` starts the same series at the
+tidal-plane levels of the Gold Coast Seaway instead: LAT, MLWS, MSL, MHWN, MHWS and HAT, as heights relative to MSL
+(from `viewer/public/tsunami-data/gold-coast-seaway-tidal-planes.json`, Maritime Safety Queensland's 2026 semidiurnal tidal planes:
+HAT +1.15 m, MHWS +0.65, MHWN +0.36, MLWN -0.37, MLWS -0.66, LAT -0.88). The sea level is held at the state for
+the hour of the run, so this is the effect of the state at arrival, not of a moving tide. "Tide alone" is the
+land the starting level already covers; the total is land under more than 1 cm at any time; the wave adds the rest.
+
+| Scenario | State (sea level) | Tide alone | Added by wave | Total flooded | Max depth on land |
+|---|---|---|---|---|---|
+| New Hebrides 12252 (0.84 m offshore) | LAT (-0.88 m) | 0 ha | 27 ha | 27 ha | 1.58 m |
+| | MLWS (-0.66) | 0 | 41 | 41 | 1.78 |
+| | MSL (0) | 0 | 99 | 99 | 2.44 |
+| | MHWN (+0.36) | 70 | 82 | 152 | 2.80 |
+| | MHWS (+0.65) | 116 | 50 | 166 | 3.08 |
+| | HAT (+1.15) | 148 | 58 | 206 | 3.55 |
+| Kermadec-Tonga 42003 (0.72 m offshore) | LAT | 0 | 19 | 19 | 1.36 |
+| | MLWS | 0 | 31 | 31 | 1.55 |
+| | MSL | 0 | 89 | 89 | 2.12 |
+| | MHWN | 70 | 74 | 144 | 2.49 |
+| | MHWS | 116 | 45 | 161 | 2.78 |
+| | HAT | 148 | 47 | 195 | 3.30 |
+| South America 142847 (0.09 m offshore, example) | LAT / MLWS | 0 | 0 | 0 | 0.00 |
+| | MSL | 0 | 2 | 2 | 0.11 |
+| | MHWN | 70 | 3 | 73 | 1.81 |
+| | MHWS | 116 | 3 | 119 | 2.10 |
+| | HAT | 148 | 2 | 150 | 2.61 |
+
+What it shows, for this terrain and model:
+
+- **The tide state at arrival moves the answer more than the scenario does.** For the 0.84 m wave the total flooded
+  area runs from 27 ha at the lowest tide to 206 ha at the highest, a factor of nearly 8, and the maximum depth on land from
+  1.6 to 3.6 m; the six scenarios of similar offshore size earlier differed by about 30% at mean sea level. Between MSL and
+  MHWN the total changes by about 15 ha for every 0.1 m of sea level, so the unknown level of MSL in the terrain's datum
+  (taken here as 0) matters at that scale.
+- **A lot of the high-tide total is the tide itself.** The terrain covers 148 ha at HAT without any wave, which includes low
+  ground that sea walls, levees and drains would in reality keep dry; the terrain data may not capture them. The area
+  the wave adds peaks near MSL and falls at the high states because the tide has already covered that ground. The
+  extra depth is real, though: the same wave puts about 1.1 to 1.2 m more water on the ground at HAT than at MSL.
+- **A tiny wave matters at high tide.** The 9 cm example adds only 2 to 3 ha at any state, but
+  the tide alone it arrives on covers 70 to 148 ha.
+
+Limits: the planes were read from a search summary of the published table; the PDF could not be downloaded from here,
+so the numbers are not yet checked against it (the file says so). The spring and neap ranges are the same in the 2024, 2025
+and 2026 tables and only MSL moves, and only heights relative to MSL are used. Putting MSL on the terrain's AVWS datum
+needs a level the table does not give. How often each state occurs is not used at all: weighting
+the states needs a tide prediction (MSQ publishes them, but not in a form that could be fetched from here) or the
+site's harmonic constituents, and would then turn this table into a tide distribution for the ensemble.
+
 How well PTHA18's deep-water waves match reality is tested in
 [docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
 315 PTHA18 scenarios of the 2011 Tohoku earthquake with NOAA DART records at 16 buoys

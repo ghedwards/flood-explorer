@@ -13,22 +13,35 @@ const path = require('node:path');
 const F = require('../tests/model.js');
 
 // Run one parsed series (see parseSeriesCsv) through the model; returns its headline numbers.
-async function runSeries(series, seconds = 3600) {
+// `tide` is the sea level the model starts at, in the terrain's datum (metres; -1 to 2).
+// "Land" is what is dry at `baseline` (default: the starting level), so that runs at
+// different tide levels are measured over the same ground: land that a high tide has
+// already covered is counted as flooded, with its depth is the tide's plus the wave's.
+async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide } = {}) {
   const { forcingFromSeries } = await import('../viewer/tsunami-coupling.js');
   const { tsunamiGrid } = await import('../viewer/tsunami-grid.js');
   const fine = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway.json')));
-  const grid = tsunamiGrid({ preset: 'gold-coast-seaway', bathymetry: fine, amplitude: 0, absorbing: true, width: .45, coupled: true });
+  const options = { preset: 'gold-coast-seaway', bathymetry: fine, amplitude: 0, absorbing: true, width: .45, coupled: true };
+  const grid = tsunamiGrid({ ...options, tide });
+  const dry = baseline === tide ? grid.depth : tsunamiGrid({ ...options, tide: baseline }).depth;
   const forcing = forcingFromSeries({ fine, fineGrid: grid }, series, { maxLocalSeconds: seconds });
   F.tsunamiStart({ ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))) });
   let frame;
   while (!frame || frame.time < seconds) frame = F.tsunamiStep(200);
-  let water = 0, land = 0, flooded = 0;
+  let water = 0, land = 0, covered = 0, tideOnly = 0;
   for (let i = 0; i < grid.depth.length; i++) {
-    if (grid.depth[i] !== 0) { water = Math.max(water, frame.peak[i]); continue; }
-    land = Math.max(land, frame.peak[i]);
-    if (frame.peak[i] > .01) flooded++;
+    if (dry[i] !== 0) { water = Math.max(water, frame.peak[i]); continue; }
+    const depth = grid.depth[i] + frame.peak[i];
+    land = Math.max(land, depth);
+    if (depth > .01) covered++;
+    if (grid.depth[i] > .01) tideOnly++;
   }
-  return { offshorePeak: Math.max(...series.values.map(Math.abs)), maxWaterLevel: water, maxLandDepth: land, floodedHectares: flooded * grid.cell ** 2 / 10000 };
+  const hectares = n => n * grid.cell ** 2 / 10000;
+  // floodedHectares: land under more than 1 cm at any time, the tide's own cover included;
+  // tideOnlyHectares: what the starting sea level covers before any wave; addedHectares: the
+  // difference, land the wave newly covered. Without a tide, flooded and added are the same.
+  return { offshorePeak: Math.max(...series.values.map(Math.abs)), maxWaterLevel: water, maxLandDepth: land,
+    floodedHectares: hectares(covered), tideOnlyHectares: hectares(tideOnly), addedHectares: hectares(covered - tideOnly) };
 }
 
 async function main(argv) {

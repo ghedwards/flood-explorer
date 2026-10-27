@@ -37,3 +37,8 @@ excludes them as impermeable cells and magenta hatching marks them unknown.
 CSIRO source classes and percentages are shown separately; amber optionally
 highlights interpolated, modelled-creek and coarse-base cells. Completeness
 and fine source grid spacing do not guarantee surveyed bed coverage.
+
+`gold-coast-seaway-tidal-planes.json` holds the Gold Coast Seaway's tidal planes (Maritime
+Safety Queensland, 2026, heights above Queensland Port Datum) for `scripts/tide-sweep.js`. It is
+not loaded by the viewer. Its `verified` flag is false: the values were read from a search
+summary of the published table and not yet checked against it.

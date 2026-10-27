@@ -1,0 +1,8 @@
+{
+  "place": "Gold Coast Seaway (Standard Port), Queensland",
+  "source": "Maritime Safety Queensland, Semidiurnal Tidal Planes 2026 (https://www.msq.qld.gov.au/_/media/tmronline/msqinternet/msqfiles/home/tides/tidal-planes/2026-semidiurnal-tidal-planes.pdf)",
+  "datum": "Queensland Port Datum (LAT 1992), metres above datum",
+  "planes": { "HAT": 2.03, "MHWS": 1.53, "MHWN": 1.24, "MSL": 0.88, "MLWN": 0.51, "MLWS": 0.22, "LAT": 0 },
+  "verified": false,
+  "note": "These values were read from a search summary of the MSQ table. The PDF itself could not be downloaded from the build environment (HTTP 403), so they have not been checked against it. The 2024 and 2025 tables give the same spring and neap ranges but a lower MSL and HAT (MSL 0.81 and HAT 1.97 in 2024), because MSQ updates MSL for sea-level rise. Only the heights relative to MSL are used by the tide scripts."
+}
