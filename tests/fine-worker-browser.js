@@ -32,7 +32,7 @@ function currentWorker() {
 }
 
 async function main() {
-  const { fineRaster, fineWindow, cropGrid } = await import('../viewer/fine-raster.js');
+  const { fineWindow, cropGrid } = await import('../viewer/fine-raster.js'), { fineRaster } = require('./fine-raster-reference.js');
   const { bandParams, stitch } = await import('../viewer/fine-pool.js');
   const server = http.createServer((req, res) => {
     const file = path.resolve(root, '.' + new URL(req.url, 'http://localhost').pathname.replace(/\/$/, '/index.html'));

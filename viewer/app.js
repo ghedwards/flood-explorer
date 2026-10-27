@@ -1,10 +1,9 @@
 import { desktopUpdates } from './desktop-updates.js';
 import { createFeedClient } from './feed-health.js';
 import './inertial-grid.js';
-import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
+import { fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
-import { HYPSO, terrainRGBA as terrainRGBAjs } from './relief.js';
-import { classifyDemGaps } from './dem-voids.js';
+import { HYPSO } from './relief.js';
 import { prepareNet, prepareRun, routeFrom, roadImpact } from './routing.js';
 import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
@@ -1212,9 +1211,9 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   const NORMAL_WATER = [38, 166, 154];
   const CHANNEL_ALPHA = 180;  // ~70 %
-  // The shaded relief: from Rust once the module has loaded, else the JavaScript reference.
+  // The shaded relief (rust/flood-core/src/render.rs), tinted with these stops.
   function terrainRGBA(a) {
-    return F.engine === 'rust' && F.terrainRGBA ? F.terrainRGBA(a, HYPSO) : terrainRGBAjs(a);
+    return F.terrainRGBA(a, HYPSO);
   }
 
   // Pixels for the current scenario. withTerrain: shaded relief underneath
@@ -1262,102 +1261,38 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // The relief overlay is pre-blended exactly as the previously fused
   // raster was: (0.88·water) over opaque terrain.
   let waterImg = null;
-  // a wet cell with no wet neighbour among the 8 around it (display only;
-  // the statistics still count it)
-  function loneCell(wet, i, W, H) {
-    const x = i % W, y = (i - x) / W;
-    for (let dy = -1; dy <= 1; dy++) {
-      const yy = y + dy;
-      if (yy < 0 || yy >= H) continue;
-      for (let dx = -1; dx <= 1; dx++) {
-        const xx = x + dx;
-        if ((dx || dy) && xx >= 0 && xx < W && wet[yy * W + xx]) return false;
-      }
-    }
-    return true;
-  }
+  // The colours are mapped in Rust (rust/flood-core/src/render.rs `compose_water`).
   function composeWater() {
     const a = state.a, run = state.run, base = state.base;
-    const relief = $('showRelief').checked;
-    // --- WASM path (Rust colour mapping) with JS fallback ---
-    const F = window.FloodCore;
-    if (F && typeof F.composeWater === 'function') {
-      try {
-        const area = state.areaKey && areaReg.get(state.areaKey);
-        const W = a.W, H = a.H;
-        const modeStr = colorMode();
-        const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
-        const hz = modeStr === 'hazard' ? hazardNow() : null;
-        const cmp = modeStr === 'compare' ? compareNow() : null;
-        const valid = a.valid instanceof Uint8Array ? a.valid : new Uint8Array(a.valid || []);
-        const ocean = a.ocean instanceof Uint8Array ? a.ocean : new Uint8Array(a.ocean || []);
-        const stream = a.stream instanceof Uint8Array ? a.stream : new Uint8Array(a.stream || []);
-        const acc = a.acc instanceof Float32Array ? a.acc : new Float32Array(a.acc || []);
-        const satRaw = a.sat || [];
-        const sat = satRaw instanceof Float32Array ? satRaw : new Float32Array(satRaw.length ? satRaw : 0);
-        const baseWet = (base && base.wet) ? (base.wet instanceof Uint8Array ? base.wet : new Uint8Array(base.wet)) : new Uint8Array(0);
-        const runWet = run.wet instanceof Uint8Array ? run.wet : new Uint8Array(run.wet || []);
-        const runDepth = run.depth instanceof Float32Array ? run.depth : new Float32Array(run.depth || []);
-        const hzCls = (hz && hz.cls) ? (hz.cls instanceof Uint8Array ? hz.cls : new Uint8Array(hz.cls)) : new Uint8Array(0);
-        const cmpArr = (cmp && cmp.diff) ? cmp.diff.map((v) => (v == null ? 0 : v)) : [];
-        const cmpDiff = new Int32Array(cmpArr);
-        // per-cell polygon mask
-        const mask = area && area.polygon ? polygonMask(area) : null;
-        const r = F.composeWater({
-          w: W, h: H, relief: relief ? 1 : 0, mode: modeCode,
-          floodA: relief ? 224 : 255, streamA: relief ? 230 : 0,
-          cellKm2: (a.cell * a.cell) / 1e6, streamThr: state.streamAreaKm2 * 3,
-          valid, ocean, stream, acc, sat, baseWet, runWet, runDepth, hzCls, cmpDiff, mask,
-        });
-        if (r && r.rgba && r.rgba.length === W * H * 4) {
-          if (!waterImg || waterImg.width !== W || waterImg.height !== H) waterImg = new ImageData(W, H);
-          waterImg.data.set(r.rgba);
-          return { img: waterImg, count: r.count || 0 };
-        }
-      } catch (e) { /* fall through to JS */ }
-    }
-    if (!waterImg || waterImg.width !== a.W || waterImg.height !== a.H) waterImg = new ImageData(a.W, a.H);
-    const d = waterImg.data;
-    d.fill(0);
-    const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
-    const floodA = relief ? 224 : 255;   // 0.88 blends over the relief base; full elsewhere
-    const streamA = relief ? 230 : 0;    // stream lines only with terrain shading
-    const cellKm2 = (a.cell * a.cell) / 1e6, streamThr = state.streamAreaKm2 * 3;
-    let n = 0;
-    const area0 = state.areaKey && areaReg.get(state.areaKey), mask = area0 && area0.polygon ? polygonMask(area0) : null;
-    for (let i = 0; i < a.N; i++) {
-      if (!a.valid[i]) continue;
-      if (mask && !mask[i]) continue;
-      let col = null, band = -1;
-      if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
-      if (cmp) {
-        const k = cmp.diff[i];
-        if (k === 2) col = COMPARE_COLORS.onlyNow;
-        else if (k === 3) col = COMPARE_COLORS.onlyPinned;
-        else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
-      } else if (run.wet[i] && isFlood(i)) {
-        if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
-        else if (!loneCell(run.wet, i, a.W, a.H)) {   // lone wet cells are speckle, not flood
-          band = depthBand(run.depth[i]);
-          col = DEPTH_STOPS[band][1];
-        }
-      }
-      const o = i * 4;
-      if (col) {
-        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2];
-        d[o + 3] = band === 0 && !(hz && hz.cls[i]) && !cmp ? Math.min(floodA, DEPTH_ALPHA[0]) : floodA;
-        n++; continue;
-      }
-      const channel = a.stream[i] && a.acc[i] * cellKm2 > streamThr;
-      if (streamA && channel) {
-        d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = streamA;
-      } else if (!relief && !a.ocean[i] && ((channel && !(a.sat && a.sat[i] >= 0 && a.sat[i] < SAT_CHANNEL)) || (base && base.wet[i]))) {
-        // river channel and normal-level water over imagery: a light neutral
-        // tint (the imagery shows the real water), not a flood colour
-        d[o] = NORMAL_WATER[0]; d[o + 1] = NORMAL_WATER[1]; d[o + 2] = NORMAL_WATER[2]; d[o + 3] = CHANNEL_ALPHA;
-      }
-    }
-    return { img: waterImg, count: n };
+    const relief = $('showRelief').checked, area = state.areaKey && areaReg.get(state.areaKey);
+    const W = a.W, H = a.H;
+    const modeStr = colorMode();
+    const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
+    const hz = modeStr === 'hazard' ? hazardNow() : null;
+    const cmp = modeStr === 'compare' ? compareNow() : null;
+    const valid = a.valid instanceof Uint8Array ? a.valid : new Uint8Array(a.valid || []);
+    const ocean = a.ocean instanceof Uint8Array ? a.ocean : new Uint8Array(a.ocean || []);
+    const stream = a.stream instanceof Uint8Array ? a.stream : new Uint8Array(a.stream || []);
+    const acc = a.acc instanceof Float32Array ? a.acc : new Float32Array(a.acc || []);
+    const satRaw = a.sat || [];
+    const sat = satRaw instanceof Float32Array ? satRaw : new Float32Array(satRaw.length ? satRaw : 0);
+    const baseWet = (base && base.wet) ? (base.wet instanceof Uint8Array ? base.wet : new Uint8Array(base.wet)) : new Uint8Array(0);
+    const runWet = run.wet instanceof Uint8Array ? run.wet : new Uint8Array(run.wet || []);
+    const runDepth = run.depth instanceof Float32Array ? run.depth : new Float32Array(run.depth || []);
+    const hzCls = (hz && hz.cls) ? (hz.cls instanceof Uint8Array ? hz.cls : new Uint8Array(hz.cls)) : new Uint8Array(0);
+    const cmpArr = (cmp && cmp.diff) ? cmp.diff.map((v) => (v == null ? 0 : v)) : [];
+    const cmpDiff = new Int32Array(cmpArr);
+    const mask = area && area.polygon ? polygonMask(area) : null;   // cells inside the area's outline
+    const r = F.composeWater({
+      w: W, h: H, relief: relief ? 1 : 0, mode: modeCode,
+      floodA: relief ? 224 : 255, streamA: relief ? 230 : 0,   // 0.88 blends over the relief base; stream lines only with relief
+      cellKm2: (a.cell * a.cell) / 1e6, streamThr: state.streamAreaKm2 * 3,
+      valid, ocean, stream, acc, sat, baseWet, runWet, runDepth, hzCls, cmpDiff, mask,
+    });
+    if (!r || !r.rgba || r.rgba.length !== W * H * 4) throw new Error('composeWater returned no picture');
+    if (!waterImg || waterImg.width !== W || waterImg.height !== H) waterImg = new ImageData(W, H);
+    waterImg.data.set(r.rgba);
+    return { img: waterImg, count: r.count || 0 };
   }
 
   /* ---- 5 m flood edges from LiDAR (display only) ----
@@ -1452,7 +1387,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   const finePool = createFinePool({
     makeWorker: () => new Worker(new URL('./fine-worker.js', import.meta.url), { type: 'module' }),
     size: typeof Worker === 'undefined' ? 0 : Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)),
-    fallback: fineRaster,
+    fallback: (p) => F.fineRaster(p),   // on the main thread, when workers are not available
     onProblem: (message) => logProblem('worker', message),
   });
   function fineCompute(p) { return finePool.compute(p); }
@@ -7789,7 +7724,9 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     // water just below sea level, inland gaps are filled from the land
     // around them (not left as pits for the model to fill as "normal water")
     if (gaps) {
-      const g = F.engine === 'rust' && F.classifyDemGaps ? F.classifyDemGaps(dem, iw, ih) : classifyDemGaps(dem, iw, ih);
+      try { await window.FloodCoreReady; } catch (err) { /* reported just below */ }
+      if (F.engine !== 'rust') throw new Error('The flood model (WebAssembly) is unavailable in this browser.');
+      const g = F.classifyDemGaps(dem, iw, ih);
       for (let i = 0; i < iw * ih; i++) if (g.sea[i]) dem[i] = -1.5;
       land += g.filledCells;
     }

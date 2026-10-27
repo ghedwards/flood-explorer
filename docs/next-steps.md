@@ -17,7 +17,7 @@ Shipped this round:
   if the first fetch times out and switches to live when it arrives.
 - **Elevation**: downloads time out (45 s per try), LiDAR gets 20 s past DEM-H
   then the model goes ahead on DEM-H; inland DEM-H gaps are filled
-  (`viewer/dem-voids.js`); LiDAR cells near 0 m under high DEM-H are treated
+  (`rust/flood-core/src/voids.rs`); LiDAR cells near 0 m under high DEM-H are treated
   as gaps (Wagga and Gundagai had 170-200 m of "normal water").
 - **River below the gauge**: the normal surface is held up by the bed's lower
   quarter downstream, never below normal depth over the local median bed

@@ -355,7 +355,7 @@
     }
 
     // The 5 m flood picture from LiDAR (the same inputs and result as fineRaster in
-    // fine-raster.js, which stays as the reference and the fallback). Colours are
+    // tests/fine-raster-reference.js, which is the reference it is checked against). Colours are
     // clamped to bytes the way the JavaScript's Uint8ClampedArray output does.
     function fineRaster(p) {
       const clamped = (v) => Uint8ClampedArray.of(v)[0];
@@ -374,15 +374,15 @@
     }
 
     // Gaps in an elevation window: sea at the coast, filled holes inland (the same
-    // result as classifyDemGaps in dem-voids.js, which stays as the reference and the
-    // fallback). `dem` is changed in place, as there.
+    // result as classifyDemGaps in tests/dem-voids-reference.js, the reference it is checked
+    // against). `dem` is changed in place, as there.
     function classifyDemGaps(dem, W, H, shoreMax) {
       const out = call('classifyDemGaps', { dem: f32(dem), W, H, shoreMax: shoreMax == null ? null : shoreMax });
       dem.set(out.dem);
       return { sea: out.sea, seaCells: num(out.seaCells), filledCells: num(out.filledCells), gaps: num(out.gaps) };
     }
 
-    // Shaded relief (the same result as terrainRGBA in relief.js, to within a colour step).
+    // Shaded relief (the same result as terrainRGBA in tests/relief-reference.js, to within a colour step).
     function terrainRGBA(a, stops) {
       const out = call('terrainRGBA', {
         W: a.W, H: a.H, cell: a.cell, dem: f32(a.dem), valid: u8(a.valid), ocean: u8(a.ocean || null),

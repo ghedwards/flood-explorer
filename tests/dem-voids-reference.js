@@ -11,13 +11,14 @@
  * dem: Float32Array W*H with NaN for no data (changed in place).
  * Returns { sea: Uint8Array (1 = sea), seaCells, filledCells, gaps }.
  *
- * rust/flood-core/src/voids.rs does the same in Rust (FloodCore.classifyDemGaps), which the
- * page uses once the module has loaded; this stays as the reference and the fallback, and
- * tests/dem-voids-wasm.test.js checks the two agree exactly.
+ * rust/flood-core/src/voids.rs does the same in Rust (FloodCore.classifyDemGaps), which the page uses;
+ * this is the plain JavaScript reference, and tests/dem-voids-wasm.test.js checks the two agree exactly.
+ * The page does not use it.
  */
-export const SEA_SHORE_MAX_M = 20;
+'use strict';
+const SEA_SHORE_MAX_M = 20;
 
-export function classifyDemGaps(dem, W, H, shoreMax = SEA_SHORE_MAX_M) {
+function classifyDemGaps(dem, W, H, shoreMax = SEA_SHORE_MAX_M) {
   const N = W * H;
   const sea = new Uint8Array(N);
   const comp = new Int32Array(N).fill(-1);
@@ -85,3 +86,5 @@ export function classifyDemGaps(dem, W, H, shoreMax = SEA_SHORE_MAX_M) {
   }
   return { sea, seaCells, filledCells, gaps };
 }
+
+module.exports = { SEA_SHORE_MAX_M, classifyDemGaps };

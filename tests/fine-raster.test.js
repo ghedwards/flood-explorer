@@ -1,10 +1,10 @@
-// The 5 m flood picture from LiDAR (viewer/fine-raster.js).
+// The 5 m flood picture from LiDAR (tests/fine-raster-reference.js, the reference for the Rust picture).
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 (async () => {
-  const { fineRaster, fineWindow, cropGrid } = await import('../viewer/fine-raster.js');
+  const { fineWindow, cropGrid } = await import('../viewer/fine-raster.js'), { fineRaster } = require('./fine-raster-reference.js');
 
   // A 40×40 model (~28 m cells) over a 0.01° square: flat ground at 1 m,
   // water level 2 m in the west half (wet), dry in the east half.
