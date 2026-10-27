@@ -2064,9 +2064,9 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // and saved places still rebuild when the signal drops.
   status.offline = { supported: 'serviceWorker' in navigator, registered: false, online: navigator.onLine };
   if (import.meta.env.PROD && 'serviceWorker' in navigator && window.isSecureContext) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href).then(() => { status.offline.registered = true; }).catch((err) => { status.offline.error = String(err); });
-    });
+    // main.js starts the app after the module has loaded, which is usually after the page's load event
+    const register = () => navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href).then(() => { status.offline.registered = true; }).catch((err) => { status.offline.error = String(err); });
+    if (document.readyState === 'complete') register(); else window.addEventListener('load', register);
   }
   function showConnection() {
     const on = navigator.onLine;
