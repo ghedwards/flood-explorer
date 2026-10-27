@@ -61,6 +61,10 @@ pub struct Solver {
     forcing: Vec<Forcing>,
     level: Option<(Vec<f64>, Vec<f64>)>,
     order: u8,
+    /// Reused every step instead of allocating the change in (h, mx, my) of every cell.
+    scratch: Vec<[f64; 3]>,
+    /// Reconstructed face states of the second-order scheme, one buffer per direction.
+    recon: [Vec<[f64; 8]>; 2],
 }
 
 impl Solver {
@@ -93,7 +97,7 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
             speed: vec![0.0; n], time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
-            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), level: None, order: 1 };
+            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), level: None, order: 1, scratch: Vec::new(), recon: [Vec::new(), Vec::new()] };
         s.dt = s.stable_dt();
         Ok(s)
     }
@@ -275,16 +279,21 @@ impl Solver {
 
     fn first_order_delta(&mut self, dt: f64) -> Vec<[f64; 3]> {
         let ratio = dt / self.cell;
-        let mut delta = vec![[0.0; 3]; self.water.len()];
+        let mut delta = std::mem::take(&mut self.scratch);
+        delta.clear();
+        delta.resize(self.water.len(), [0.0; 3]);
         // Include mirrored ghost states at outer walls. Each interior face is
         // evaluated once, so its mass exchange is exactly equal and opposite.
+        let mut inflow = 0.0;
         for axis in [1, 2] {
             let (across, along) = if axis == 1 { (self.w, self.h) } else { (self.h, self.w) };
-            for row in 0..along { for face in 0..=across {
+            let mut visit = |row: usize, face: usize| {
                 let index = |col: usize| if axis == 1 { row * self.w + col } else { col * self.w + row };
                 let li = index(face.saturating_sub(1));
                 let ri = index(face.min(across - 1));
-                if !self.valid[li] && !self.valid[ri] { continue; }
+                if !self.valid[li] && !self.valid[ri] { return; }
+                // Two cells with no water at all exchange nothing (the flux is exactly zero).
+                if self.water[li] == 0.0 && self.water[ri] == 0.0 { return; }
                 let (mut zl, mut zr) = (self.bed[li], self.bed[ri]);
                 let mut left = self.state(li);
                 let mut right = self.state(ri);
@@ -299,8 +308,7 @@ impl Solver {
                 } else { None };
                 let (flux, cl, cr) = if let Some((f, edge)) = boundary {
                     // Mass entering the domain, in m3, through this face.
-                    let inflow = if matches!(edge, Edge::West | Edge::North) { f[0] } else { -f[0] } * dt * self.cell;
-                    self.boundary_volume += inflow;
+                    inflow += if matches!(edge, Edge::West | Edge::North) { f[0] } else { -f[0] } * dt * self.cell;
                     (f, 0.0, 0.0)
                 } else {
                     Self::face(left, right, zl, zr, axis)
@@ -309,8 +317,10 @@ impl Solver {
                     if face > 0 && self.valid[li] { delta[li][k] -= ratio * (flux[k] + if k == axis { cl } else { 0.0 }); }
                     if face < across && self.valid[ri] { delta[ri][k] += ratio * (flux[k] + if k == axis { cr } else { 0.0 }); }
                 }
-            } }
+            };
+            for row in 0..along { for face in 0..=across { visit(row, face); } }
         }
+        self.boundary_volume += inflow;
         delta
     }
 
@@ -320,42 +330,47 @@ impl Solver {
     // it and both neighbours are valid and wet, and its depth comfortably
     // exceeds the bed and surface variation; otherwise it keeps its mean values,
     // which is exactly the first-order scheme there.
-    fn reconstruct(&self, axis: usize, h: &[f64], mx: &[f64], my: &[f64]) -> Vec<[f64; 8]> {
+    fn reconstruct(&self, axis: usize, h: &[f64], vel: &[(f64, f64)], out_buf: &mut Vec<[f64; 8]>) {
         const WET: f64 = 0.01;
         let (w, rows) = (self.w, self.h);
         let step = if axis == 0 { 1 } else { w };
-        let velocity = |i: usize| if h[i] > DRY { (mx[i] / h[i], my[i] / h[i]) } else { (0.0, 0.0) };
         let minmod = |a: f64, b: f64, c: f64| if a > 0.0 && b > 0.0 && c > 0.0 { a.min(b).min(c) } else if a < 0.0 && b < 0.0 && c < 0.0 { a.max(b).max(c) } else { 0.0 };
         let limited = |lo: f64, mid: f64, hi: f64| minmod(1.5 * (mid - lo), 0.5 * (hi - lo), 1.5 * (hi - mid));
-        (0..w * rows).map(|i| {
+        out_buf.clear();
+        out_buf.extend((0..w * rows).map(|i| {
             let (x, y) = (i % w, i / w);
-            let (u, v) = velocity(i);
+            let (u, v) = vel[i];
             let out = [h[i], h[i], u, u, v, v, self.bed[i], self.bed[i]];
+            // a cell that is not wet enough keeps its mean values
+            if h[i] < WET { return out; }
             let inside = if axis == 0 { x > 0 && x + 1 < w } else { y > 0 && y + 1 < rows };
             if !inside { return out; }
             let (a, b) = (i - step, i + step);
-            if !(self.valid[i] && self.valid[a] && self.valid[b]) || h[i] < WET || h[a] < WET || h[b] < WET { return out; }
+            if !(self.valid[i] && self.valid[a] && self.valid[b]) || h[a] < WET || h[b] < WET { return out; }
             let surface = |j: usize| h[j] + self.bed[j];
             let s_eta = limited(surface(a), surface(i), surface(b));
             let s_z = 0.5 * (self.bed[b] - self.bed[a]);
             let s_h = s_eta - s_z;
             // Keep both face depths positive with margin; otherwise stay first-order.
             if s_h.abs() > 1.8 * h[i] || s_z.abs() > 1.8 * h[i] { return out; }
-            let (ua, ub) = (velocity(a), velocity(b));
+            let (ua, ub) = (vel[a], vel[b]);
             let s_u = limited(ua.0, u, ub.0);
             let s_v = limited(ua.1, v, ub.1);
             [h[i] - 0.5 * s_h, h[i] + 0.5 * s_h, u - 0.5 * s_u, u + 0.5 * s_u, v - 0.5 * s_v, v + 0.5 * s_v, self.bed[i] - 0.5 * s_z, self.bed[i] + 0.5 * s_z]
-        }).collect()
+        }));
     }
 
     // Time derivative of (h, mx, my) for the second-order scheme, and the water
     // entering through forced edges (m3/s). Same face fluxes and pressure
     // corrections as the first-order scheme, applied to reconstructed face
     // states, plus a centred bed-slope source from the reconstructed bed.
-    fn rate(&self, h: &[f64], mx: &[f64], my: &[f64], time: f64) -> (Vec<[f64; 3]>, f64) {
+    fn rate(&self, h: &[f64], mx: &[f64], my: &[f64], time: f64, recon: &mut [Vec<[f64; 8]>; 2]) -> (Vec<[f64; 3]>, f64) {
         let n = h.len();
         let inv = 1.0 / self.cell;
-        let recon = [self.reconstruct(0, h, mx, my), self.reconstruct(1, h, mx, my)];
+        // velocities once for both directions (a dry cell has none)
+        let vel: Vec<(f64, f64)> = (0..n).map(|i| if h[i] > DRY { (mx[i] / h[i], my[i] / h[i]) } else { (0.0, 0.0) }).collect();
+        self.reconstruct(0, h, &vel, &mut recon[0]);
+        self.reconstruct(1, h, &vel, &mut recon[1]);
         let mut rate = vec![[0.0; 3]; n];
         let mut inflow = 0.0;
         for axis in [1usize, 2] {
@@ -366,6 +381,8 @@ impl Solver {
                 let li = index(face.saturating_sub(1));
                 let ri = index(face.min(across - 1));
                 if !self.valid[li] && !self.valid[ri] { continue; }
+                // Two cells with no water at all exchange nothing (the flux is exactly zero).
+                if h[li] == 0.0 && h[ri] == 0.0 { continue; }
                 // Left state: the lower cell's outward face; right: the upper cell's inward face.
                 let pick = |c: &[f64; 8], outward: bool| {
                     let o = usize::from(outward);
@@ -407,7 +424,8 @@ impl Solver {
 
     fn second_order_delta(&mut self, dt: f64) -> Result<Vec<[f64; 3]>, String> {
         let n = self.water.len();
-        let (r0, in0) = self.rate(&self.water, &self.mx, &self.my, self.time);
+        let mut recon = std::mem::take(&mut self.recon);
+        let (r0, in0) = self.rate(&self.water, &self.mx, &self.my, self.time, &mut recon);
         let (mut h1, mut m1, mut n1) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
         for i in 0..n {
             let h = self.water[i] + dt * r0[i][0];
@@ -415,7 +433,8 @@ impl Solver {
             h1[i] = h.max(0.0);
             if h1[i] > DRY { m1[i] = self.mx[i] + dt * r0[i][1]; n1[i] = self.my[i] + dt * r0[i][2]; }
         }
-        let (r1, in1) = self.rate(&h1, &m1, &n1, self.time + dt);
+        let (r1, in1) = self.rate(&h1, &m1, &n1, self.time + dt, &mut recon);
+        self.recon = recon;
         self.boundary_volume += 0.5 * dt * (in0 + in1);
         Ok((0..n).map(|i| [0, 1, 2].map(|k| 0.5 * dt * (r0[i][k] + r1[i][k]))).collect())
     }
@@ -423,31 +442,41 @@ impl Solver {
     fn step(&mut self) -> Result<(), String> {
         let dt = self.stable_dt();
         let delta = if self.order == 2 { self.second_order_delta(dt)? } else { self.first_order_delta(dt) };
-        for (i, d) in delta.iter().enumerate() {
-            let h = self.water[i] + d[0];
+        // The per-cell update works on plain slices of equal length, so no index is checked.
+        let n = self.water.len();
+        let (water, mx, my, eta, peak, speed) = (&mut self.water[..n], &mut self.mx[..n], &mut self.my[..n], &mut self.eta[..n], &mut self.peak[..n], &mut self.speed[..n]);
+        let (reference, sponge, change) = (&self.reference[..n], &self.sponge[..n], &delta[..n]);
+        let (roughness, cell) = (self.roughness, self.cell);
+        let mut sponge_exchange = 0.0;
+        for i in 0..n {
+            let d = change[i];
+            let h = water[i] + d[0];
             if !h.is_finite() || h < -1e-9 { return Err("inundation solver lost positivity; reset the scene".into()); }
-            self.water[i] = h.max(0.0);
-            self.mx[i] += d[1]; self.my[i] += d[2];
-            if self.water[i] <= DRY { self.mx[i] = 0.0; self.my[i] = 0.0; }
-            else {
-                let speed = self.mx[i].hypot(self.my[i]) / self.water[i];
-                let friction = 1.0 + dt * G * self.roughness.powi(2) * speed / self.water[i].powf(4.0 / 3.0);
-                self.mx[i] /= friction; self.my[i] /= friction;
+            water[i] = h.max(0.0);
+            mx[i] += d[1]; my[i] += d[2];
+            if water[i] <= DRY { mx[i] = 0.0; my[i] = 0.0; }
+            else if roughness != 0.0 {
+                // (With no roughness the friction factor is exactly 1, so it is skipped.)
+                let speed = mx[i].hypot(my[i]) / water[i];
+                let friction = 1.0 + dt * G * roughness.powi(2) * speed / water[i].powf(4.0 / 3.0);
+                mx[i] /= friction; my[i] /= friction;
             }
-            if self.sponge[i] > 0.0 {
-                let damping = (-self.sponge[i] * dt / 20.0).exp();
-                let previous = self.water[i];
-                self.water[i] = self.reference[i] + (previous - self.reference[i]) * damping;
-                self.boundary_volume += (self.water[i] - previous) * self.cell * self.cell;
-                self.mx[i] *= damping; self.my[i] *= damping;
+            if sponge[i] > 0.0 {
+                let damping = (-sponge[i] * dt / 20.0).exp();
+                let previous = water[i];
+                water[i] = reference[i] + (previous - reference[i]) * damping;
+                sponge_exchange += (water[i] - previous) * cell * cell;
+                mx[i] *= damping; my[i] *= damping;
             }
-            self.eta[i] = self.water[i] - self.reference[i];
-            self.peak[i] = self.peak[i].max(self.eta[i].abs());
-            self.speed[i] = if self.water[i] > DRY { self.mx[i].hypot(self.my[i]) / self.water[i] } else { 0.0 };
-            if !self.speed[i].is_finite() { return Err("non-finite inundation velocity".into()); }
+            eta[i] = water[i] - reference[i];
+            peak[i] = peak[i].max(eta[i].abs());
+            speed[i] = if water[i] > DRY { mx[i].hypot(my[i]) / water[i] } else { 0.0 };
+            if !speed[i].is_finite() { return Err("non-finite inundation velocity".into()); }
         }
+        self.boundary_volume += sponge_exchange;
         self.time += dt;
         self.dt = self.stable_dt();
+        self.scratch = delta;
         Ok(())
     }
 }
@@ -787,6 +816,54 @@ mod tests {
         assert!(second_fine.l1 < 0.03 && second_coarse.l1 < 0.06, "second order: {} and {}", second_fine.l1, second_coarse.l1);
         assert!(second_fine.l1 < first_fine.l1 / 4.0, "second order should keep the shape several times better");
         assert!(second_fine.shoreline < 3.0, "second order shoreline error {} m", second_fine.shoreline);
+    }
+
+    // Where the time goes on a 160 x 96 scene like the bundled local terrains (run with --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn time_the_steps() {
+        let (w, h, cell) = (160usize, 96usize, 50.0_f64);
+        let bed: Vec<f64> = (0..w * h).map(|i| { let x = (i % w) as f64; if x < 80.0 { -(40.0 - x * 0.5) } else { (x - 80.0) * 0.1 } }).collect();
+        let still: Vec<f64> = bed.iter().map(|z| (-z).max(0.0)).collect();
+        let eta: Vec<f64> = (0..w * h).map(|i| if still[i] > 0.0 { 0.8 * (-(((i % w) as f64 - 40.0).powi(2) + ((i / w) as f64 - 48.0).powi(2)) / 50.0).exp() } else { 0.0 }).collect();
+        for order in [1u8, 2] {
+            let mut s = Solver::new(w, h, cell, bed.clone(), still.clone(), eta.clone(), true, 0.025).unwrap();
+            s.set_order(order).unwrap();
+            // a second scene with a forced edge, a tide, a mask and no sponge, only for the checksum
+            let mut f = Solver::new(w, h, cell, bed.clone(), still.clone(), vec![0.0; w * h], false, 0.03).unwrap();
+            f.set_order(order).unwrap();
+            f.set_valid((0..w * h).map(|i| u8::from(!((i % w) > 120 && (i / w) % 9 == 4))).collect()).unwrap();
+            f.set_forcing(Edge::West, (0..20).map(|k| k as f64 * 60.0).collect(), (0..20).map(|k| 0.6 * (k as f64 * 0.7).sin()).collect(), 1).unwrap();
+            f.set_level((0..20).map(|k| k as f64 * 60.0).collect(), (0..20).map(|k| 0.02 * k as f64).collect()).unwrap();
+            for _ in 0..(if order == 1 { 15 } else { 6 }) { f.advance(100).unwrap(); }
+            let fsum = |v: &[f64]| v.iter().fold(0xcbf29ce484222325u64, |a, x| (a ^ x.to_bits()).wrapping_mul(0x100000001b3).rotate_left(5));
+            eprintln!("order {order}: forced checksum water {:016x} mx {:016x} my {:016x} volume error {:.3e}", fsum(&f.water), fsum(&f.mx), fsum(&f.my), f.volume_error());
+            let steps = std::env::var("STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(if order == 1 { 3000 } else { 1000 });
+            let t = std::time::Instant::now();
+            for _ in 0..steps / 200 { s.advance(200).unwrap(); }
+            let each = t.elapsed().as_secs_f64() / steps as f64;
+            let sum = |v: &[f64]| v.iter().fold(0xcbf29ce484222325u64, |a, x| (a ^ x.to_bits()).wrapping_mul(0x100000001b3).rotate_left(5));
+            eprintln!("order {order}: checksum water {:016x} mx {:016x} my {:016x}", sum(&s.water), sum(&s.mx), sum(&s.my));
+            eprintln!("order {order}: {:.1} us per step, {:.1} ns per cell-step, dt {:.3} s", each * 1e6, each * 1e9 / (w * h) as f64, s.dt);
+            let t = std::time::Instant::now();
+            for _ in 0..200 { std::hint::black_box(s.stable_dt()); }
+            eprintln!("  stable_dt: {:.1} us", t.elapsed().as_secs_f64() / 200.0 * 1e6);
+            if order == 1 {
+                let t = std::time::Instant::now();
+                for _ in 0..200 { std::hint::black_box(s.first_order_delta(1.0)); }
+                eprintln!("  first_order_delta: {:.1} us", t.elapsed().as_secs_f64() / 200.0 * 1e6);
+            } else {
+                let vel: Vec<(f64, f64)> = (0..w * h).map(|i| if s.water[i] > DRY { (s.mx[i] / s.water[i], s.my[i] / s.water[i]) } else { (0.0, 0.0) }).collect();
+                let mut buf = Vec::new();
+                let t = std::time::Instant::now();
+                for _ in 0..200 { s.reconstruct(0, &s.water, &vel, &mut buf); std::hint::black_box(&buf); }
+                eprintln!("  one reconstruct: {:.1} us", t.elapsed().as_secs_f64() / 200.0 * 1e6);
+                let mut recon = [Vec::new(), Vec::new()];
+                let t = std::time::Instant::now();
+                for _ in 0..200 { std::hint::black_box(s.rate(&s.water, &s.mx, &s.my, 0.0, &mut recon)); }
+                eprintln!("  one rate (2 reconstructs + fluxes + source): {:.1} us", t.elapsed().as_secs_f64() / 200.0 * 1e6);
+            }
+        }
     }
 
     #[test]

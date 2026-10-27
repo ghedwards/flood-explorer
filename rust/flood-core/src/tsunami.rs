@@ -25,11 +25,17 @@ pub struct Solver {
     qx: Vec<f64>,
     qy: Vec<f64>,
     damping: Vec<f64>,
+    /// The sponge factor of every x face and y face (the geometric mean of the two cells either side),
+    /// worked out once instead of a square root per face per step.
+    damp_x: Vec<f64>,
+    damp_y: Vec<f64>,
     filter: Option<crate::dispersion::Filter>,
     variable: Option<crate::dispersion::Variable>,
     /// Use the variable-depth dispersive operator even where the depth is
     /// uniform (it is selected automatically otherwise).
     pub force_variable_dispersion: bool,
+    /// Relative residual of the variable-depth dispersive solve (see dispersion.rs).
+    pub dispersion_tolerance: f64,
     recorder: Option<Recorder>,
 }
 
@@ -71,8 +77,12 @@ impl Solver {
                 damping[y * w + x] = (-0.12 * strength * strength).exp();
             } }
         }
+        let mut damp_x = vec![1.0; (w + 1) * h];
+        let mut damp_y = vec![1.0; w * (h + 1)];
+        for y in 0..h { for x in 1..w { damp_x[y * (w + 1) + x] = (damping[y * w + x - 1] * damping[y * w + x]).sqrt(); } }
+        for y in 1..h { for x in 0..w { damp_y[y * w + x] = (damping[(y - 1) * w + x] * damping[y * w + x]).sqrt(); } }
         Ok(Self { w, h, cell, peak: eta.iter().map(|v| v.abs()).collect(), depth, eta, time: 0.0, dt, steps: 0,
-            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping, filter: None, variable: None, force_variable_dispersion: false,
+            qx: vec![0.0; (w + 1) * h], qy: vec![0.0; w * (h + 1)], damping, damp_x, damp_y, filter: None, variable: None, force_variable_dispersion: false, dispersion_tolerance: crate::dispersion::TOLERANCE,
             recorder: None, method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
     }
 
@@ -117,7 +127,11 @@ impl Solver {
             let uniform = self.depth[0];
             variable = self.force_variable_dispersion || uniform <= 0.0 || self.depth.iter().any(|d| (*d-uniform).abs() > 1e-9);
             if variable {
-                if self.variable.is_none() { self.variable = Some(crate::dispersion::Variable::new(self.w, self.h, self.cell, &self.depth)); }
+                if self.variable.is_none() {
+                    let mut v = crate::dispersion::Variable::new(self.w, self.h, self.cell, &self.depth);
+                    v.tolerance = self.dispersion_tolerance;
+                    self.variable = Some(v);
+                }
             } else if self.filter.is_none() { self.filter = Some(crate::dispersion::Filter::new(self.w,self.h,uniform,self.cell)); }
         }
         for _ in 0..steps {
@@ -138,7 +152,7 @@ impl Solver {
                     if self.depth[left] > 0.0 && self.depth[right] > 0.0 {
                         let depth = (self.depth[left] + self.depth[right]) * 0.5;
                         self.qx[face] = (self.qx[face] - kick * depth * (surface[right] - surface[left]))
-                            * (self.damping[left] * self.damping[right]).sqrt();
+                            * self.damp_x[face];
                     }
                 } }
                 for y in 1..self.h { for x in 0..self.w {
@@ -147,7 +161,7 @@ impl Solver {
                     if self.depth[above] > 0.0 && self.depth[below] > 0.0 {
                         let depth = (self.depth[above] + self.depth[below]) * 0.5;
                         self.qy[below] = (self.qy[below] - kick * depth * (surface[below] - surface[above]))
-                            * (self.damping[above] * self.damping[below]).sqrt();
+                            * self.damp_y[below];
                     }
                 } }
             }
@@ -178,7 +192,7 @@ impl Solver {
             let depth = v.depth_x(face);
             if depth > 0.0 {
                 self.qx[face] = (self.qx[face] + kick * depth * v.accel[face])
-                    * (self.damping[y * self.w + x - 1] * self.damping[y * self.w + x]).sqrt();
+                    * self.damp_x[face];
             }
         } }
         for y in 1..self.h { for x in 0..self.w {
@@ -186,7 +200,7 @@ impl Solver {
             let depth = v.depth_y(below);
             if depth > 0.0 {
                 self.qy[below] = (self.qy[below] + kick * depth * v.accel[nx + below])
-                    * (self.damping[below - self.w] * self.damping[below]).sqrt();
+                    * self.damp_y[below];
             }
         } }
         Ok(())
@@ -267,6 +281,26 @@ impl Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Cost of a step on a 160 x 96 coastal-sized grid (run with --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn time_the_steps() {
+        let (w, h) = (160usize, 96usize);
+        let depth: Vec<f64> = (0..w * h).map(|i| { let x = (i % w) as f64; if x > 140.0 { 0.0 } else { (4000.0 - x * 18.0).max(30.0) } }).collect();
+        let eta: Vec<f64> = (0..w * h).map(|i| if depth[i] > 0.0 { 1.5 * (-(((i % w) as f64 - 50.0).powi(2) + ((i / w) as f64 - 48.0).powi(2)) / 60.0).exp() } else { 0.0 }).collect();
+        let sum = |v: &[f64]| v.iter().fold(0xcbf29ce484222325u64, |a, x| (a ^ x.to_bits()).wrapping_mul(0x100000001b3).rotate_left(5));
+        for (name, method, absorbing) in [("staggered", Method::Staggered, true), ("staggered, no sponge", Method::Staggered, false), ("finite volume", Method::FiniteVolume, true), ("dispersive", Method::Dispersive, true)] {
+            let mut s = Solver::new(w, h, 1500.0, depth.clone(), eta.clone(), absorbing).unwrap();
+            s.method = method;
+            let steps = if method == Method::Dispersive { 200 } else { 1000 };
+            let t = std::time::Instant::now();
+            for _ in 0..steps / 100 { s.advance(100).unwrap(); }
+            let each = t.elapsed().as_secs_f64() / steps as f64;
+            eprintln!("{name}: {:.1} us per step, {:.1} ns per cell-step; checksum eta {:016x} qx {:016x}; solver iterations per step {:.1}", each * 1e6, each * 1e9 / (w * h) as f64, sum(&s.eta), sum(&s.qx), s.dispersion_iterations() as f64 / s.steps as f64);
+        }
+    }
+
 
     #[test]
     fn still_water_stays_still_over_variable_bathymetry() {
@@ -420,9 +454,30 @@ mod tests {
         scalar.method = Method::Dispersive;
         variable.method = Method::Dispersive;
         variable.force_variable_dispersion = true;
+        // Solved tightly, so this compares the two operators, not the solver's stopping point.
+        variable.dispersion_tolerance = 1e-10;
         for _ in 0..3 { scalar.advance(40).unwrap(); variable.advance(40).unwrap(); }
         let worst = scalar.eta.iter().zip(&variable.eta).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
         assert!(worst < 1e-7, "max difference {worst}");
+    }
+
+    #[test]
+    fn the_default_solver_tolerance_changes_the_wave_by_far_less_than_a_millimetre() {
+        // 1e-6 (the default) against 1e-10, a 0.5 m source over a shelf after 600 steps.
+        let (w, h) = (96, 40);
+        let depth = shelf(w, h, 3000.0);
+        let eta = pulse(w, h, 40.0, 3.0);
+        let run = |tolerance: f64| {
+            let mut s = Solver::new(w, h, 1000.0, depth.clone(), eta.clone(), false).unwrap();
+            s.method = Method::Dispersive;
+            s.dispersion_tolerance = tolerance;
+            for _ in 0..6 { s.advance(100).unwrap(); }
+            (s.eta.clone(), s.dispersion_iterations())
+        };
+        let ((loose, loose_iterations), (tight, tight_iterations)) = (run(crate::dispersion::TOLERANCE), run(1e-10));
+        let worst = loose.iter().zip(&tight).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        assert!(worst < 1e-5, "max difference {worst} m");
+        assert!(loose_iterations * 3 < tight_iterations * 2, "{loose_iterations} iterations against {tight_iterations}");
     }
 
     #[test]
