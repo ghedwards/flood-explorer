@@ -427,6 +427,11 @@ interval on that fraction. Scenarios whose peak at the point is under 0.1 m are 
 flooding nothing (a 9 cm wave floods about 2 ha). A run of 60 draws for Kermadec-Tonga (`kermadectonga2`,
 Mw 8.4 to 9.6, 10,351 scenarios, total rate 1.8% per year) at hazard point 1450.5 takes about 25 minutes;
 the full report is `docs/validation/ensemble-kermadectonga2-gauge1450.5.json`.
+`ensemble-ptha.js` and `tide-sweep.js` spread their local runs over worker threads
+(`--jobs N`, default one per core up to 8; `scripts/run-pool.js`). Each worker loads its own copy of the
+WASM model and the runs are deterministic, so results do not depend on the number of workers (a test checks this).
+On 4 cores, six one-hour runs took 99 s in one thread and 33 s on four workers, about 3 times faster, with identical results
+(a run takes 15 to 20 s on an idle core). The 25 minutes quoted above was for the earlier single-thread version.
 
 As a check on the sampling, its offshore result can be compared with PTHA18's own curve for that zone at the same
 point (rate of exceeding the stage; PTHA18's interval is its 16th to 84th percentile, the sample's is a 90% sampling interval):
