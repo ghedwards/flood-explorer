@@ -287,6 +287,53 @@ function sampleEvenly(rows, count) {
   return Array.from({ length: count }, (_, i) => rows[Math.floor(i * rows.length / count)]);
 }
 
+// Scenarios drawn with probability proportional to their annual rate, by systematic
+// sampling: `count` equally spaced points through the cumulative rate, from a random
+// start (`random()` in [0, 1)). A scenario carrying more than 1/count of the total rate
+// is drawn several times, so draws are returned as { row, mw, rateAnnual, draws } with
+// distinct rows; `total` is the summed rate of the pool the draws represent.
+function sampleByRate(rows, count, random = Math.random) {
+  if (!Number.isInteger(count) || count < 1) throw new Error('The sample size is a whole number from 1.');
+  const total = rows.reduce((sum, r) => sum + r.rateAnnual, 0);
+  if (!(total > 0)) throw new Error('None of the scenarios has a positive rate.');
+  const step = total / count, start = random() * step, drawn = new Map();
+  let cumulative = 0, k = 0;
+  for (const r of rows) {
+    cumulative += r.rateAnnual;
+    while (k < count && start + k * step < cumulative) {
+      drawn.set(r.row, { ...r, draws: (drawn.get(r.row)?.draws || 0) + 1 });
+      k++;
+    }
+  }
+  return { draws: [...drawn.values()], total, count };
+}
+
+// Annual rate at which `metric` reaches each threshold, from rate-proportional draws:
+// total rate times the fraction of draws at or above it. `results` are { draws, value }
+// for the distinct scenarios drawn. The 90% interval is the Wilson interval on that
+// fraction, so it covers the sampling error only (not the model's, nor PTHA18's own
+// uncertainty), and it is wide when few draws reach the threshold.
+function sampledExceedance(results, total, count, thresholds) {
+  const z = 1.645;
+  return thresholds.map(threshold => {
+    const hits = results.reduce((n, r) => n + (r.value >= threshold ? r.draws : 0), 0), p = hits / count;
+    const denominator = 1 + z * z / count, centre = (p + z * z / (2 * count)) / denominator;
+    const half = z * Math.sqrt(p * (1 - p) / count + z * z / (4 * count * count)) / denominator;
+    return { threshold, hits, rate: total * p, low: total * Math.max(0, centre - half), high: total * Math.min(1, centre + half) };
+  });
+}
+
+// A small seeded generator (mulberry32) so a sampled ensemble can be repeated.
+function seededRandom(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 // One scenario (1-based table row, as in the R code) of a source zone.
 async function scenario(get, zone, slipType, row) {
   checkZone(zone); checkSlipType(slipType);
@@ -465,5 +512,5 @@ function toCsv(series, meta) {
 
 module.exports = {
   DAP_BASE, SLIP_TYPES, parseDapAscii, parseIndices, parseSlips, relativePath, hazardPoints, nearestPoints, pointByGaugeID,
-  exceedanceCurve, exceedanceRate, describeRate, ZONES, zoneContributions, stageAtRate, rankByPeak, sampleEvenly, scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
+  exceedanceCurve, exceedanceRate, describeRate, ZONES, zoneContributions, stageAtRate, rankByPeak, sampleEvenly, sampleByRate, sampledExceedance, seededRandom, scenario, findScenarios, scenarioStage, unitSeriesAt, scenarioRange, scenarioTargets, sumScenario, delayedLinearFriction, greenScale, trimSeries, toCsv,
 };

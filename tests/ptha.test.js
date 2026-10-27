@@ -274,3 +274,31 @@ test('the batch runner reports each series through the nested model and rejects 
   await assert.rejects(main(['--seconds', '99999', 'x.csv']), /up to 7200/);
   await assert.rejects(main(['--tide', '1', 'x.csv']), /Unknown option/);
 });
+
+test('rate-proportional sampling draws in proportion to rate and estimates exceedance rates', () => {
+  const rows = [{ row: 1, mw: 8, rateAnnual: 1 }, { row: 2, mw: 8, rateAnnual: 1 }, { row: 3, mw: 9, rateAnnual: 2 }];
+  const { draws, total, count } = lib.sampleByRate(rows, 4, () => 0);
+  assert.equal(total, 4);
+  assert.equal(count, 4);
+  assert.deepEqual(draws.map(d => [d.row, d.draws]), [[1, 1], [2, 1], [3, 2]]);
+  // A heavy scenario is drawn several times; a huge sample follows the rates closely.
+  const many = Array.from({ length: 50 }, (_, i) => ({ row: i + 1, mw: 8, rateAnnual: i === 0 ? 50 : 1 }));
+  const sample = lib.sampleByRate(many, 99, () => .3);
+  assert.equal(sample.draws.find(d => d.row === 1).draws, 50);
+  assert.equal(sample.draws.reduce((n, d) => n + d.draws, 0), 99);
+  assert.throws(() => lib.sampleByRate(rows, 0), /whole number/);
+  assert.throws(() => lib.sampleByRate([{ row: 1, mw: 8, rateAnnual: 0 }], 3), /positive rate/);
+  // The generator is seeded and in [0, 1).
+  const [a, b] = [lib.seededRandom(7), lib.seededRandom(7)];
+  const values = Array.from({ length: 5 }, a);
+  assert.deepEqual(values, Array.from({ length: 5 }, b));
+  assert.ok(values.every(v => v >= 0 && v < 1) && new Set(values).size === 5);
+  // Exceedance: half the draws reach 2, so half the total rate does.
+  const results = [{ draws: 2, value: 1 }, { draws: 2, value: 3 }];
+  const [low, high, none] = lib.sampledExceedance(results, 0.01, 4, [0.5, 2, 10]);
+  assert.equal(low.rate, 0.01);
+  assert.equal(high.rate, 0.005);
+  assert.equal(none.rate, 0);
+  assert.ok(high.low < high.rate && high.rate < high.high && none.low === 0 && none.high > 0);
+  assert.equal(low.hits, 4);
+});
