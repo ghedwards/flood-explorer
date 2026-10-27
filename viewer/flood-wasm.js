@@ -369,8 +369,17 @@
       return { sea: out.sea, seaCells: num(out.seaCells), filledCells: num(out.filledCells), gaps: num(out.gaps) };
     }
 
+    // Shaded relief (the same result as terrainRGBA in relief.js, to within a colour step).
+    function terrainRGBA(a, stops) {
+      const out = call('terrainRGBA', {
+        W: a.W, H: a.H, cell: a.cell, dem: f32(a.dem), valid: u8(a.valid), ocean: u8(a.ocean || null),
+        stops: stops.flatMap(([t, c]) => [t, c[0], c[1], c[2]]),
+      });
+      return new Uint8ClampedArray(out.rgba.slice().buffer);
+    }
+
     const rust = {
-      fineRaster, classifyDemGaps,
+      fineRaster, classifyDemGaps, terrainRGBA,
       tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
       // Run a regional model to the end, returning surface displacement at the
       // requested (x, y) cell coordinates for use as nested boundary forcing.

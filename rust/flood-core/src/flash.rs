@@ -165,15 +165,32 @@ pub fn flash_flood(a: &Analysis, o: &Storm) -> Run {
     }
     let mut overland = 0usize;
     if cc > 0.0 {
+        // Rain intensity depends only on the catchment area, and almost every land cell drains a
+        // handful of cells, so it is worked out once per catchment size (a power per cell otherwise).
+        let mut memo = vec![f64::NAN; 4096];
+        let mut intensity = |acc: f64| -> f64 {
+            if (0.0..4096.0).contains(&acc) && acc == acc.floor() {
+                let k = acc as usize;
+                if memo[k].is_nan() { memo[k] = i_at((acc * cell_a) / 1e6); }
+                memo[k]
+            } else {
+                i_at((acc * cell_a) / 1e6)
+            }
+        };
         for c in 0..n {
             if a.valid[c] == 0 || a.stream[c] != 0 || a.ocean[c] != 0 || a.rec[c] < 0 {
                 continue;
             }
             let r = a.rec[c] as usize;
             let piped = ua.as_ref().map_or(0.0, |u| pipe * u[c] as f64 * cell_a);
-            let qw = jmax(0.0, cc * i_at((a.acc[c] * cell_a) / 1e6) * a.acc[c] * cell_a - piped) / cell;
+            let qw = jmax(0.0, cc * intensity(a.acc[c]) * a.acc[c] * cell_a - piped) / cell;
             let s = jmax(0.002, (dem[c] as f64 - dem[r] as f64) / jmax(cell, a.chain[c] - a.chain[r]));
-            let d = ((qw * n_ov) / s.sqrt()).powf(0.6);
+            let x = (qw * n_ov) / s.sqrt();
+            // x^0.6 reaches 0.1 m at x = 0.02154, so the power is only worked out for the few cells above 0.0215
+            if x < 0.0215 {
+                continue;
+            }
+            let d = x.powf(0.6);
             if d >= 0.1 && d > depth[c] as f64 {
                 depth[c] = d as f32;
                 kind[c] = 2;
@@ -304,5 +321,17 @@ pub fn flash_flood(a: &Analysis, o: &Storm) -> Run {
         on_path: vec![0u8; n],
         kind: Some(kind),
         summary: Some(summary),
+    }
+}
+
+#[cfg(test)]
+mod skip_tests {
+    /// `flash_flood` skips the overland-depth power for x below 0.0215, because x^0.6 is then under the 0.1 m
+    /// that counts as overland flow. This keeps that cut-off safely on the low side.
+    #[test]
+    fn the_overland_cut_off_is_below_the_depth_that_counts() {
+        assert!(0.0215_f64.powf(0.6) < 0.1);
+        assert!(0.0216_f64.powf(0.6) > 0.0998, "and the cut-off is close enough to be worth having");
+        assert!(0.0215 < 0.1_f64.powf(1.0 / 0.6));
     }
 }

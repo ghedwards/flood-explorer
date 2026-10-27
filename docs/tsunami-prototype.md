@@ -694,6 +694,28 @@ time is the flux itself, a few square roots and divisions per face; going furthe
 results matching bit for bit. `time_the_steps` in `inundation.rs` and `tsunami.rs` are ignored tests that print these timings
 (`cargo test --release -p flood-core time_the_steps -- --ignored --nocapture`).
 
+#### WebAssembly is slower than native at some maths
+
+A second round of measurements, in the WebAssembly module under Node (the same module the browser runs), found that
+`hypot` and `powf` cost far more there than in the native build: the module carries its own maths library, and they are
+the slow parts of it. Because of that the same change that gave 10% natively gave 2× in the module.
+
+| Change | Before | After |
+|---|---|---|
+| Nonlinear solver: vector length as `sqrt(x² + y²)` instead of `hypot` (about 1e-14 relative difference in the answer) | first order 6.8 s, second order 18 s for a 1800 s nested run | 3.2 s and 12.3 s |
+| Storm model (`flash_flood`): rain intensity worked out once per catchment size, and the overland-depth power skipped for cells below the depth that could matter (identical output) | 247 ms, and 276 ms with pipes, on 1.78 M cells | 95 ms and 125 ms |
+| Shaded relief in Rust (`terrain_rgba`), also without `hypot` and with no per-pixel trigonometry (identical to the JavaScript on test data) | JavaScript 260 ms | 89 ms |
+| Flood timeline: one scenario and one surface reused across steps, no copy of either per step (identical output) | 241 ms (0.44 M cells), 1,100 ms (1.78 M cells) | 205 ms and 980 ms |
+| 3D water frame: reads only the sampled cells of an encoded frame, and a flat table instead of a `Map` for the soft shoreline (identical mesh) | 3-5 ms hard edge, 21 ms soft shoreline | 1.3 ms and 10 ms |
+
+Things that did **not** help in the module, and were left out: replacing `powf(4/3)` with a cube root (slower), the same for
+the 2D inertial model's `h^(7/3)` (slower), working out the sponge's exponentials once per strength instead of per cell
+(no change), and finding the next time step inside the update loop instead of a separate pass (no change).
+
+Timings on this machine drift by 30% or more over an hour, so each of these was measured by building the old and new
+versions in turn, three times, and comparing neighbouring runs; an earlier comparison made without that care was
+wrong in both directions. The ignored `time_a_large_relief` test and the `time_the_steps` tests print native figures.
+
 ## Sensitivity ensemble
 
 In any nonlinear local scene, **Sensitivity ensemble** (below the gauges) reruns the

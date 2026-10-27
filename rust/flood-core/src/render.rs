@@ -248,3 +248,124 @@ mod tests {
         assert_eq!(rgba[4*4+3], 0);
     }
 }
+/// Shaded relief for the map and the static image: a hypsometric tint (`stops`, as
+/// [position, r, g, b] rows from 0 to 1) lit from the north-west, sea in a flat colour, no data
+/// transparent. A port of `terrainRGBA` in viewer/relief.js, which it matches to within a colour step
+/// (the lighting is written without per-pixel trigonometry, so it equals the browser's only up to
+/// rounding, which can move a rounded channel by one in a very few pixels).
+pub fn terrain_rgba(w: usize, h: usize, cell: f64, dem: &[f32], valid: &[u8], ocean: Option<&[u8]>, stops: &[[f64; 4]]) -> Result<Vec<u8>, String> {
+    let n = w * h;
+    if w == 0 || h == 0 || dem.len() != n || valid.len() != n || ocean.is_some_and(|o| o.len() != n) || stops.len() < 2 {
+        return Err("terrain relief: inconsistent sizes".into());
+    }
+    // the 2nd and 98th percentile of the land heights, from every seventh cell
+    let mut land: Vec<f64> = (0..n).step_by(7).filter(|&i| valid[i] != 0 && !ocean.is_some_and(|o| o[i] != 0)).map(|i| dem[i] as f64).collect();
+    land.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let (lo, hi) = if land.is_empty() { (0.0, 1.0) } else { (land[(land.len() as f64 * 0.02).floor() as usize], land[(land.len() as f64 * 0.98).floor() as usize]) };
+    let (az, alt) = ((315.0_f64 * std::f64::consts::PI) / 180.0, (45.0_f64 * std::f64::consts::PI) / 180.0);
+    let (cos_alt, sin_alt) = (alt.cos(), alt.sin());
+    let c0 = az - std::f64::consts::FRAC_PI_2;
+    let (cos_c0, sin_c0) = (c0.cos(), c0.sin());
+    let tint = |t: f64| -> [f64; 3] {
+        for k in 1..stops.len() {
+            if t <= stops[k][0] {
+                let (a, b) = (stops[k - 1], stops[k]);
+                let f = (t - a[0]) / (b[0] - a[0]);
+                return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f];
+            }
+        }
+        let last = stops[stops.len() - 1];
+        [last[1], last[2], last[3]]
+    };
+    // a Uint8ClampedArray store: round half to even, clamp to 0..=255
+    let byte = |v: f64| -> u8 { if v.is_nan() { 0 } else { v.clamp(0.0, 255.0).round_ties_even() as u8 } };
+    let at = |x: i64, y: i64| -> f64 {
+        let (x, y) = (x.clamp(0, w as i64 - 1) as usize, y.clamp(0, h as i64 - 1) as usize);
+        let i = y * w + x;
+        if valid[i] != 0 { dem[i] as f64 } else { f64::NAN }
+    };
+    let mut out = vec![0u8; n * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let (i, o) = (y * w + x, (y * w + x) * 4);
+            if valid[i] == 0 {
+                continue;
+            }
+            let c = dem[i] as f64;
+            if c < -1.0 {
+                out[o..o + 4].copy_from_slice(&[0xc9, 0xe7, 0xf7, 255]);
+                continue;
+            }
+            let z = |dx: i64, dy: i64| { let v = at(x as i64 + dx, y as i64 + dy); if v.is_nan() { c } else { v } };
+            let gx = (z(1, 0) - z(-1, 0)) / (2.0 * cell);
+            let gy = (z(0, 1) - z(0, -1)) / (2.0 * cell);
+            // The browser's formula is cos(alt) cos(slope) + sin(alt) sin(slope) cos(az - aspect - 90 deg), with
+            // slope = atan(1.6 |g|) and aspect = atan2(gy, -gx). With u = 1.6 |g|: cos(atan u) = 1 / sqrt(1 + u^2),
+            // sin(atan u) = u / sqrt(1 + u^2), cos(aspect) = -gx / |g| and sin(aspect) = gy / |g|, so the same number
+            // comes from square roots alone (no per-pixel trigonometry), equal up to rounding.
+            let g = (gx * gx + gy * gy).sqrt();   // not hypot: it is slow in WebAssembly
+            let u = g * 1.6;
+            let inv = 1.0 / (1.0 + u * u).sqrt();
+            let toward = if g > 0.0 { (cos_c0 * -gx + sin_c0 * gy) / g } else { 0.0 };
+            let hs = (cos_alt * inv + sin_alt * (u * inv) * toward).clamp(0.0, 1.0);
+            let span = hi - lo;
+            let t = ((c - lo) / if span != 0.0 { span } else { 1.0 }).clamp(0.0, 1.0);
+            let col = tint(t);
+            let k = 0.55 + 0.5 * hs;
+            out[o] = byte(col[0] * k);
+            out[o + 1] = byte(col[1] * k);
+            out[o + 2] = byte(col[2] * k);
+            out[o + 3] = 255;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod relief_tests {
+    use super::*;
+    const STOPS: [[f64; 4]; 5] = [[0.0, 226.0, 230.0, 214.0], [0.12, 208.0, 218.0, 186.0], [0.35, 186.0, 186.0, 146.0], [0.65, 160.0, 142.0, 112.0], [1.0, 128.0, 112.0, 100.0]];
+
+    #[test]
+    fn sea_is_flat_no_data_is_clear_and_slopes_facing_the_light_are_brighter() {
+        let (w, h) = (9, 5);
+        // land rising to the east, a wall of sea in the first column, one cell of no data
+        let dem: Vec<f32> = (0..w * h).map(|i| if i % w == 0 { -5.0 } else { (i % w) as f32 * 3.0 }).collect();
+        let mut valid = vec![1u8; w * h];
+        valid[2 * w + 4] = 0;
+        let px = terrain_rgba(w, h, 30.0, &dem, &valid, None, &STOPS).unwrap();
+        assert_eq!(px.len(), w * h * 4);
+        assert_eq!(&px[0..4], &[0xc9, 0xe7, 0xf7, 255]);
+        assert_eq!(px[(2 * w + 4) * 4 + 3], 0);
+        assert_eq!(px[(2 * w + 5) * 4 + 3], 255);
+        // flat ground lit at 45 degrees gives 0.55 + 0.5 cos(45 deg)... compare a west-facing and an east-facing slope
+        let flat = vec![10f32; w * h];
+        let f = terrain_rgba(w, h, 30.0, &flat, &vec![1u8; w * h], None, &STOPS).unwrap();
+        let east_down: Vec<f32> = (0..w * h).map(|i| 50.0 - (i % w) as f32 * 4.0).collect();
+        let west_down: Vec<f32> = (0..w * h).map(|i| (i % w) as f32 * 4.0).collect();
+        let a = terrain_rgba(w, h, 30.0, &east_down, &vec![1u8; w * h], None, &STOPS).unwrap();
+        let b = terrain_rgba(w, h, 30.0, &west_down, &vec![1u8; w * h], None, &STOPS).unwrap();
+        let mid = (2 * w + 4) * 4;
+        let sum = |p: &[u8]| p[mid] as u32 + p[mid + 1] as u32 + p[mid + 2] as u32;
+        assert!(sum(&b) > sum(&a), "a slope facing the north-west light is brighter ({} against {})", sum(&b), sum(&a));
+        assert!(f[mid] > 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn time_a_large_relief() {
+        let (w, h) = (1333usize, 1333usize);
+        let dem: Vec<f32> = (0..w * h).map(|i| { let (x, y) = ((i % w) as f32, (i / w) as f32); if x < 250.0 { -3.0 } else { 5.0 + 40.0 * (x / 9.0).sin() * (y / 7.0).cos() + 0.2 * x } }).collect();
+        let valid = vec![1u8; w * h];
+        let t = std::time::Instant::now();
+        let out = terrain_rgba(w, h, 30.0, &dem, &valid, None, &STOPS).unwrap();
+        eprintln!("terrain_rgba {w}x{h}: {:?} ({} bytes)", t.elapsed(), out.len());
+    }
+
+    #[test]
+    fn bad_sizes_are_errors() {
+        assert!(terrain_rgba(3, 3, 30.0, &[0.0; 8], &[1; 9], None, &STOPS).is_err());
+        assert!(terrain_rgba(3, 3, 30.0, &[0.0; 9], &[1; 9], Some(&[0; 4]), &STOPS).is_err());
+        assert!(terrain_rgba(3, 3, 30.0, &[0.0; 9], &[1; 9], None, &STOPS[..1]).is_err());
+    }
+}

@@ -944,14 +944,16 @@ pub fn flood_timeline(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Timeline {
     let mut depth_frames: Vec<u8> = Vec::with_capacity(steps * n);
     let mut depth_frame_max: Vec<f32> = Vec::with_capacity(steps);
 
+    // One scenario for every step (only the bay level moves), and the surface handed to the run
+    // and taken back, instead of copying the scenario and a surface of every cell each step.
+    let mut sc = s.clone();
+    sc.wse = None;
     for k in 0..steps {
         let t = t0 + k as f64 * step;
         gauge[k] = w.gauge_at(t) as f32;
         wave_surface(&w, t, &mut wse);
-        let mut sc = s.clone();
         sc.bay_level = w.bay_at(t);
-        sc.wse = None;
-        let run = inundate_with(a, &sc, wse.clone(), vec![0u8; n]);
+        let run = inundate_with(a, &sc, std::mem::take(&mut wse), Vec::new());
         let mut cnt = 0;
         let mut mx = 0.0f32;
         for c in 0..n {
@@ -983,12 +985,14 @@ pub fn flood_timeline(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Timeline {
         // encode this step's depths as u8 (scaled to the frame max)
         let scale = if mx > 0.0 { mx / 255.0 } else { 1.0 };
         depth_frame_max.push(mx);
-        for c in 0..n {
+        let frame_start = depth_frames.len();
+        depth_frames.resize(frame_start + n, 0);
+        for (c, out) in depth_frames[frame_start..].iter_mut().enumerate() {
             let d = if run.wet[c] != 0 && a.ocean[c] == 0 { run.depth[c] } else { 0.0 };
-            let q = if d <= 0.0 { 0u8 } else { ((d / scale).round().min(255.0)) as u8 };
-            depth_frames.push(q);
+            *out = if d <= 0.0 { 0u8 } else { ((d / scale).round().min(255.0)) as u8 };
         }
         wet_count[k] = cnt;
+        wse = run.wse;
     }
     Timeline { t0, step, steps, first_wet, last_wet, first_deep, last_deep, wet_count, gauge, words_per_step: wps, wet_bits, deep_bits, depth_frames, depth_frame_max }
 }

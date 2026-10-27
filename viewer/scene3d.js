@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import {
   makeProjection, parseKey, parentKey, tileToScene, decodeTerrarium, sampleRaster, selectTiles, resolveDraw,
-  tileHeights, tileMesh, tileGroundAt, BANDS3D, tileAt, TILE_SEGS, decimateStep, waterMesh, waterFromFrame, overrideHeight, boxesOverlap,
+  tileHeights, tileMesh, tileGroundAt, BANDS3D, tileAt, TILE_SEGS, decimateStep, waterMesh, waterMeshFromFrame, overrideHeight, boxesOverlap,
 } from './terrain3d.js';
 
 const EXAG_DEFAULT = 1.5;
@@ -1044,7 +1044,7 @@ class Scene3d {
     let m = null;
     const tl = t.area.timeline;
     if (tl && tl.depthFrames && tl.depthFrames.length >= (k + 1) * a.N && tl.depthFrameMax && tl.depthFrameMax.length > k) {
-      m = waterFromFrame(a, tl.depthFrames.subarray(k * a.N, (k + 1) * a.N), tl.depthFrameMax[k] || 0, skip, opts).mesh;
+      m = waterMeshFromFrame(a, tl.depthFrames.subarray(k * a.N, (k + 1) * a.N), tl.depthFrameMax[k] || 0, skip, opts);
     } else if (t.area.run) {
       const r = t.area.run;   // slim runs omit wse; level (= dem + depth) is kept
       m = waterMesh(a, r.level, r.depth, r.wet, skip, opts);

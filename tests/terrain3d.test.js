@@ -74,6 +74,27 @@ test('waterFromFrame matches showTimeStep decode arithmetic', () => {
   for (let k = 1; k < mesh.positions.length; k += 3) assert.ok(Number.isFinite(mesh.positions[k]));
 });
 
+test('the frame mesh read without decoding the grid is the same mesh, soft or hard, with or without scene coordinates', () => {
+  const a = makeGrid(90, 70, 10);
+  let seed = 7;
+  const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const colX = Float64Array.from({ length: a.W }, (_, x) => 500 + x * 10 + 0.37), rowZ = Float64Array.from({ length: a.H }, (_, y) => -200 + y * 10 - 0.11);
+  for (const skip of [2, 4]) for (const soft of [false, true]) for (const scene of [false, true]) for (const maxD of [0, 0.7, 5.5]) {
+    const frame = new Uint8Array(a.N);
+    for (let y = 0; y < a.H; y++) for (let x = 0; x < a.W; x++) if (rand() < 0.55 && x > 10 && x < 70 && y > 5 && y < 60 && !a.ocean[y * a.W + x]) frame[y * a.W + x] = 1 + Math.floor(rand() * 254);
+    const opts = { soft, lift: 0.05, ...(scene ? { colX, rowZ } : {}) };
+    const full = t3d.waterFromFrame(a, frame, maxD, skip, opts).mesh;
+    const lean = t3d.waterMeshFromFrame(a, frame, maxD, skip, opts);
+    assert.equal(lean === null, full === null);
+    if (!full) continue;
+    for (const key of ['positions', 'colors', 'uvs', 'indices']) {
+      assert.equal(lean[key].length, full[key].length, key);
+      assert.ok(Buffer.from(lean[key].buffer).equals(Buffer.from(full[key].buffer)), `${key} differs (skip ${skip}, soft ${soft}, scene ${scene}, maxD ${maxD})`);
+    }
+    assert.deepEqual([lean.cols, lean.rows, lean.skip, lean.wM, lean.hM], [full.cols, full.rows, full.skip, full.wM, full.hM]);
+  }
+});
+
 test('soft water adds a transparent ring at the neighbours\' level and 3D shades step at the legend boundaries', () => {
   const a = makeGrid(), N = a.N;
   const wse = new Float64Array(N), depth = new Float32Array(N), wet = new Uint8Array(N);
