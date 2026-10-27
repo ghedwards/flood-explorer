@@ -119,10 +119,11 @@ q_t = H w,   eta_t = -div(q)
 on the same staggered grid, with face depths averaged from the two adjacent
 wet cells and land and domain edges as walls. It is solved each step by
 Jacobi-preconditioned BiCGSTAB, warm-started from a linear extrapolation of the
-previous two solutions, to a relative residual of 1e-8 (at most 300
+previous two solutions, to a relative residual of 1e-6 (at most 300
 iterations, otherwise the run stops with an error). In uniform depth the
 operator is algebraically the scalar one, and a Rust test confirms the two
-agree to 1e-7.
+agree to 1e-7 when both are solved tightly. A residual of 1e-6 changes a 1.5 m source by 4e-8 m after 2000 steps
+compared with solving to 1e-12, and takes about 9 iterations a step instead of 15 at 1e-8.
 
 Checks beyond that: still water stays still over uneven bathymetry and land;
 displacement volume is conserved on a shelf with land; a pulse 15 km wide on a
@@ -175,9 +176,8 @@ variable-depth terms beyond those checks. The formulation is a weak-dispersion
 form (kH below about 1) with no extra variable-depth terms, no nonlinearity,
 no breaking and no wetting/drying. The regional 1.5 km grids floor coastal
 depths at 10 m, so shorter waves than about 4–5 cells (6–7 km) are not
-represented in any case. Cost on a 160 × 96 coastal grid is about 20 ms per
-step in the browser (roughly 25 solver iterations per step), around 50 times
-the shallow-water solver, so playback runs at a few simulated minutes per
+represented in any case. Cost on the 160 × 96 Moreton grid is about 8 ms per step (it was 12.7 ms
+with the earlier residual of 1e-8), around 60 times the shallow-water solver's 0.125 ms, so playback runs at a few simulated minutes per
 second whatever speed is selected. It is not available in the nonlinear local scenes.
 
 ## Prefetched Australian east coast
@@ -663,6 +663,36 @@ still approximate, and the scheme is newer and less tested on rough terrain
 than the default. It costs about three times the CPU per simulated second (two
 stages plus reconstruction), so live playback runs slower; the pre-calculation
 option helps. The mass and boundary accounting are unchanged.
+
+### Speed of the solvers
+
+Where the time goes, measured on a 160 × 96 grid like the bundled local terrains (50 m cells, half of it land,
+with a sponge, friction and a forced edge in a second scene), and what was done about it:
+
+- **Dry cells were doing full work.** Two cells with no water at all exchange exactly nothing, so such a face is
+  skipped (the second-order scheme did the full flux and reconstruction there too). The second-order scheme also
+  worked out each cell's velocity up to six times and allocated about a megabyte of reconstruction for every
+  direction on every stage; it now computes the velocities once and reuses its buffers, as the first-order scheme
+  reuses its change array. The per-cell update runs over plain slices, and skips the friction power when the roughness is zero.
+- **The sponge factor of each face** in the linear solver is worked out once instead of a square root per face per step.
+- **The dispersive solve's tolerance** is 1e-6 (above).
+
+None of this changes the answer: a checksum of the full state (every depth and both transports) after hundreds to thousands of steps is bit for bit the
+same before and after the first-order and second-order changes and the linear-solver change, in scenes with a forced edge, a tide, a mask and a sponge.
+(Only the dispersive solver changes, within the tolerance above.) Results, native Rust on this machine:
+
+| | before | after |
+|---|---|---|
+| First order, per step | 970 µs | 835 µs |
+| Second order, per step | 3,360 µs | 1,890 µs |
+| Staggered linear, per step | 104 µs | 97 µs |
+| Dispersive, per step | 5,240 µs | 3,030 µs |
+
+In the browser module (Node, WASM) a 1800 s run of the nested Gold Coast Seaway model took 7.8 s at first order and 22.8 s at second order, and now takes 6.7 s
+and 17.6 s (the same flooded depths); the Moreton dispersive grid went from 12.7 to 7.8 ms per step. The rest of the first-order
+time is the flux itself, a few square roots and divisions per face; going further means changing the arithmetic, which would stop the
+results matching bit for bit. `time_the_steps` in `inundation.rs` and `tsunami.rs` are ignored tests that print these timings
+(`cargo test --release -p flood-core time_the_steps -- --ignored --nocapture`).
 
 ## Sensitivity ensemble
 
