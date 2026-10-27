@@ -233,7 +233,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   let pending = 0;
   function schedule() {
-    if (modelUnavailable) return;   // the wasm gate card explains why
     syncOutputs();
     if (pending) return;
     pending = requestAnimationFrame(() => { pending = 0; runScenario(); });
@@ -589,7 +588,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     await nextFrame();
     try {
       if (id === 'sample') {
-        await window.FloodCoreReady;
         const g = F.syntheticTerrain();
         state.areaMeta = { id: 'sample', name: 'Sample terrain', synthetic: true, streamAreaKm2: 4 };
         await useGrid(g, 'sample', { events: true });
@@ -663,11 +661,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return worker;
   }
   function analyseAsync(grid, opts) {
-    if (modelUnavailable) return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
-    const onMainThread = () => {
-      if (F.engine !== 'rust') return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
-      return nextFrame().then(() => F.analyse(grid, opts));
-    };
+    const onMainThread = () => nextFrame().then(() => F.analyse(grid, opts));
     const w = getWorker();
     if (!w) return onMainThread();
     return new Promise((resolve, reject) => {
@@ -831,7 +825,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   }
 
   async function readRaster(file, opts) {
-    await window.FloodCoreReady;   // the grid helpers are in the module
     const name = file.name.toLowerCase();
     if (name.endsWith('.asc') || name.endsWith('.txt')) {
       const g = F.parseAsciiGrid(await file.text());
@@ -2064,39 +2057,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   }
   const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
   const status = (window.__floodStatus = { mode: 'static', overlayUpdates: 0, tilesLoaded: 0, tileErrors: 0, floodPixels: 0, overlays: {} });
-  status.engine = F.engine || 'loading';
-
-  // The flood model only exists as WebAssembly. When it can't load (an old
-  // browser, private-mode restrictions or a broken fetch) the app refuses
-  // to run rather than silently degrading, because every number on screen
-  // would otherwise come from a different model than the user expects.
-  let modelUnavailable = false;
-  function showModelGate(detail) {
-    if (modelUnavailable) return;
-    modelUnavailable = true;
-    status.engine = F.engine = 'error';
-    const card = document.createElement('div');
-    card.id = 'wasmGate';
-    card.setAttribute('role', 'alertdialog');
-    card.setAttribute('aria-label', 'The flood model is unavailable');
-    card.innerHTML = `<style>
-      #wasmGate{position:fixed;inset:0;z-index:9999;background:rgba(8,24,38,.72);display:flex;align-items:center;justify-content:center;padding:24px}
-      #wasmGate .card{max-width:34em;background:var(--paper,#fff);color:var(--ink,#123);border-radius:12px;padding:22px 26px;box-shadow:0 8px 40px rgba(0,0,0,.35)}
-      #wasmGate h2{margin:.1em 0 .4em;font-size:1.15em}
-      #wasmGate ul{margin:.3em 0 .8em;padding-left:1.2em}
-      #wasmGate button{font:inherit;padding:.4em 1.1em;border-radius:8px;border:1px solid var(--line,#94a3b8);background:var(--accent,#20618d);color:#fff;cursor:pointer}
-    </style><div class="card"><h2>This browser can't run the flood model</h2>
-      <p>The flood model is written in Rust and runs as WebAssembly. It didn't load, so flood maps, statistics and timeline playback can't be calculated.</p>
-      <p>This usually means:</p>
-      <ul><li>an old browser without WebAssembly — try the current Firefox, Chrome, Edge or Safari</li>
-      <li>a browser extension or private-browsing setting blocking WebAssembly or the model download</li>
-      <li>an interrupted download — a reload often fixes it</li></ul>
-      <p class="hint">${escapeHtml(detail || '')}</p>
-      <button type="button" onclick="location.reload()">Reload the app</button></div>`;
-    document.body.appendChild(card);
-  }
-  window.addEventListener('flood:wasm-error', (e) => showModelGate(e.detail && e.detail.error));
-  if (window.FloodCoreReady) window.FloodCoreReady.then(() => { status.engine = F.engine; if (F.engine !== 'rust') showModelGate('The model could not be loaded in this browser session.'); });
+  status.engine = F.engine;   // 'rust': main.js does not start the app without the WebAssembly model
 
   // Offline use: a service worker keeps the app, the national data, map
   // tiles and model terrain that have been used, so the site still opens
@@ -6886,7 +6847,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   async function calibrateAsync(a, s0, m, bed) {
     const scan = (tick) => F.calibrateLevels(a, s0, m, bed, (s, lv) => F.inundate(a, Object.assign({}, s, { gaugeLevel: lv }), { slim: 1 }), tick);
     const w = getWorker();
-    if (!modelUnavailable && w && a.analysisKey != null && a.keyGen === workerGen) {
+    if (w && a.analysisKey != null && a.keyGen === workerGen) {
       try {
         return await new Promise((resolve, reject) => {
           const id = ++workerSeq;
@@ -7107,10 +7068,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   /* ---------- flood over time: when places flood, roads close, places are cut off */
   async function timelineAsync(a, s, opts) {
-    const onMainThread = () => {
-      if (F.engine !== 'rust') return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
-      return nextFrame().then(() => F.floodTimeline(a, s, opts));
-    };
+    const onMainThread = () => nextFrame().then(() => F.floodTimeline(a, s, opts));
     const w = getWorker();
     if (!w) return onMainThread();
     // when the analysis is resident in the worker (key + same generation),
@@ -7584,8 +7542,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     // water just below sea level, inland gaps are filled from the land
     // around them (not left as pits for the model to fill as "normal water")
     if (gaps) {
-      try { await window.FloodCoreReady; } catch (err) { /* reported just below */ }
-      if (F.engine !== 'rust') throw new Error('The flood model (WebAssembly) is unavailable in this browser.');
       const g = F.classifyDemGaps(dem, iw, ih);
       for (let i = 0; i < iw * ih; i++) if (g.sea[i]) dem[i] = -1.5;
       land += g.filledCells;
@@ -8277,7 +8233,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     if (!st || !st.sources) { box.innerHTML = `${live}<p class="hint">The site build's status couldn't be loaded${why ? ` (${escapeHtml(why)})` : ''}.</p>`; return null; }
     const label = { ok: 'OK', cached: 'From an earlier build', problem: 'Problem', missing: 'Not available' };
     const when = (iso) => (iso ? new Date(iso).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
-    const engine = F.engine === 'rust' ? 'Rust, compiled to WebAssembly' : (F.engine === 'error' ? 'WebAssembly failed to load (the flood model is unavailable)' : 'WebAssembly');
+    const engine = 'Rust, compiled to WebAssembly';
     box.innerHTML = `${liveSourcesHtml()}<p class="hint">Built ${escapeHtml(when(st.built))}. Flood model running in ${engine}.</p>${st.sources.map((s) => `<li class="st-${escapeHtml(s.state)}">
       <strong>${escapeHtml(s.name)}</strong> <span class="st-badge">${escapeHtml(label[s.state] || s.state)}</span><br>
       <span class="hint">${escapeHtml(s.summary)}${s.fetched ? ` · data from ${escapeHtml(when(s.fetched))}` : ''} · for ${escapeHtml(s.feeds)}</span></li>`).join('')}</ul>`;
