@@ -5,6 +5,7 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
 import { HYPSO, terrainRGBA as terrainRGBAjs } from './relief.js';
 import { classifyDemGaps } from './dem-voids.js';
+import { prepareNet, prepareRun, routeFrom } from './routing.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 /* Flood Explorer — viewer
@@ -8370,75 +8371,20 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   /* ---------- property check: one spot, every answer the app has */
 
-  // Road edges under more than 0.3 m of water in the current run
-  function closedEdges(d) {
-    const run = state.run, a = state.a;
-    if (state.routeCache && state.routeCache.run === run && state.routeCache.d === d) return state.routeCache.closed;
-    const net = d.net, closed = new Uint8Array(net.edges.length);
-    const deep = (c) => c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) && run.depth[c] >= 0.3;
-    net.edges.forEach(([u, v], k) => {
-      for (let t = 0; t <= 4 && !closed[k]; t++) {
-        const f = t / 4;
-        if (deep(cellOf(net.lat[u] + (net.lat[v] - net.lat[u]) * f, net.lon[u] + (net.lon[v] - net.lon[u]) * f))) closed[k] = 1;
-      }
-    });
-    state.routeCache = { run, d, closed };
-    return closed;
-  }
   const EVAC = 'Evacuation centre';
   // The shortest dry route by road from a spot to the edge of the model and
-  // to the nearest dry evacuation centre (Dijkstra over the road network)
+  // to the nearest dry evacuation centre (Dijkstra over the road network).
+  // The network is prepared once per area and the flooded edges once per run
+  // (viewer/routing.js).
+  const routeNets = new WeakMap();
   function routeOut(lat, lon) {
-    const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a, g = state.geo;
+    const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a, run = state.run;
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    const net = d.net, nN = net.lat.length, closed = closedEdges(d), run = state.run;
-    const nodeWet = (n) => { const c = cellOf(net.lat[n], net.lon[n]); return c >= 0 && run.wet[c] && run.depth[c] >= 0.3 && !(a.ocean && a.ocean[c]); };
-    const km = (u, v) => Math.hypot((net.lon[v] - net.lon[u]) * 111.32 * Math.cos((net.lat[u] * Math.PI) / 180), (net.lat[v] - net.lat[u]) * 110.574);
-    let start = -1, best = Infinity;
-    for (let n = 0; n < nN; n++) {
-      const dd = (net.lat[n] - lat) ** 2 + ((net.lon[n] - lon) * Math.cos((lat * Math.PI) / 180)) ** 2;
-      if (dd < best) { best = dd; start = n; }
-    }
-    const startKm = Math.sqrt(best) * 111;
-    if (start < 0 || startKm > 0.5) return { none: true };
-    const adj = Array.from({ length: nN }, () => []);
-    net.edges.forEach(([u, v, ri], k) => { if (!closed[k]) { adj[u].push([v, ri]); adj[v].push([u, ri]); } });
-    const mx = ((g.east - g.west) / a.W) * 3, my = ((g.north - g.south) / a.H) * 3;
-    const isExit = (n) => net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx;
-    // evacuation centres: their nearest road node
-    const centres = d.sites.filter((x) => x.kind === EVAC).map((x) => {
-      let nb = -1, bd = Infinity;
-      for (let n = 0; n < nN; n++) { const dd = (net.lat[n] - x.lat) ** 2 + (net.lon[n] - x.lon) ** 2; if (dd < bd) { bd = dd; nb = n; } }
-      return { ...x, node: nb, flooded: (() => { const c = cellOf(x.lat, x.lon); return c >= 0 && run.wet[c] && run.depth[c] >= 0.15; })() };
-    });
-    const centreAt = new Map(centres.filter((x) => !x.flooded && x.node >= 0).map((x) => [x.node, x]));
-    const dist = new Float64Array(nN).fill(Infinity), prev = new Int32Array(nN).fill(-1), via = new Int32Array(nN).fill(-1);
-    const heap = new F._internal.MinHeap(net.edges.length * 2 + 4);
-    if (!nodeWet(start)) { dist[start] = 0; heap.push(0, start); }
-    let exitNode = -1, centreNode = -1;
-    while (heap.n) {
-      const u = heap.pop();
-      if (exitNode < 0 && isExit(u)) exitNode = u;
-      if (centreNode < 0 && centreAt.has(u)) centreNode = u;
-      if (exitNode >= 0 && (centreNode >= 0 || !centreAt.size)) break;
-      for (const [v, ri] of adj[u]) {
-        if (nodeWet(v)) continue;
-        const nd = dist[u] + km(u, v);
-        if (nd < dist[v]) { dist[v] = nd; prev[v] = u; via[v] = ri; heap.push(nd, v); }
-      }
-    }
-    const path = (t) => {
-      if (t < 0) return null;
-      const pts = [], names = [];
-      for (let n = t; n >= 0; n = prev[n]) {
-        pts.push([net.lat[n], net.lon[n]]);
-        const nm = via[n] >= 0 && d.roads[via[n]] ? d.roads[via[n]].name : '';
-        if (nm && names[names.length - 1] !== nm) names.push(nm);
-      }
-      return { km: dist[t], pts: pts.reverse(), via: names.reverse().slice(0, 4) };
-    };
-    return { startKm, toExit: path(exitNode), toCentre: centreNode >= 0 ? Object.assign(path(centreNode), { name: centreAt.get(centreNode).name }) : null,
-      centres: centres.length, centresFlooded: centres.filter((x) => x.flooded).length };
+    let P = routeNets.get(d);
+    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap));
+    let R = state.routeCache;
+    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean), { run, a });
+    return routeFrom(R, lat, lon);
   }
   function drawRoute(r) {
     const L = window.L;
