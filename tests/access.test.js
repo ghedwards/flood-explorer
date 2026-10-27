@@ -204,3 +204,29 @@ function town(seed, side, nB, g) {
     assert.ok(cut > 50 && island > 5 && iso > 5, `exercised ${cut} cut, ${island} stranded, ${iso} isolated`);
   });
 })();
+
+(async () => {
+  const { prepareNet } = await import('../viewer/routing.js');
+  const { timelineAccess } = await import('../viewer/access.js');
+  test('the Rust step loop gives the same access timeline as the JavaScript one', () => {
+    assert.equal(typeof F.accessOverTime, 'function');
+    const g = { west: 153.0, east: 153.05, south: -27.5, north: -27.46 }, W = 80, H = 70, N = W * H;
+    for (const [seed, density] of [[3, 0.9], [9, 0.3], [12, 1]]) {
+      const d = town(seed, 30, 3000, g), K = 24, words = Math.ceil(N / 32), r = rng(seed);
+      const bitsFor = (p, grow) => {
+        const b = new Uint32Array(K * words);
+        for (let k = 0; k < K; k++) {
+          const cx = r() * W, cy = r() * H, rad = 3 + k * grow;
+          for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if ((x - cx) ** 2 + (y - cy) ** 2 < rad * rad && r() < p) { const c = y * W + x; b[k * words + (c >>> 5)] |= 1 << (c & 31); }
+        }
+        return b;
+      };
+      const tl = { steps: K, wordsPerStep: words, wetBits: bitsFor(density, 1.4), deepBits: bitsFor(density / 2, 1.1), t0: 6, step: 3 };
+      const P = prepareNet(d, F._internal.MinHeap);
+      const js = timelineAccess(tl, d, P, g, W, H), rust = timelineAccess(tl, d, P, g, W, H, F.accessOverTime);
+      assert.deepEqual(rust, js, `seed ${seed}`);
+      assert.deepEqual(js, referenceAccess(tl, d, g, W, H));
+      assert.ok(js.maxIso > 0 && js.roads.length > 0, 'the case exercises closures and cut-off buildings');
+    }
+  });
+})();

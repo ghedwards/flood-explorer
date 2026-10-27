@@ -54,7 +54,30 @@ function buildingsOn(P, G, d, W, H, geo, bNode) {
   return (P.bstatic = { bx: d.bx, by: d.by, G, bCell, count, nodeOff, nodeList });
 }
 
-export function timelineAccess(tl, d, P, geo, W, H) {
+/* A closed road name at step k: extend its last closure if it was closed the step before, else start a new one. */
+function closeRoad(roads, name, k) {
+  const intervals = roads.get(name) || [], last = intervals[intervals.length - 1];
+  if (last && last.to === k - 1) last.to = k;
+  else intervals.push({ name, from: k, to: k });
+  roads.set(name, intervals);
+}
+
+function summarise(tl, roads, { isoCount, floodCount, closedCount, isoSteps, firstIso, longest }) {
+  const K = tl.steps;
+  const toH = (k) => Math.round(tl.t0 + k * tl.step);
+  let maxIso = 0, maxIsoAt = 0;
+  for (let k = 0; k < K; k++) if (isoCount[k] > maxIso) { maxIso = isoCount[k]; maxIsoAt = k; }
+  const roadList = Array.from(roads.values()).flat().sort((x, y) => x.from - y.from);
+  return {
+    roads: roadList.map((r) => ({ name: r.name, closes: toH(r.from), reopens: toH(r.to + 1) })),
+    firstClose: roadList.length ? toH(roadList[0].from) : null,
+    maxIso, maxIsoAt: toH(maxIsoAt), longest: Math.round(longest * tl.step),
+    isoCount, floodCount, closedCount, isoSteps, firstIso,
+  };
+}
+
+/* `native`, when given, runs the step loop elsewhere (FloodCore.accessOverTime); its answer is the same. */
+export function timelineAccess(tl, d, P, geo, W, H, native) {
   const G = prepareGrid(P, geo, W, H), { off, to, edge } = P, nN = P.nN, nE = P.nE, K = tl.steps, wps = tl.wordsPerStep, N = W * H;
   const ce = cellEdges(P, G, N), net = P.net, nB = d.bx.length;
   const bNode = buildingNodes(P, d.bx, d.by), dryReach = dryReachOf(P);
@@ -65,6 +88,16 @@ export function timelineAccess(tl, d, P, geo, W, H) {
   const edgeName = new Int32Array(nE);
   for (let e = 0; e < nE; e++) edgeName[e] = nameId[net.edges[e][2]];
 
+  if (native) {   // the step loop below, in Rust
+    const r = native({
+      steps: K, wps, cells: N, names: names.length, off, to, edge, nodeCell: G.node, exit: G.exit, dryReach,
+      ceOff: ce.off, ceList: ce.list, edgeName, bCell: B.bCell, bCount: B.count, nodeOff: B.nodeOff, nodeList: B.nodeList,
+      wet: tl.wetBits, deep: tl.deepBits,
+    });
+    const roads = new Map();
+    for (let k = 0, at = 0; k < K; k++) for (let j = 0; j < r.nameCounts[k]; j++) closeRoad(roads, names[r.nameIds[at++]], k);
+    return summarise(tl, roads, r);
+  }
   const roads = new Map(), edgeStamp = new Int32Array(nE), nameStamp = new Int32Array(names.length), nameFirst = new Int32Array(names.length);
   const isoSteps = new Int16Array(nB), firstIso = new Int16Array(nB).fill(-1), isoRun = new Int16Array(nB), nowIso = new Int32Array(nB);
   const isoCount = new Int32Array(K), floodCount = new Int32Array(K), closedCount = new Int32Array(K);
@@ -95,12 +128,7 @@ export function timelineAccess(tl, d, P, geo, W, H) {
     }
     closedCount[k] = closed;
     closedNames.sort((x, y) => nameFirst[x] - nameFirst[y]);   // in the order the old edge scan met them
-    for (const nm of closedNames) {
-      const name = names[nm], intervals = roads.get(name) || [], last = intervals[intervals.length - 1];
-      if (last && last.to === k - 1) last.to = k;
-      else intervals.push({ name, from: k, to: k });
-      roads.set(name, intervals);
-    }
+    for (const nm of closedNames) closeRoad(roads, names[nm], k);
     // nodes still joined to the edge of the model; with nothing deep, that is every node the whole network joins
     let reach = dryReach;
     if (anyDeep) {
@@ -146,14 +174,5 @@ export function timelineAccess(tl, d, P, geo, W, H) {
     isoCount[k] = now.length;
     active = now;
   }
-  const toH = (k) => Math.round(tl.t0 + k * tl.step);
-  let maxIso = 0, maxIsoAt = 0;
-  for (let k = 0; k < K; k++) if (isoCount[k] > maxIso) { maxIso = isoCount[k]; maxIsoAt = k; }
-  const roadList = Array.from(roads.values()).flat().sort((x, y) => x.from - y.from);
-  return {
-    roads: roadList.map((r) => ({ name: r.name, closes: toH(r.from), reopens: toH(r.to + 1) })),
-    firstClose: roadList.length ? toH(roadList[0].from) : null,
-    maxIso, maxIsoAt: toH(maxIsoAt), longest: Math.round(longest * tl.step),
-    isoCount, floodCount, closedCount, isoSteps, firstIso,
-  };
+  return summarise(tl, roads, { isoCount, floodCount, closedCount, isoSteps, firstIso, longest });
 }

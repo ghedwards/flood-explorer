@@ -126,6 +126,13 @@ impl Bag {
             None => None,
         }
     }
+    pub fn u32s(&self, k: &str) -> Option<Vec<u32>> {
+        match self.0.get(k) {
+            Some(Val::U32(v)) => Some(v.clone()),
+            Some(v) => Some(v.to_f64().iter().map(|&x| x as u32).collect()),
+            None => None,
+        }
+    }
     pub fn i16s(&self, k: &str) -> Option<Vec<i16>> {
         match self.0.get(k) {
             Some(Val::I16(v)) => Some(v.clone()),
@@ -696,6 +703,22 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let slim = b.has("slim");
             let r = with_analysis(b.num("a"), |a| inundate(a, &s))?;
             put_run(&mut o, &r, slim);
+        }
+        "accessOverTime" => {
+            let g = |k: &str| b.i32s(k).unwrap_or_default();
+            let (off, to, edge, node_cell, ce_off, ce_list, edge_name) = (g("off"), g("to"), g("edge"), g("nodeCell"), g("ceOff"), g("ceList"), g("edgeName"));
+            let (b_cell, b_count, node_off, node_list) = (g("bCell"), g("bCount"), g("nodeOff"), g("nodeList"));
+            let (exit, dry_reach) = (b.u8s("exit").unwrap_or_default(), b.u8s("dryReach").unwrap_or_default());
+            let (wet, deep) = (b.u32s("wet").unwrap_or_default(), b.u32s("deep").unwrap_or_default());
+            let r = access::access_over_time(&access::AccessIn {
+                steps: b.num("steps") as usize, wps: b.num("wps") as usize, n_cells: b.num("cells") as usize, n_names: b.num("names") as usize,
+                off: &off, to: &to, edge: &edge, node_cell: &node_cell, exit: &exit, dry_reach: &dry_reach,
+                ce_off: &ce_off, ce_list: &ce_list, edge_name: &edge_name,
+                b_cell: &b_cell, b_count: &b_count, node_off: &node_off, node_list: &node_list, wet: &wet, deep: &deep,
+            });
+            o.i32s("closedCount", &r.closed_count).i32s("floodCount", &r.flood_count).i32s("isoCount", &r.iso_count)
+                .i16s("isoSteps", &r.iso_steps).i16s("firstIso", &r.first_iso).num("longest", r.longest as f64)
+                .i32s("nameCounts", &r.name_counts).i32s("nameIds", &r.name_ids);
         }
         "inundateAt" => {
             let s = scenario_of(b);

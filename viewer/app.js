@@ -7583,7 +7583,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // Roads and isolation through time, from when each spot is over 0.3 m deep
   function timelineAccess(tl, d) {
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    return timelineAccessOn(tl, d, routeNetOf(d), state.geo, state.a.W, state.a.H);
+    return timelineAccessOn(tl, d, routeNetOf(d), state.geo, state.a.W, state.a.H, F.accessOverTime);
   }
   // what routing did to the peak on its way down the river
   function routeNote(tl) {

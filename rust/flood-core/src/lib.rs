@@ -2,6 +2,7 @@
 //! flooding, hazard and flood over time. A port of viewer/flood-core.js
 //! with the same numbers; no outside crates, so it builds anywhere.
 
+pub mod access;
 pub mod fine;
 pub mod voids;
 pub mod flash;

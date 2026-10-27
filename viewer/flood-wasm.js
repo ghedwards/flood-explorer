@@ -217,6 +217,12 @@
       return r;
     }
 
+    // The step loop of the road access timeline (viewer/access.js); the arrays are the prepared network and buildings.
+    function accessOverTime(o) {
+      const out = call('accessOverTime', o);
+      return { closedCount: out.closedCount, floodCount: out.floodCount, isoCount: out.isoCount, isoSteps: out.isoSteps, firstIso: out.firstIso, longest: num(out.longest), nameCounts: out.nameCounts, nameIds: out.nameIds };
+    }
+
     // Is one cell flooded in a scenario, and how deep? Stops as soon as the fill reaches it, and
     // sends back two numbers instead of the grids; the answer is the full run's.
     function inundateAt(a, s, cell) {
@@ -398,7 +404,7 @@
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
-      analyse, streamSurface, inundate, inundateAt, flashFlood, stats, hazard, compareRuns,
+      analyse, streamSurface, inundate, inundateAt, accessOverTime, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
       composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };
