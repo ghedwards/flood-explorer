@@ -341,7 +341,27 @@
       return { W: num(out.W), H: num(out.H), data: out.data, nodata: num(out.nodata), bounds: out.bounds ? Array.from(out.bounds) : null };
     }
 
+    // The 5 m flood picture from LiDAR (the same inputs and result as fineRaster in
+    // fine-raster.js, which stays as the reference and the fallback). Colours are
+    // clamped to bytes the way the JavaScript's Uint8ClampedArray output does.
+    function fineRaster(p) {
+      const clamped = (v) => Uint8ClampedArray.of(v)[0];
+      const colours = (list) => Uint8Array.from(list.flatMap((c) => Array.from(Uint8ClampedArray.from(c))));
+      const bytes = (a) => (a instanceof Uint8Array ? a : new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+      const out = call('fineRaster', {
+        W: p.W, H: p.H, box: p.box, extent: [p.g.west, p.g.east, p.g.north, p.g.south], aW: p.aW, aH: p.aH, x0: p.x0, y0: p.y0, ww: p.ww,
+        lidar: f32(p.lidar), nd: p.nd, dem: f32(p.dem), valid: u8(p.valid), ocean: u8(p.ocean), wet: u8(p.wet), depth: f32(p.depth),
+        level: p.level ? f32(p.level) : null, baseWet: u8(p.baseWet), baseDepth: p.baseDepth ? f32(p.baseDepth) : null,
+        hzCls: u8(p.hzCls), hzVel: p.hzVel ? f32(p.hzVel) : null, coarse: bytes(p.coarse),
+        depthLimits: p.depthStops.map((s) => s[0]), depthColors: colours(p.depthStops.map((s) => s[1])), depthAlpha0: clamped(p.depthAlpha0),
+        water: colours([p.water]), channelAlpha: clamped(p.channelAlpha), hazardColors: colours(p.hazardColors), hazardLimits: p.hazardLimits.flat(),
+      });
+      // a copy of exactly the picture, so its buffer can be handed to the page
+      return { rgba: new Uint8ClampedArray(out.rgba.slice().buffer), have: num(out.have) };
+    }
+
     const rust = {
+      fineRaster,
       tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
       // Run a regional model to the end, returning surface displacement at the
       // requested (x, y) cell coordinates for use as nested boundary forcing.

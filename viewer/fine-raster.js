@@ -20,6 +20,10 @@
  *   water, channelAlpha, hazardColors, hazardLimits
  * }
  * Returns { rgba: Uint8ClampedArray(W*H*4), have } — have = pixels with LiDAR.
+ *
+ * rust/flood-core/src/fine.rs is the same picture in Rust (FloodCore.fineRaster); the
+ * fine worker uses it when the module loads, and this stays as the reference and the
+ * fallback. tests/fine-raster-wasm.test.js checks the two agree byte for byte.
  */
 export function fineRaster(p) {
   const { W, H, box, g, aW, aH, x0, y0, ww, lidar, nd } = p;
