@@ -2,6 +2,7 @@
 # source zone southamerica, stochastic slip, scenario row 142847: Mw 9.4, annual rate 1.55e-6 (a scenario rate, not a hazard estimate)
 # hazard point 1450.5 at 154.0000 E -28.0000 N, ocean depth 667 m, stage above mean sea level (no tide)
 # t = 0 is 1446.0 min after the earthquake (window aligned to the peak); the wave first exceeds 2% of its whole-series peak 810.5 min after it, and the largest wave (0.093 m) is 1476.0 min after it; this file's largest is 0.093 m
+# PTHA18 hazard at this point: this scenario's peak at the point, 0.129 m, is exceeded about 1 in 28 years (16th-84th percentile of the uncertainty: about 1 in 17 years to about 1 in 83 years), summed over all source zones; main source zones for a peak this large: newhebrides2 25%, southamerica 24%, kermadectonga2 16%, kurilsjapan 10%
 # frictionless linear model, 1 arc-minute grid: not reliable nearshore or for late arrivals; delayed linear friction applied (12 h delay, 1e-5 drag)
 # Geoscience Australia PTHA18, CC BY 4.0, (c) Commonwealth of Australia (Geoscience Australia); https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha ; report http://dx.doi.org/10.11636/Record.2018.041
 seconds,metres

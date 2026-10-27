@@ -367,11 +367,55 @@ the tool reports when the whole-series peak is outside the window it wrote.
 `--friction` applies PTHA18's delayed linear friction (12 h delay, 1e-5 drag),
 `--local-depth M` scales by Green's law from the hazard point's depth to M metres
 (capped at 0.5 to 2), and `--slip` chooses stochastic (default), variable-uniform or
-uniform scenarios. The output carries its provenance as `#` comment lines. A real
+uniform scenarios. `--hazard` also reads PTHA18's own exceedance-rate curve at the hazard
+point (summed over every source zone, with its 16th to 84th percentile uncertainty) and says
+how often a peak as large as this scenario's is expected there, and which source zones contribute
+most to exceeding it (each zone has its own curve), in the console and in the file.
+`--gauge ID --return-period YEARS` works the other way: the stage PTHA18 expects to be exceeded once in that
+many years at the point, with its uncertainty range and main source zones. At the Gold Coast point
+above that is 0.25 m for 1 in 100 years (mostly the New Hebrides, South America and Kermadec-Tonga zones)
+and 0.76 m for 1 in 2500 years (mostly Kermadec-Tonga and New Hebrides).
+The output carries its provenance as `#` comment lines. A real
 example, a Mw 9.4 South American scenario at the 667 m hazard point off the Gold
 Coast (peak 9 cm after friction), is in
 `docs/examples/ptha18-southamerica-142847-gauge1450.5.csv`; a test runs it through the
-nested Gold Coast Seaway model.
+nested Gold Coast Seaway model. Its frictionless peak at the point is 13 cm, which PTHA18
+expects to be exceeded about once in 28 years (16th to 84th percentile: 1 in 17 to 1 in 83) from
+all sources combined. So this very large, very rare scenario produces a wave there that is common
+in PTHA18's terms: its rate says how rare the earthquake is, not how rare the wave is at this point.
+
+#### Scenarios at a hazard level
+
+`scripts/pick-ptha-scenarios.js` finds scenarios of one source zone whose peak at a hazard point
+is close to a chosen level (`--target-stage METRES`, or `--return-period YEARS` to take the level
+from PTHA18's curve). It samples scenarios evenly in a magnitude range, not weighted by rate,
+so it finds scenarios of the right size rather than the ones that dominate the hazard.
+`scripts/run-series-local.js` then runs several series files through the nested Gold Coast Seaway
+model for comparison. For the hazard point 1450.5, PTHA18's level for 1 in 2500 years is 0.76 m
+(16th to 84th percentile: 0.35 to 0.91 m), mostly from the Kermadec-Tonga and New Hebrides zones.
+Five sampled scenarios from those zones with offshore peaks of 0.7 to 0.9 m, against the example
+above, run for an hour from mean sea level with no tide:
+
+| Scenario | Mw | Offshore peak | Max water level | Max depth on land | Flooded |
+|---|---|---|---|---|---|
+| South America 142847 (example) | 9.4 | 0.09 m | 0.25 m | 0.11 m | 2 ha |
+| New Hebrides 12252 | 9.0 | 0.84 m | 2.45 m | 2.44 m | 99 ha |
+| New Hebrides 12277 | 9.0 | 0.81 m | 2.36 m | 2.34 m | 94 ha |
+| Kermadec-Tonga 43241 | 9.3 | 0.74 m | 2.02 m | 2.00 m | 91 ha |
+| Kermadec-Tonga 42003 | 9.1 | 0.72 m | 2.24 m | 2.12 m | 89 ha |
+| Kermadec-Tonga 43490 | 9.4 | 0.90 m | 3.14 m | 1.92 m | 68 ha |
+
+(Offshore peak is the largest absolute value in the series, trough included. Flooded counts initially
+dry cells with more than 1 cm of water.) Two things stand out. The model turns a deep-water
+wave about nine times larger into a flooded area some forty times larger: the response is steeply
+nonlinear in the wave. And scenarios with similar offshore peaks differ by about 30%
+in flooded area (and by about 20% in maximum depth on land), with the largest wave (43490) flooding the least, so a single peak
+number does not determine the outcome; the wave's period and shape matter too.
+
+These are illustrations of how this model responds to waves of PTHA18's 1-in-2500-year offshore size. They do **not**
+estimate the 1-in-2500-year flood: that would need many scenarios weighted by their rates, tide
+as a distribution, and calibrated terrain and roughness, none of which is here. The terrain
+is the bundled 5 m grid at mean sea level without tide.
 
 How well PTHA18's deep-water waves match reality is tested in
 [docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
@@ -386,7 +430,9 @@ reads, not the lab's own solvers, and it is one event in deep water.
 What this is and is not:
 
 - **One scenario, not a hazard.** A scenario's annual rate is recorded in the file but
-  a single run says nothing about how likely a given inundation is. PTHA18's use is to
+  a single run says nothing about how likely a given inundation is. `--hazard` places the
+  scenario's peak on PTHA18's published offshore curve, which is deep-water stage (above mean
+  sea level, no tide), not inundation. PTHA18's use is to
   supply many such scenarios with rates for site studies; this lab runs one at a time
   (the sensitivity ensemble varies other inputs, not the scenario).
 - **PTHA18's waves are from a frictionless linear model on a 1 arc-minute grid.** They are
