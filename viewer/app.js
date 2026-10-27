@@ -7978,7 +7978,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     // water just below sea level, inland gaps are filled from the land
     // around them (not left as pits for the model to fill as "normal water")
     if (gaps) {
-      const g = classifyDemGaps(dem, iw, ih);
+      const g = F.engine === 'rust' && F.classifyDemGaps ? F.classifyDemGaps(dem, iw, ih) : classifyDemGaps(dem, iw, ih);
       for (let i = 0; i < iw * ih; i++) if (g.sea[i]) dem[i] = -1.5;
       land += g.filledCells;
     }

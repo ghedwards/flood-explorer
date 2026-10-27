@@ -360,8 +360,17 @@
       return { rgba: new Uint8ClampedArray(out.rgba.slice().buffer), have: num(out.have) };
     }
 
+    // Gaps in an elevation window: sea at the coast, filled holes inland (the same
+    // result as classifyDemGaps in dem-voids.js, which stays as the reference and the
+    // fallback). `dem` is changed in place, as there.
+    function classifyDemGaps(dem, W, H, shoreMax) {
+      const out = call('classifyDemGaps', { dem: f32(dem), W, H, shoreMax: shoreMax == null ? null : shoreMax });
+      dem.set(out.dem);
+      return { sea: out.sea, seaCells: num(out.seaCells), filledCells: num(out.filledCells), gaps: num(out.gaps) };
+    }
+
     const rust = {
-      fineRaster,
+      fineRaster, classifyDemGaps,
       tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
       // Run a regional model to the end, returning surface displacement at the
       // requested (x, y) cell coordinates for use as nested boundary forcing.

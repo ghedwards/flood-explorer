@@ -794,6 +794,16 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let g = grid_of(b)?;
             o.f32s("dem", &burn_defences(&g, &levees_of(b)));
         }
+        "classifyDemGaps" => {
+            let mut dem = b.f32s("dem").ok_or("classifyDemGaps: missing dem")?;
+            let size = |k: &str| -> Result<usize, String> {
+                let v = b.num(k);
+                if v.is_finite() && v >= 0.0 && v.fract() == 0.0 { Ok(v as usize) } else { Err(format!("classifyDemGaps: {} must be a whole number", k)) }
+            };
+            let shore = b.num("shoreMax");
+            let g = classify_dem_gaps(&mut dem, size("W")?, size("H")?, if shore.is_nan() { SEA_SHORE_MAX_M } else { shore })?;
+            o.f32s("dem", &dem).u8s("sea", &g.sea).num("seaCells", g.sea_cells as f64).num("filledCells", g.filled_cells as f64).num("gaps", g.gaps as f64);
+        }
         "fineRaster" => {
             let need = |k: &str| b.u8s(k).ok_or_else(|| format!("fineRaster: missing {}", k));
             let nums = |k: &str, n: usize| -> Result<Vec<f64>, String> {
