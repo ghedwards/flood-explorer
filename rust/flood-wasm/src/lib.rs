@@ -825,8 +825,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 if v.is_finite() && v >= 0.0 && v.fract() == 0.0 { Ok(v as usize) } else { Err(format!("fineRaster: {} must be a whole number", k)) }
             };
             let (w, h, a_w, a_h, x0, y0, ww) = (size("W")?, size("H")?, size("aW")?, size("aH")?, size("x0")?, size("y0")?, size("ww")?);
+            let (row_from, row_to) = (if b.has("rowFrom") { size("rowFrom")? } else { 0 }, if b.has("rowTo") { size("rowTo")? } else { h });
             let (rgba, have) = fine_raster(&Fine {
-                w, h, bbox: [bbox[0], bbox[1], bbox[2], bbox[3]], extent: [extent[0], extent[1], extent[2], extent[3]], a_w, a_h, x0, y0, ww,
+                w, h, row_from, row_to, bbox: [bbox[0], bbox[1], bbox[2], bbox[3]], extent: [extent[0], extent[1], extent[2], extent[3]], a_w, a_h, x0, y0, ww,
                 lidar: &lidar, nodata: b.num("nd"), dem: &dem, valid: &valid, ocean: &ocean, wet: &wet, depth: &depth,
                 level: level.as_deref(), base_wet: base_wet.as_deref(), base_depth: base_depth.as_deref(), hz_cls: hz_cls.as_deref(), hz_vel: hz_vel.as_deref(),
                 coarse: &coarse, depth_limits: &depth_limits, depth_colors: &depth_colors, depth_alpha0: b.num("depthAlpha0") as u8,

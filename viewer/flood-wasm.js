@@ -349,7 +349,7 @@
       const colours = (list) => Uint8Array.from(list.flatMap((c) => Array.from(Uint8ClampedArray.from(c))));
       const bytes = (a) => (a instanceof Uint8Array ? a : new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
       const out = call('fineRaster', {
-        W: p.W, H: p.H, box: p.box, extent: [p.g.west, p.g.east, p.g.north, p.g.south], aW: p.aW, aH: p.aH, x0: p.x0, y0: p.y0, ww: p.ww,
+        W: p.W, H: p.H, rowFrom: p.rowFrom, rowTo: p.rowTo, box: p.box, extent: [p.g.west, p.g.east, p.g.north, p.g.south], aW: p.aW, aH: p.aH, x0: p.x0, y0: p.y0, ww: p.ww,
         lidar: f32(p.lidar), nd: p.nd, dem: f32(p.dem), valid: u8(p.valid), ocean: u8(p.ocean), wet: u8(p.wet), depth: f32(p.depth),
         level: p.level ? f32(p.level) : null, baseWet: u8(p.baseWet), baseDepth: p.baseDepth ? f32(p.baseDepth) : null,
         hzCls: u8(p.hzCls), hzVel: p.hzVel ? f32(p.hzVel) : null, coarse: bytes(p.coarse),

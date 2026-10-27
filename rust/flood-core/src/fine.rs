@@ -11,6 +11,9 @@
 pub struct Fine<'a> {
     pub w: usize,
     pub h: usize,
+    /// Work out only rows `row_from..row_to` of `h`; `lidar` and the result then hold just those rows.
+    pub row_from: usize,
+    pub row_to: usize,
     /// west, south, east, north of the output.
     pub bbox: [f64; 4],
     /// west, east, north, south of the whole model grid.
@@ -45,11 +48,12 @@ pub struct Fine<'a> {
     pub hazard_limits: &'a [f64],
 }
 
-/// RGBA pixels (w * h * 4) and the number of pixels that have LiDAR.
+/// RGBA pixels (w * rows * 4) and the number of pixels that have LiDAR.
 pub fn fine_raster(p: &Fine) -> Result<(Vec<u8>, usize), String> {
     let (w, h, a_w, a_h) = (p.w, p.h, p.a_w, p.a_h);
+    let (row_from, row_to) = (p.row_from, p.row_to);
     let n = p.dem.len();
-    if w == 0 || h == 0 || a_w == 0 || a_h == 0 || p.ww == 0 || p.lidar.len() != w * h || !n.is_multiple_of(p.ww) {
+    if w == 0 || h == 0 || a_w == 0 || a_h == 0 || p.ww == 0 || row_from > row_to || row_to > h || p.lidar.len() != w * (row_to - row_from) || !n.is_multiple_of(p.ww) {
         return Err("fine raster: inconsistent sizes".into());
     }
     let same = |len: usize| len == n;
@@ -107,7 +111,7 @@ pub fn fine_raster(p: &Fine) -> Result<(Vec<u8>, usize), String> {
     for k in 0..n {
         busy[k] = !level_of[k].is_nan() || !speed_of[k].is_nan() || !base_of[k].is_nan() || in_base[k];
     }
-    let mut out = vec![0u8; w * h * 4];
+    let mut out = vec![0u8; w * (row_to.saturating_sub(row_from)) * 4];
     let mut have = 0usize;
     let (ww, x0, y0) = (p.ww as i64, p.x0 as i64, p.y0 as i64);
     // The columns' nearest model cell and weights do not depend on the row.
@@ -116,14 +120,14 @@ pub fn fine_raster(p: &Fine) -> Result<(Vec<u8>, usize), String> {
         let fx = ((lon - west) / gw) * a_w as f64 - 0.5;
         ((a_w as f64 - 1.0).min(0f64.max((fx + 0.5).floor())) as i64, fx)
     }).collect();
-    for py in 0..h {
+    for py in row_from..row_to {
         let lat = p.bbox[3] - ((py as f64 + 0.5) / h as f64) * (p.bbox[3] - p.bbox[1]);
         let fy = ((north - lat) / gh) * a_h as f64 - 0.5;
         let cy = (a_h as f64 - 1.0).min(0f64.max((fy + 0.5).floor())) as i64;
         for (px, &(cx, fx)) in cols.iter().enumerate() {
             let ci = (cy - y0) * ww + (cx - x0);
-            let o = (py * w + px) * 4;
-            let lid = p.lidar[py * w + px] as f64;
+            let o = ((py - row_from) * w + px) * 4;
+            let lid = p.lidar[(py - row_from) * w + px] as f64;
             // a pixel whose model cell lies outside the window is left clear
             if ci < 0 || ci as usize >= n {
                 continue;
@@ -227,7 +231,7 @@ mod tests {
 
     fn run<'a>(s: &'a Setup) -> Fine<'a> {
         Fine {
-            w: 60, h: 60, bbox: [150.002, -23.008, 150.008, -23.002], extent: [150.0, 150.01, -23.0, -23.01], a_w: 40, a_h: 40, x0: 0, y0: 0, ww: 40,
+            w: 60, h: 60, row_from: 0, row_to: 60, bbox: [150.002, -23.008, 150.008, -23.002], extent: [150.0, 150.01, -23.0, -23.01], a_w: 40, a_h: 40, x0: 0, y0: 0, ww: 40,
             lidar: &s.lidar, nodata: -9999.0, dem: &s.dem, valid: &s.valid, ocean: &s.ocean, wet: &s.wet, depth: &s.depth,
             level: None, base_wet: None, base_depth: None, hz_cls: None, hz_vel: None, coarse: &s.coarse,
             depth_limits: &LIMITS, depth_colors: &COLORS, depth_alpha0: 178, water: [9, 9, 9], channel_alpha: 90,
@@ -307,7 +311,7 @@ mod bench {
         let colors = [1u8; 15];
         let hc = [1u8; 18];
         let hl = [0.3, 2.0, 0.3, 0.5, 2.0, 0.6, 1.2, 2.0, 0.6, 2.0, 2.0, 1.0, 4.0, 4.0, 4.0];
-        let p = Fine { w, h, bbox: [150.02, -23.18, 150.12, -23.08], extent: [150.0, 150.2, -23.0, -23.2], a_w, a_h, x0: 0, y0: 0, ww: a_w,
+        let p = Fine { w, h, row_from: 0, row_to: h, bbox: [150.02, -23.18, 150.12, -23.08], extent: [150.0, 150.2, -23.0, -23.2], a_w, a_h, x0: 0, y0: 0, ww: a_w,
             lidar: &lidar, nodata: -9999.0, dem: &dem, valid: &valid, ocean: &ocean, wet: &wet, depth: &depth, level: None, base_wet: None, base_depth: None,
             hz_cls: None, hz_vel: None, coarse: &coarse, depth_limits: &limits, depth_colors: &colors, depth_alpha0: 178, water: [9, 9, 9], channel_alpha: 90,
             hazard_colors: &hc, hazard_limits: &hl };
