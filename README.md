@@ -86,7 +86,7 @@ Every step is also available in the RustGIS desktop or web app, so you can open 
 
 ### 3. Flood scenarios (in the browser)
 
-The flood model is written in Rust ([`rust/flood-core`](rust/flood-core)) and compiled to WebAssembly, so it runs in the page and its background worker ([`viewer/flood-wasm.js`](viewer/flood-wasm.js) gives it the same interface as before). [`viewer/flood-core.js`](viewer/flood-core.js) is the same model in JavaScript: it runs if WebAssembly can't load, or with `?engine=js` in the address, and the build checks that the two give the same numbers ([`tests/parity.js`](tests/parity.js)). The Data status panel says which one is running. The model takes the ground elevations and the D8 flow directions and:
+The flood model is written in Rust ([`rust/flood-core`](rust/flood-core)) and compiled to WebAssembly, so it runs in the page and its background worker ([`viewer/flood-wasm.js`](viewer/flood-wasm.js) gives it the same interface as before). There is no JavaScript copy of the model: without WebAssembly the page says so and the flood model is unavailable. Where the page does heavy per-cell or per-building work (the flood-impact sweep, the road access timeline, the shaded relief and water overlay, the 5 m flood picture, the 3D water mesh), that is Rust too, and each has a plain JavaScript version in `tests/` that the Rust is checked against. The Data status panel says which engine is running. The model takes the ground elevations and the D8 flow directions and:
 
 1. Builds the stream network from a minimum catchment area.
 2. Sets a water surface along the river: it varies linearly with river distance from the bay level at the mouth to the chosen level at the gauge, and rises at a set slope (default 0.3 m/km) upstream of the gauge and up tributaries.
@@ -212,10 +212,10 @@ The comparison workflow uses `flood compare-hydrology <reference-directory> <can
 
 
 ```sh
-node --test tests/*.test.js                                   # the model (JavaScript) and the app
+node --test tests/*.test.js                                   # the model (WebAssembly build) and the app
 cargo test --manifest-path rust/Cargo.toml --workspace          # the model and pipeline in Rust (services mocked)
 FLOOD_IMPL=wasm node --test tests/core.test.js                  # the model tests against the WebAssembly build
-FLOOD_IMPL=wasm node tests/parity.js > w.txt && node tests/parity.js w.txt   # same numbers as the JavaScript model
+FLOOD_IMPL=wasm node tests/parity.js rust.txt                   # same numbers as the Rust reference run (see build.yml)
 ```
 
 The tests check routing (every cell drains), monotonic flooding, water levels at the gauge and mouth, connectivity, and that Whitebox D8 pointers from the pipeline reproduce the browser's own routing exactly.
@@ -232,7 +232,7 @@ rust/flood-pipeline/         `flood`: data fetchers, DEM download, hydrology and
 rust/flood-node/             the WebAssembly interface as a Node addon, for tests
 tests/geolibre/              reference GeoLibre runner for raster comparison
 viewer/                      static web app: index.html (markup), styles.css, app.js,
-                             flood-wasm.js (Rust model), flood-core.js (JavaScript model),
+                             flood-wasm.js (Rust model: the page's whole interface to it),
                              flood-worker.js (background analysis)
 tests/                       model, app and live-site tests
 .github/workflows/build.yml  CI: test, build terrain, publish to Pages

@@ -6,7 +6,7 @@ const F = require('./model.js');
 const { scene } = require('./fine-scene.js');
 
 (async () => {
-  const { fineRaster, fineWindow, cropGrid } = await import('../viewer/fine-raster.js');
+  const { fineWindow, cropGrid } = await import('../viewer/fine-raster.js'), { fineRaster } = require('./fine-raster-reference.js');
   const { planBands, bandParams, stitch, createFinePool } = await import('../viewer/fine-pool.js');
   const fine = { fineWindow, cropGrid };
   const same = (a, b) => Buffer.from(a.buffer, a.byteOffset, a.length).equals(Buffer.from(b.buffer, b.byteOffset, b.length));

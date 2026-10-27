@@ -2,9 +2,13 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const F = require('./model.js');
+const ref = require('./water-mesh-reference.js');   // the JavaScript mesh the Rust one is held to
 
 (async () => {
   const t3d = await import('../viewer/terrain3d.js');
+  const rustMesh = F.waterMesh;
+  const bytes = (v) => Buffer.from(v.buffer, v.byteOffset, v.byteLength);   // the view's own bytes (the Rust mesh shares a buffer)
 
 // A tiny synthetic analysis grid: land sloping up from the west, a river
 // bed along x=20..30, ocean at y<2, NoData at x>=W-2.
@@ -39,14 +43,14 @@ test('waterMesh emits vertices only for wet cells with the right band colour', (
     const i = 15 * a.W + x;
     wet[i] = 1; depth[i] = 1.4; wse[i] = a.dem[i] + 1.4;
   }
-  const m = t3d.waterMesh(a, wse, depth, wet, 1);
+  const m = t3d.waterMesh(a, wse, depth, wet, 1, {}, rustMesh);
   // a single wet row can't make quads — the builder needs 2 wet rows
   assert.equal(m, null);
   for (let y = 14; y <= 16; y++) for (let x = 20; x <= 30; x++) {
     const i = y * a.W + x;
     wet[i] = 1; depth[i] = y === 15 ? 1.4 : 2.4; wse[i] = a.dem[i] + depth[i];
   }
-  const m2 = t3d.waterMesh(a, wse, depth, wet, 1);
+  const m2 = t3d.waterMesh(a, wse, depth, wet, 1, {}, rustMesh);
   assert.ok(m2);
   // depth 1.4 → the 1–2 m band #3786c9: find the (x=20, y=15) vertex
   const k = m2.positions.findIndex((v, j) => j % 3 === 0 && v === 20 * a.cell && m2.positions[j + 2] === 15 * a.cell) / 3;
@@ -63,7 +67,7 @@ test('waterFromFrame matches showTimeStep decode arithmetic', () => {
     frame[y * a.W + x] = x === 12 ? 128 : 255;
   }
   const maxD = 2.0;
-  const { wse, depth, wet, mesh } = t3d.waterFromFrame(a, frame, maxD, 2);
+  const { wse, depth, wet, mesh } = ref.waterFromFrame(a, frame, maxD, 2);
   assert.equal(depth[10 * a.W + 10], 2.0);
   assert.equal(wet[10 * a.W + 10], 1);
   assert.equal(wse[10 * a.W + 10], a.dem[10 * a.W + 10] + 2.0);
@@ -74,7 +78,7 @@ test('waterFromFrame matches showTimeStep decode arithmetic', () => {
   for (let k = 1; k < mesh.positions.length; k += 3) assert.ok(Number.isFinite(mesh.positions[k]));
 });
 
-test('the frame mesh read without decoding the grid is the same mesh, soft or hard, with or without scene coordinates', () => {
+test('the Rust mesh is the JavaScript one byte for byte, from a frame or a run, soft or hard, with or without scene coordinates', () => {
   const a = makeGrid(90, 70, 10);
   let seed = 7;
   const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
@@ -83,13 +87,18 @@ test('the frame mesh read without decoding the grid is the same mesh, soft or ha
     const frame = new Uint8Array(a.N);
     for (let y = 0; y < a.H; y++) for (let x = 0; x < a.W; x++) if (rand() < 0.55 && x > 10 && x < 70 && y > 5 && y < 60 && !a.ocean[y * a.W + x]) frame[y * a.W + x] = 1 + Math.floor(rand() * 254);
     const opts = { soft, lift: 0.05, ...(scene ? { colX, rowZ } : {}) };
-    const full = t3d.waterFromFrame(a, frame, maxD, skip, opts).mesh;
-    const lean = t3d.waterMeshFromFrame(a, frame, maxD, skip, opts);
+    const full = ref.waterFromFrame(a, frame, maxD, skip, opts).mesh;
+    const lean = t3d.waterMeshFromFrame(a, frame, maxD, skip, opts, rustMesh);
+    // the same cells as a run (what waterFromFrame decodes) give the same mesh
+    const dec = ref.waterFromFrame(a, frame, maxD, skip, opts);
+    const fromRun = t3d.waterMesh(a, dec.wse, dec.depth, dec.wet, skip, opts, rustMesh);
+    assert.equal(fromRun === null, full === null);
+    if (full) for (const key of ['positions', 'colors', 'uvs', 'indices']) assert.ok(bytes(fromRun[key]).equals(bytes(full[key])), `${key} differs from a run`);
     assert.equal(lean === null, full === null);
     if (!full) continue;
     for (const key of ['positions', 'colors', 'uvs', 'indices']) {
       assert.equal(lean[key].length, full[key].length, key);
-      assert.ok(Buffer.from(lean[key].buffer).equals(Buffer.from(full[key].buffer)), `${key} differs (skip ${skip}, soft ${soft}, scene ${scene}, maxD ${maxD})`);
+      assert.ok(bytes(lean[key]).equals(bytes(full[key])), `${key} differs (skip ${skip}, soft ${soft}, scene ${scene}, maxD ${maxD})`);
     }
     assert.deepEqual([lean.cols, lean.rows, lean.skip, lean.wM, lean.hM], [full.cols, full.rows, full.skip, full.wM, full.hM]);
   }
@@ -99,7 +108,7 @@ test('soft water adds a transparent ring at the neighbours\' level and 3D shades
   const a = makeGrid(), N = a.N;
   const wse = new Float64Array(N), depth = new Float32Array(N), wet = new Uint8Array(N);
   for (let y = 14; y <= 16; y++) for (let x = 20; x <= 24; x++) { const i = y * a.W + x; wet[i] = 1; depth[i] = 1.2; wse[i] = 7; }
-  const hard = t3d.waterMesh(a, wse, depth, wet, 1), soft = t3d.waterMesh(a, wse, depth, wet, 1, { soft: true });
+  const hard = t3d.waterMesh(a, wse, depth, wet, 1, {}, rustMesh), soft = t3d.waterMesh(a, wse, depth, wet, 1, { soft: true }, rustMesh);
   assert.ok(soft.positions.length > hard.positions.length);
   const alphas = []; for (let k = 3; k < soft.colors.length; k += 4) alphas.push(soft.colors[k]);
   assert.ok(alphas.some((v) => v === 0) && alphas.some((v) => v > 0.5));
@@ -111,12 +120,12 @@ test('soft water adds a transparent ring at the neighbours\' level and 3D shades
 });
 
 test('depthColor follows the 2D legend band boundaries and the 3D colours', () => {
-  assert.deepEqual(t3d.depthColor(0.0), [0x3f, 0x9a, 0xe0]);
-  assert.deepEqual(t3d.depthColor(0.49), [0x3f, 0x9a, 0xe0]);
-  assert.deepEqual(t3d.depthColor(0.5), [0x2b, 0x7f, 0xd0]);
-  assert.deepEqual(t3d.depthColor(1.9), [0x1f, 0x67, 0xbb]);
-  assert.deepEqual(t3d.depthColor(4.5), [0x0c, 0x34, 0x70]);
-  for (const [lo, c] of t3d.BANDS3D) assert.deepEqual(t3d.depthColor(lo), c);   // one palette for 2D and 3D
+  assert.deepEqual(ref.depthColor(0.0), [0x3f, 0x9a, 0xe0]);
+  assert.deepEqual(ref.depthColor(0.49), [0x3f, 0x9a, 0xe0]);
+  assert.deepEqual(ref.depthColor(0.5), [0x2b, 0x7f, 0xd0]);
+  assert.deepEqual(ref.depthColor(1.9), [0x1f, 0x67, 0xbb]);
+  assert.deepEqual(ref.depthColor(4.5), [0x0c, 0x34, 0x70]);
+  for (const [lo, c] of t3d.BANDS3D) assert.deepEqual(ref.depthColor(lo), c);   // one palette for 2D and 3D
 });
 
 /* ---------- v4 ---------- */
@@ -271,7 +280,7 @@ test('water meshes can take scene coordinates from the shared projection', () =>
   const wse = new Float64Array(N), depth = new Float32Array(N), wet = new Uint8Array(N);
   for (let y = 14; y <= 16; y++) for (let x = 20; x <= 30; x++) { const i = y * a.W + x; wet[i] = 1; depth[i] = 1; wse[i] = a.dem[i] + 1; }
   const colX = Float64Array.from({ length: a.W }, (_, x) => 1000 + x * 7), rowZ = Float64Array.from({ length: a.H }, (_, y) => -500 + y * 7);
-  const m = t3d.waterMesh(a, wse, depth, wet, 1, { colX, rowZ, lift: 0.05 });
+  const m = t3d.waterMesh(a, wse, depth, wet, 1, { colX, rowZ, lift: 0.05 }, rustMesh);
   const k = m.positions.findIndex((v, j) => j % 3 === 0 && Math.abs(v - (1000 + 20 * 7)) < 1e-3 && Math.abs(m.positions[j + 2] - (-500 + 15 * 7)) < 1e-3) / 3;
   assert.ok(k >= 0);
   assert.ok(Math.abs(m.positions[k * 3 + 1] - (a.dem[15 * a.W + 20] + 1.05)) < 1e-4);

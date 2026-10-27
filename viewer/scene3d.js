@@ -1044,10 +1044,10 @@ class Scene3d {
     let m = null;
     const tl = t.area.timeline;
     if (tl && tl.depthFrames && tl.depthFrames.length >= (k + 1) * a.N && tl.depthFrameMax && tl.depthFrameMax.length > k) {
-      m = waterMeshFromFrame(a, tl.depthFrames.subarray(k * a.N, (k + 1) * a.N), tl.depthFrameMax[k] || 0, skip, opts);
+      m = waterMeshFromFrame(a, tl.depthFrames.subarray(k * a.N, (k + 1) * a.N), tl.depthFrameMax[k] || 0, skip, opts, window.FloodCore.waterMesh);
     } else if (t.area.run) {
       const r = t.area.run;   // slim runs omit wse; level (= dem + depth) is kept
-      m = waterMesh(a, r.level, r.depth, r.wet, skip, opts);
+      m = waterMesh(a, r.level, r.depth, r.wet, skip, opts, window.FloodCore.waterMesh);
     }
     if (!m) return;
     const geo = new THREE.BufferGeometry();

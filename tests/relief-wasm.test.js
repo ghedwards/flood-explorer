@@ -1,11 +1,11 @@
-// The Rust/WASM shaded relief must match the JavaScript reference (viewer/relief.js) to within a colour step.
+// The Rust/WASM shaded relief must match the JavaScript reference (tests/relief-reference.js) to within a colour step.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const F = require('./model.js');
 
 (async () => {
-  const { terrainRGBA, HYPSO } = await import('../viewer/relief.js');
+  const { HYPSO } = await import('../viewer/relief.js'), { terrainRGBA: reference } = require('./relief-reference.js'), terrainRGBA = (a) => reference(a, HYPSO);
   const rng = (seed) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 
   // hills with a coast, no-data holes, a sea mask or not

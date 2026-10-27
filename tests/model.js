@@ -8,7 +8,6 @@
 // without WebAssembly, and so do these tests.
 const path = require('path');
 const fs = require('fs');
-const J = require('../viewer/flood-core.js');
 const W = require('../viewer/flood-wasm.js');
 
 const impl = process.env.FLOOD_IMPL || 'wasm';
@@ -19,8 +18,8 @@ if (impl === 'wasm') {
     throw new Error(`No flood.wasm at ${file} — run 'node scripts/build-wasm.js' first (needs the rust toolchain).`);
   }
   const instance = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), {});
-  F = W.create(W.wasmRunner(instance), J);
+  F = W.create(W.wasmRunner(instance));
 } else if (impl === 'native') {
-  F = W.create(W.addonRunner(require(path.resolve(process.env.FLOOD_NODE_ADDON))), J);
+  F = W.create(W.addonRunner(require(path.resolve(process.env.FLOOD_NODE_ADDON))));
 } else throw new Error(`unknown FLOOD_IMPL ${impl}`);
 module.exports = F;

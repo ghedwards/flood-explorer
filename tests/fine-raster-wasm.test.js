@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const F = require('./model.js');
 
 (async () => {
-  const { fineRaster, fineWindow, cropGrid } = await import('../viewer/fine-raster.js');
+  const { fineWindow, cropGrid } = await import('../viewer/fine-raster.js'), { fineRaster } = require('./fine-raster-reference.js');
 
   const { scene } = require('./fine-scene.js');
   const fine = { fineWindow, cropGrid };

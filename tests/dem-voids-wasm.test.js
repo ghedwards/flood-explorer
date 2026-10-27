@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const F = require('./model.js');
 
 (async () => {
-  const { classifyDemGaps } = await import('../viewer/dem-voids.js');
+  const { classifyDemGaps } = require('./dem-voids-reference.js');
   const rng = (seed) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 
   // A DEM with a coast on a random side, lakes of no data, speckle holes, big inland holes

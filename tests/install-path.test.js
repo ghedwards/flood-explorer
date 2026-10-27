@@ -13,7 +13,6 @@ const path = require('node:path');
   globalThis.self = globalThis;
   globalThis.fetch = async () => new Response(bytes, { headers: { 'content-type': 'application/wasm' } });
 
-  await import('../viewer/flood-core.js');
   await import('../viewer/flood-wasm.js');
 
   const core = globalThis.FloodCore;

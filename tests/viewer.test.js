@@ -72,11 +72,15 @@ test('timeline states retain dry gaps between two flood peaks', () => {
   assert.ok(gaps > 0, 'the two peaks have intervening dry cells');
 });
 
-test('roads reopen and buildings are dry between successive peaks', () => {
+test('roads reopen and buildings are dry between successive peaks', async () => {
+  const { roadNet } = await import('../viewer/roadnet.js'), { timelineAccess } = await import('../viewer/access.js');
   const N = 100, steps = 7, wordsPerStep = Math.ceil(N / 32);
   const wetBits = new Uint32Array(steps * wordsPerStep), deepBits = new Uint32Array(steps * wordsPerStep);
   for (const k of [1, 5]) for (const bits of [wetBits, deepBits]) bits[k * wordsPerStep + (55 >>> 5)] |= 1 << (55 & 31);
-  const ctx = viewer(['cellOf', 'timelineAccess'], { state: { a: { W: 10, H: 10 }, geo: { west: 0, east: .01, south: 0, north: .01 } } });
+  const ctx = viewer(['timelineAccess'], {
+    state: { a: { W: 10, H: 10 }, geo: { west: 0, east: .01, south: 0, north: .01 } },
+    roadNet, timelineAccessOn: timelineAccess, F,
+  });
   const access = ctx.timelineAccess({ steps, t0: 0, step: 1, wordsPerStep, wetBits, deepBits }, {
     bx: [.0055, .0065], by: [.0045, .0045], roads: [{ name: 'River Road' }],
     net: { lat: [.0099, .0045], lon: [.0055, .0055], edges: [[0, 1, 0]] },
@@ -262,8 +266,10 @@ test('a timeline for an unchanged model completes', async () => {
   assert.equal(f.area.timeline.steps, 2);
 });
 
-test('population estimates use only the covered share of a census area', () => {
+test('population estimates use only the covered share of a census area', async () => {
+  const { scenarioImpact } = await import('../viewer/impact.js'), { roadNet } = await import('../viewer/roadnet.js');
   const ctx = viewer(['cellOf', 'ringsKm2', 'computeImpact'], {
+    scenarioImpact, F, roadNet,
     state: { areaKey: 'a', a: { W: 2, H: 2, N: 4, cell: 1000, ocean: new Uint8Array(4) }, geo,
       run: { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) } },
     $: (id) => ({ value: id === 'floorHeight' ? '.3' : '0' }), damageShare: () => 0,
@@ -277,8 +283,10 @@ test('population estimates use only the covered share of a census area', () => {
   assert.equal(ctx.computeImpact(data).people, 100, 'the land-area fallback is also coverage adjusted');
 });
 
-test('impact counts: floor height optional and heavy sweep cached per run', () => {
+test('impact counts: floor height optional and heavy sweep cached per run', async () => {
+  const { scenarioImpact } = await import('../viewer/impact.js'), { roadNet } = await import('../viewer/roadnet.js');
   const ctx = viewer(['cellOf', 'ringsKm2', 'computeImpact'], {
+    scenarioImpact, F, roadNet,
     state: { areaKey: 'a', a: { W: 2, H: 2, N: 4, cell: 1000, ocean: new Uint8Array(4) }, geo,
       run: { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) } },
     $: (id) => (id === 'floorUnknown' ? { checked: true } : { value: id === 'floorHeight' ? '.3' : '0' }),

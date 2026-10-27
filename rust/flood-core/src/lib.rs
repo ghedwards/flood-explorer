@@ -1,7 +1,11 @@
 //! Flood Explorer's flood model: terrain, drainage, river levels, flash
-//! flooding, hazard and flood over time. A port of viewer/flood-core.js
-//! with the same numbers; no outside crates, so it builds anywhere.
+//! flooding, hazard and flood over time. A port of the JavaScript model
+//! it replaced, with the same numbers; no outside crates, so it builds anywhere.
 
+pub mod access;
+pub mod impact;
+pub mod mesh;
+pub mod net;
 pub mod fine;
 pub mod voids;
 pub mod flash;

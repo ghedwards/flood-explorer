@@ -1,11 +1,12 @@
 import { desktopUpdates } from './desktop-updates.js';
 import { createFeedClient } from './feed-health.js';
 import './inertial-grid.js';
-import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
+import { fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
-import { HYPSO, terrainRGBA as terrainRGBAjs } from './relief.js';
-import { classifyDemGaps } from './dem-voids.js';
-import { prepareNet, prepareRun, routeFrom } from './routing.js';
+import { HYPSO } from './relief.js';
+import { roadNet, setGrid, setRun, routeFrom } from './roadnet.js';
+import { scenarioImpact } from './impact.js';
+import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 /* Flood Explorer — viewer
@@ -232,7 +233,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   let pending = 0;
   function schedule() {
-    if (modelUnavailable) return;   // the wasm gate card explains why
     syncOutputs();
     if (pending) return;
     pending = requestAnimationFrame(() => { pending = 0; runScenario(); });
@@ -661,11 +661,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return worker;
   }
   function analyseAsync(grid, opts) {
-    if (modelUnavailable) return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
-    const onMainThread = () => {
-      if (F.engine !== 'rust') return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
-      return nextFrame().then(() => F.analyse(grid, opts));
-    };
+    const onMainThread = () => nextFrame().then(() => F.analyse(grid, opts));
     const w = getWorker();
     if (!w) return onMainThread();
     return new Promise((resolve, reject) => {
@@ -1115,10 +1111,8 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   ];   // same colours as BANDS3D in terrain3d.js (the old palest band read as white paint over imagery)
   // opacity per band over imagery: shallow water stays slightly see-through
   const DEPTH_ALPHA = [178, 230, 230, 230, 230];
-  const depthBand = (dep) => { for (let k = 0; k < DEPTH_STOPS.length; k++) if (dep < DEPTH_STOPS[k][0]) return k; return DEPTH_STOPS.length - 1; };
-  const WATER = [109, 147, 173];
   // normal (river or lake) water over imagery: its own teal, clearly visible
-  // but not a flood blue (WATER above stays the relief view's water colour)
+  // but not a flood blue (the relief view's water colour is in render.rs)
   // What is normally water. The normal-level run wets everything below the
   // river's normal surface that connects to it, which on a terrain model
   // includes ground that levees, drains or terrain errors keep dry, and its
@@ -1190,6 +1184,13 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // at the normal level, and then its depth is counted from the normal
   // water surface: ground that is never wet can't really lie below the water
   // it connects to, so a terrain hole there isn't read as metres of flood.
+  // cell → position in base.low, built once per low-ground list
+  const lowIndexes = new WeakMap();
+  function lowIndexOf(low) {
+    let m = lowIndexes.get(low);
+    if (!m) { m = new Map(); for (let k = 0; k < low.idx.length; k++) if (!m.has(low.idx[k])) m.set(low.idx[k], k); lowIndexes.set(low, m); }
+    return m;
+  }
   function dryLowGround(run, base) {
     const low = base && base.low;
     if (!run || !low) return run;
@@ -1204,47 +1205,9 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   const NORMAL_WATER = [38, 166, 154];
   const CHANNEL_ALPHA = 180;  // ~70 %
-  // The shaded relief: from Rust once the module has loaded, else the JavaScript reference.
+  // The shaded relief (rust/flood-core/src/render.rs), tinted with these stops.
   function terrainRGBA(a) {
-    return F.engine === 'rust' && F.terrainRGBA ? F.terrainRGBA(a, HYPSO) : terrainRGBAjs(a);
-  }
-
-  // Pixels for the current scenario. withTerrain: shaded relief underneath
-  // (static map); otherwise transparent except water (overlay on a basemap).
-  function composeImage(withTerrain) {
-    const a = state.a, run = state.run, base = state.base;
-    const img = withTerrain
-      ? new ImageData(new Uint8ClampedArray(state.terrain), a.W, a.H)
-      : new ImageData(a.W, a.H);
-    const d = img.data;
-    const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
-    for (let i = 0; i < a.N; i++) {
-      if (!a.valid[i]) continue;
-      const o = i * 4;
-      let col = null, alpha = 0.88;
-      if (withTerrain && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
-      if (cmp) {
-        const k = cmp.diff[i];
-        if (k === 2) col = COMPARE_COLORS.onlyNow;
-        else if (k === 3) col = COMPARE_COLORS.onlyPinned;
-        else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
-      } else if (run.wet[i] && isFlood(i)) {
-        if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
-        else {
-          col = DEPTH_STOPS[depthBand(run.depth[i])][1];
-        }
-      }
-      if (withTerrain && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) { col = WATER; alpha = 0.9; }
-      if (!col) continue;
-      if (withTerrain) {
-        d[o] = d[o] * (1 - alpha) + col[0] * alpha;
-        d[o + 1] = d[o + 1] * (1 - alpha) + col[1] * alpha;
-        d[o + 2] = d[o + 2] * (1 - alpha) + col[2] * alpha;
-      } else {
-        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
-      }
-    }
-    return img;
+    return F.terrainRGBA(a, HYPSO);
   }
 
   // Water raster for the map overlay (Leaflet imageOverlay): flooded cells
@@ -1254,112 +1217,38 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // The relief overlay is pre-blended exactly as the previously fused
   // raster was: (0.88·water) over opaque terrain.
   let waterImg = null;
-  // a wet cell with no wet neighbour among the 8 around it (display only;
-  // the statistics still count it)
-  function loneCell(wet, i, W, H) {
-    const x = i % W, y = (i - x) / W;
-    for (let dy = -1; dy <= 1; dy++) {
-      const yy = y + dy;
-      if (yy < 0 || yy >= H) continue;
-      for (let dx = -1; dx <= 1; dx++) {
-        const xx = x + dx;
-        if ((dx || dy) && xx >= 0 && xx < W && wet[yy * W + xx]) return false;
-      }
-    }
-    return true;
-  }
-  function composeWater() {
+  // The colours are mapped in Rust (rust/flood-core/src/render.rs `compose_water`).
+  function composeWater(relief = $('showRelief').checked) {
     const a = state.a, run = state.run, base = state.base;
-    const relief = $('showRelief').checked;
-    // --- WASM path (Rust colour mapping) with JS fallback ---
-    const F = window.FloodCore;
-    if (F && typeof F.composeWater === 'function') {
-      try {
-        const area = state.areaKey && areaReg.get(state.areaKey);
-        const W = a.W, H = a.H, N = a.N;
-        const modeStr = colorMode();
-        const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
-        const hz = modeStr === 'hazard' ? hazardNow() : null;
-        const cmp = modeStr === 'compare' ? compareNow() : null;
-        const valid = a.valid instanceof Uint8Array ? a.valid : new Uint8Array(a.valid || []);
-        const ocean = a.ocean instanceof Uint8Array ? a.ocean : new Uint8Array(a.ocean || []);
-        const stream = a.stream instanceof Uint8Array ? a.stream : new Uint8Array(a.stream || []);
-        const acc = a.acc instanceof Float32Array ? a.acc : new Float32Array(a.acc || []);
-        const satRaw = a.sat || [];
-        const sat = satRaw instanceof Float32Array ? satRaw : new Float32Array(satRaw.length ? satRaw : 0);
-        const baseWet = (base && base.wet) ? (base.wet instanceof Uint8Array ? base.wet : new Uint8Array(base.wet)) : new Uint8Array(0);
-        const runWet = run.wet instanceof Uint8Array ? run.wet : new Uint8Array(run.wet || []);
-        const runDepth = run.depth instanceof Float32Array ? run.depth : new Float32Array(run.depth || []);
-        const hzCls = (hz && hz.cls) ? (hz.cls instanceof Uint8Array ? hz.cls : new Uint8Array(hz.cls)) : new Uint8Array(0);
-        const cmpArr = (cmp && cmp.diff) ? cmp.diff.map((v) => (v == null ? 0 : v)) : [];
-        const cmpDiff = new Int32Array(cmpArr);
-        // per-cell polygon mask
-        let mask = null;
-        if (area && area.polygon) {
-          mask = new Uint8Array(N);
-          for (let i = 0; i < N; i++) {
-            const ll = cellLatLng(i);
-            mask[i] = pointInPolygon(ll[0], ll[1], area.polygon) ? 1 : 0;
-          }
-        }
-        const r = F.composeWater({
-          w: W, h: H, relief: relief ? 1 : 0, mode: modeCode,
-          floodA: relief ? 224 : 255, streamA: relief ? 230 : 0,
-          cellKm2: (a.cell * a.cell) / 1e6, streamThr: state.streamAreaKm2 * 3,
-          valid, ocean, stream, acc, sat, baseWet, runWet, runDepth, hzCls, cmpDiff, mask,
-        });
-        if (r && r.rgba && r.rgba.length === W * H * 4) {
-          if (!waterImg || waterImg.width !== W || waterImg.height !== H) waterImg = new ImageData(W, H);
-          waterImg.data.set(r.rgba);
-          return { img: waterImg, count: r.count || 0 };
-        }
-      } catch (e) { /* fall through to JS */ }
-    }
-    if (!waterImg || waterImg.width !== a.W || waterImg.height !== a.H) waterImg = new ImageData(a.W, a.H);
-    const d = waterImg.data;
-    d.fill(0);
-    const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
-    const floodA = relief ? 224 : 255;   // 0.88 blends over the relief base; full elsewhere
-    const streamA = relief ? 230 : 0;    // stream lines only with terrain shading
-    const cellKm2 = (a.cell * a.cell) / 1e6, streamThr = state.streamAreaKm2 * 3;
-    let n = 0;
-    for (let i = 0; i < a.N; i++) {
-      if (!a.valid[i]) continue;
-      const area = state.areaKey && areaReg.get(state.areaKey);
-      if (area && area.polygon) {
-        const ll = cellLatLng(i);
-        if (!pointInPolygon(ll[0], ll[1], area.polygon)) continue;
-      }
-      let col = null, band = -1;
-      if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
-      if (cmp) {
-        const k = cmp.diff[i];
-        if (k === 2) col = COMPARE_COLORS.onlyNow;
-        else if (k === 3) col = COMPARE_COLORS.onlyPinned;
-        else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
-      } else if (run.wet[i] && isFlood(i)) {
-        if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
-        else if (!loneCell(run.wet, i, a.W, a.H)) {   // lone wet cells are speckle, not flood
-          band = depthBand(run.depth[i]);
-          col = DEPTH_STOPS[band][1];
-        }
-      }
-      const o = i * 4;
-      if (col) {
-        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2];
-        d[o + 3] = band === 0 && !(hz && hz.cls[i]) && !cmp ? Math.min(floodA, DEPTH_ALPHA[0]) : floodA;
-        n++; continue;
-      }
-      const channel = a.stream[i] && a.acc[i] * cellKm2 > streamThr;
-      if (streamA && channel) {
-        d[o] = WATER[0]; d[o + 1] = WATER[1]; d[o + 2] = WATER[2]; d[o + 3] = streamA;
-      } else if (!relief && !a.ocean[i] && ((channel && !(a.sat && a.sat[i] >= 0 && a.sat[i] < SAT_CHANNEL)) || (base && base.wet[i]))) {
-        // river channel and normal-level water over imagery: a light neutral
-        // tint (the imagery shows the real water), not a flood colour
-        d[o] = NORMAL_WATER[0]; d[o + 1] = NORMAL_WATER[1]; d[o + 2] = NORMAL_WATER[2]; d[o + 3] = CHANNEL_ALPHA;
-      }
-    }
-    return { img: waterImg, count: n };
+    const area = state.areaKey && areaReg.get(state.areaKey);
+    const W = a.W, H = a.H;
+    const modeStr = colorMode();
+    const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
+    const hz = modeStr === 'hazard' ? hazardNow() : null;
+    const cmp = modeStr === 'compare' ? compareNow() : null;
+    const valid = a.valid instanceof Uint8Array ? a.valid : new Uint8Array(a.valid || []);
+    const ocean = a.ocean instanceof Uint8Array ? a.ocean : new Uint8Array(a.ocean || []);
+    const stream = a.stream instanceof Uint8Array ? a.stream : new Uint8Array(a.stream || []);
+    const acc = a.acc instanceof Float32Array ? a.acc : new Float32Array(a.acc || []);
+    const satRaw = a.sat || [];
+    const sat = satRaw instanceof Float32Array ? satRaw : new Float32Array(satRaw.length ? satRaw : 0);
+    const baseWet = (base && base.wet) ? (base.wet instanceof Uint8Array ? base.wet : new Uint8Array(base.wet)) : new Uint8Array(0);
+    const runWet = run.wet instanceof Uint8Array ? run.wet : new Uint8Array(run.wet || []);
+    const runDepth = run.depth instanceof Float32Array ? run.depth : new Float32Array(run.depth || []);
+    const hzCls = (hz && hz.cls) ? (hz.cls instanceof Uint8Array ? hz.cls : new Uint8Array(hz.cls)) : new Uint8Array(0);
+    const cmpArr = (cmp && cmp.diff) ? cmp.diff.map((v) => (v == null ? 0 : v)) : [];
+    const cmpDiff = new Int32Array(cmpArr);
+    const mask = area && area.polygon ? polygonMask(area) : null;   // cells inside the area's outline
+    const r = F.composeWater({
+      w: W, h: H, relief: relief ? 1 : 0, mode: modeCode,
+      floodA: relief ? 224 : 255, streamA: relief ? 230 : 0,   // 0.88 blends over the relief base; stream lines only with relief
+      cellKm2: (a.cell * a.cell) / 1e6, streamThr: state.streamAreaKm2 * 3,
+      valid, ocean, stream, acc, sat, baseWet, runWet, runDepth, hzCls, cmpDiff, mask,
+    });
+    if (!r || !r.rgba || r.rgba.length !== W * H * 4) throw new Error('composeWater returned no picture');
+    if (!waterImg || waterImg.width !== W || waterImg.height !== H) waterImg = new ImageData(W, H);
+    waterImg.data.set(r.rgba);
+    return { img: waterImg, count: r.count || 0 };
   }
 
   /* ---- 5 m flood edges from LiDAR (display only) ----
@@ -1454,7 +1343,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   const finePool = createFinePool({
     makeWorker: () => new Worker(new URL('./fine-worker.js', import.meta.url), { type: 'module' }),
     size: typeof Worker === 'undefined' ? 0 : Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)),
-    fallback: fineRaster,
+    fallback: (p) => F.fineRaster(p),   // on the main thread, when workers are not available
     onProblem: (message) => logProblem('worker', message),
   });
   function fineCompute(p) { return finePool.compute(p); }
@@ -1771,10 +1660,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   function drawStaticMap() {
     const a = state.a;
-    const img = composeImage(true);
+    // the relief with the water over it (the overlay is pre-blended for exactly this)
     const off = state.offscreen;
     off.width = a.W; off.height = a.H;
-    off.getContext('2d').putImageData(img, 0, 0);
+    const octx = off.getContext('2d');
+    octx.putImageData(new ImageData(new Uint8ClampedArray(state.terrain), a.W, a.H), 0, 0);
+    const wc = state.offscreenWater || (state.offscreenWater = document.createElement('canvas'));
+    wc.width = a.W; wc.height = a.H;
+    wc.getContext('2d').putImageData(composeWater(true).img, 0, 0);
+    octx.drawImage(wc, 0, 0);
 
     const canvas = $('map');
     const stage = $('mapWrap');
@@ -2163,39 +2057,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   }
   const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
   const status = (window.__floodStatus = { mode: 'static', overlayUpdates: 0, tilesLoaded: 0, tileErrors: 0, floodPixels: 0, overlays: {} });
-  status.engine = F.engine || 'loading';
-
-  // The flood model only exists as WebAssembly. When it can't load (an old
-  // browser, private-mode restrictions or a broken fetch) the app refuses
-  // to run rather than silently degrading, because every number on screen
-  // would otherwise come from a different model than the user expects.
-  let modelUnavailable = false;
-  function showModelGate(detail) {
-    if (modelUnavailable) return;
-    modelUnavailable = true;
-    status.engine = F.engine = 'error';
-    const card = document.createElement('div');
-    card.id = 'wasmGate';
-    card.setAttribute('role', 'alertdialog');
-    card.setAttribute('aria-label', 'The flood model is unavailable');
-    card.innerHTML = `<style>
-      #wasmGate{position:fixed;inset:0;z-index:9999;background:rgba(8,24,38,.72);display:flex;align-items:center;justify-content:center;padding:24px}
-      #wasmGate .card{max-width:34em;background:var(--paper,#fff);color:var(--ink,#123);border-radius:12px;padding:22px 26px;box-shadow:0 8px 40px rgba(0,0,0,.35)}
-      #wasmGate h2{margin:.1em 0 .4em;font-size:1.15em}
-      #wasmGate ul{margin:.3em 0 .8em;padding-left:1.2em}
-      #wasmGate button{font:inherit;padding:.4em 1.1em;border-radius:8px;border:1px solid var(--line,#94a3b8);background:var(--accent,#20618d);color:#fff;cursor:pointer}
-    </style><div class="card"><h2>This browser can't run the flood model</h2>
-      <p>The flood model is written in Rust and runs as WebAssembly. It didn't load, so flood maps, statistics and timeline playback can't be calculated.</p>
-      <p>This usually means:</p>
-      <ul><li>an old browser without WebAssembly — try the current Firefox, Chrome, Edge or Safari</li>
-      <li>a browser extension or private-browsing setting blocking WebAssembly or the model download</li>
-      <li>an interrupted download — a reload often fixes it</li></ul>
-      <p class="hint">${escapeHtml(detail || '')}</p>
-      <button type="button" onclick="location.reload()">Reload the app</button></div>`;
-    document.body.appendChild(card);
-  }
-  window.addEventListener('flood:wasm-error', (e) => showModelGate(e.detail && e.detail.error));
-  if (window.FloodCoreReady) window.FloodCoreReady.then(() => { status.engine = F.engine; if (F.engine !== 'rust') showModelGate('The model could not be loaded in this browser session.'); });
+  status.engine = F.engine;   // 'rust': main.js does not start the app without the WebAssembly model
 
   // Offline use: a service worker keeps the app, the national data, map
   // tiles and model terrain that have been used, so the site still opens
@@ -3284,21 +3146,14 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     const x = (i % a.W) + 0.5, y = Math.floor(i / a.W) + 0.5;
     return [g.north - (y / a.H) * (g.north - g.south), g.west + (x / a.W) * (g.east - g.west)];
   }
-  function pointInPolygon(lat, lon, rings) {
-    if (!Array.isArray(rings) || !rings.length) return true;
-    let inside = false;
-    for (let r = 0; r < rings.length; r++) {
-      const ring = rings[r];
-      if (!Array.isArray(ring) || ring.length < 3) continue;
-      let c = false;
-      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        const yi = ring[i][0], xi = ring[i][1];
-        const yj = ring[j][0], xj = ring[j][1];
-        if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) c = !c;
-      }
-      if (r === 0) inside = c; else if (c) inside = false;
-    }
-    return inside;
+  // Which cells lie inside an area's outline: worked out once per outline and grid, not on every redraw
+  function polygonMask(area) {
+    const a = state.a, g = state.geo, c = area.maskCache;
+    if (c && c.a === a && c.g === g && c.polygon === area.polygon) return c.mask;
+    const rings = (Array.isArray(area.polygon) ? area.polygon : []).filter((r) => Array.isArray(r));
+    const mask = F.polygonMask(g, a.W, a.H, rings);
+    area.maskCache = { a, g, polygon: area.polygon, mask };
+    return mask;
   }
 
   function latLngCell(ll) {
@@ -3458,7 +3313,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return a.mainOutlet >= 0 ? a.acc[a.mainOutlet] * 0.05 : 0;
   }
 
-  function isFlood(i) { return !(state.base && state.base.wet[i]) && !state.a.ocean[i]; }
 
   function drawStats(s) {
     if (state.inertial) {
@@ -6724,157 +6578,24 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return Object.assign({}, base, { overFloor, floorH, damage });
     // The heavy sweep: buildings, roads and isolation (BFS over dry roads),
     // people (SA1), workers (SA2), road lengths and key sites. Rebuilt only
-    // when the impact data or the run changes.
+    // when the impact data or the run changes. What depends only on the area
+    // is prepared once and the sweep itself is Rust (viewer/impact.js).
     function computeScenarioImpact(d, a, run) {
-    const depthAt = (c) => (c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) ? run.depth[c] : 0);
-    // buildings
-    const nB = d.bx.length;
-    let bWet = 0, bDeep = 0, hWet = 0, workWet = 0;
-    const bCell = new Int32Array(nB), bFlood = new Uint8Array(nB), bDepth = new Float32Array(nB);
-    for (let i = 0; i < nB; i++) {
-      const c = cellOf(d.by[i], d.bx[i]);
-      bCell[i] = c;
-      const z = bDepth[i] = depthAt(c);
-      if (z >= 0.15) {
-        bWet++; bFlood[i] = 1;
-        if (d.isHome[i]) hWet++;
-        if (d.isWork[i]) workWet++;
-        if (z >= 0.5) bDeep++;
-      }
-    }
-    // evacuation: dry roads still joined to the edge of the model area by
-    // dry roads; dry buildings whose nearest road is cut off are isolated
-    const net = d.net;
-    let isolatedB = 0, isolatedPeopleW = null, cutEdges = [], islandEdges = [];
-    if (net && net.lat.length) {
-      const nN = net.lat.length, g = state.geo;
-      const dryNode = new Uint8Array(nN);
-      for (let n = 0; n < nN; n++) dryNode[n] = depthAt(cellOf(net.lat[n], net.lon[n])) < 0.3 ? 1 : 0;
-      const adj = Array.from({ length: nN }, () => []);
-      const edgeDry = net.edges.map(([u, v]) => {
-        let ok = dryNode[u] && dryNode[v];
-        if (ok) for (let t = 1; t < 4 && ok; t++) { const f = t / 4; if (depthAt(cellOf(net.lat[u] + (net.lat[v] - net.lat[u]) * f, net.lon[u] + (net.lon[v] - net.lon[u]) * f)) >= 0.3) ok = 0; }
-        return ok;
-      });
-      net.edges.forEach(([u, v], k) => { if (edgeDry[k]) { adj[u].push(v); adj[v].push(u); } });
-      const mx = ((g.east - g.west) / a.W) * 3, my = ((g.north - g.south) / a.H) * 3;
-      const reach = new Uint8Array(nN), q = [];
-      for (let n = 0; n < nN; n++) {
-        const edge = net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx;
-        if (edge && dryNode[n]) { reach[n] = 1; q.push(n); }
-      }
-      for (let h = 0; h < q.length; h++) for (const m of adj[q[h]]) if (!reach[m]) { reach[m] = 1; q.push(m); }
-      // roads that don't join the edge even when everything is dry (private
-      // roads, mapping gaps) aren't cut off by the flood
-      if (!net.dryReach) {
-        const all = Array.from({ length: nN }, () => []);
-        net.edges.forEach(([u, v]) => { all[u].push(v); all[v].push(u); });
-        const dr = new Uint8Array(nN), q2 = [];
-        for (let n = 0; n < nN; n++) if (net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx) { dr[n] = 1; q2.push(n); }
-        for (let h = 0; h < q2.length; h++) for (const m of all[q2[h]]) if (!dr[m]) { dr[m] = 1; q2.push(m); }
-        net.dryReach = dr;
-      }
-      net.edges.forEach(([u, v, ri], k) => {
-        if (!edgeDry[k]) cutEdges.push([u, v]);
-        else if (!reach[u] || !reach[v]) islandEdges.push([u, v]);
-      });
-      // nearest road node for each dry building (grid hash ~ 200 m)
-      const hs = 0.002, hash = new Map();
-      for (let n = 0; n < nN; n++) { const k = `${Math.floor(net.lat[n] / hs)},${Math.floor(net.lon[n] / hs)}`; let l = hash.get(k); if (!l) hash.set(k, (l = [])); l.push(n); }
-      const isoB = new Uint8Array(nB);
-      for (let i = 0; i < nB; i++) {
-        if (bFlood[i]) continue;
-        const ky = Math.floor(d.by[i] / hs), kx = Math.floor(d.bx[i] / hs);
-        let best = -1, bd = Infinity;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const n of hash.get(`${ky + dy},${kx + dx}`) || []) {
-          const dd = (net.lat[n] - d.by[i]) ** 2 + ((net.lon[n] - d.bx[i]) * 0.9) ** 2;
-          if (dd < bd) { bd = dd; best = n; }
+      const sa = (key, grid, feats) => {   // census areas painted onto the grid, once per area and grid size
+        if (!d[grid] || d[key] !== state.areaKey + a.W) {
+          const px = drawRings(feats, state.geo, a.W, a.H, (f, i) => `rgb(${(i + 1) >> 16 & 255},${(i + 1) >> 8 & 255},${(i + 1) & 255})`);
+          const idg = new Int32Array(a.N).fill(-1);
+          for (let c = 0; c < a.N; c++) { const v = (px[4 * c] << 16) | (px[4 * c + 1] << 8) | px[4 * c + 2]; if (px[4 * c + 3] > 250 && v > 0 && v <= feats.length) idg[c] = v - 1; }
+          d[grid] = idg; d[key] = state.areaKey + a.W;
         }
-        if (best >= 0 && dryNode[best] && !reach[best] && net.dryReach[best]) { isoB[i] = 1; isolatedB++; }
-      }
-      isolatedPeopleW = isoB;
-    }
-    // people: each SA1's population spread over its buildings (or its land)
-    let people = null, peopleIsolated = null;
-    if (d.sa1) {
-      if (!d.sa1Grid || d.sa1Key !== state.areaKey + a.W) {
-        const px = drawRings(d.sa1.feats, state.geo, a.W, a.H, (f, i) => `rgb(${(i + 1) >> 16 & 255},${(i + 1) >> 8 & 255},${(i + 1) & 255})`);
-        const idg = new Int32Array(a.N).fill(-1);
-        for (let c = 0; c < a.N; c++) { const v = (px[4 * c] << 16) | (px[4 * c + 1] << 8) | px[4 * c + 2]; if (px[4 * c + 3] > 250 && v > 0 && v <= d.sa1.feats.length) idg[c] = v - 1; }
-        d.sa1Grid = idg; d.sa1Key = state.areaKey + a.W;
-      }
-      const nS = d.sa1.pop.length, tot = new Float64Array(nS), hit = new Float64Array(nS), land = new Float64Array(nS), wetL = new Float64Array(nS), inside = new Float64Array(nS);
-      for (let i = 0; i < nB; i++) { const s = bCell[i] >= 0 ? d.sa1Grid[bCell[i]] : -1; if (s >= 0) { tot[s]++; if (bFlood[i]) hit[s]++; } }
-      for (let c = 0; c < a.N; c++) { const s = d.sa1Grid[c]; if (s >= 0) inside[s] += (a.cell * a.cell) / 1e6; }
-      for (let c = 0; c < a.N; c++) { const s = d.sa1Grid[c]; if (s >= 0 && !(a.ocean && a.ocean[c])) { land[s]++; if (depthAt(c) >= 0.15) wetL[s]++; } }
-      // Buildings are fetched only inside the model. Allocate only the
-      // covered share of each SA1's population, as for SA2 workers below.
-      const pop = d.sa1.pop.map((p, s) => {
-        const km2 = d.sa1.km2 ? d.sa1.km2[s] : ringsKm2(d.sa1.feats[s].geometry?.rings);
-        return p * (km2 > 0 ? Math.min(1, inside[s] / km2) : 0);
-      });
-      people = 0;
-      for (let s = 0; s < nS; s++) people += pop[s] * (tot[s] > 0 ? hit[s] / tot[s] : (land[s] ? wetL[s] / land[s] : 0));
-      if (isolatedPeopleW) {
-        const iso = new Float64Array(nS);
-        for (let i = 0; i < nB; i++) { const s0 = bCell[i] >= 0 ? d.sa1Grid[bCell[i]] : -1; if (s0 >= 0 && isolatedPeopleW[i]) iso[s0]++; }
-        peopleIsolated = 0;
-        for (let s = 0; s < nS; s++) if (tot[s] > 0) peopleIsolated += pop[s] * (iso[s] / tot[s]);
-      }
-    }
-    // workers: each SA2's workers (by place of work) spread over its mapped
-    // workplaces (or all its buildings if none are mapped by type), scaled
-    // by how much of the SA2 lies inside the model
-    let workers = null, workersAll = null;
-    if (d.sa2) {
-      if (!d.sa2Grid || d.sa2Key !== state.areaKey + a.W) {
-        const px = drawRings(d.sa2.feats, state.geo, a.W, a.H, (f, i) => `rgb(${(i + 1) >> 16 & 255},${(i + 1) >> 8 & 255},${(i + 1) & 255})`);
-        const idg = new Int32Array(a.N).fill(-1);
-        for (let c = 0; c < a.N; c++) { const v = (px[4 * c] << 16) | (px[4 * c + 1] << 8) | px[4 * c + 2]; if (px[4 * c + 3] > 250 && v > 0 && v <= d.sa2.feats.length) idg[c] = v - 1; }
-        d.sa2Grid = idg; d.sa2Key = state.areaKey + a.W;
-      }
-      const nS = d.sa2.workers.length, wT = new Float64Array(nS), wH = new Float64Array(nS), bT = new Float64Array(nS), bH = new Float64Array(nS), inside = new Float64Array(nS);
-      for (let i = 0; i < nB; i++) {
-        const s = bCell[i] >= 0 ? d.sa2Grid[bCell[i]] : -1;
-        if (s < 0) continue;
-        bT[s]++; if (bFlood[i]) bH[s]++;
-        if (d.isWork[i]) { wT[s]++; if (bFlood[i]) wH[s]++; }
-      }
-      const cellKm2 = (a.cell * a.cell) / 1e6;
-      for (let c = 0; c < a.N; c++) { const s = d.sa2Grid[c]; if (s >= 0) inside[s] += cellKm2; }
-      workers = 0; workersAll = 0;
-      for (let s = 0; s < nS; s++) {
-        const frac = d.sa2.km2[s] > 0 ? Math.min(1, inside[s] / d.sa2.km2[s]) : 0, W = d.sa2.workers[s] * frac;
-        workersAll += W;
-        workers += W * (wT[s] >= 3 ? wH[s] / wT[s] : bT[s] > 0 ? bH[s] / bT[s] : 0);
-      }
-    }
-    // roads: length under more than 0.3 m of water (impassable to cars)
-    const cutBy = new Map();
-    let cutKm = 0, roadKm = 0;
-    for (const rd of d.roads) {
-      let cut = 0;
-      for (let k = 1; k < rd.pts.length; k++) {
-        const p0 = rd.pts[k - 1], p1 = rd.pts[k];
-        const len = Math.hypot((p1.lon - p0.lon) * Math.cos((p0.lat * Math.PI) / 180), p1.lat - p0.lat) * 111.32;
-        roadKm += len;
-        const steps = Math.max(1, Math.ceil((len * 1000) / a.cell));
-        let wetSteps = 0;
-        for (let t = 0; t < steps; t++) {
-          const f = (t + 0.5) / steps;
-          if (depthAt(cellOf(p0.lat + (p1.lat - p0.lat) * f, p0.lon + (p1.lon - p0.lon) * f)) >= 0.3) wetSteps++;
-        }
-        cut += (len * wetSteps) / steps;
-      }
-      if (cut > 0) { cutKm += cut; const key = rd.name || `(unnamed ${rd.type})`; cutBy.set(key, (cutBy.get(key) || 0) + cut); }
-    }
-    const worstRoads = Array.from(cutBy.entries()).filter(([n]) => !n.startsWith('(unnamed')).sort((x, y) => y[1] - x[1]).slice(0, 8);
-    // key sites
-    const sitesHit = d.sites.map((s) => ({ ...s, depth: depthAt(cellOf(s.lat, s.lon)) })).filter((s) => s.depth >= 0.15).sort((x, y) => y.depth - x.depth);
-    return {
-      buildings: nB, bWet, bDeep, hWet, workers, workersAll, homesTagged: d.isHome.reduce((x, y) => x + y, 0), workWet, workTagged: d.isWork.reduce((x, y) => x + y, 0),
-      bDepth, isolatedB, peopleIsolated, cutEdges, islandEdges, people, cutKm, roadKm, worstRoads, sites: d.sites.length, sitesHit,
-    };
+      };
+      if (d.sa1) sa('sa1Key', 'sa1Grid', d.sa1.feats);
+      if (d.sa2) sa('sa2Key', 'sa2Grid', d.sa2.feats);
+      const r = scenarioImpact({ d, a, run, geo: state.geo, P: roadNet(d, F), ringsKm2 });
+      const depthAt = (c) => (c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) ? run.depth[c] : 0);
+      // key sites
+      r.sitesHit = d.sites.map((s) => ({ ...s, depth: depthAt(cellOf(s.lat, s.lon)) })).filter((s) => s.depth >= 0.15).sort((x, y) => y.depth - x.depth);
+      return r;
     }
   }
   // Indicative damage: the EU Joint Research Centre's global depth–damage
@@ -7126,7 +6847,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   async function calibrateAsync(a, s0, m, bed) {
     const scan = (tick) => F.calibrateLevels(a, s0, m, bed, (s, lv) => F.inundate(a, Object.assign({}, s, { gaugeLevel: lv }), { slim: 1 }), tick);
     const w = getWorker();
-    if (!modelUnavailable && w && a.analysisKey != null && a.keyGen === workerGen) {
+    if (w && a.analysisKey != null && a.keyGen === workerGen) {
       try {
         return await new Promise((resolve, reject) => {
           const id = ++workerSeq;
@@ -7347,10 +7068,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   /* ---------- flood over time: when places flood, roads close, places are cut off */
   async function timelineAsync(a, s, opts) {
-    const onMainThread = () => {
-      if (F.engine !== 'rust') return Promise.reject(new Error('The flood model (WebAssembly) is unavailable in this browser.'));
-      return nextFrame().then(() => F.floodTimeline(a, s, opts));
-    };
+    const onMainThread = () => nextFrame().then(() => F.floodTimeline(a, s, opts));
     const w = getWorker();
     if (!w) return onMainThread();
     // when the analysis is resident in the worker (key + same generation),
@@ -7618,96 +7336,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // Roads and isolation through time, from when each spot is over 0.3 m deep
   function timelineAccess(tl, d) {
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    const a = state.a, net = d.net, nN = net.lat.length, K = tl.steps, g = state.geo;
-    const at = (bits, c, k) => c >= 0 && !!(bits[k * tl.wordsPerStep + (c >>> 5)] & (1 << (c & 31)));
-    const deepAt = (c, k) => at(tl.deepBits, c, k);
-    const wetAt = (c, k) => at(tl.wetBits, c, k);
-    const nodeCell = new Int32Array(nN);
-    for (let n = 0; n < nN; n++) nodeCell[n] = cellOf(net.lat[n], net.lon[n]);
-    // Keep the sampled cells, then test each edge at the current step.
-    // A road can reopen between successive river or tidal peaks.
-    const edgeCells = net.edges.map(([u, v]) => {
-      const cells = new Set();
-      for (let t = 0; t <= 4; t++) {
-        const f = t / 4;
-        const c = cellOf(net.lat[u] + (net.lat[v] - net.lat[u]) * f, net.lon[u] + (net.lon[v] - net.lon[u]) * f);
-        if (c >= 0) cells.add(c);
-      }
-      return Array.from(cells);
-    });
-    const edgeClosed = new Uint8Array(net.edges.length), roads = new Map();
-    // exits: dry road nodes at the edge of the model area
-    const mx = ((g.east - g.west) / a.W) * 3, my = ((g.north - g.south) / a.H) * 3;
-    const exit = new Uint8Array(nN);
-    for (let n = 0; n < nN; n++) exit[n] = net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx ? 1 : 0;
-    const adj = Array.from({ length: nN }, () => []);
-    net.edges.forEach(([u, v], k) => { adj[u].push([v, k]); adj[v].push([u, k]); });
-    // nearest road node per building (grid hash ~ 200 m)
-    const hs = 0.002, hash = new Map();
-    for (let n = 0; n < nN; n++) { const key = `${Math.floor(net.lat[n] / hs)},${Math.floor(net.lon[n] / hs)}`; (hash.get(key) || hash.set(key, []).get(key)).push(n); }
-    const nB = d.bx.length, bNode = new Int32Array(nB).fill(-1), bCell = new Int32Array(nB);
-    for (let i = 0; i < nB; i++) {
-      bCell[i] = cellOf(d.by[i], d.bx[i]);
-      const ky = Math.floor(d.by[i] / hs), kx = Math.floor(d.bx[i] / hs);
-      let bd = Infinity;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const n of hash.get(`${ky + dy},${kx + dx}`) || []) {
-        const dd = (net.lat[n] - d.by[i]) ** 2 + ((net.lon[n] - d.bx[i]) * 0.9) ** 2;
-        if (dd < bd) { bd = dd; bNode[i] = n; }
-      }
-    }
-    // places whose roads never reach the edge, even when dry, don't count
-    const dryReach = new Uint8Array(nN), q0 = [];
-    for (let n = 0; n < nN; n++) if (exit[n]) { dryReach[n] = 1; q0.push(n); }
-    for (let h = 0; h < q0.length; h++) for (const [m] of adj[q0[h]]) if (!dryReach[m]) { dryReach[m] = 1; q0.push(m); }
-    const isoSteps = new Int16Array(nB), firstIso = new Int16Array(nB).fill(-1);
-    const isoRun = new Int16Array(nB);
-    let longest = 0;
-    const isoCount = new Int32Array(K), floodCount = new Int32Array(K), closedCount = new Int32Array(K);
-    const reach = new Uint8Array(nN), q = new Int32Array(nN);
-    for (let k = 0; k < K; k++) {
-      reach.fill(0);
-      const closedNames = new Set();
-      let closed = 0;
-      for (let e = 0; e < net.edges.length; e++) {
-        edgeClosed[e] = edgeCells[e].some((c) => deepAt(c, k)) ? 1 : 0;
-        if (!edgeClosed[e]) continue;
-        closed++;
-        const name = d.roads[net.edges[e][2]].name;
-        if (name) closedNames.add(name);
-      }
-      closedCount[k] = closed;
-      for (const name of closedNames) {
-        const intervals = roads.get(name) || [];
-        const last = intervals[intervals.length - 1];
-        if (last && last.to === k - 1) last.to = k;
-        else intervals.push({ name, from: k, to: k });
-        roads.set(name, intervals);
-      }
-      let qt = 0;
-      for (let n = 0; n < nN; n++) if (exit[n] && !deepAt(nodeCell[n], k)) { reach[n] = 1; q[qt++] = n; }
-      for (let h = 0; h < qt; h++) for (const [m, e] of adj[q[h]]) {
-        if (reach[m] || edgeClosed[e] || deepAt(nodeCell[m], k)) continue;
-        reach[m] = 1; q[qt++] = m;
-      }
-      for (let i = 0; i < nB; i++) {
-        if (wetAt(bCell[i], k)) { floodCount[k]++; isoRun[i] = 0; continue; }
-        if (bNode[i] >= 0 && !reach[bNode[i]] && dryReach[bNode[i]]) {
-          isoCount[k]++; isoSteps[i]++; isoRun[i]++;
-          longest = Math.max(longest, isoRun[i]);
-          if (firstIso[i] < 0) firstIso[i] = k;
-        } else isoRun[i] = 0;
-      }
-    }
-    const toH = (k) => Math.round(tl.t0 + k * tl.step);
-    let maxIso = 0, maxIsoAt = 0;
-    for (let k = 0; k < K; k++) if (isoCount[k] > maxIso) { maxIso = isoCount[k]; maxIsoAt = k; }
-    const roadList = Array.from(roads.values()).flat().sort((x, y) => x.from - y.from);
-    return {
-      roads: roadList.map((r) => ({ name: r.name, closes: toH(r.from), reopens: toH(r.to + 1) })),
-      firstClose: roadList.length ? toH(roadList[0].from) : null,
-      maxIso, maxIsoAt: toH(maxIsoAt), longest: Math.round(longest * tl.step),
-      isoCount, floodCount, closedCount, isoSteps, firstIso,
-    };
+    return timelineAccessOn(tl, d, roadNet(d, F), state.geo, state.a.W, state.a.H);
   }
   // what routing did to the peak on its way down the river
   function routeNote(tl) {
@@ -7913,7 +7542,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     // water just below sea level, inland gaps are filled from the land
     // around them (not left as pits for the model to fill as "normal water")
     if (gaps) {
-      const g = F.engine === 'rust' && F.classifyDemGaps ? F.classifyDemGaps(dem, iw, ih) : classifyDemGaps(dem, iw, ih);
+      const g = F.classifyDemGaps(dem, iw, ih);
       for (let i = 0; i < iw * ih; i++) if (g.sea[i]) dem[i] = -1.5;
       land += g.filledCells;
     }
@@ -8373,18 +8002,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   const EVAC = 'Evacuation centre';
   // The shortest dry route by road from a spot to the edge of the model and
-  // to the nearest dry evacuation centre (Dijkstra over the road network).
-  // The network is prepared once per area and the flooded edges once per run
-  // (viewer/routing.js).
-  const routeNets = new WeakMap();
+  // to the nearest dry evacuation centre (Dijkstra over the road network,
+  // which the module holds: viewer/roadnet.js).
   function routeOut(lat, lon) {
-    const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a, run = state.run;
+    const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a;
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    let P = routeNets.get(d);
-    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap));
-    let R = state.routeCache;
-    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean), { run, a });
-    return routeFrom(R, lat, lon);
+    const P = roadNet(d, F);
+    setGrid(P, state.geo, a.W, a.H);
+    setRun(P, state.run, a.ocean);
+    return routeFrom(P, lat, lon);
   }
   function drawRoute(r) {
     const L = window.L;
@@ -8398,7 +8024,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     const a = state.a;
     if (state.gauge < 0 || ctl.floodType.value === 'flash') return null;
     const base = scenario(), lo0 = a.dem[state.gauge] + 0.3, hi0 = parseFloat(ctl.gaugeLevel.max) || lo0 + 10;
-    const wetAt = (L) => { const r = dryLowGround(F.inundate(a, withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta), { slim: 1 }), state.base); return r.wet[c] && !(a.ocean && a.ocean[c]) && !(state.base && state.base.wet[c]); };
+    const low = state.base && state.base.low, lowAt = low && lowIndexOf(low);
+    const wetAt = (L) => {
+      const s = withRiverBelow(a, Object.assign({}, base, { gaugeLevel: L }), state.areaMeta);
+      if (a.ocean && a.ocean[c] || state.base && state.base.wet[c]) return false;
+      if (!F.inundateAt) { const r = dryLowGround(F.inundate(a, s, { slim: 1 }), state.base); return Boolean(r.wet[c]); }
+      // one cell, no grids: what dryLowGround would leave of the full run at c
+      const p = F.inundateAt(a, s, c), k = lowAt ? lowAt.get(c) : undefined;
+      return p.wet && !(k !== undefined && p.depth - low.depth[k] <= 0.05);
+    };
     if (wetAt(lo0)) return { level: lo0, always: true };
     if (!wetAt(hi0)) return { above: hi0 };
     let lo = lo0, hi = hi0;
@@ -8599,7 +8233,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     if (!st || !st.sources) { box.innerHTML = `${live}<p class="hint">The site build's status couldn't be loaded${why ? ` (${escapeHtml(why)})` : ''}.</p>`; return null; }
     const label = { ok: 'OK', cached: 'From an earlier build', problem: 'Problem', missing: 'Not available' };
     const when = (iso) => (iso ? new Date(iso).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
-    const engine = F.engine === 'rust' ? 'Rust, compiled to WebAssembly' : (F.engine === 'error' ? 'WebAssembly failed to load (the flood model is unavailable)' : 'WebAssembly');
+    const engine = 'Rust, compiled to WebAssembly';
     box.innerHTML = `${liveSourcesHtml()}<p class="hint">Built ${escapeHtml(when(st.built))}. Flood model running in ${engine}.</p>${st.sources.map((s) => `<li class="st-${escapeHtml(s.state)}">
       <strong>${escapeHtml(s.name)}</strong> <span class="st-badge">${escapeHtml(label[s.state] || s.state)}</span><br>
       <span class="hint">${escapeHtml(s.summary)}${s.fetched ? ` · data from ${escapeHtml(when(s.fetched))}` : ''} · for ${escapeHtml(s.feeds)}</span></li>`).join('')}</ul>`;

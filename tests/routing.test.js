@@ -1,11 +1,46 @@
-// The prepared-network router (viewer/routing.js) must give exactly the routes the earlier per-click
-// version did. The reference below is that version, kept as it was.
+// The route to dry land (viewer/roadnet.js with the Rust network, rust/flood-core/src/net.rs) must give the routes the
+// earlier per-click JavaScript version did: the same nodes, roads and names, lengths to rounding. The reference below
+// is that version, kept as it was.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const F = require('./model.js');
 
 const EVAC = 'Evacuation centre';
+
+// the binary heap the earlier JavaScript search used (ties come out in its order, which the Rust one reproduces)
+function MinHeap(cap) {
+  this.k = new Float64Array(cap);
+  this.v = new Int32Array(cap);
+  this.n = 0;
+}
+MinHeap.prototype.push = function (key, val) {
+  let i = this.n++;
+  const k = this.k, v = this.v;
+  while (i > 0) {
+    const p = (i - 1) >> 1;
+    if (k[p] <= key) break;
+    k[i] = k[p]; v[i] = v[p]; i = p;
+  }
+  k[i] = key; v[i] = val;
+};
+MinHeap.prototype.pop = function () {
+  const k = this.k, v = this.v;
+  const top = v[0];
+  const lk = k[--this.n], lv = v[this.n];
+  let i = 0;
+  for (;;) {
+    let c = 2 * i + 1;
+    if (c >= this.n) break;
+    if (c + 1 < this.n && k[c + 1] < k[c]) c++;
+    if (k[c] >= lk) break;
+    k[i] = k[c]; v[i] = v[c]; i = c;
+  }
+  k[i] = lk; v[i] = lv;
+  return top;
+};
+// lengths from Rust and JavaScript differ in the last digits (the maths libraries differ), so compare to 10 figures
+const approx = (x) => JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'number' ? Number(v.toPrecision(10)) : v)));
 
 function referenceRoute(d, geo, a, run, lat, lon) {
   const cellOf = (la, lo) => {
@@ -41,7 +76,7 @@ function referenceRoute(d, geo, a, run, lat, lon) {
   });
   const centreAt = new Map(centres.filter((x) => !x.flooded && x.node >= 0).map((x) => [x.node, x]));
   const dist = new Float64Array(nN).fill(Infinity), prev = new Int32Array(nN).fill(-1), via = new Int32Array(nN).fill(-1);
-  const heap = new F._internal.MinHeap(net.edges.length * 2 + 4);
+  const heap = new MinHeap(net.edges.length * 2 + 4);
   if (!nodeWet(start)) { dist[start] = 0; heap.push(0, start); }
   let exitNode = -1, centreNode = -1;
   while (heap.n) {
@@ -100,7 +135,7 @@ function runWith(seed, a, blobs) {
 }
 
 (async () => {
-  const { prepareNet, prepareRun, routeFrom } = await import('../viewer/routing.js');
+  const { roadNet, setGrid, setRun, routeFrom } = await import('../viewer/roadnet.js');
   const geo = { west: 153.0, east: 153.06, south: -27.5, north: -27.44 };
   const W = 90, H = 90, a = { W, H, N: W * H, ocean: new Uint8Array(W * H) };
   for (let y = 0; y < H; y++) for (let x = 0; x < 8; x++) a.ocean[y * W + x] = 1;
@@ -108,13 +143,14 @@ function runWith(seed, a, blobs) {
   test('the prepared router returns the same routes as the earlier per-click search', () => {
     let routed = 0, withCentre = 0, none = 0;
     for (const [seed, side] of [[1, 12], [2, 25], [3, 40]]) {
-      const d = town(seed, side, geo), P = prepareNet(d, F._internal.MinHeap);
+      const d = town(seed, side, geo), P = roadNet(d, F);
       for (let k = 0; k < 4; k++) {
-        const run = runWith(seed * 10 + k, a, k * 2), R = prepareRun(P, geo, a.W, a.H, run, a.ocean), r = rng(seed * 100 + k);
+        const run = runWith(seed * 10 + k, a, k * 2), r = rng(seed * 100 + k);
+        setGrid(P, geo, a.W, a.H); setRun(P, run, a.ocean);
         for (let q = 0; q < 40; q++) {
           const lat = geo.south + (geo.north - geo.south) * r(), lon = geo.west + (geo.east - geo.west) * r();
-          const want = referenceRoute(d, geo, a, run, lat, lon), got = routeFrom(R, lat, lon);
-          assert.deepEqual(got, want, `seed ${seed} run ${k} query ${q}`);
+          const want = referenceRoute(d, geo, a, run, lat, lon), got = routeFrom(P, lat, lon);
+          assert.deepEqual(approx(got), approx(want), `seed ${seed} run ${k} query ${q}`);
           if (want.none) none++; else { routed++; if (want.toCentre) withCentre++; }
         }
       }
@@ -126,13 +162,13 @@ function runWith(seed, a, blobs) {
     const d = town(7, 30, geo);
     // two nodes at the same spot: the lower index wins
     d.net.lat[500] = d.net.lat[300]; d.net.lon[500] = d.net.lon[300];
-    const P = prepareNet(d, F._internal.MinHeap), r = rng(9), run = { wet: new Uint8Array(a.N), depth: new Float32Array(a.N) };
-    const R = prepareRun(P, geo, a.W, a.H, run, null);
+    const P = roadNet(d, F), r = rng(9), run = { wet: new Uint8Array(a.N), depth: new Float32Array(a.N) };
+    setGrid(P, geo, a.W, a.H); setRun(P, run, null);
     for (let q = 0; q < 200; q++) {
       const lat = geo.south - 0.02 + (geo.north - geo.south + 0.04) * r(), lon = geo.west - 0.02 + (geo.east - geo.west + 0.04) * r();
-      assert.deepEqual(routeFrom(R, lat, lon), referenceRoute(d, geo, a, run, lat, lon));
+      assert.deepEqual(approx(routeFrom(P, lat, lon)), approx(referenceRoute(d, geo, a, run, lat, lon)));
     }
-    const here = routeFrom(R, d.net.lat[300], d.net.lon[300]);
+    const here = routeFrom(P, d.net.lat[300], d.net.lon[300]);
     assert.equal(here.startKm, 0);
   });
 })();

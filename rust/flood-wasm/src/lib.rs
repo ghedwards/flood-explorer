@@ -126,6 +126,13 @@ impl Bag {
             None => None,
         }
     }
+    pub fn u32s(&self, k: &str) -> Option<Vec<u32>> {
+        match self.0.get(k) {
+            Some(Val::U32(v)) => Some(v.clone()),
+            Some(v) => Some(v.to_f64().iter().map(|&x| x as u32).collect()),
+            None => None,
+        }
+    }
     pub fn i16s(&self, k: &str) -> Option<Vec<i16>> {
         match self.0.get(k) {
             Some(Val::I16(v)) => Some(v.clone()),
@@ -200,6 +207,7 @@ thread_local! {
     static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
     static ANALYSES: RefCell<Vec<Option<Analysis>>> = const { RefCell::new(Vec::new()) };
     static WAVES: RefCell<Vec<Option<Wave>>> = const { RefCell::new(Vec::new()) };
+    static NETS: RefCell<Vec<Option<net::Net>>> = const { RefCell::new(Vec::new()) };
     static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -220,6 +228,16 @@ fn with_analysis<R>(h: f64, f: impl FnOnce(&Analysis) -> R) -> Result<R, String>
         match s.get(h as usize).and_then(|x| x.as_ref()) {
             Some(a) if h >= 0.0 => Ok(f(a)),
             _ => Err("no such analysis".into()),
+        }
+    })
+}
+
+fn with_net<R>(h: f64, f: impl FnOnce(&mut net::Net) -> R) -> Result<R, String> {
+    NETS.with(|s| {
+        let mut s = s.borrow_mut();
+        match s.get_mut(h as usize).and_then(|x| x.as_mut()) {
+            Some(n) if h >= 0.0 => Ok(f(n)),
+            _ => Err("no such road network".into()),
         }
     })
 }
@@ -246,6 +264,16 @@ fn grid_of(b: &Bag) -> Result<Grid, String> {
         return Err("dem is the wrong size".into());
     }
     Ok(Grid { w, h, cell: b.num("cell"), dem, valid: b.u8s("valid"), inflow: b.f32s("inflow"), d8: b.i16s("d8") })
+}
+
+fn put_grid(o: &mut Out, g: &Grid) {
+    o.num("W", g.w as f64).num("H", g.h as f64).num("cell", g.cell).f32s("dem", &g.dem);
+    if let Some(v) = &g.valid {
+        o.u8s("valid", v);
+    }
+    if let Some(v) = &g.inflow {
+        o.f32s("inflow", v);
+    }
 }
 
 fn put_analysis(o: &mut Out, a: &Analysis) {
@@ -696,6 +724,154 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let slim = b.has("slim");
             let r = with_analysis(b.num("a"), |a| inundate(a, &s))?;
             put_run(&mut o, &r, slim);
+        }
+        "waterMesh" => {
+            let (col_x, row_z) = (b.f64s("colX").unwrap_or_default(), b.f64s("rowZ").unwrap_or_default());
+            let (surface, depth, wet) = (b.f64s("surface").unwrap_or_default(), b.f32s("depth").unwrap_or_default(), b.u8s("wet").unwrap_or_default());
+            let (dem, frame) = (b.f32s("dem").unwrap_or_default(), b.u8s("frame").unwrap_or_default());
+            let water = if b.has("frame") {
+                mesh::Water::Frame { dem: &dem, frame: &frame, max_d: b.num("maxD") }
+            } else {
+                mesh::Water::Run { surface: &surface, depth: &depth, wet: &wet }
+            };
+            let m = mesh::water_mesh(&mesh::MeshIn {
+                w: b.num("W") as usize, h: b.num("H") as usize, cell: b.num("cell"), skip: b.num("skip") as usize, lift: b.num("lift"),
+                soft: b.num("soft") != 0.0, col_x: &col_x, row_z: &row_z, water,
+            });
+            match m {
+                Some(m) => { o.num("any", 1.0).f32s("positions", &m.positions).f32s("colors", &m.colors).f32s("uvs", &m.uvs).u32s("indices", &m.indices); }
+                None => { o.num("any", 0.0); }
+            }
+        }
+        "polygonMask" => {
+            let (coords, off) = (b.f64s("pts").unwrap_or_default(), b.i32s("off").unwrap_or_default());
+            let rings: Vec<Vec<(f64, f64)>> = off.windows(2).map(|w| coords[2 * w[0] as usize..2 * w[1] as usize].chunks(2).map(|p| (p[0], p[1])).collect()).collect();
+            let geo = impact::Geo { west: b.num("west"), east: b.num("east"), south: b.num("south"), north: b.num("north"), w: b.num("W") as usize, h: b.num("H") as usize };
+            o.u8s("mask", &impact::polygon_mask(&geo, &rings));
+        }
+        "netLoad" => {
+            let (g, f) = (|k: &str| b.i32s(k).unwrap_or_default(), |k: &str| b.f64s(k).unwrap_or_default());
+            let n = net::Net::new(f("lat"), f("lon"), g("eu"), g("ev"), g("eroad"), f("centreLat"), f("centreLon"));
+            let h = NETS.with(|s| store(s, n));
+            o.num("handle", h as f64);
+        }
+        "netDrop" => {
+            let h = b.num("net");
+            NETS.with(|s| { if let Some(x) = s.borrow_mut().get_mut(h as usize) { *x = None; } });
+        }
+        "netGrid" => {
+            let geo = impact::Geo { west: b.num("west"), east: b.num("east"), south: b.num("south"), north: b.num("north"), w: b.num("W") as usize, h: b.num("H") as usize };
+            with_net(b.num("net"), |n| n.set_grid(geo))?;
+        }
+        "netBuildings" => {
+            let (bx, by) = (b.f64s("bx").unwrap_or_default(), b.f64s("by").unwrap_or_default());
+            with_net(b.num("net"), |n| n.set_buildings(&bx, &by, b.u8s("isHome").unwrap_or_default(), b.u8s("isWork").unwrap_or_default()))??;
+        }
+        "netCensus" => {
+            let g = |k: &str| b.i32s(k).unwrap_or_default();
+            let f = |k: &str| b.f64s(k).unwrap_or_default();
+            let ocean = b.u8s("ocean").unwrap_or_default();
+            with_net(b.num("net"), |n| n.set_census(g("sa1Grid"), b.num("nSa1") as usize, g("sa2Grid"), b.num("nSa2") as usize, &ocean, b.num("cellKm2"), (f("roadLat"), f("roadLon"), g("roadOff"))))?;
+        }
+        "netRun" => {
+            with_net(b.num("net"), |n| n.set_run(b.u8s("wet").unwrap_or_default(), b.f32s("depth").unwrap_or_default(), b.u8s("ocean").unwrap_or_default()))??;
+        }
+        "netRoute" => {
+            let r = with_net(b.num("net"), |n| n.route(b.num("lat"), b.num("lon")))??;
+            let none = |p: &Option<net::Path>| p.is_none() as u8 as f64;
+            o.num("none", r.none as u8 as f64).num("startKm", r.start_km).num("centres", r.centres as f64).num("centresFlooded", r.centres_flooded as f64).num("centre", r.centre as f64);
+            o.num("noExit", none(&r.to_exit)).num("noCentre", none(&r.to_centre));
+            if let Some(p) = &r.to_exit { o.num("exitKm", p.km).i32s("exitNodes", &p.nodes).i32s("exitVias", &p.vias); }
+            if let Some(p) = &r.to_centre { o.num("centreKm", p.km).i32s("centreNodes", &p.nodes).i32s("centreVias", &p.vias); }
+        }
+        "netImpact" => {
+            let r = with_net(b.num("net"), |n| -> Result<impact::ImpactOut, String> {
+                let (g, bl, run) = (n.grid.as_ref().ok_or("the grid is not set")?, n.buildings.as_ref().ok_or("the buildings are not set")?, n.run.as_ref().ok_or("no run is set")?);
+                // each census area's share inside the model (population and workers, scaled by how much of it is covered)
+                let share = |raw: Vec<f64>, km2: Vec<f64>, inside: &[f64]| -> Vec<f64> {
+                    (0..raw.len()).map(|s| raw[s] * if km2[s] > 0.0 { (inside[s] / km2[s]).min(1.0) } else { 0.0 }).collect()
+                };
+                let sa1_pop = share(b.f64s("sa1Pop").unwrap_or_default(), b.f64s("sa1Km2").unwrap_or_default(), &n.census.sa1_inside);
+                let sa2_workers = share(b.f64s("sa2Workers").unwrap_or_default(), b.f64s("sa2Km2").unwrap_or_default(), &n.census.sa2_inside);
+                Ok(impact::impact_sweep(&impact::ImpactIn {
+                    geo: g.geo, cell_m: b.num("cellM"), wet: &run.wet, depth: &run.depth, ocean: &run.ocean,
+                    b_cell: &bl.b_cell, is_home: &bl.is_home, is_work: &bl.is_work, b_node: &bl.b_node,
+                    off: &n.off, to: &n.to, edge: &n.edge, edge_u: &n.edge_u, edge_v: &n.edge_v, exit: &g.exit, dry_reach: &g.dry_reach,
+                    closed: &run.roads.closed, road_wet: &run.roads.wet,
+                    sa1_grid: &n.census.sa1_grid, sa1_pop: &sa1_pop, sa1_land: &n.census.sa1_land, sa2_grid: &n.census.sa2_grid, sa2_workers: &sa2_workers,
+                    road_lat: &n.census.road_lat, road_lon: &n.census.road_lon, road_off: &n.census.road_off,
+                }))
+            })??;
+            o.f32s("bDepth", &r.b_depth).u8s("bFlood", &r.b_flood).u8s("iso", &r.iso)
+                .i32s("cutEdges", &r.cut_edges).i32s("islandEdges", &r.island_edges)
+                .f64s("roadCutKm", &r.road_cut_km)
+                .f64s("n", &[r.b_wet as f64, r.b_deep as f64, r.h_wet as f64, r.work_wet as f64, r.isolated_b as f64, r.people, r.people_isolated, r.workers, r.workers_all, r.road_km]);
+        }
+        "netAccess" => {
+            let r = with_net(b.num("net"), |n| -> Result<access::AccessOut, String> {
+                let (g, bl) = (n.grid.as_ref().ok_or("the grid is not set")?, n.buildings.as_ref().ok_or("the buildings are not set")?);
+                let (wet, deep, edge_name) = (b.u32s("wet").unwrap_or_default(), b.u32s("deep").unwrap_or_default(), b.i32s("edgeName").unwrap_or_default());
+                Ok(access::access_over_time(&access::AccessIn {
+                    steps: b.num("steps") as usize, wps: b.num("wps") as usize, n_cells: g.geo.w * g.geo.h, n_names: b.num("names") as usize,
+                    off: &n.off, to: &n.to, edge: &n.edge, node_cell: &g.node_cell, exit: &g.exit, dry_reach: &g.dry_reach,
+                    ce_off: &g.cell_edge_off, ce_list: &g.cell_edge, edge_name: &edge_name,
+                    b_cell: &bl.b_cell, b_count: &bl.count, node_off: &bl.node_off, node_list: &bl.node_list, wet: &wet, deep: &deep,
+                }))
+            })??;
+            o.i32s("closedCount", &r.closed_count).i32s("floodCount", &r.flood_count).i32s("isoCount", &r.iso_count)
+                .i16s("isoSteps", &r.iso_steps).i16s("firstIso", &r.first_iso).num("longest", r.longest as f64)
+                .i32s("nameCounts", &r.name_counts).i32s("nameIds", &r.name_ids);
+        }
+        "syntheticTerrain" => {
+            put_grid(&mut o, &synthetic_terrain(b.num("W") as usize, b.num("H") as usize, b.num("cell"), b.num("seed") as u32));
+        }
+        "parseAsciiGrid" => {
+            let text = String::from_utf8_lossy(&b.u8s("text").unwrap_or_default()).into_owned();
+            put_grid(&mut o, &parse_ascii_grid(&text)?);
+        }
+        "downsample" => {
+            put_grid(&mut o, &downsample(&grid_of(b)?, b.num("maxSide") as usize));
+        }
+        "cleanNodata" => {
+            let mut g = grid_of(b)?;
+            clean_nodata(&mut g, b.num("nodata"));
+            o.u8s("valid", g.valid.as_deref().unwrap_or(&[]));
+        }
+        "lineCells" => {
+            let flat = b.f64s("pts").unwrap_or_default();
+            let pts: Vec<(f64, f64)> = flat.chunks(2).map(|p| (p[0], p[1])).collect();
+            o.i32s("cells", &line_cells(&pts, b.num("W") as usize, b.num("H") as usize));
+        }
+        "stormUplift" => {
+            o.num("v", storm_uplift(b.num("hours"), b.num("warming")));
+        }
+        "hazardClass" => {
+            o.num("v", hazard_class(b.num("d"), b.num("v")) as f64);
+        }
+        "snapToStream" => {
+            let v = with_analysis(b.num("a"), |a| snap_to_stream(a, b.num("x") as i64, b.num("y") as i64, b.num("r") as i64, b.num("minAcc")))?;
+            o.num("v", v as f64);
+        }
+        "mainStem" => {
+            o.i32s("cells", &with_analysis(b.num("a"), main_stem)?);
+        }
+        "encodeWhiteboxD8" => {
+            o.i16s("codes", &with_analysis(b.num("a"), encode_whitebox_d8)?);
+        }
+        "mergeRuns" => {
+            let (r1, r2) = (run_of(b, "a")?, run_of(b, "b")?);
+            put_run(&mut o, &merge_runs(&r1, &r2), true);
+        }
+        "scoreRun" => {
+            let (wet, near, flood) = (b.u8s("wet").unwrap_or_default(), b.u8s("near").unwrap_or_default(), b.u8s("flood").unwrap_or_default());
+            let (hit, miss, fa) = with_analysis(b.num("a"), |a| score_run(a, &wet, &near, &flood))?;
+            o.num("hit", hit as f64).num("miss", miss as f64).num("fa", fa as f64);
+        }
+        "inundateAt" => {
+            let s = scenario_of(b);
+            let cell = b.num("cell");
+            let d = with_analysis(b.num("a"), |a| if cell >= 0.0 { probe(a, &s, cell as usize) } else { None })?;
+            o.num("wet", if d.is_some() { 1.0 } else { 0.0 }).num("depth", d.unwrap_or(0.0) as f64);
         }
         "flashFlood" => {
             let st = Storm {

@@ -1,11 +1,11 @@
 // Gaps in an elevation window: sea at the coast, filled holes inland
-// (viewer/dem-voids.js).
+// (tests/dem-voids-reference.js).
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 (async () => {
-  const { classifyDemGaps } = await import('../viewer/dem-voids.js');
+  const { classifyDemGaps } = require('./dem-voids-reference.js');
 
   test('an inland gap is filled from the land around it, not made a pit', () => {
     const W = 20, H = 20, dem = new Float32Array(W * H).fill(170);
