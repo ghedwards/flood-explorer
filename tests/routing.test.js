@@ -108,7 +108,7 @@ function runWith(seed, a, blobs) {
   test('the prepared router returns the same routes as the earlier per-click search', () => {
     let routed = 0, withCentre = 0, none = 0;
     for (const [seed, side] of [[1, 12], [2, 25], [3, 40]]) {
-      const d = town(seed, side, geo), P = prepareNet(d, F._internal.MinHeap);
+      const d = town(seed, side, geo), P = prepareNet(d, F._internal.MinHeap, F);
       for (let k = 0; k < 4; k++) {
         const run = runWith(seed * 10 + k, a, k * 2), R = prepareRun(P, geo, a.W, a.H, run, a.ocean, F.prepareRoadsRun), r = rng(seed * 100 + k);
         for (let q = 0; q < 40; q++) {
@@ -126,7 +126,7 @@ function runWith(seed, a, blobs) {
     const d = town(7, 30, geo);
     // two nodes at the same spot: the lower index wins
     d.net.lat[500] = d.net.lat[300]; d.net.lon[500] = d.net.lon[300];
-    const P = prepareNet(d, F._internal.MinHeap), r = rng(9), run = { wet: new Uint8Array(a.N), depth: new Float32Array(a.N) };
+    const P = prepareNet(d, F._internal.MinHeap, F), r = rng(9), run = { wet: new Uint8Array(a.N), depth: new Float32Array(a.N) };
     const R = prepareRun(P, geo, a.W, a.H, run, null, F.prepareRoadsRun);
     for (let q = 0; q < 200; q++) {
       const lat = geo.south - 0.02 + (geo.north - geo.south + 0.04) * r(), lon = geo.west - 0.02 + (geo.east - geo.west + 0.04) * r();

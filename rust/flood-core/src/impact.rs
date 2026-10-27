@@ -271,3 +271,63 @@ pub fn impact_sweep(a: &ImpactIn) -> ImpactOut {
     }
     o
 }
+
+/// The nearest road node to each building, searched among the nodes in the 3x3 buckets of 0.002 degrees around it
+/// with longitude scaled by 0.9 (-1 where there is none). Ties go to the bucket met first, then the lower node.
+pub fn building_nodes(node_lat: &[f64], node_lon: &[f64], bx: &[f64], by: &[f64]) -> Vec<i32> {
+    const HS: f64 = 0.002;
+    let cell = |v: f64| (v / HS).floor() as i64;
+    let keys: Vec<(i64, i64)> = (0..node_lat.len()).map(|n| (cell(node_lat[n]), cell(node_lon[n]))).collect();
+    if keys.is_empty() {
+        return vec![-1; bx.len()];
+    }
+    // the buckets as a dense grid over the nodes' extent (with a one-bucket margin for the 3x3 look), nodes in
+    // ascending order within each: a bucket's list is csr[start[b]..start[b + 1]]
+    let (ky0, ky1) = (keys.iter().map(|k| k.0).min().unwrap() - 1, keys.iter().map(|k| k.0).max().unwrap() + 1);
+    let (kx0, kx1) = (keys.iter().map(|k| k.1).min().unwrap() - 1, keys.iter().map(|k| k.1).max().unwrap() + 1);
+    let (rows, cols) = ((ky1 - ky0 + 1) as usize, (kx1 - kx0 + 1) as usize);
+    let slot = |ky: i64, kx: i64| -> Option<usize> {
+        if ky < ky0 || ky > ky1 || kx < kx0 || kx > kx1 {
+            None
+        } else {
+            Some((ky - ky0) as usize * cols + (kx - kx0) as usize)
+        }
+    };
+    let mut start = vec![0u32; rows * cols + 1];
+    for &(ky, kx) in &keys {
+        start[slot(ky, kx).unwrap() + 1] += 1;
+    }
+    for i in 0..rows * cols {
+        start[i + 1] += start[i];
+    }
+    let mut fill = start.clone();
+    let mut csr = vec![0u32; keys.len()];
+    for (n, &(ky, kx)) in keys.iter().enumerate() {
+        let b = slot(ky, kx).unwrap();
+        csr[fill[b] as usize] = n as u32;
+        fill[b] += 1;
+    }
+    (0..bx.len())
+        .map(|i| {
+            let (ky, kx) = (cell(by[i]), cell(bx[i]));
+            let (mut best, mut bd) = (-1i32, f64::INFINITY);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if let Some(b) = slot(ky + dy, kx + dx) {
+                        for &n in &csr[start[b] as usize..start[b + 1] as usize] {
+                            let n = n as usize;
+                            let dlat = node_lat[n] - by[i];
+                            let dlon = (node_lon[n] - bx[i]) * 0.9;
+                            let dd = dlat * dlat + dlon * dlon;
+                            if dd < bd {
+                                bd = dd;
+                                best = n as i32;
+                            }
+                        }
+                    }
+                }
+            }
+            best
+        })
+        .collect()
+}

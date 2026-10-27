@@ -67,7 +67,7 @@ function nearest(net, ix, lat, lon, kx) {
   return { node: bi, dd: best };
 }
 
-export function prepareNet(d, MinHeap) {
+export function prepareNet(d, MinHeap, F) {
   const net = d.net, nN = net.lat.length, nE = net.edges.length;
   const off = new Int32Array(nN + 1);
   for (const [u, v] of net.edges) { off[u + 1]++; off[v + 1]++; }
@@ -80,7 +80,7 @@ export function prepareNet(d, MinHeap) {
   });
   const index = buildIndex(net);
   const centres = (d.sites || []).filter((x) => x.kind === EVAC).map((x) => ({ ...x, node: nearest(net, index, x.lat, x.lon, 1).node }));
-  return { d, net, nN, nE, off, to, road, edge, len, index, centres, heap: new MinHeap(2 * nE + 4), dist: new Float64Array(nN), prev: new Int32Array(nN), via: new Int32Array(nN), grid: null };
+  return { d, net, F, nN, nE, off, to, road, edge, len, index, centres, heap: new MinHeap(2 * nE + 4), dist: new Float64Array(nN), prev: new Int32Array(nN), via: new Int32Array(nN), grid: null };
 }
 
 const cellAt = (geo, W, H, lat, lon) => {
@@ -158,27 +158,11 @@ export function routeFrom(R, lat, lon) {
 /* ---- shared by the flood-impact sweep and the over-time access analysis ---- */
 
 /* The nearest road node to each building: searched among the road nodes in the 3×3 buckets of 0.002° around it,
- * longitude scaled by 0.9; -1 where there is none. Depends only on the network and the buildings. */
+ * longitude scaled by 0.9; -1 where there is none. Depends only on the network and the buildings. Worked out in
+ * Rust (FloodCore.buildingNodes). */
 export function buildingNodes(P, bx, by) {
   if (P.bnodes && P.bnodes.bx === bx && P.bnodes.by === by) return P.bnodes.v;
-  const net = P.net, hs = 0.002, OFF = 4194304, SPAN = 8388608, key = (ky, kx) => (ky + OFF) * SPAN + (kx + OFF);
-  const hash = new Map();
-  for (let n = 0; n < P.nN; n++) {
-    const k = key(Math.floor(net.lat[n] / hs), Math.floor(net.lon[n] / hs));
-    let l = hash.get(k); if (!l) hash.set(k, (l = [])); l.push(n);
-  }
-  const nB = bx.length, v = new Int32Array(nB).fill(-1);
-  for (let i = 0; i < nB; i++) {
-    const ky = Math.floor(by[i] / hs), kx = Math.floor(bx[i] / hs);
-    let bd = Infinity;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      const l = hash.get(key(ky + dy, kx + dx));
-      if (l) for (const n of l) {
-        const dd = (net.lat[n] - by[i]) ** 2 + ((net.lon[n] - bx[i]) * 0.9) ** 2;
-        if (dd < bd) { bd = dd; v[i] = n; }
-      }
-    }
-  }
+  const v = P.F.buildingNodes({ nodeLat: P.net.lat, nodeLon: P.net.lon, bx, by });
   P.bnodes = { bx, by, v };
   return v;
 }

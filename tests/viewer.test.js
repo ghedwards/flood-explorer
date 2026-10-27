@@ -79,7 +79,7 @@ test('roads reopen and buildings are dry between successive peaks', async () => 
   for (const k of [1, 5]) for (const bits of [wetBits, deepBits]) bits[k * wordsPerStep + (55 >>> 5)] |= 1 << (55 & 31);
   const ctx = viewer(['timelineAccess'], {
     state: { a: { W: 10, H: 10 }, geo: { west: 0, east: .01, south: 0, north: .01 } },
-    routeNetOf: (d) => prepareNet(d, F._internal.MinHeap), timelineAccessOn: timelineAccess, F,
+    routeNetOf: (d) => prepareNet(d, F._internal.MinHeap, F), timelineAccessOn: timelineAccess, F,
   });
   const access = ctx.timelineAccess({ steps, t0: 0, step: 1, wordsPerStep, wetBits, deepBits }, {
     bx: [.0055, .0065], by: [.0045, .0045], roads: [{ name: 'River Road' }],

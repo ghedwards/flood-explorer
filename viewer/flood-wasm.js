@@ -230,6 +230,9 @@
       return num(out.any) ? { positions: out.positions, colors: out.colors, uvs: out.uvs, indices: out.indices } : null;
     }
 
+    // The nearest road node to each building (viewer/routing.js buildingNodes).
+    function buildingNodes(o) { return call('buildingNodes', o).nodes; }
+
     // Which road edges, road nodes and evacuation centres a run floods (viewer/routing.js prepareRun).
     function prepareRoadsRun(o) {
       const out = call('prepareRun', o);
@@ -426,7 +429,7 @@
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
-      analyse, streamSurface, inundate, inundateAt, accessOverTime, prepareRoadsRun, impactSweep, waterMesh, flashFlood, stats, hazard, compareRuns,
+      analyse, streamSurface, inundate, inundateAt, accessOverTime, prepareRoadsRun, buildingNodes, impactSweep, waterMesh, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
       composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };

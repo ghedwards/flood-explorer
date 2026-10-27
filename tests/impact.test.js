@@ -56,7 +56,7 @@ const near = (x, y, what) => assert.ok(Math.abs(x - y) <= 1e-9 * Math.max(1, Mat
       const d = area(seed, variant), ocean = new Uint8Array(N);
       for (let y = 0; y < H; y++) for (let x = 0; x < 8; x++) ocean[y * W + x] = 1;
       const a = { W, H, N, cell: 40, ocean }, hasNet = variant.net;
-      const P = hasNet ? prepareNet(d, F._internal.MinHeap) : null;
+      const P = hasNet ? prepareNet(d, F._internal.MinHeap, F) : null;
       for (let k = 0; k < 4; k++) {
         const run = runWith(seed * 10 + k, a, 1 + k * 2);
         const state = { a, run, geo, areaKey: 'kA' };

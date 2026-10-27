@@ -722,6 +722,10 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 None => { o.num("any", 0.0); }
             }
         }
+        "buildingNodes" => {
+            let f = |k: &str| b.f64s(k).unwrap_or_default();
+            o.i32s("nodes", &impact::building_nodes(&f("nodeLat"), &f("nodeLon"), &f("bx"), &f("by")));
+        }
         "prepareRun" => {
             let g = |k: &str| b.i32s(k).unwrap_or_default();
             let u = |k: &str| b.u8s(k).unwrap_or_default();

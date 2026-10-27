@@ -8103,7 +8103,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   const routeNets = new WeakMap();
   function routeNetOf(d) {
     let P = routeNets.get(d);
-    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap));
+    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap, F));
     return P;
   }
   // the flooded roads and nodes of one run, shared by the route, the impact sweep and the property check
