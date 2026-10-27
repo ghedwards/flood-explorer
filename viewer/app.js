@@ -4,7 +4,8 @@ import './inertial-grid.js';
 import { fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
 import { HYPSO } from './relief.js';
-import { prepareNet, prepareRun, routeFrom, roadImpact } from './routing.js';
+import { prepareNet, prepareRun, routeFrom } from './routing.js';
+import { scenarioImpact } from './impact.js';
 import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
@@ -6666,115 +6667,25 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return Object.assign({}, base, { overFloor, floorH, damage });
     // The heavy sweep: buildings, roads and isolation (BFS over dry roads),
     // people (SA1), workers (SA2), road lengths and key sites. Rebuilt only
-    // when the impact data or the run changes.
+    // when the impact data or the run changes. What depends only on the area
+    // is prepared once and the sweep itself is Rust (viewer/impact.js).
     function computeScenarioImpact(d, a, run) {
-    const depthAt = (c) => (c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) ? run.depth[c] : 0);
-    // buildings
-    const nB = d.bx.length;
-    let bWet = 0, bDeep = 0, hWet = 0, workWet = 0;
-    const bCell = new Int32Array(nB), bFlood = new Uint8Array(nB), bDepth = new Float32Array(nB);
-    for (let i = 0; i < nB; i++) {
-      const c = cellOf(d.by[i], d.bx[i]);
-      bCell[i] = c;
-      const z = bDepth[i] = depthAt(c);
-      if (z >= 0.15) {
-        bWet++; bFlood[i] = 1;
-        if (d.isHome[i]) hWet++;
-        if (d.isWork[i]) workWet++;
-        if (z >= 0.5) bDeep++;
-      }
-    }
-    // evacuation: dry roads still joined to the edge of the model area by
-    // dry roads; dry buildings whose nearest road is cut off are isolated
-    // (viewer/routing.js: the network is prepared once, the flooded roads once per run)
-    const net = d.net;
-    let isolatedB = 0, isolatedPeopleW = null, cutEdges = [], islandEdges = [];
-    if (net && net.lat.length) {
-      const ri = roadImpact(preparedRun(d, a, run), d.bx, d.by, bFlood);
-      ({ cutEdges, islandEdges, isolatedB } = ri);
-      isolatedPeopleW = ri.iso;
-    }
-    // people: each SA1's population spread over its buildings (or its land)
-    let people = null, peopleIsolated = null;
-    if (d.sa1) {
-      if (!d.sa1Grid || d.sa1Key !== state.areaKey + a.W) {
-        const px = drawRings(d.sa1.feats, state.geo, a.W, a.H, (f, i) => `rgb(${(i + 1) >> 16 & 255},${(i + 1) >> 8 & 255},${(i + 1) & 255})`);
-        const idg = new Int32Array(a.N).fill(-1);
-        for (let c = 0; c < a.N; c++) { const v = (px[4 * c] << 16) | (px[4 * c + 1] << 8) | px[4 * c + 2]; if (px[4 * c + 3] > 250 && v > 0 && v <= d.sa1.feats.length) idg[c] = v - 1; }
-        d.sa1Grid = idg; d.sa1Key = state.areaKey + a.W;
-      }
-      const nS = d.sa1.pop.length, tot = new Float64Array(nS), hit = new Float64Array(nS), land = new Float64Array(nS), wetL = new Float64Array(nS), inside = new Float64Array(nS);
-      for (let i = 0; i < nB; i++) { const s = bCell[i] >= 0 ? d.sa1Grid[bCell[i]] : -1; if (s >= 0) { tot[s]++; if (bFlood[i]) hit[s]++; } }
-      for (let c = 0; c < a.N; c++) { const s = d.sa1Grid[c]; if (s >= 0) inside[s] += (a.cell * a.cell) / 1e6; }
-      for (let c = 0; c < a.N; c++) { const s = d.sa1Grid[c]; if (s >= 0 && !(a.ocean && a.ocean[c])) { land[s]++; if (depthAt(c) >= 0.15) wetL[s]++; } }
-      // Buildings are fetched only inside the model. Allocate only the
-      // covered share of each SA1's population, as for SA2 workers below.
-      const pop = d.sa1.pop.map((p, s) => {
-        const km2 = d.sa1.km2 ? d.sa1.km2[s] : ringsKm2(d.sa1.feats[s].geometry?.rings);
-        return p * (km2 > 0 ? Math.min(1, inside[s] / km2) : 0);
-      });
-      people = 0;
-      for (let s = 0; s < nS; s++) people += pop[s] * (tot[s] > 0 ? hit[s] / tot[s] : (land[s] ? wetL[s] / land[s] : 0));
-      if (isolatedPeopleW) {
-        const iso = new Float64Array(nS);
-        for (let i = 0; i < nB; i++) { const s0 = bCell[i] >= 0 ? d.sa1Grid[bCell[i]] : -1; if (s0 >= 0 && isolatedPeopleW[i]) iso[s0]++; }
-        peopleIsolated = 0;
-        for (let s = 0; s < nS; s++) if (tot[s] > 0) peopleIsolated += pop[s] * (iso[s] / tot[s]);
-      }
-    }
-    // workers: each SA2's workers (by place of work) spread over its mapped
-    // workplaces (or all its buildings if none are mapped by type), scaled
-    // by how much of the SA2 lies inside the model
-    let workers = null, workersAll = null;
-    if (d.sa2) {
-      if (!d.sa2Grid || d.sa2Key !== state.areaKey + a.W) {
-        const px = drawRings(d.sa2.feats, state.geo, a.W, a.H, (f, i) => `rgb(${(i + 1) >> 16 & 255},${(i + 1) >> 8 & 255},${(i + 1) & 255})`);
-        const idg = new Int32Array(a.N).fill(-1);
-        for (let c = 0; c < a.N; c++) { const v = (px[4 * c] << 16) | (px[4 * c + 1] << 8) | px[4 * c + 2]; if (px[4 * c + 3] > 250 && v > 0 && v <= d.sa2.feats.length) idg[c] = v - 1; }
-        d.sa2Grid = idg; d.sa2Key = state.areaKey + a.W;
-      }
-      const nS = d.sa2.workers.length, wT = new Float64Array(nS), wH = new Float64Array(nS), bT = new Float64Array(nS), bH = new Float64Array(nS), inside = new Float64Array(nS);
-      for (let i = 0; i < nB; i++) {
-        const s = bCell[i] >= 0 ? d.sa2Grid[bCell[i]] : -1;
-        if (s < 0) continue;
-        bT[s]++; if (bFlood[i]) bH[s]++;
-        if (d.isWork[i]) { wT[s]++; if (bFlood[i]) wH[s]++; }
-      }
-      const cellKm2 = (a.cell * a.cell) / 1e6;
-      for (let c = 0; c < a.N; c++) { const s = d.sa2Grid[c]; if (s >= 0) inside[s] += cellKm2; }
-      workers = 0; workersAll = 0;
-      for (let s = 0; s < nS; s++) {
-        const frac = d.sa2.km2[s] > 0 ? Math.min(1, inside[s] / d.sa2.km2[s]) : 0, W = d.sa2.workers[s] * frac;
-        workersAll += W;
-        workers += W * (wT[s] >= 3 ? wH[s] / wT[s] : bT[s] > 0 ? bH[s] / bT[s] : 0);
-      }
-    }
-    // roads: length under more than 0.3 m of water (impassable to cars)
-    const cutBy = new Map();
-    let cutKm = 0, roadKm = 0;
-    for (const rd of d.roads) {
-      let cut = 0;
-      for (let k = 1; k < rd.pts.length; k++) {
-        const p0 = rd.pts[k - 1], p1 = rd.pts[k];
-        const len = Math.hypot((p1.lon - p0.lon) * Math.cos((p0.lat * Math.PI) / 180), p1.lat - p0.lat) * 111.32;
-        roadKm += len;
-        const steps = Math.max(1, Math.ceil((len * 1000) / a.cell));
-        let wetSteps = 0;
-        for (let t = 0; t < steps; t++) {
-          const f = (t + 0.5) / steps;
-          if (depthAt(cellOf(p0.lat + (p1.lat - p0.lat) * f, p0.lon + (p1.lon - p0.lon) * f)) >= 0.3) wetSteps++;
+      const sa = (key, grid, feats) => {   // census areas painted onto the grid, once per area and grid size
+        if (!d[grid] || d[key] !== state.areaKey + a.W) {
+          const px = drawRings(feats, state.geo, a.W, a.H, (f, i) => `rgb(${(i + 1) >> 16 & 255},${(i + 1) >> 8 & 255},${(i + 1) & 255})`);
+          const idg = new Int32Array(a.N).fill(-1);
+          for (let c = 0; c < a.N; c++) { const v = (px[4 * c] << 16) | (px[4 * c + 1] << 8) | px[4 * c + 2]; if (px[4 * c + 3] > 250 && v > 0 && v <= feats.length) idg[c] = v - 1; }
+          d[grid] = idg; d[key] = state.areaKey + a.W;
         }
-        cut += (len * wetSteps) / steps;
-      }
-      if (cut > 0) { cutKm += cut; const key = rd.name || `(unnamed ${rd.type})`; cutBy.set(key, (cutBy.get(key) || 0) + cut); }
-    }
-    const worstRoads = Array.from(cutBy.entries()).filter(([n]) => !n.startsWith('(unnamed')).sort((x, y) => y[1] - x[1]).slice(0, 8);
-    // key sites
-    const sitesHit = d.sites.map((s) => ({ ...s, depth: depthAt(cellOf(s.lat, s.lon)) })).filter((s) => s.depth >= 0.15).sort((x, y) => y.depth - x.depth);
-    return {
-      buildings: nB, bWet, bDeep, hWet, workers, workersAll, homesTagged: d.isHome.reduce((x, y) => x + y, 0), workWet, workTagged: d.isWork.reduce((x, y) => x + y, 0),
-      bDepth, isolatedB, peopleIsolated, cutEdges, islandEdges, people, cutKm, roadKm, worstRoads, sites: d.sites.length, sitesHit,
-    };
+      };
+      if (d.sa1) sa('sa1Key', 'sa1Grid', d.sa1.feats);
+      if (d.sa2) sa('sa2Key', 'sa2Grid', d.sa2.feats);
+      const hasNet = Boolean(d.net && d.net.lat.length), P = hasNet ? routeNetOf(d) : null;
+      const r = scenarioImpact({ d, a, run, geo: state.geo, P, R: hasNet ? preparedRun(d, a, run) : null, sweep: F.impactSweep, ringsKm2 });
+      const depthAt = (c) => (c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) ? run.depth[c] : 0);
+      // key sites
+      r.sitesHit = d.sites.map((s) => ({ ...s, depth: depthAt(cellOf(s.lat, s.lon)) })).filter((s) => s.depth >= 0.15).sort((x, y) => y.depth - x.depth);
+      return r;
     }
   }
   // Indicative damage: the EU Joint Research Centre's global depth–damage
@@ -8199,7 +8110,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   function preparedRun(d, a, run) {
     const P = routeNetOf(d);
     let R = state.routeCache;
-    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean), { run, a });
+    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean, F.prepareRoadsRun), { run, a });
     return R;
   }
   function routeOut(lat, lon) {

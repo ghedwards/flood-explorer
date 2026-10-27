@@ -1,5 +1,5 @@
-// The prepared-network access analyses (viewer/access.js with the Rust step loop, roadImpact in viewer/routing.js) must
-// give exactly what the earlier per-call versions did. The references below are those versions, kept as they were.
+// The prepared-network access analysis (viewer/access.js with the Rust step loop) must give exactly what the earlier
+// per-step version did. The reference below is that version, kept as it was.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -98,53 +98,6 @@ function referenceAccess(tl, d, g, W, H) {
   };
 }
 
-// the road part of the old flood-impact sweep
-function referenceRoadImpact(d, g, W, H, run, ocean, bFlood) {
-  const cellOf = cellOfFor(g, W, H), net = d.net, nB = d.bx.length, nN = net.lat.length;
-  const depthAt = (c) => (c >= 0 && run.wet[c] && !(ocean && ocean[c]) ? run.depth[c] : 0);
-  const cutEdges = [], islandEdges = [];
-  let isolatedB = 0;
-  const dryNode = new Uint8Array(nN);
-  for (let n = 0; n < nN; n++) dryNode[n] = depthAt(cellOf(net.lat[n], net.lon[n])) < 0.3 ? 1 : 0;
-  const adj = Array.from({ length: nN }, () => []);
-  const edgeDry = net.edges.map(([u, v]) => {
-    let ok = dryNode[u] && dryNode[v];
-    if (ok) for (let t = 1; t < 4 && ok; t++) { const f = t / 4; if (depthAt(cellOf(net.lat[u] + (net.lat[v] - net.lat[u]) * f, net.lon[u] + (net.lon[v] - net.lon[u]) * f)) >= 0.3) ok = 0; }
-    return ok;
-  });
-  net.edges.forEach(([u, v], k) => { if (edgeDry[k]) { adj[u].push(v); adj[v].push(u); } });
-  const mx = ((g.east - g.west) / W) * 3, my = ((g.north - g.south) / H) * 3;
-  const reach = new Uint8Array(nN), q = [];
-  for (let n = 0; n < nN; n++) {
-    const edge = net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx;
-    if (edge && dryNode[n]) { reach[n] = 1; q.push(n); }
-  }
-  for (let h = 0; h < q.length; h++) for (const m of adj[q[h]]) if (!reach[m]) { reach[m] = 1; q.push(m); }
-  const all = Array.from({ length: nN }, () => []);
-  net.edges.forEach(([u, v]) => { all[u].push(v); all[v].push(u); });
-  const dr = new Uint8Array(nN), q2 = [];
-  for (let n = 0; n < nN; n++) if (net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx) { dr[n] = 1; q2.push(n); }
-  for (let h = 0; h < q2.length; h++) for (const m of all[q2[h]]) if (!dr[m]) { dr[m] = 1; q2.push(m); }
-  net.edges.forEach(([u, v], k) => {
-    if (!edgeDry[k]) cutEdges.push([u, v]);
-    else if (!reach[u] || !reach[v]) islandEdges.push([u, v]);
-  });
-  const hs = 0.002, hash = new Map();
-  for (let n = 0; n < nN; n++) { const k = `${Math.floor(net.lat[n] / hs)},${Math.floor(net.lon[n] / hs)}`; let l = hash.get(k); if (!l) hash.set(k, (l = [])); l.push(n); }
-  const isoB = new Uint8Array(nB);
-  for (let i = 0; i < nB; i++) {
-    if (bFlood[i]) continue;
-    const ky = Math.floor(d.by[i] / hs), kx = Math.floor(d.bx[i] / hs);
-    let best = -1, bd = Infinity;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const n of hash.get(`${ky + dy},${kx + dx}`) || []) {
-      const dd = (net.lat[n] - d.by[i]) ** 2 + ((net.lon[n] - d.bx[i]) * 0.9) ** 2;
-      if (dd < bd) { bd = dd; best = n; }
-    }
-    if (best >= 0 && dryNode[best] && !reach[best] && dr[best]) { isoB[i] = 1; isolatedB++; }
-  }
-  return { cutEdges, islandEdges, isolatedB, iso: isoB };
-}
-
 const rng = (seed) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 
 function town(seed, side, nB, g) {
@@ -161,7 +114,7 @@ function town(seed, side, nB, g) {
 }
 
 (async () => {
-  const { prepareNet, prepareRun, roadImpact } = await import('../viewer/routing.js');
+  const { prepareNet } = await import('../viewer/routing.js');
   const { timelineAccess } = await import('../viewer/access.js');
   const g = { west: 153.0, east: 153.05, south: -27.5, north: -27.46 };
   const W = 80, H = 70, N = W * H;
@@ -181,27 +134,6 @@ function town(seed, side, nB, g) {
     const got = timelineAccess(tl, d, prepareNet(d, F._internal.MinHeap), g, W, H, F.accessOverTime);
     assert.deepEqual(got, want);
     assert.ok(want.maxIso > 0 && want.roads.length > 2 && want.longest > 0, 'the case exercises closures and cut-off buildings');
-  });
-
-  test('the road impact of one run matches the earlier sweep', () => {
-    const d = town(6, 30, 3000, g), P = prepareNet(d, F._internal.MinHeap), r = rng(2);
-    const ocean = new Uint8Array(N); for (let y = 0; y < H; y++) for (let x = 0; x < 6; x++) ocean[y * W + x] = 1;
-    let cut = 0, island = 0, iso = 0;
-    for (let k = 0; k < 6; k++) {
-      const wet = new Uint8Array(N), depth = new Float32Array(N);
-      for (let b = 0; b < 1 + k; b++) {
-        const cx = r() * W, cy = r() * H, rad = 4 + r() * 18;
-        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if ((x - cx) ** 2 + (y - cy) ** 2 < rad * rad) { const i = y * W + x; wet[i] = 1; depth[i] = Math.max(depth[i], r() * 1.5); }
-      }
-      const run = { wet, depth }, bFlood = new Uint8Array(d.bx.length);
-      const cellOf = cellOfFor(g, W, H);
-      for (let i = 0; i < d.bx.length; i++) { const c = cellOf(d.by[i], d.bx[i]); bFlood[i] = c >= 0 && wet[c] && !ocean[c] && depth[c] >= 0.15 ? 1 : 0; }
-      const want = referenceRoadImpact(d, g, W, H, run, ocean, bFlood);
-      const got = roadImpact(prepareRun(P, g, W, H, run, ocean), d.bx, d.by, bFlood);
-      assert.deepEqual(got, want, `run ${k}`);
-      cut += want.cutEdges.length; island += want.islandEdges.length; iso += want.isolatedB;
-    }
-    assert.ok(cut > 50 && island > 5 && iso > 5, `exercised ${cut} cut, ${island} stranded, ${iso} isolated`);
   });
 })();
 

@@ -223,6 +223,21 @@
       return { closedCount: out.closedCount, floodCount: out.floodCount, isoCount: out.isoCount, isoSteps: out.isoSteps, firstIso: out.firstIso, longest: num(out.longest), nameCounts: out.nameCounts, nameIds: out.nameIds };
     }
 
+    // Which road edges, road nodes and evacuation centres a run floods (viewer/routing.js prepareRun).
+    function prepareRoadsRun(o) {
+      const out = call('prepareRun', o);
+      return { closed: out.closed, nodeWet: out.nodeWet, flooded: out.flooded };
+    }
+
+    // The flood's effect on buildings, people, workers and roads for one run (viewer/impact.js).
+    function impactSweep(o) {
+      const out = call('impactSweep', o), n = out.n;
+      return {
+        bDepth: out.bDepth, bFlood: out.bFlood, iso: out.iso, cutEdges: out.cutEdges, islandEdges: out.islandEdges, roadCutKm: out.roadCutKm,
+        bWet: n[0], bDeep: n[1], hWet: n[2], workWet: n[3], isolatedB: n[4], people: n[5], peopleIsolated: n[6], workers: n[7], workersAll: n[8], roadKm: n[9],
+      };
+    }
+
     // Is one cell flooded in a scenario, and how deep? Stops as soon as the fill reaches it, and
     // sends back two numbers instead of the grids; the answer is the full run's.
     function inundateAt(a, s, cell) {
@@ -404,7 +419,7 @@
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
-      analyse, streamSurface, inundate, inundateAt, accessOverTime, flashFlood, stats, hazard, compareRuns,
+      analyse, streamSurface, inundate, inundateAt, accessOverTime, prepareRoadsRun, impactSweep, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
       composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };

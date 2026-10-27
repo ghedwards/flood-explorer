@@ -6,7 +6,6 @@
  * Results are identical to the earlier per-click version: same neighbour order, same tie-breaks. */
 
 const EVAC = 'Evacuation centre';
-const DEEP = 0.3, CENTRE_DEEP = 0.15;
 
 const kmArc = (net, u, v) => Math.hypot((net.lon[v] - net.lon[u]) * 111.32 * Math.cos((net.lat[u] * Math.PI) / 180), (net.lat[v] - net.lat[u]) * 110.574);
 
@@ -110,19 +109,13 @@ export function prepareGrid(P, geo, W, H) {
   return (P.grid = { geo, W, H, sample, node, exit, centreCell });
 }
 
-/* What depends on the run: edges and nodes under more than 0.3 m of water, and which centres are flooded. */
-export function prepareRun(P, geo, W, H, run, ocean) {
-  const G = prepareGrid(P, geo, W, H), dry = (c) => c >= 0 && run.wet[c] && !(ocean && ocean[c]);
-  const closed = new Uint8Array(P.nE), wet = new Uint8Array(P.nN);
-  for (let k = 0; k < P.nE; k++) {
-    for (let t = 0; t < 5; t++) {
-      const c = G.sample[5 * k + t];
-      if (dry(c) && run.depth[c] >= DEEP) { closed[k] = 1; break; }
-    }
-  }
-  for (let n = 0; n < P.nN; n++) { const c = G.node[n]; wet[n] = c >= 0 && run.wet[c] && run.depth[c] >= DEEP && !(ocean && ocean[c]) ? 1 : 0; }
-  const flooded = P.centres.map((_, i) => { const c = G.centreCell[i]; return c >= 0 && run.wet[c] && run.depth[c] >= CENTRE_DEEP; });
-  return { P, closed, wet, flooded };
+/* What depends on the run: edges and nodes under more than 0.3 m of water, and which centres are flooded
+ * (worked out in Rust: FloodCore.prepareRoadsRun). */
+export function prepareRun(P, geo, W, H, run, ocean, prepareRoadsRun) {
+  const G = prepareGrid(P, geo, W, H);
+  if (!G.centreCells) G.centreCells = Int32Array.from(G.centreCell);
+  const r = prepareRoadsRun({ sample: G.sample, nodeCell: G.node, centreCell: G.centreCells, wet: run.wet, depth: run.depth, ocean: ocean || new Uint8Array(0) });
+  return { P, closed: r.closed, wet: r.nodeWet, flooded: Array.from(r.flooded, Boolean) };
 }
 
 export function routeFrom(R, lat, lon) {
@@ -201,36 +194,4 @@ export function dryReachOf(P) {
   for (let h = 0; h < qt; h++) { const u = q[h]; for (let p = off[u]; p < off[u + 1]; p++) if (!r[to[p]]) { r[to[p]] = 1; q[qt++] = to[p]; } }
   P.dryReach = r; P.dryReachGrid = G;
   return r;
-}
-
-/* Dry road nodes still joined to the edge of the model by dry roads. */
-export function reachableFromEdge(R) {
-  const { P, closed, wet } = R, { off, to, edge } = P, G = P.grid, r = new Uint8Array(P.nN), q = new Int32Array(P.nN);
-  let qt = 0;
-  for (let n = 0; n < P.nN; n++) if (G.exit[n] && !wet[n]) { r[n] = 1; q[qt++] = n; }
-  for (let h = 0; h < qt; h++) {
-    const u = q[h];
-    for (let p = off[u]; p < off[u + 1]; p++) { const m = to[p]; if (!r[m] && !closed[edge[p]]) { r[m] = 1; q[qt++] = m; } }
-  }
-  return r;
-}
-
-/* The flood's effect on the roads: edges under water, edges left stranded, and the dry buildings whose
- * nearest road is cut off from the edge of the model. bFlood marks flooded buildings. */
-export function roadImpact(R, bx, by, bFlood) {
-  const { P, closed, wet } = R, net = P.net, reach = reachableFromEdge(R), dr = dryReachOf(P), bn = buildingNodes(P, bx, by);
-  const cutEdges = [], islandEdges = [];
-  for (let k = 0; k < P.nE; k++) {
-    const [u, v] = net.edges[k];
-    if (closed[k]) cutEdges.push([u, v]);
-    else if (!reach[u] || !reach[v]) islandEdges.push([u, v]);
-  }
-  const nB = bx.length, iso = new Uint8Array(nB);
-  let isolatedB = 0;
-  for (let i = 0; i < nB; i++) {
-    if (bFlood[i]) continue;
-    const b = bn[i];
-    if (b >= 0 && !wet[b] && !reach[b] && dr[b]) { iso[i] = 1; isolatedB++; }
-  }
-  return { cutEdges, islandEdges, isolatedB, iso };
 }

@@ -3,6 +3,7 @@
 //! with the same numbers; no outside crates, so it builds anywhere.
 
 pub mod access;
+pub mod impact;
 pub mod fine;
 pub mod voids;
 pub mod flash;

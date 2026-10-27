@@ -266,8 +266,10 @@ test('a timeline for an unchanged model completes', async () => {
   assert.equal(f.area.timeline.steps, 2);
 });
 
-test('population estimates use only the covered share of a census area', () => {
+test('population estimates use only the covered share of a census area', async () => {
+  const { scenarioImpact } = await import('../viewer/impact.js');
   const ctx = viewer(['cellOf', 'ringsKm2', 'computeImpact'], {
+    scenarioImpact, F, routeNetOf: () => null, preparedRun: () => null,
     state: { areaKey: 'a', a: { W: 2, H: 2, N: 4, cell: 1000, ocean: new Uint8Array(4) }, geo,
       run: { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) } },
     $: (id) => ({ value: id === 'floorHeight' ? '.3' : '0' }), damageShare: () => 0,
@@ -281,8 +283,10 @@ test('population estimates use only the covered share of a census area', () => {
   assert.equal(ctx.computeImpact(data).people, 100, 'the land-area fallback is also coverage adjusted');
 });
 
-test('impact counts: floor height optional and heavy sweep cached per run', () => {
+test('impact counts: floor height optional and heavy sweep cached per run', async () => {
+  const { scenarioImpact } = await import('../viewer/impact.js');
   const ctx = viewer(['cellOf', 'ringsKm2', 'computeImpact'], {
+    scenarioImpact, F, routeNetOf: () => null, preparedRun: () => null,
     state: { areaKey: 'a', a: { W: 2, H: 2, N: 4, cell: 1000, ocean: new Uint8Array(4) }, geo,
       run: { wet: new Uint8Array(4).fill(1), depth: new Float32Array(4).fill(1) } },
     $: (id) => (id === 'floorUnknown' ? { checked: true } : { value: id === 'floorHeight' ? '.3' : '0' }),

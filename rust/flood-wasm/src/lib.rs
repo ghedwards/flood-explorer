@@ -704,6 +704,35 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let r = with_analysis(b.num("a"), |a| inundate(a, &s))?;
             put_run(&mut o, &r, slim);
         }
+        "prepareRun" => {
+            let g = |k: &str| b.i32s(k).unwrap_or_default();
+            let u = |k: &str| b.u8s(k).unwrap_or_default();
+            let r = impact::prepare_run(&g("sample"), &g("nodeCell"), &g("centreCell"), &u("wet"), &b.f32s("depth").unwrap_or_default(), &u("ocean"));
+            o.u8s("closed", &r.closed).u8s("nodeWet", &r.wet).u8s("flooded", &r.flooded);
+        }
+        "impactSweep" => {
+            let g = |k: &str| b.i32s(k).unwrap_or_default();
+            let u = |k: &str| b.u8s(k).unwrap_or_default();
+            let f = |k: &str| b.f64s(k).unwrap_or_default();
+            let (wet, depth, ocean) = (u("wet"), b.f32s("depth").unwrap_or_default(), u("ocean"));
+            let (b_cell, b_node, off, to, edge, edge_u, edge_v) = (g("bCell"), g("bNode"), g("off"), g("to"), g("edge"), g("edgeU"), g("edgeV"));
+            let (is_home, is_work, exit, dry_reach, closed, road_wet) = (u("isHome"), u("isWork"), u("exit"), u("dryReach"), u("closed"), u("roadWet"));
+            let (sa1_grid, sa1_pop, sa1_land, sa2_grid, sa2_workers) = (g("sa1Grid"), f("sa1Pop"), f("sa1Land"), g("sa2Grid"), f("sa2Workers"));
+            let (road_lat, road_lon, road_off) = (f("roadLat"), f("roadLon"), g("roadOff"));
+            let r = impact::impact_sweep(&impact::ImpactIn {
+                geo: impact::Geo { west: b.num("west"), east: b.num("east"), south: b.num("south"), north: b.num("north"), w: b.num("W") as usize, h: b.num("H") as usize },
+                cell_m: b.num("cellM"), wet: &wet, depth: &depth, ocean: &ocean,
+                b_cell: &b_cell, is_home: &is_home, is_work: &is_work, b_node: &b_node,
+                off: &off, to: &to, edge: &edge, edge_u: &edge_u, edge_v: &edge_v, exit: &exit, dry_reach: &dry_reach,
+                closed: &closed, road_wet: &road_wet,
+                sa1_grid: &sa1_grid, sa1_pop: &sa1_pop, sa1_land: &sa1_land, sa2_grid: &sa2_grid, sa2_workers: &sa2_workers,
+                road_lat: &road_lat, road_lon: &road_lon, road_off: &road_off,
+            });
+            o.f32s("bDepth", &r.b_depth).u8s("bFlood", &r.b_flood).u8s("iso", &r.iso)
+                .i32s("cutEdges", &r.cut_edges).i32s("islandEdges", &r.island_edges)
+                .f64s("roadCutKm", &r.road_cut_km)
+                .f64s("n", &[r.b_wet as f64, r.b_deep as f64, r.h_wet as f64, r.work_wet as f64, r.isolated_b as f64, r.people, r.people_isolated, r.workers, r.workers_all, r.road_km]);
+        }
         "accessOverTime" => {
             let g = |k: &str| b.i32s(k).unwrap_or_default();
             let (off, to, edge, node_cell, ce_off, ce_list, edge_name) = (g("off"), g("to"), g("edge"), g("nodeCell"), g("ceOff"), g("ceList"), g("edgeName"));
