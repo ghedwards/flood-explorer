@@ -91,7 +91,7 @@ const cellAt = (geo, W, H, lat, lon) => {
 
 /* What depends on the grid (not the run): the cells under the five samples along each edge, the cell of
  * each node and centre, and which nodes are on the edge of the model. */
-function prepareGrid(P, geo, W, H) {
+export function prepareGrid(P, geo, W, H) {
   if (P.grid && P.grid.geo === geo && P.grid.W === W && P.grid.H === H) return P.grid;
   const net = P.net, nN = P.nN;
   const sample = new Int32Array(5 * P.nE), node = new Int32Array(nN), exit = new Uint8Array(nN);
@@ -160,4 +160,77 @@ export function routeFrom(R, lat, lon) {
   };
   return { startKm, toExit: path(exitNode), toCentre: centreNode >= 0 ? Object.assign(path(centreNode), { name: centreAt.get(centreNode).name }) : null,
     centres: centres.length, centresFlooded: flooded.filter(Boolean).length };
+}
+
+/* ---- shared by the flood-impact sweep and the over-time access analysis ---- */
+
+/* The nearest road node to each building: searched among the road nodes in the 3×3 buckets of 0.002° around it,
+ * longitude scaled by 0.9; -1 where there is none. Depends only on the network and the buildings. */
+export function buildingNodes(P, bx, by) {
+  if (P.bnodes && P.bnodes.bx === bx && P.bnodes.by === by) return P.bnodes.v;
+  const net = P.net, hs = 0.002, OFF = 4194304, SPAN = 8388608, key = (ky, kx) => (ky + OFF) * SPAN + (kx + OFF);
+  const hash = new Map();
+  for (let n = 0; n < P.nN; n++) {
+    const k = key(Math.floor(net.lat[n] / hs), Math.floor(net.lon[n] / hs));
+    let l = hash.get(k); if (!l) hash.set(k, (l = [])); l.push(n);
+  }
+  const nB = bx.length, v = new Int32Array(nB).fill(-1);
+  for (let i = 0; i < nB; i++) {
+    const ky = Math.floor(by[i] / hs), kx = Math.floor(bx[i] / hs);
+    let bd = Infinity;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const l = hash.get(key(ky + dy, kx + dx));
+      if (l) for (const n of l) {
+        const dd = (net.lat[n] - by[i]) ** 2 + ((net.lon[n] - bx[i]) * 0.9) ** 2;
+        if (dd < bd) { bd = dd; v[i] = n; }
+      }
+    }
+  }
+  P.bnodes = { bx, by, v };
+  return v;
+}
+
+/* Road nodes joined to the edge of the model by the whole network, flooded or not (roads that never reach it,
+ * private roads or mapping gaps, aren't cut off by a flood). */
+export function dryReachOf(P) {
+  const G = P.grid;
+  if (P.dryReach && P.dryReachGrid === G) return P.dryReach;
+  const { off, to } = P, r = new Uint8Array(P.nN), q = new Int32Array(P.nN);
+  let qt = 0;
+  for (let n = 0; n < P.nN; n++) if (G.exit[n]) { r[n] = 1; q[qt++] = n; }
+  for (let h = 0; h < qt; h++) { const u = q[h]; for (let p = off[u]; p < off[u + 1]; p++) if (!r[to[p]]) { r[to[p]] = 1; q[qt++] = to[p]; } }
+  P.dryReach = r; P.dryReachGrid = G;
+  return r;
+}
+
+/* Dry road nodes still joined to the edge of the model by dry roads. */
+export function reachableFromEdge(R) {
+  const { P, closed, wet } = R, { off, to, edge } = P, G = P.grid, r = new Uint8Array(P.nN), q = new Int32Array(P.nN);
+  let qt = 0;
+  for (let n = 0; n < P.nN; n++) if (G.exit[n] && !wet[n]) { r[n] = 1; q[qt++] = n; }
+  for (let h = 0; h < qt; h++) {
+    const u = q[h];
+    for (let p = off[u]; p < off[u + 1]; p++) { const m = to[p]; if (!r[m] && !closed[edge[p]]) { r[m] = 1; q[qt++] = m; } }
+  }
+  return r;
+}
+
+/* The flood's effect on the roads: edges under water, edges left stranded, and the dry buildings whose
+ * nearest road is cut off from the edge of the model. bFlood marks flooded buildings. */
+export function roadImpact(R, bx, by, bFlood) {
+  const { P, closed, wet } = R, net = P.net, reach = reachableFromEdge(R), dr = dryReachOf(P), bn = buildingNodes(P, bx, by);
+  const cutEdges = [], islandEdges = [];
+  for (let k = 0; k < P.nE; k++) {
+    const [u, v] = net.edges[k];
+    if (closed[k]) cutEdges.push([u, v]);
+    else if (!reach[u] || !reach[v]) islandEdges.push([u, v]);
+  }
+  const nB = bx.length, iso = new Uint8Array(nB);
+  let isolatedB = 0;
+  for (let i = 0; i < nB; i++) {
+    if (bFlood[i]) continue;
+    const b = bn[i];
+    if (b >= 0 && !wet[b] && !reach[b] && dr[b]) { iso[i] = 1; isolatedB++; }
+  }
+  return { cutEdges, islandEdges, isolatedB, iso };
 }

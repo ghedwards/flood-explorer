@@ -5,7 +5,8 @@ import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
 import { HYPSO, terrainRGBA as terrainRGBAjs } from './relief.js';
 import { classifyDemGaps } from './dem-voids.js';
-import { prepareNet, prepareRun, routeFrom } from './routing.js';
+import { prepareNet, prepareRun, routeFrom, roadImpact } from './routing.js';
+import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 /* Flood Explorer — viewer
@@ -1283,7 +1284,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     if (F && typeof F.composeWater === 'function') {
       try {
         const area = state.areaKey && areaReg.get(state.areaKey);
-        const W = a.W, H = a.H, N = a.N;
+        const W = a.W, H = a.H;
         const modeStr = colorMode();
         const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
         const hz = modeStr === 'hazard' ? hazardNow() : null;
@@ -1301,14 +1302,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
         const cmpArr = (cmp && cmp.diff) ? cmp.diff.map((v) => (v == null ? 0 : v)) : [];
         const cmpDiff = new Int32Array(cmpArr);
         // per-cell polygon mask
-        let mask = null;
-        if (area && area.polygon) {
-          mask = new Uint8Array(N);
-          for (let i = 0; i < N; i++) {
-            const ll = cellLatLng(i);
-            mask[i] = pointInPolygon(ll[0], ll[1], area.polygon) ? 1 : 0;
-          }
-        }
+        const mask = area && area.polygon ? polygonMask(area) : null;
         const r = F.composeWater({
           w: W, h: H, relief: relief ? 1 : 0, mode: modeCode,
           floodA: relief ? 224 : 255, streamA: relief ? 230 : 0,
@@ -1330,13 +1324,10 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     const streamA = relief ? 230 : 0;    // stream lines only with terrain shading
     const cellKm2 = (a.cell * a.cell) / 1e6, streamThr = state.streamAreaKm2 * 3;
     let n = 0;
+    const area0 = state.areaKey && areaReg.get(state.areaKey), mask = area0 && area0.polygon ? polygonMask(area0) : null;
     for (let i = 0; i < a.N; i++) {
       if (!a.valid[i]) continue;
-      const area = state.areaKey && areaReg.get(state.areaKey);
-      if (area && area.polygon) {
-        const ll = cellLatLng(i);
-        if (!pointInPolygon(ll[0], ll[1], area.polygon)) continue;
-      }
+      if (mask && !mask[i]) continue;
       let col = null, band = -1;
       if (relief && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
       if (cmp) {
@@ -3290,6 +3281,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     const a = state.a, g = state.geo;
     const x = (i % a.W) + 0.5, y = Math.floor(i / a.W) + 0.5;
     return [g.north - (y / a.H) * (g.north - g.south), g.west + (x / a.W) * (g.east - g.west)];
+  }
+  // Which cells lie inside an area's outline: worked out once per outline and grid, not on every redraw
+  function polygonMask(area) {
+    const a = state.a, g = state.geo, c = area.maskCache;
+    if (c && c.a === a && c.g === g && c.polygon === area.polygon) return c.mask;
+    const mask = new Uint8Array(a.N);
+    for (let i = 0; i < a.N; i++) { const ll = cellLatLng(i); mask[i] = pointInPolygon(ll[0], ll[1], area.polygon) ? 1 : 0; }
+    area.maskCache = { a, g, polygon: area.polygon, mask };
+    return mask;
   }
   function pointInPolygon(lat, lon, rings) {
     if (!Array.isArray(rings) || !rings.length) return true;
@@ -6751,55 +6751,13 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     }
     // evacuation: dry roads still joined to the edge of the model area by
     // dry roads; dry buildings whose nearest road is cut off are isolated
+    // (viewer/routing.js: the network is prepared once, the flooded roads once per run)
     const net = d.net;
     let isolatedB = 0, isolatedPeopleW = null, cutEdges = [], islandEdges = [];
     if (net && net.lat.length) {
-      const nN = net.lat.length, g = state.geo;
-      const dryNode = new Uint8Array(nN);
-      for (let n = 0; n < nN; n++) dryNode[n] = depthAt(cellOf(net.lat[n], net.lon[n])) < 0.3 ? 1 : 0;
-      const adj = Array.from({ length: nN }, () => []);
-      const edgeDry = net.edges.map(([u, v]) => {
-        let ok = dryNode[u] && dryNode[v];
-        if (ok) for (let t = 1; t < 4 && ok; t++) { const f = t / 4; if (depthAt(cellOf(net.lat[u] + (net.lat[v] - net.lat[u]) * f, net.lon[u] + (net.lon[v] - net.lon[u]) * f)) >= 0.3) ok = 0; }
-        return ok;
-      });
-      net.edges.forEach(([u, v], k) => { if (edgeDry[k]) { adj[u].push(v); adj[v].push(u); } });
-      const mx = ((g.east - g.west) / a.W) * 3, my = ((g.north - g.south) / a.H) * 3;
-      const reach = new Uint8Array(nN), q = [];
-      for (let n = 0; n < nN; n++) {
-        const edge = net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx;
-        if (edge && dryNode[n]) { reach[n] = 1; q.push(n); }
-      }
-      for (let h = 0; h < q.length; h++) for (const m of adj[q[h]]) if (!reach[m]) { reach[m] = 1; q.push(m); }
-      // roads that don't join the edge even when everything is dry (private
-      // roads, mapping gaps) aren't cut off by the flood
-      if (!net.dryReach) {
-        const all = Array.from({ length: nN }, () => []);
-        net.edges.forEach(([u, v]) => { all[u].push(v); all[v].push(u); });
-        const dr = new Uint8Array(nN), q2 = [];
-        for (let n = 0; n < nN; n++) if (net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx) { dr[n] = 1; q2.push(n); }
-        for (let h = 0; h < q2.length; h++) for (const m of all[q2[h]]) if (!dr[m]) { dr[m] = 1; q2.push(m); }
-        net.dryReach = dr;
-      }
-      net.edges.forEach(([u, v, ri], k) => {
-        if (!edgeDry[k]) cutEdges.push([u, v]);
-        else if (!reach[u] || !reach[v]) islandEdges.push([u, v]);
-      });
-      // nearest road node for each dry building (grid hash ~ 200 m)
-      const hs = 0.002, hash = new Map();
-      for (let n = 0; n < nN; n++) { const k = `${Math.floor(net.lat[n] / hs)},${Math.floor(net.lon[n] / hs)}`; let l = hash.get(k); if (!l) hash.set(k, (l = [])); l.push(n); }
-      const isoB = new Uint8Array(nB);
-      for (let i = 0; i < nB; i++) {
-        if (bFlood[i]) continue;
-        const ky = Math.floor(d.by[i] / hs), kx = Math.floor(d.bx[i] / hs);
-        let best = -1, bd = Infinity;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const n of hash.get(`${ky + dy},${kx + dx}`) || []) {
-          const dd = (net.lat[n] - d.by[i]) ** 2 + ((net.lon[n] - d.bx[i]) * 0.9) ** 2;
-          if (dd < bd) { bd = dd; best = n; }
-        }
-        if (best >= 0 && dryNode[best] && !reach[best] && net.dryReach[best]) { isoB[i] = 1; isolatedB++; }
-      }
-      isolatedPeopleW = isoB;
+      const ri = roadImpact(preparedRun(d, a, run), d.bx, d.by, bFlood);
+      ({ cutEdges, islandEdges, isolatedB } = ri);
+      isolatedPeopleW = ri.iso;
     }
     // people: each SA1's population spread over its buildings (or its land)
     let people = null, peopleIsolated = null;
@@ -7625,96 +7583,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // Roads and isolation through time, from when each spot is over 0.3 m deep
   function timelineAccess(tl, d) {
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    const a = state.a, net = d.net, nN = net.lat.length, K = tl.steps, g = state.geo;
-    const at = (bits, c, k) => c >= 0 && !!(bits[k * tl.wordsPerStep + (c >>> 5)] & (1 << (c & 31)));
-    const deepAt = (c, k) => at(tl.deepBits, c, k);
-    const wetAt = (c, k) => at(tl.wetBits, c, k);
-    const nodeCell = new Int32Array(nN);
-    for (let n = 0; n < nN; n++) nodeCell[n] = cellOf(net.lat[n], net.lon[n]);
-    // Keep the sampled cells, then test each edge at the current step.
-    // A road can reopen between successive river or tidal peaks.
-    const edgeCells = net.edges.map(([u, v]) => {
-      const cells = new Set();
-      for (let t = 0; t <= 4; t++) {
-        const f = t / 4;
-        const c = cellOf(net.lat[u] + (net.lat[v] - net.lat[u]) * f, net.lon[u] + (net.lon[v] - net.lon[u]) * f);
-        if (c >= 0) cells.add(c);
-      }
-      return Array.from(cells);
-    });
-    const edgeClosed = new Uint8Array(net.edges.length), roads = new Map();
-    // exits: dry road nodes at the edge of the model area
-    const mx = ((g.east - g.west) / a.W) * 3, my = ((g.north - g.south) / a.H) * 3;
-    const exit = new Uint8Array(nN);
-    for (let n = 0; n < nN; n++) exit[n] = net.lat[n] < g.south + my || net.lat[n] > g.north - my || net.lon[n] < g.west + mx || net.lon[n] > g.east - mx ? 1 : 0;
-    const adj = Array.from({ length: nN }, () => []);
-    net.edges.forEach(([u, v], k) => { adj[u].push([v, k]); adj[v].push([u, k]); });
-    // nearest road node per building (grid hash ~ 200 m)
-    const hs = 0.002, hash = new Map();
-    for (let n = 0; n < nN; n++) { const key = `${Math.floor(net.lat[n] / hs)},${Math.floor(net.lon[n] / hs)}`; (hash.get(key) || hash.set(key, []).get(key)).push(n); }
-    const nB = d.bx.length, bNode = new Int32Array(nB).fill(-1), bCell = new Int32Array(nB);
-    for (let i = 0; i < nB; i++) {
-      bCell[i] = cellOf(d.by[i], d.bx[i]);
-      const ky = Math.floor(d.by[i] / hs), kx = Math.floor(d.bx[i] / hs);
-      let bd = Infinity;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const n of hash.get(`${ky + dy},${kx + dx}`) || []) {
-        const dd = (net.lat[n] - d.by[i]) ** 2 + ((net.lon[n] - d.bx[i]) * 0.9) ** 2;
-        if (dd < bd) { bd = dd; bNode[i] = n; }
-      }
-    }
-    // places whose roads never reach the edge, even when dry, don't count
-    const dryReach = new Uint8Array(nN), q0 = [];
-    for (let n = 0; n < nN; n++) if (exit[n]) { dryReach[n] = 1; q0.push(n); }
-    for (let h = 0; h < q0.length; h++) for (const [m] of adj[q0[h]]) if (!dryReach[m]) { dryReach[m] = 1; q0.push(m); }
-    const isoSteps = new Int16Array(nB), firstIso = new Int16Array(nB).fill(-1);
-    const isoRun = new Int16Array(nB);
-    let longest = 0;
-    const isoCount = new Int32Array(K), floodCount = new Int32Array(K), closedCount = new Int32Array(K);
-    const reach = new Uint8Array(nN), q = new Int32Array(nN);
-    for (let k = 0; k < K; k++) {
-      reach.fill(0);
-      const closedNames = new Set();
-      let closed = 0;
-      for (let e = 0; e < net.edges.length; e++) {
-        edgeClosed[e] = edgeCells[e].some((c) => deepAt(c, k)) ? 1 : 0;
-        if (!edgeClosed[e]) continue;
-        closed++;
-        const name = d.roads[net.edges[e][2]].name;
-        if (name) closedNames.add(name);
-      }
-      closedCount[k] = closed;
-      for (const name of closedNames) {
-        const intervals = roads.get(name) || [];
-        const last = intervals[intervals.length - 1];
-        if (last && last.to === k - 1) last.to = k;
-        else intervals.push({ name, from: k, to: k });
-        roads.set(name, intervals);
-      }
-      let qt = 0;
-      for (let n = 0; n < nN; n++) if (exit[n] && !deepAt(nodeCell[n], k)) { reach[n] = 1; q[qt++] = n; }
-      for (let h = 0; h < qt; h++) for (const [m, e] of adj[q[h]]) {
-        if (reach[m] || edgeClosed[e] || deepAt(nodeCell[m], k)) continue;
-        reach[m] = 1; q[qt++] = m;
-      }
-      for (let i = 0; i < nB; i++) {
-        if (wetAt(bCell[i], k)) { floodCount[k]++; isoRun[i] = 0; continue; }
-        if (bNode[i] >= 0 && !reach[bNode[i]] && dryReach[bNode[i]]) {
-          isoCount[k]++; isoSteps[i]++; isoRun[i]++;
-          longest = Math.max(longest, isoRun[i]);
-          if (firstIso[i] < 0) firstIso[i] = k;
-        } else isoRun[i] = 0;
-      }
-    }
-    const toH = (k) => Math.round(tl.t0 + k * tl.step);
-    let maxIso = 0, maxIsoAt = 0;
-    for (let k = 0; k < K; k++) if (isoCount[k] > maxIso) { maxIso = isoCount[k]; maxIsoAt = k; }
-    const roadList = Array.from(roads.values()).flat().sort((x, y) => x.from - y.from);
-    return {
-      roads: roadList.map((r) => ({ name: r.name, closes: toH(r.from), reopens: toH(r.to + 1) })),
-      firstClose: roadList.length ? toH(roadList[0].from) : null,
-      maxIso, maxIsoAt: toH(maxIsoAt), longest: Math.round(longest * tl.step),
-      isoCount, floodCount, closedCount, isoSteps, firstIso,
-    };
+    return timelineAccessOn(tl, d, routeNetOf(d), state.geo, state.a.W, state.a.H);
   }
   // what routing did to the peak on its way down the river
   function routeNote(tl) {
@@ -8384,14 +8253,22 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // The network is prepared once per area and the flooded edges once per run
   // (viewer/routing.js).
   const routeNets = new WeakMap();
+  function routeNetOf(d) {
+    let P = routeNets.get(d);
+    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap));
+    return P;
+  }
+  // the flooded roads and nodes of one run, shared by the route, the impact sweep and the property check
+  function preparedRun(d, a, run) {
+    const P = routeNetOf(d);
+    let R = state.routeCache;
+    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean), { run, a });
+    return R;
+  }
   function routeOut(lat, lon) {
     const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a, run = state.run;
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    let P = routeNets.get(d);
-    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap));
-    let R = state.routeCache;
-    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean), { run, a });
-    return routeFrom(R, lat, lon);
+    return routeFrom(preparedRun(d, a, run), lat, lon);
   }
   function drawRoute(r) {
     const L = window.L;
