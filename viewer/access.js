@@ -6,7 +6,7 @@
 
 import { prepareGrid, buildingNodes, dryReachOf } from './routing.js';
 
-const DEEP_BIT = (bits, base, c) => c >= 0 && (bits[base + (c >>> 5)] & (1 << (c & 31))) !== 0;
+const BIT = (bits, base, c) => c >= 0 && (bits[base + (c >>> 5)] & (1 << (c & 31))) !== 0;
 
 /* The distinct cells under the samples along each edge (a road can reopen between peaks, so it is tested at
  * each step); kept with the grid. */
@@ -24,66 +24,127 @@ function edgeCells(P, G) {
   return (G.edgeCells = { off, cell: Int32Array.from(cells) });
 }
 
-export function timelineAccess(tl, d, P, geo, W, H) {
-  const G = prepareGrid(P, geo, W, H), { off, to, edge } = P, nN = P.nN, nE = P.nE, K = tl.steps, wps = tl.wordsPerStep;
-  const ec = edgeCells(P, G), net = P.net, nB = d.bx.length;
-  const bNode = buildingNodes(P, d.bx, d.by), dryReach = dryReachOf(P);
-  const bCell = new Int32Array(nB);
+/* Edges by cell (the inverse of edgeCells): which edges are closed when a cell is deep. */
+function cellEdges(P, G, N) {
+  if (G.cellEdges) return G.cellEdges;
+  const ec = edgeCells(P, G), off = new Int32Array(N + 1);
+  for (let p = 0; p < ec.cell.length; p++) off[ec.cell[p] + 1]++;
+  for (let c = 0; c < N; c++) off[c + 1] += off[c];
+  const at = off.slice(0, N), list = new Int32Array(ec.cell.length);
+  for (let e = 0; e < P.nE; e++) for (let p = ec.off[e]; p < ec.off[e + 1]; p++) list[at[ec.cell[p]]++] = e;
+  return (G.cellEdges = { off, list });
+}
+
+/* The buildings, against the grid and the network: each one's cell, how many buildings per cell, and the
+ * buildings that have each road node as their nearest. */
+function buildingsOn(P, G, d, W, H, geo, bNode) {
+  const c = P.bstatic;
+  if (c && c.bx === d.bx && c.by === d.by && c.G === G) return c;
+  const nB = d.bx.length, bCell = new Int32Array(nB), count = new Int32Array(W * H), nodeOff = new Int32Array(P.nN + 1);
   for (let i = 0; i < nB; i++) {   // the same arithmetic as the page's cellOf
     const x = Math.floor(((d.bx[i] - geo.west) / (geo.east - geo.west)) * W), y = Math.floor(((geo.north - d.by[i]) / (geo.north - geo.south)) * H);
-    bCell[i] = x < 0 || y < 0 || x >= W || y >= H ? -1 : y * W + x;
+    const cell = x < 0 || y < 0 || x >= W || y >= H ? -1 : y * W + x;
+    bCell[i] = cell;
+    if (cell >= 0) count[cell]++;
+    if (bNode[i] >= 0) nodeOff[bNode[i] + 1]++;
   }
+  for (let n = 0; n < P.nN; n++) nodeOff[n + 1] += nodeOff[n];
+  const at = nodeOff.slice(0, P.nN), nodeList = new Int32Array(nodeOff[P.nN]);
+  for (let i = 0; i < nB; i++) if (bNode[i] >= 0) nodeList[at[bNode[i]]++] = i;
+  return (P.bstatic = { bx: d.bx, by: d.by, G, bCell, count, nodeOff, nodeList });
+}
+
+export function timelineAccess(tl, d, P, geo, W, H) {
+  const G = prepareGrid(P, geo, W, H), { off, to, edge } = P, nN = P.nN, nE = P.nE, K = tl.steps, wps = tl.wordsPerStep, N = W * H;
+  const ce = cellEdges(P, G, N), net = P.net, nB = d.bx.length;
+  const bNode = buildingNodes(P, d.bx, d.by), dryReach = dryReachOf(P);
+  const B = buildingsOn(P, G, d, W, H, geo, bNode);
   // road names, by index: ids shared between roads of the same name; -1 for none
   const nameId = new Int32Array(d.roads.length).fill(-1), names = [], idOf = new Map();
   d.roads.forEach((r, i) => { if (r.name) { if (!idOf.has(r.name)) { idOf.set(r.name, names.length); names.push(r.name); } nameId[i] = idOf.get(r.name); } });
   const edgeName = new Int32Array(nE);
   for (let e = 0; e < nE; e++) edgeName[e] = nameId[net.edges[e][2]];
 
-  const roads = new Map(), edgeClosed = new Uint8Array(nE), seen = new Int32Array(names.length);
-  const isoSteps = new Int16Array(nB), firstIso = new Int16Array(nB).fill(-1), isoRun = new Int16Array(nB);
+  const roads = new Map(), edgeStamp = new Int32Array(nE), nameStamp = new Int32Array(names.length), nameFirst = new Int32Array(names.length);
+  const isoSteps = new Int16Array(nB), firstIso = new Int16Array(nB).fill(-1), isoRun = new Int16Array(nB), nowIso = new Int32Array(nB);
   const isoCount = new Int32Array(K), floodCount = new Int32Array(K), closedCount = new Int32Array(K);
-  const reach = new Uint8Array(nN), q = new Int32Array(nN);
-  let longest = 0;
+  const reachBuf = new Uint8Array(nN), q = new Int32Array(nN);
+  let longest = 0, active = [];
   for (let k = 0; k < K; k++) {
-    const base = k * wps;
-    reach.fill(0);
+    const base = k * wps, stamp = k + 1;
+    // edges under deep water: from the deep cells outwards
+    let closed = 0, anyDeep = false;
     const closedNames = [];
-    let closed = 0;
-    for (let e = 0; e < nE; e++) {
-      let c = 0;
-      for (let p = ec.off[e]; p < ec.off[e + 1]; p++) if (DEEP_BIT(tl.deepBits, base, ec.cell[p])) { c = 1; break; }
-      edgeClosed[e] = c;
-      if (!c) continue;
-      closed++;
-      const nm = edgeName[e];
-      if (nm >= 0 && seen[nm] !== k + 1) { seen[nm] = k + 1; closedNames.push(nm); }
+    for (let w = 0; w < wps; w++) {
+      let bits = tl.deepBits[base + w];
+      if (!bits) continue;
+      anyDeep = true;
+      while (bits) {
+        const low = bits & -bits, cell = (w << 5) + 31 - Math.clz32(low);
+        bits ^= low;
+        if (cell >= N) continue;
+        for (let p = ce.off[cell]; p < ce.off[cell + 1]; p++) {
+          const e = ce.list[p];
+          if (edgeStamp[e] === stamp) continue;
+          edgeStamp[e] = stamp; closed++;
+          const nm = edgeName[e];
+          if (nm < 0) continue;
+          if (nameStamp[nm] !== stamp) { nameStamp[nm] = stamp; nameFirst[nm] = e; closedNames.push(nm); } else if (e < nameFirst[nm]) nameFirst[nm] = e;
+        }
+      }
     }
     closedCount[k] = closed;
+    closedNames.sort((x, y) => nameFirst[x] - nameFirst[y]);   // in the order the old edge scan met them
     for (const nm of closedNames) {
       const name = names[nm], intervals = roads.get(name) || [], last = intervals[intervals.length - 1];
       if (last && last.to === k - 1) last.to = k;
       else intervals.push({ name, from: k, to: k });
       roads.set(name, intervals);
     }
-    let qt = 0;
-    for (let n = 0; n < nN; n++) if (G.exit[n] && !DEEP_BIT(tl.deepBits, base, G.node[n])) { reach[n] = 1; q[qt++] = n; }
-    for (let h = 0; h < qt; h++) {
-      const u = q[h];
-      for (let p = off[u]; p < off[u + 1]; p++) {
-        const m = to[p];
-        if (reach[m] || edgeClosed[edge[p]] || DEEP_BIT(tl.deepBits, base, G.node[m])) continue;
-        reach[m] = 1; q[qt++] = m;
+    // nodes still joined to the edge of the model; with nothing deep, that is every node the whole network joins
+    let reach = dryReach;
+    if (anyDeep) {
+      reach = reachBuf; reach.fill(0);
+      let qt = 0;
+      for (let n = 0; n < nN; n++) if (G.exit[n] && !BIT(tl.deepBits, base, G.node[n])) { reach[n] = 1; q[qt++] = n; }
+      for (let h = 0; h < qt; h++) {
+        const u = q[h];
+        for (let p = off[u]; p < off[u + 1]; p++) {
+          const m = to[p];
+          if (reach[m] || edgeStamp[edge[p]] === stamp || BIT(tl.deepBits, base, G.node[m])) continue;
+          reach[m] = 1; q[qt++] = m;
+        }
       }
     }
-    for (let i = 0; i < nB; i++) {
-      if (DEEP_BIT(tl.wetBits, base, bCell[i])) { floodCount[k]++; isoRun[i] = 0; continue; }
-      const b = bNode[i];
-      if (b >= 0 && !reach[b] && dryReach[b]) {
-        isoCount[k]++; isoSteps[i]++; isoRun[i]++;
-        if (isoRun[i] > longest) longest = isoRun[i];
-        if (firstIso[i] < 0) firstIso[i] = k;
-      } else isoRun[i] = 0;
+    // flooded buildings: wet cells, weighted by the buildings in each
+    let flood = 0;
+    for (let w = 0; w < wps; w++) {
+      let bits = tl.wetBits[base + w];
+      while (bits) {
+        const low = bits & -bits, cell = (w << 5) + 31 - Math.clz32(low);
+        bits ^= low;
+        if (cell < N) flood += B.count[cell];
+      }
     }
+    floodCount[k] = flood;
+    // cut off: dry buildings whose nearest road node the network joins to the edge but the flood has cut from it
+    const now = [];
+    for (let n = 0; n < nN; n++) {
+      if (!dryReach[n] || reach[n]) continue;
+      for (let p = B.nodeOff[n]; p < B.nodeOff[n + 1]; p++) {
+        const i = B.nodeList[p];
+        if (BIT(tl.wetBits, base, B.bCell[i])) continue;
+        now.push(i); nowIso[i] = stamp;
+      }
+    }
+    for (const i of active) if (nowIso[i] !== stamp) isoRun[i] = 0;
+    for (const i of now) {
+      isoSteps[i]++; isoRun[i]++;
+      if (isoRun[i] > longest) longest = isoRun[i];
+      if (firstIso[i] < 0) firstIso[i] = k;
+    }
+    isoCount[k] = now.length;
+    active = now;
   }
   const toH = (k) => Math.round(tl.t0 + k * tl.step);
   let maxIso = 0, maxIsoAt = 0;
