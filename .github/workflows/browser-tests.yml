@@ -42,6 +42,7 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Serve the pull request viewer with published data
         if: github.event_name == 'pull_request'
+        timeout-minutes: 15
         run: |
           npm run build
           npm run test:build
@@ -54,8 +55,14 @@ jobs:
           exit 1
       - name: Check the 5 m picture worker in the built bundle
         if: github.event_name == 'pull_request'
+        timeout-minutes: 5
         run: node tests/fine-worker-browser.js
+      - name: Check the impact panel, routes and flood over time in the built bundle
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 5
+        run: node tests/impact-browser.js
       - name: Check the live interactive map
+        timeout-minutes: 25
         env:
           SITE_URL: ${{ github.event_name == 'pull_request' && 'http://127.0.0.1:8000/' || inputs.site_url || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
           SMOKE_PRESETS: ${{ inputs.presets || 'quick' }}
@@ -64,6 +71,7 @@ jobs:
           npm run test:smoke -- "$SITE_URL"
       - name: Probe national data sources from the browser
         if: always()
+        timeout-minutes: 5
         env:
           SITE_URL: ${{ github.event_name == 'pull_request' && 'http://127.0.0.1:8000/' || inputs.site_url || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
         run: npm run test:sources -- "$SITE_URL"

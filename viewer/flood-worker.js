@@ -57,9 +57,10 @@ self.onmessage = async (e) => {
       } else {
         tl.depthFramesCompressed = false;
       }
-      const bufs = [tl.firstWet, tl.lastWet, tl.firstDeep, tl.lastDeep, tl.wetCount, tl.gauge, tl.wetBits, tl.deepBits, tl.depthFrames, tl.depthFrameMax]
-        .filter((x) => x && x.buffer).map((x) => x.buffer);
-      self.postMessage({ id, a: tl }, bufs);
+      // arrays read out of the module can be views of one buffer, which may be transferred only once
+      const bufs = new Set([tl.firstWet, tl.lastWet, tl.firstDeep, tl.lastDeep, tl.wetCount, tl.gauge, tl.wetBits, tl.deepBits, tl.depthFrames, tl.depthFrameMax]
+        .filter((x) => x && x.buffer).map((x) => x.buffer));
+      self.postMessage({ id, a: tl }, Array.from(bufs));
     }
     if (kind === 'timeline' && e.data.aKey != null && resident.has(e.data.aKey)) {
       // no 30–45 MB analysis clone or re-upload: run against the handle
