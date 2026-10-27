@@ -79,8 +79,8 @@ self.onmessage = async (e) => {
       const R = e.data.aKey != null ? resident.get(e.data.aKey) : null;
       if (!R) throw new Error('no resident analysis to calibrate against');
       const stub = self.FloodCore.byHandle(R.h);
-      const best = self.FloodCore.calibrateLevels(R, e.data.s0, e.data.m, e.data.bed,
-        (s0, lv) => self.FloodCore.inundate(stub, Object.assign({}, s0, { gaugeLevel: lv })));
+      const best = await self.FloodCore.calibrateLevels(stub, e.data.s0, e.data.m, e.data.bed,
+        (s0, lv) => self.FloodCore.inundate(stub, Object.assign({}, s0, { gaugeLevel: lv }), { slim: 1 }));
       self.postMessage({ id, a: best });
       return;
     }
