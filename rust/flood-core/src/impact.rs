@@ -332,3 +332,49 @@ pub fn building_nodes(node_lat: &[f64], node_lon: &[f64], bx: &[f64], by: &[f64]
         })
         .collect()
 }
+
+/// Which grid cells (centres) lie inside a polygon of rings given as [lat, lon] points: the first ring is the
+/// outline and later ones are holes; a ring with fewer than three points is ignored; no rings means everywhere.
+/// The crossings of each row are worked out once, so a cell only counts those to its east.
+pub fn polygon_mask(geo: &Geo, rings: &[Vec<(f64, f64)>]) -> Vec<u8> {
+    let n = geo.w * geo.h;
+    if rings.is_empty() {
+        return vec![1; n];
+    }
+    let mut mask = vec![0u8; n];
+    let mut cross: Vec<Vec<f64>> = vec![Vec::new(); rings.len()];
+    for y in 0..geo.h {
+        let lat = geo.north - ((y as f64 + 0.5) / geo.h as f64) * (geo.north - geo.south);
+        for (r, ring) in rings.iter().enumerate() {
+            cross[r].clear();
+            if ring.len() < 3 {
+                continue;
+            }
+            let mut j = ring.len() - 1;
+            for i in 0..ring.len() {
+                let ((yi, xi), (yj, xj)) = (ring[i], ring[j]);
+                if (yi > lat) != (yj > lat) {
+                    cross[r].push((xj - xi) * (lat - yi) / (yj - yi) + xi);
+                }
+                j = i;
+            }
+        }
+        for x in 0..geo.w {
+            let lon = geo.west + ((x as f64 + 0.5) / geo.w as f64) * (geo.east - geo.west);
+            let mut inside = false;
+            for (r, ring) in rings.iter().enumerate() {
+                if ring.len() < 3 {
+                    continue;
+                }
+                let c = cross[r].iter().filter(|&&cx| lon < cx).count() % 2 == 1;
+                if r == 0 {
+                    inside = c;
+                } else if c {
+                    inside = false;
+                }
+            }
+            mask[y * geo.w + x] = inside as u8;
+        }
+    }
+    mask
+}

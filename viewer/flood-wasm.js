@@ -216,6 +216,14 @@
       return r;
     }
 
+    // Which cells (centres) of a W x H grid over geo lie inside a polygon (rings of [lat, lon] points; the first
+    // is the outline, later ones holes); no rings means everywhere.
+    function polygonMask(geo, W, H, rings) {
+      const pts = [], off = [0];
+      for (const ring of rings) { for (const p of ring) pts.push(p[0], p[1]); off.push(pts.length / 2); }
+      return call('polygonMask', { west: geo.west, east: geo.east, south: geo.south, north: geo.north, W, H, pts: Float64Array.from(pts), off: Int32Array.from(off) }).mask;
+    }
+
     // The water surface as a mesh for the 3D view (viewer/terrain3d.js): a run (surface, depth, wet) or a timeline
     // frame (dem, frame, maxD). Null when no quad survives.
     function waterMesh(o) {
@@ -497,7 +505,7 @@
     }
 
     const rust = {
-      netLoad, netGrid, netBuildings, netCensus, netRun, netRoute, netImpact, netAccess,
+      polygonMask, netLoad, netGrid, netBuildings, netCensus, netRun, netRoute, netImpact, netAccess,
       syntheticTerrain, parseAsciiGrid, downsample, cleanNodata, lineCells, stormUplift, hazardClass, snapToStream, mainStem, encodeWhiteboxD8, mergeRuns, scoreRun, calibrateLevels,
       fineRaster, classifyDemGaps, terrainRGBA,
       tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },

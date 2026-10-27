@@ -743,6 +743,12 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 None => { o.num("any", 0.0); }
             }
         }
+        "polygonMask" => {
+            let (coords, off) = (b.f64s("pts").unwrap_or_default(), b.i32s("off").unwrap_or_default());
+            let rings: Vec<Vec<(f64, f64)>> = off.windows(2).map(|w| coords[2 * w[0] as usize..2 * w[1] as usize].chunks(2).map(|p| (p[0], p[1])).collect()).collect();
+            let geo = impact::Geo { west: b.num("west"), east: b.num("east"), south: b.num("south"), north: b.num("north"), w: b.num("W") as usize, h: b.num("H") as usize };
+            o.u8s("mask", &impact::polygon_mask(&geo, &rings));
+        }
         "netLoad" => {
             let (g, f) = (|k: &str| b.i32s(k).unwrap_or_default(), |k: &str| b.f64s(k).unwrap_or_default());
             let n = net::Net::new(f("lat"), f("lon"), g("eu"), g("ev"), g("eroad"), f("centreLat"), f("centreLon"));

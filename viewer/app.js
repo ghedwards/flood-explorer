@@ -3189,26 +3189,10 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   function polygonMask(area) {
     const a = state.a, g = state.geo, c = area.maskCache;
     if (c && c.a === a && c.g === g && c.polygon === area.polygon) return c.mask;
-    const mask = new Uint8Array(a.N);
-    for (let i = 0; i < a.N; i++) { const ll = cellLatLng(i); mask[i] = pointInPolygon(ll[0], ll[1], area.polygon) ? 1 : 0; }
+    const rings = (Array.isArray(area.polygon) ? area.polygon : []).filter((r) => Array.isArray(r));
+    const mask = F.polygonMask(g, a.W, a.H, rings);
     area.maskCache = { a, g, polygon: area.polygon, mask };
     return mask;
-  }
-  function pointInPolygon(lat, lon, rings) {
-    if (!Array.isArray(rings) || !rings.length) return true;
-    let inside = false;
-    for (let r = 0; r < rings.length; r++) {
-      const ring = rings[r];
-      if (!Array.isArray(ring) || ring.length < 3) continue;
-      let c = false;
-      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        const yi = ring[i][0], xi = ring[i][1];
-        const yj = ring[j][0], xj = ring[j][1];
-        if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) c = !c;
-      }
-      if (r === 0) inside = c; else if (c) inside = false;
-    }
-    return inside;
   }
 
   function latLngCell(ll) {
