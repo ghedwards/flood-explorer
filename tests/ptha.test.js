@@ -302,3 +302,19 @@ test('rate-proportional sampling draws in proportion to rate and estimates excee
   assert.ok(high.low < high.rate && high.rate < high.high && none.low === 0 && none.high > 0);
   assert.equal(low.hits, 4);
 });
+
+test('zone ensembles combine by summing rates with intervals added in quadrature', () => {
+  const { combine } = require('../scripts/combine-ensembles.js');
+  const zone = (name, rate, low, high, gauge = 1) => ({ zone: name, gauge, offshore: [{ threshold: 0.5, rate, low, high }], flooded: [{ threshold: 10, rate, low, high }] });
+  const [row] = combine([zone('a', 0.01, 0.006, 0.014), zone('b', 0.02, 0.017, 0.026)], 'offshore');
+  assert.ok(Math.abs(row.rate - 0.03) < 1e-12);
+  assert.ok(Math.abs(row.low - (0.03 - Math.hypot(0.004, 0.003))) < 1e-12);
+  assert.ok(Math.abs(row.high - (0.03 + Math.hypot(0.004, 0.006))) < 1e-12);
+  assert.deepEqual(row.byZone, { a: 0.01, b: 0.02 });
+  assert.equal(combine([zone('a', 0.01, 0.006, 0.014)], 'flooded')[0].rate, 0.01);
+  assert.throws(() => combine([], 'offshore'), /at least one/);
+  assert.throws(() => combine([zone('a', 1, 1, 1), zone('b', 1, 1, 1, 2)], 'offshore'), /different hazard points/);
+  const other = zone('b', 1, 1, 1); other.offshore[0].threshold = 0.7;
+  assert.throws(() => combine([zone('a', 1, 1, 1), other], 'offshore'), /different offshore thresholds/);
+  assert.throws(() => combine([{ zone: 'a' }], 'offshore'), /no offshore estimates/);
+});

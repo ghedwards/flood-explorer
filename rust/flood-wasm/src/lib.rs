@@ -794,6 +794,47 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let g = grid_of(b)?;
             o.f32s("dem", &burn_defences(&g, &levees_of(b)));
         }
+        "classifyDemGaps" => {
+            let mut dem = b.f32s("dem").ok_or("classifyDemGaps: missing dem")?;
+            let size = |k: &str| -> Result<usize, String> {
+                let v = b.num(k);
+                if v.is_finite() && v >= 0.0 && v.fract() == 0.0 { Ok(v as usize) } else { Err(format!("classifyDemGaps: {} must be a whole number", k)) }
+            };
+            let shore = b.num("shoreMax");
+            let g = classify_dem_gaps(&mut dem, size("W")?, size("H")?, if shore.is_nan() { SEA_SHORE_MAX_M } else { shore })?;
+            o.f32s("dem", &dem).u8s("sea", &g.sea).num("seaCells", g.sea_cells as f64).num("filledCells", g.filled_cells as f64).num("gaps", g.gaps as f64);
+        }
+        "fineRaster" => {
+            let need = |k: &str| b.u8s(k).ok_or_else(|| format!("fineRaster: missing {}", k));
+            let nums = |k: &str, n: usize| -> Result<Vec<f64>, String> {
+                let v = b.f64s(k).ok_or_else(|| format!("fineRaster: missing {}", k))?;
+                if v.len() == n { Ok(v) } else { Err(format!("fineRaster: {} needs {} numbers", k, n)) }
+            };
+            let (bbox, extent) = (nums("box", 4)?, nums("extent", 4)?);
+            let (lidar, dem, depth) = (b.f32s("lidar").ok_or("fineRaster: missing lidar")?, b.f32s("dem").ok_or("fineRaster: missing dem")?, b.f32s("depth").ok_or("fineRaster: missing depth")?);
+            let (valid, ocean, wet, coarse) = (need("valid")?, need("ocean")?, need("wet")?, need("coarse")?);
+            let (level, base_depth, hz_vel) = (b.f32s("level"), b.f32s("baseDepth"), b.f32s("hzVel"));
+            let (base_wet, hz_cls) = (b.u8s("baseWet"), b.u8s("hzCls"));
+            let (depth_limits, depth_colors, hazard_colors, hazard_limits) = (b.f64s("depthLimits").ok_or("fineRaster: missing depthLimits")?, need("depthColors")?, need("hazardColors")?, b.f64s("hazardLimits").ok_or("fineRaster: missing hazardLimits")?);
+            let water = need("water")?;
+            if water.len() != 3 {
+                return Err("fineRaster: water needs 3 values".into());
+            }
+            let size = |k: &str| -> Result<usize, String> {
+                let v = b.num(k);
+                if v.is_finite() && v >= 0.0 && v.fract() == 0.0 { Ok(v as usize) } else { Err(format!("fineRaster: {} must be a whole number", k)) }
+            };
+            let (w, h, a_w, a_h, x0, y0, ww) = (size("W")?, size("H")?, size("aW")?, size("aH")?, size("x0")?, size("y0")?, size("ww")?);
+            let (row_from, row_to) = (if b.has("rowFrom") { size("rowFrom")? } else { 0 }, if b.has("rowTo") { size("rowTo")? } else { h });
+            let (rgba, have) = fine_raster(&Fine {
+                w, h, row_from, row_to, bbox: [bbox[0], bbox[1], bbox[2], bbox[3]], extent: [extent[0], extent[1], extent[2], extent[3]], a_w, a_h, x0, y0, ww,
+                lidar: &lidar, nodata: b.num("nd"), dem: &dem, valid: &valid, ocean: &ocean, wet: &wet, depth: &depth,
+                level: level.as_deref(), base_wet: base_wet.as_deref(), base_depth: base_depth.as_deref(), hz_cls: hz_cls.as_deref(), hz_vel: hz_vel.as_deref(),
+                coarse: &coarse, depth_limits: &depth_limits, depth_colors: &depth_colors, depth_alpha0: b.num("depthAlpha0") as u8,
+                water: [water[0], water[1], water[2]], channel_alpha: b.num("channelAlpha") as u8, hazard_colors: &hazard_colors, hazard_limits: &hazard_limits,
+            })?;
+            o.u8s("rgba", &rgba).num("have", have as f64);
+        }
         "parseSimpleTiff" => {
             let bytes = b.u8s("bytes").ok_or("no bytes")?;
             let t = parse_simple_tiff(&bytes)?;

@@ -2,6 +2,7 @@ import { desktopUpdates } from './desktop-updates.js';
 import { createFeedClient } from './feed-health.js';
 import './inertial-grid.js';
 import { fineRaster, fineWindow, cropGrid } from './fine-raster.js';
+import { createFinePool } from './fine-pool.js';
 import { classifyDemGaps } from './dem-voids.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
@@ -1494,35 +1495,16 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     status.fine = { W, H, lidar: +(res.have / (W * H)).toFixed(2), ms: Math.round(performance.now() - t0), worker: !!res.worker,
       fetchMs: Math.round(tFetched - t0), prepMs: Math.round(tPrepped - tFetched), computeMs: Math.round(tComputed - tPrepped), drawMs: Math.round(tDrawn - tComputed) };
   }
-  // The 5 m picture is worked out in a worker; without one (or if it
-  // fails), here.
-  let fineWorker = null, fineWorkerOk = true, fineReq = 0;
-  const fineWaiting = new Map();
-  function fineCompute(p) {
-    if (fineWorkerOk && typeof Worker !== 'undefined') {
-      try {
-        if (!fineWorker) {
-          fineWorker = new Worker(new URL('./fine-worker.js', import.meta.url), { type: 'module' });
-          fineWorker.onmessage = (e) => {
-            const w = fineWaiting.get(e.data.id);
-            if (!w) return;
-            fineWaiting.delete(e.data.id);
-            if (e.data.error) w.reject(new Error(e.data.error)); else w.resolve({ rgba: e.data.rgba, have: e.data.have, worker: true });
-          };
-          fineWorker.onerror = (ev) => {
-            logProblem('worker', `5 m flood worker failed: ${(ev && ev.message) || 'unknown error'} (drawing on the main thread instead)`);
-            fineWorkerOk = false; fineWorker = null;
-            for (const w of fineWaiting.values()) w.reject(new Error('worker failed'));
-            fineWaiting.clear();
-          };
-        }
-        const id = ++fineReq;
-        return new Promise((resolve, reject) => { fineWaiting.set(id, { resolve, reject }); fineWorker.postMessage({ id, p }); })
-          .catch(() => fineRaster(p));
-      } catch (err) { fineWorkerOk = false; }
-    }
-    return Promise.resolve(fineRaster(p));
-  }
+  // The 5 m picture is worked out by workers, a band of rows each (up to three, leaving a core for
+  // the page; a two-core phone gets one; bands under 200 rows are not worth a worker); without
+  // them, or if one fails, here.
+  const finePool = createFinePool({
+    makeWorker: () => new Worker(new URL('./fine-worker.js', import.meta.url), { type: 'module' }),
+    size: typeof Worker === 'undefined' ? 0 : Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)),
+    fallback: fineRaster,
+    onProblem: (message) => logProblem('worker', message),
+  });
+  function fineCompute(p) { return finePool.compute(p); }
 
   // What the flood colours show: depth, hazard class, or the change from a
   // pinned scenario. Hazard colours run light to dark (viridis), the
@@ -7978,7 +7960,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     // water just below sea level, inland gaps are filled from the land
     // around them (not left as pits for the model to fill as "normal water")
     if (gaps) {
-      const g = classifyDemGaps(dem, iw, ih);
+      const g = F.engine === 'rust' && F.classifyDemGaps ? F.classifyDemGaps(dem, iw, ih) : classifyDemGaps(dem, iw, ih);
       for (let i = 0; i < iw * ih; i++) if (g.sea[i]) dem[i] = -1.5;
       land += g.filledCells;
     }

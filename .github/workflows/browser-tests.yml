@@ -52,6 +52,9 @@ jobs:
           done
           cat preview.log
           exit 1
+      - name: Check the 5 m picture worker in the built bundle
+        if: github.event_name == 'pull_request'
+        run: node tests/fine-worker-browser.js
       - name: Check the live interactive map
         env:
           SITE_URL: ${{ github.event_name == 'pull_request' && 'http://127.0.0.1:8000/' || inputs.site_url || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
