@@ -589,6 +589,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     await nextFrame();
     try {
       if (id === 'sample') {
+        await window.FloodCoreReady;
         const g = F.syntheticTerrain();
         state.areaMeta = { id: 'sample', name: 'Sample terrain', synthetic: true, streamAreaKm2: 4 };
         await useGrid(g, 'sample', { events: true });
@@ -830,6 +831,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   }
 
   async function readRaster(file, opts) {
+    await window.FloodCoreReady;   // the grid helpers are in the module
     const name = file.name.toLowerCase();
     if (name.endsWith('.asc') || name.endsWith('.txt')) {
       const g = F.parseAsciiGrid(await file.text());

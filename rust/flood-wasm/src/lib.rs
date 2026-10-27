@@ -255,6 +255,16 @@ fn grid_of(b: &Bag) -> Result<Grid, String> {
     Ok(Grid { w, h, cell: b.num("cell"), dem, valid: b.u8s("valid"), inflow: b.f32s("inflow"), d8: b.i16s("d8") })
 }
 
+fn put_grid(o: &mut Out, g: &Grid) {
+    o.num("W", g.w as f64).num("H", g.h as f64).num("cell", g.cell).f32s("dem", &g.dem);
+    if let Some(v) = &g.valid {
+        o.u8s("valid", v);
+    }
+    if let Some(v) = &g.inflow {
+        o.f32s("inflow", v);
+    }
+}
+
 fn put_analysis(o: &mut Out, a: &Analysis) {
     o.num("W", a.w as f64)
         .num("H", a.h as f64)
@@ -770,6 +780,51 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             o.i32s("closedCount", &r.closed_count).i32s("floodCount", &r.flood_count).i32s("isoCount", &r.iso_count)
                 .i16s("isoSteps", &r.iso_steps).i16s("firstIso", &r.first_iso).num("longest", r.longest as f64)
                 .i32s("nameCounts", &r.name_counts).i32s("nameIds", &r.name_ids);
+        }
+        "syntheticTerrain" => {
+            put_grid(&mut o, &synthetic_terrain(b.num("W") as usize, b.num("H") as usize, b.num("cell"), b.num("seed") as u32));
+        }
+        "parseAsciiGrid" => {
+            let text = String::from_utf8_lossy(&b.u8s("text").unwrap_or_default()).into_owned();
+            put_grid(&mut o, &parse_ascii_grid(&text)?);
+        }
+        "downsample" => {
+            put_grid(&mut o, &downsample(&grid_of(b)?, b.num("maxSide") as usize));
+        }
+        "cleanNodata" => {
+            let mut g = grid_of(b)?;
+            clean_nodata(&mut g, b.num("nodata"));
+            o.u8s("valid", g.valid.as_deref().unwrap_or(&[]));
+        }
+        "lineCells" => {
+            let flat = b.f64s("pts").unwrap_or_default();
+            let pts: Vec<(f64, f64)> = flat.chunks(2).map(|p| (p[0], p[1])).collect();
+            o.i32s("cells", &line_cells(&pts, b.num("W") as usize, b.num("H") as usize));
+        }
+        "stormUplift" => {
+            o.num("v", storm_uplift(b.num("hours"), b.num("warming")));
+        }
+        "hazardClass" => {
+            o.num("v", hazard_class(b.num("d"), b.num("v")) as f64);
+        }
+        "snapToStream" => {
+            let v = with_analysis(b.num("a"), |a| snap_to_stream(a, b.num("x") as i64, b.num("y") as i64, b.num("r") as i64, b.num("minAcc")))?;
+            o.num("v", v as f64);
+        }
+        "mainStem" => {
+            o.i32s("cells", &with_analysis(b.num("a"), main_stem)?);
+        }
+        "encodeWhiteboxD8" => {
+            o.i16s("codes", &with_analysis(b.num("a"), encode_whitebox_d8)?);
+        }
+        "mergeRuns" => {
+            let (r1, r2) = (run_of(b, "a")?, run_of(b, "b")?);
+            put_run(&mut o, &merge_runs(&r1, &r2), true);
+        }
+        "scoreRun" => {
+            let (wet, near, flood) = (b.u8s("wet").unwrap_or_default(), b.u8s("near").unwrap_or_default(), b.u8s("flood").unwrap_or_default());
+            let (hit, miss, fa) = with_analysis(b.num("a"), |a| score_run(a, &wet, &near, &flood))?;
+            o.num("hit", hit as f64).num("miss", miss as f64).num("fa", fa as f64);
         }
         "inundateAt" => {
             let s = scenario_of(b);

@@ -361,6 +361,27 @@ pub fn stats(a: &Analysis, run: &Run, base: Option<&Run>) -> Stats {
 }
 
 /// Combine two runs, keeping the deeper water in each cell.
+/// Agreement of a run with a recorded flood outline over the cells within flood-reach of it (`near`): cells
+/// flooded in both (hits), only in the record (misses), only in the model (false alarms); streams and the sea
+/// are left out.
+pub fn score_run(a: &Analysis, wet: &[u8], near: &[u8], flood: &[u8]) -> (u32, u32, u32) {
+    let (mut hit, mut miss, mut fa) = (0, 0, 0);
+    for c in 0..a.n {
+        if near[c] == 0 || a.ocean[c] != 0 || a.stream[c] != 0 {
+            continue;
+        }
+        let (w, f) = (wet[c] == 1, flood[c] == 1);
+        if w && f {
+            hit += 1;
+        } else if f {
+            miss += 1;
+        } else if w {
+            fa += 1;
+        }
+    }
+    (hit, miss, fa)
+}
+
 pub fn merge_runs(r1: &Run, r2: &Run) -> Run {
     let n = r1.wet.len();
     let (mut wet, mut depth, mut level) = (vec![0u8; n], vec![0f32; n], vec![f32::NAN; n]);

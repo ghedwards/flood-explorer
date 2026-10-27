@@ -3,8 +3,7 @@
  *
  * In the page and the worker this file loads flood.wasm and swaps the Rust
  * versions of the heavy functions into window.FloodCore once it is ready.
- * flood-core.js keeps only the model-adjacent helpers that have no wasm
- * bridge; there is no JavaScript flood model — when the wasm module can't
+ * flood-core.js keeps only a binary heap; there is no JavaScript flood model — when the wasm module can't
  * load, the app refuses to run (app.js shows the unsupported card).
  *
  * The module has four exports: flood_alloc, flood_free, flood_run and
@@ -416,7 +415,81 @@
       return new Uint8ClampedArray(out.rgba.slice().buffer);
     }
 
+    /* ---- grid and run helpers (the work is in rust/flood-core: grid.rs, hydro.rs, surface.rs, flash.rs) ---- */
+
+    const gridFrom = (out, extra) => Object.assign({ W: num(out.W), H: num(out.H), cell: num(out.cell), dem: out.dem, valid: out.valid || null }, out.inflow ? { inflow: out.inflow } : null, extra);
+
+    // The illustrative sample terrain (a meandering river into a bay); not real elevation.
+    function syntheticTerrain(opts) {
+      const o = Object.assign({ W: 420, H: 300, cell: 50, seed: 1974 }, opts || {});
+      return gridFrom(call('syntheticTerrain', o), { valid: null, name: 'Sample terrain (illustrative)', synthetic: true });
+    }
+
+    // An ESRI ASCII grid (.asc) from its text.
+    function parseAsciiGrid(text) {
+      try { return gridFrom(call('parseAsciiGrid', { text: new TextEncoder().encode(text) })); } catch (e) { throw new Error(e.message.replace(/^flood model: /, ''), { cause: e }); }
+    }
+
+    // Block-average a grid so its longest side is at most maxSide cells.
+    function downsample(grid, maxSide) {
+      if (Math.ceil(Math.max(grid.W, grid.H) / maxSide) <= 1) return grid;
+      const out = call('downsample', { W: grid.W, H: grid.H, cell: grid.cell, dem: f32(grid.dem), valid: u8(grid.valid), maxSide });
+      return Object.assign({}, grid, { W: num(out.W), H: num(out.H), cell: num(out.cell), dem: out.dem, valid: out.valid });
+    }
+
+    // Mark values outside a plausible elevation range (or equal to nodata) as invalid, in place.
+    function cleanNodata(grid, nodata) {
+      grid.valid = call('cleanNodata', { W: grid.W, H: grid.H, dem: f32(grid.dem), valid: u8(grid.valid), nodata }).valid;
+      return grid;
+    }
+
+    // Grid cells along a polyline of [x, y] grid coordinates, each once, in order.
+    function lineCells(pts, W, H) {
+      return call('lineCells', { pts: Float64Array.from(pts.flat()), W, H }).cells;
+    }
+
+    // Rainfall uplift for a climate warmingC degrees warmer.
+    const stormUplift = (hours, warmingC) => num(call('stormUplift', { hours, warming: warmingC }).v);
+    const hazardClass = (d, v) => num(call('hazardClass', { d, v }).v);
+
+    // The stream cell nearest (x, y) within r cells whose flow accumulation is at least minAcc; -1 if none.
+    const snapToStream = (a, x, y, r, minAcc) => num(call('snapToStream', { a: handleOf(a), x, y, r: r || 0, minAcc: minAcc || 0 }).v);
+    const mainStem = (a) => call('mainStem', { a: handleOf(a) }).cells;
+    const encodeWhiteboxD8 = (a) => call('encodeWhiteboxD8', { a: handleOf(a) }).codes;
+
+    // Where either of two runs floods, the deeper one's depth and level.
+    function mergeRuns(r1, r2) {
+      const out = call('mergeRuns', { awet: u8(r1.wet), adepth: f32(r1.depth), alevel: f32(r1.level), bwet: u8(r2.wet), bdepth: f32(r2.depth), blevel: f32(r2.level) });
+      return { wet: out.wet, depth: out.depth, level: out.level, wse: r1.wse, onPath: r1.onPath, kind: r2.kind, summary: r2.summary };
+    }
+
+    // Agreement of a run with a recorded flood outline, over cells within flood-reach distance of it.
+    function scoreRun(a, run, m) {
+      const o = call('scoreRun', { a: handleOf(a), wet: u8(run.wet), near: u8(m.near), flood: u8(m.flood) });
+      const hit = num(o.hit), miss = num(o.miss), fa = num(o.fa);
+      return { hit, miss, fa, csi: hit + miss + fa ? hit / (hit + miss + fa) : 0, captured: hit + miss ? hit / (hit + miss) : 0, extra: hit + fa ? fa / (hit + fa) : 0 };
+    }
+
+    // Which river level best reproduces the recorded flood: sweep the level in 0.5 m steps from half a metre above
+    // the river bed up to 20 metres, then refine in 5 cm steps around the best. `run(s0, lv)` builds the flood
+    // run; `tick` (if given) is awaited between sweep steps so a caller can keep the page painting.
+    async function calibrateLevels(scoreA, s0, m, bed, run, tick) {
+      const tryLevel = (lv) => scoreRun(scoreA, run(s0, lv), m);
+      let best = { lv: s0.gaugeLevel, s: tryLevel(s0.gaugeLevel) };
+      for (let lv = bed + 0.5; lv <= bed + 20; lv += 0.5) {
+        if (tick) await tick();
+        const s = tryLevel(lv);
+        if (s.csi > best.s.csi) best = { lv, s };
+      }
+      for (let lv = best.lv - 0.45; lv <= best.lv + 0.45; lv += 0.05) {
+        const s = tryLevel(lv);
+        if (s.csi > best.s.csi) best = { lv, s };
+      }
+      return best;
+    }
+
     const rust = {
+      syntheticTerrain, parseAsciiGrid, downsample, cleanNodata, lineCells, stormUplift, hazardClass, snapToStream, mainStem, encodeWhiteboxD8, mergeRuns, scoreRun, calibrateLevels,
       fineRaster, classifyDemGaps, terrainRGBA,
       tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
       // Run a regional model to the end, returning surface displacement at the
