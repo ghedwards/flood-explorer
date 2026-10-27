@@ -1,5 +1,5 @@
 //! The flood's effect on buildings, people, workers and roads for one model run: a port of the sweep in
-//! `computeScenarioImpact` (viewer/app.js) and of the prepared-network helpers in viewer/routing.js. The
+//! `computeScenarioImpact` (viewer/app.js) and of the prepared-network helpers beside it. The
 //! caller prepares what depends only on the area and the grid once (road network as CSR adjacency, the cell
 //! under each building, SA1/SA2 grids and their population shares); this does what changes with the run.
 
@@ -22,6 +22,7 @@ fn depth_at(wet: &[u8], depth: &[f32], ocean: &[u8], c: i32) -> f64 {
 }
 
 /// The grid's geography, to turn a position into a cell exactly as the page's `cellOf` does.
+#[derive(Clone, Copy, Debug)]
 pub struct Geo {
     pub west: f64,
     pub east: f64,

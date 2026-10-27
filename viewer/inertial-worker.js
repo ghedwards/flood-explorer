@@ -1,5 +1,4 @@
 import './runtime-paths.js';
-import './flood-core.js';
 import './flood-wasm.js';
 
 self.onmessage = async ({ data }) => {

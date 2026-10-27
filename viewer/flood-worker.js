@@ -1,7 +1,6 @@
 /* Flood Explorer background worker: runs the heavy flow analysis off the
  * page's main thread so building or reopening a model doesn't freeze it. */
 import './runtime-paths.js';
-import './flood-core.js';
 import './flood-wasm.js';
 
 // Analyses this worker computed, kept resident: the wasm handle (created

@@ -4,7 +4,7 @@ import './inertial-grid.js';
 import { fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
 import { HYPSO } from './relief.js';
-import { prepareNet, prepareRun, routeFrom } from './routing.js';
+import { roadNet, setGrid, setRun, routeFrom } from './roadnet.js';
 import { scenarioImpact } from './impact.js';
 import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
@@ -6682,8 +6682,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
       };
       if (d.sa1) sa('sa1Key', 'sa1Grid', d.sa1.feats);
       if (d.sa2) sa('sa2Key', 'sa2Grid', d.sa2.feats);
-      const hasNet = Boolean(d.net && d.net.lat.length), P = hasNet ? routeNetOf(d) : null;
-      const r = scenarioImpact({ d, a, run, geo: state.geo, P, R: hasNet ? preparedRun(d, a, run) : null, sweep: F.impactSweep, ringsKm2 });
+      const r = scenarioImpact({ d, a, run, geo: state.geo, P: roadNet(d, F), ringsKm2 });
       const depthAt = (c) => (c >= 0 && run.wet[c] && !(a.ocean && a.ocean[c]) ? run.depth[c] : 0);
       // key sites
       r.sitesHit = d.sites.map((s) => ({ ...s, depth: depthAt(cellOf(s.lat, s.lon)) })).filter((s) => s.depth >= 0.15).sort((x, y) => y.depth - x.depth);
@@ -7431,7 +7430,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // Roads and isolation through time, from when each spot is over 0.3 m deep
   function timelineAccess(tl, d) {
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    return timelineAccessOn(tl, d, routeNetOf(d), state.geo, state.a.W, state.a.H, F.accessOverTime);
+    return timelineAccessOn(tl, d, roadNet(d, F), state.geo, state.a.W, state.a.H);
   }
   // what routing did to the peak on its way down the river
   function routeNote(tl) {
@@ -8099,26 +8098,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   const EVAC = 'Evacuation centre';
   // The shortest dry route by road from a spot to the edge of the model and
-  // to the nearest dry evacuation centre (Dijkstra over the road network).
-  // The network is prepared once per area and the flooded edges once per run
-  // (viewer/routing.js).
-  const routeNets = new WeakMap();
-  function routeNetOf(d) {
-    let P = routeNets.get(d);
-    if (!P) routeNets.set(d, P = prepareNet(d, F._internal.MinHeap, F));
-    return P;
-  }
-  // the flooded roads and nodes of one run, shared by the route, the impact sweep and the property check
-  function preparedRun(d, a, run) {
-    const P = routeNetOf(d);
-    let R = state.routeCache;
-    if (!R || R.run !== run || R.P !== P || R.a !== a) R = state.routeCache = Object.assign(prepareRun(P, state.geo, a.W, a.H, run, a.ocean, F.prepareRoadsRun), { run, a });
-    return R;
-  }
+  // to the nearest dry evacuation centre (Dijkstra over the road network,
+  // which the module holds: viewer/roadnet.js).
   function routeOut(lat, lon) {
-    const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a, run = state.run;
+    const area = state.areaKey && areaReg.get(state.areaKey), d = area && area.impact, a = state.a;
     if (!d || d.error || !d.net || !d.net.lat.length) return null;
-    return routeFrom(preparedRun(d, a, run), lat, lon);
+    const P = roadNet(d, F);
+    setGrid(P, state.geo, a.W, a.H);
+    setRun(P, state.run, a.ocean);
+    return routeFrom(P, lat, lon);
   }
   function drawRoute(r) {
     const L = window.L;

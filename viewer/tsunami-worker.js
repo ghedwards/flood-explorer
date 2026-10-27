@@ -1,5 +1,4 @@
 import './runtime-paths.js';
-import './flood-core.js';
 import './flood-wasm.js';
 import { runMember, startRun } from './tsunami-runner.js';
 

@@ -1,10 +1,10 @@
 /* Flood Explorer: the flood model compiled from Rust (rust/flood-core) to
- * WebAssembly, behind the same API as flood-core.js (FloodCore).
+ * WebAssembly, as the global FloodCore.
  *
- * In the page and the worker this file loads flood.wasm and swaps the Rust
- * versions of the heavy functions into window.FloodCore once it is ready.
- * flood-core.js keeps only a binary heap; there is no JavaScript flood model — when the wasm module can't
- * load, the app refuses to run (app.js shows the unsupported card).
+ * In the page and the worker this file loads flood.wasm and puts the Rust
+ * functions into window.FloodCore once it is ready. There is no JavaScript
+ * flood model: when the wasm module can't load, the app refuses to run
+ * (app.js shows the unsupported card).
  *
  * The module has four exports: flood_alloc, flood_free, flood_run and
  * flood_out_len. flood_run(op, input) takes a "bag" of named arrays and
@@ -110,7 +110,7 @@
 
   const num = (x) => (x && x.length ? x[0] : NaN);
 
-  function create(runner, J) {
+  function create(runner) {
     const call = (op, obj) => {
       const out = runner(op, obj);
       if (out.error) throw new Error('flood model: ' + dec.decode(out.error));
@@ -216,35 +216,11 @@
       return r;
     }
 
-    // The step loop of the road access timeline (viewer/access.js); the arrays are the prepared network and buildings.
-    function accessOverTime(o) {
-      const out = call('accessOverTime', o);
-      return { closedCount: out.closedCount, floodCount: out.floodCount, isoCount: out.isoCount, isoSteps: out.isoSteps, firstIso: out.firstIso, longest: num(out.longest), nameCounts: out.nameCounts, nameIds: out.nameIds };
-    }
-
     // The water surface as a mesh for the 3D view (viewer/terrain3d.js): a run (surface, depth, wet) or a timeline
     // frame (dem, frame, maxD). Null when no quad survives.
     function waterMesh(o) {
       const out = call('waterMesh', { ...o, maxD: o.maxD == null ? 0 : o.maxD, colX: o.colX || null, rowZ: o.rowZ || null, surface: o.surface ? Float64Array.from(o.surface) : null });
       return num(out.any) ? { positions: out.positions, colors: out.colors, uvs: out.uvs, indices: out.indices } : null;
-    }
-
-    // The nearest road node to each building (viewer/routing.js buildingNodes).
-    function buildingNodes(o) { return call('buildingNodes', o).nodes; }
-
-    // Which road edges, road nodes and evacuation centres a run floods (viewer/routing.js prepareRun).
-    function prepareRoadsRun(o) {
-      const out = call('prepareRun', o);
-      return { closed: out.closed, nodeWet: out.nodeWet, flooded: out.flooded };
-    }
-
-    // The flood's effect on buildings, people, workers and roads for one run (viewer/impact.js).
-    function impactSweep(o) {
-      const out = call('impactSweep', o), n = out.n;
-      return {
-        bDepth: out.bDepth, bFlood: out.bFlood, iso: out.iso, cutEdges: out.cutEdges, islandEdges: out.islandEdges, roadCutKm: out.roadCutKm,
-        bWet: n[0], bDeep: n[1], hWet: n[2], workWet: n[3], isolatedB: n[4], people: n[5], peopleIsolated: n[6], workers: n[7], workersAll: n[8], roadKm: n[9],
-      };
     }
 
     // Is one cell flooded in a scenario, and how deep? Stops as soon as the fill reaches it, and
@@ -415,6 +391,38 @@
       return new Uint8ClampedArray(out.rgba.slice().buffer);
     }
 
+    /* ---- a road network held by the module (rust/flood-core/src/net.rs; viewer/roadnet.js is the page's side) ---- */
+
+    // Build an area's road network; the object it returns is dropped from the module when it is collected.
+    function netLoad(o) {
+      const net = { h: num(call('netLoad', o).handle) };
+      if (gone) gone.register(net, { op: 'netDrop', key: 'net', h: net.h });
+      return net;
+    }
+    const netCall = (op) => (net, o) => call(op, { net: net.h, ...o });
+    const netGrid = netCall('netGrid'), netBuildings = netCall('netBuildings'), netCensus = netCall('netCensus'), netRun = netCall('netRun');
+    const netRoute = (net, lat, lon) => {
+      const o = call('netRoute', { net: net.h, lat, lon });
+      const path = (km, nodes, vias) => ({ km: num(km), nodes, vias });
+      return {
+        none: num(o.none) === 1, startKm: num(o.startKm), centres: num(o.centres), centresFlooded: num(o.centresFlooded), centre: num(o.centre),
+        toExit: num(o.noExit) ? null : path(o.exitKm, o.exitNodes, o.exitVias), toCentre: num(o.noCentre) ? null : path(o.centreKm, o.centreNodes, o.centreVias),
+      };
+    };
+    // the flood's effect on buildings, people, workers and roads for the net's current run
+    function netImpact(net, o) {
+      const out = call('netImpact', { net: net.h, ...o }), n = out.n;
+      return {
+        bDepth: out.bDepth, bFlood: out.bFlood, iso: out.iso, cutEdges: out.cutEdges, islandEdges: out.islandEdges, roadCutKm: out.roadCutKm,
+        bWet: n[0], bDeep: n[1], hWet: n[2], workWet: n[3], isolatedB: n[4], people: n[5], peopleIsolated: n[6], workers: n[7], workersAll: n[8], roadKm: n[9],
+      };
+    }
+    // the step loop of the road access timeline
+    function netAccess(net, o) {
+      const out = call('netAccess', { net: net.h, ...o });
+      return { closedCount: out.closedCount, floodCount: out.floodCount, isoCount: out.isoCount, isoSteps: out.isoSteps, firstIso: out.firstIso, longest: num(out.longest), nameCounts: out.nameCounts, nameIds: out.nameIds };
+    }
+
     /* ---- grid and run helpers (the work is in rust/flood-core: grid.rs, hydro.rs, surface.rs, flash.rs) ---- */
 
     const gridFrom = (out, extra) => Object.assign({ W: num(out.W), H: num(out.H), cell: num(out.cell), dem: out.dem, valid: out.valid || null }, out.inflow ? { inflow: out.inflow } : null, extra);
@@ -489,6 +497,7 @@
     }
 
     const rust = {
+      netLoad, netGrid, netBuildings, netCensus, netRun, netRoute, netImpact, netAccess,
       syntheticTerrain, parseAsciiGrid, downsample, cleanNodata, lineCells, stormUplift, hazardClass, snapToStream, mainStem, encodeWhiteboxD8, mergeRuns, scoreRun, calibrateLevels,
       fineRaster, classifyDemGaps, terrainRGBA,
       tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
@@ -502,7 +511,7 @@
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
-      analyse, streamSurface, inundate, inundateAt, accessOverTime, prepareRoadsRun, buildingNodes, impactSweep, waterMesh, flashFlood, stats, hazard, compareRuns,
+      analyse, streamSurface, inundate, inundateAt, waterMesh, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
       composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };
@@ -513,7 +522,7 @@
       handles.set(o, h);
       return o;
     }
-    return Object.assign({}, J, rust, { engine: 'rust', rustFunctions: Object.keys(rust), handleOf, byHandle });
+    return Object.assign({}, rust, { engine: 'rust', rustFunctions: Object.keys(rust), handleOf, byHandle });
   }
 
   /* ------------------------------------------------- loading it live */
@@ -532,7 +541,6 @@
   // wasm module can't load the app refuses to run (app.js shows the
   // unsupported card on FloodCoreReady/engine 'error').
   function install(target, url) {
-    const J = Object.assign({}, target);
     target.engine = 'loading';
     if (typeof WebAssembly !== 'object') {
       target.engine = 'error';
@@ -543,7 +551,7 @@
       return Promise.resolve(target);
     }
     return instantiate(url || 'flood.wasm').then((inst) => {
-      const core = create(wasmRunner(inst), J);
+      const core = create(wasmRunner(inst));
       for (const k of core.rustFunctions) {
         target[k] = function () { return core[k].apply(null, arguments); };
       }
@@ -567,6 +575,7 @@
 });
 
 // In the page or worker, swap in the Rust model behind FloodCore.
-if (typeof self !== 'undefined' && self.FloodCore && self.FloodWasm) {
+if (typeof self !== 'undefined' && self.FloodWasm) {
+  self.FloodCore = self.FloodCore || {};
   self.FloodCoreReady = self.FloodWasm.install(self.FloodCore, self.FloodWasmURL);
 }

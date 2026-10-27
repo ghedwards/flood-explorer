@@ -2,7 +2,6 @@
  * at street zoom stays smooth while it's worked out. If the module does not load in here, the
  * job fails and the pool falls back to the main thread. */
 import './runtime-paths.js';
-import './flood-core.js';
 import './flood-wasm.js';
 
 self.onmessage = async (e) => {

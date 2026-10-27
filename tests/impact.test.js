@@ -10,7 +10,7 @@ const rng = (seed) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return
 const near = (x, y, what) => assert.ok(Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(x), Math.abs(y)), `${what}: ${x} vs ${y}`);
 
 (async () => {
-  const { prepareNet, prepareRun } = await import('../viewer/routing.js');
+  const { roadNet } = await import('../viewer/roadnet.js');
   const { scenarioImpact } = await import('../viewer/impact.js');
   const geo = { west: 153.0, east: 153.06, south: -27.5, north: -27.44 };
   const W = 120, H = 100, N = W * H;
@@ -55,15 +55,13 @@ const near = (x, y, what) => assert.ok(Math.abs(x - y) <= 1e-9 * Math.max(1, Mat
     for (const [seed, variant] of [[1, { net: true, sa1: true, sa2: true }], [2, { net: true, sa1: true, sa2: false }], [3, { net: false, sa1: true, sa2: true }], [4, { net: true, sa1: false, sa2: true }]]) {
       const d = area(seed, variant), ocean = new Uint8Array(N);
       for (let y = 0; y < H; y++) for (let x = 0; x < 8; x++) ocean[y * W + x] = 1;
-      const a = { W, H, N, cell: 40, ocean }, hasNet = variant.net;
-      const P = hasNet ? prepareNet(d, F._internal.MinHeap, F) : null;
+      const a = { W, H, N, cell: 40, ocean };
       for (let k = 0; k < 4; k++) {
         const run = runWith(seed * 10 + k, a, 1 + k * 2);
         const state = { a, run, geo, areaKey: 'kA' };
         // the reference keeps its own copy of the area so its caches do not meet ours
         const ref = makeReference({ state, $: (id) => (id === 'floorUnknown' ? { checked: true } : { value: '0' }), cellOf, drawRings: () => { throw new Error('grids are prepared'); }, ringsKm2: () => 1, damageShare: () => 0 })(structuredCloneArea(d), false);
-        const R = hasNet ? prepareRun(P, geo, W, H, run, ocean, F.prepareRoadsRun) : null;
-        const got = scenarioImpact({ d, a, run, geo, P, R, sweep: F.impactSweep, ringsKm2: () => 1 });
+        const got = scenarioImpact({ d, a, run, geo, P: roadNet(d, F), ringsKm2: () => 1 });
         for (const k2 of ['buildings', 'bWet', 'bDeep', 'hWet', 'homesTagged', 'workWet', 'workTagged', 'isolatedB', 'sites']) assert.equal(got[k2], ref[k2], k2);
         assert.deepEqual(Array.from(got.bDepth), Array.from(ref.bDepth), 'building depths');
         assert.deepEqual(got.cutEdges, ref.cutEdges, 'cut edges');

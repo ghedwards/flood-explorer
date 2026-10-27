@@ -114,7 +114,7 @@ function town(seed, side, nB, g) {
 }
 
 (async () => {
-  const { prepareNet } = await import('../viewer/routing.js');
+  const { roadNet } = await import('../viewer/roadnet.js');
   const { timelineAccess } = await import('../viewer/access.js');
   const g = { west: 153.0, east: 153.05, south: -27.5, north: -27.46 };
   const W = 80, H = 70, N = W * H;
@@ -131,17 +131,16 @@ function town(seed, side, nB, g) {
     };
     const tl = { steps: K, wordsPerStep: words, wetBits: bitsFor(0.9), deepBits: bitsFor(0.5), t0: 6, step: 3 };
     const want = referenceAccess(tl, d, g, W, H);
-    const got = timelineAccess(tl, d, prepareNet(d, F._internal.MinHeap, F), g, W, H, F.accessOverTime);
+    const got = timelineAccess(tl, d, roadNet(d, F), g, W, H);
     assert.deepEqual(got, want);
     assert.ok(want.maxIso > 0 && want.roads.length > 2 && want.longest > 0, 'the case exercises closures and cut-off buildings');
   });
 })();
 
 (async () => {
-  const { prepareNet } = await import('../viewer/routing.js');
+  const { roadNet } = await import('../viewer/roadnet.js');
   const { timelineAccess } = await import('../viewer/access.js');
   test('the Rust step loop matches the earlier per-step version on denser and sparser floods', () => {
-    assert.equal(typeof F.accessOverTime, 'function');
     const g = { west: 153.0, east: 153.05, south: -27.5, north: -27.46 }, W = 80, H = 70, N = W * H;
     for (const [seed, density] of [[3, 0.9], [9, 0.3], [12, 1]]) {
       const d = town(seed, 30, 3000, g), K = 24, words = Math.ceil(N / 32), r = rng(seed);
@@ -154,8 +153,8 @@ function town(seed, side, nB, g) {
         return b;
       };
       const tl = { steps: K, wordsPerStep: words, wetBits: bitsFor(density, 1.4), deepBits: bitsFor(density / 2, 1.1), t0: 6, step: 3 };
-      const P = prepareNet(d, F._internal.MinHeap, F);
-      const got = timelineAccess(tl, d, P, g, W, H, F.accessOverTime);
+      const P = roadNet(d, F);
+      const got = timelineAccess(tl, d, P, g, W, H);
       assert.deepEqual(got, referenceAccess(tl, d, g, W, H), `seed ${seed}`);
       assert.ok(got.maxIso > 0 && got.roads.length > 0, 'the case exercises closures and cut-off buildings');
     }
