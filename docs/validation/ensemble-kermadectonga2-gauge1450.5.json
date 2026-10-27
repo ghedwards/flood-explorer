@@ -1,0 +1,690 @@
+{
+ "zone": "kermadectonga2",
+ "slipType": "stochastic",
+ "gauge": 1450.5,
+ "mw": [
+  8.4,
+  9.6
+ ],
+ "count": 60,
+ "seconds": 3600,
+ "skipBelow": 0.1,
+ "poolRate": 0.018197915060667376,
+ "poolSize": 10351,
+ "results": [
+  {
+   "row": 32694,
+   "mw": 8.4,
+   "rateAnnual": 0.00003384968193736481,
+   "draws": 1,
+   "peak": 0.022217503164659994,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 32708,
+   "mw": 8.4,
+   "rateAnnual": 0.00002631126297222145,
+   "draws": 1,
+   "peak": 0.04184272891108339,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 32763,
+   "mw": 8.4,
+   "rateAnnual": 0.0000024970753987911,
+   "draws": 1,
+   "peak": 0.073038133862876,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 32860,
+   "mw": 8.4,
+   "rateAnnual": 0.000003432618663061972,
+   "draws": 1,
+   "peak": 0.03585398811651601,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 32970,
+   "mw": 8.4,
+   "rateAnnual": 0.000003974380785489854,
+   "draws": 1,
+   "peak": 0.028482416324761003,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 33103,
+   "mw": 8.4,
+   "rateAnnual": 0.0000016643033230514498,
+   "draws": 1,
+   "peak": 0.048318588601563996,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 33280,
+   "mw": 8.4,
+   "rateAnnual": 0.000001787872404343647,
+   "draws": 1,
+   "peak": 0.06944844712431801,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 33424,
+   "mw": 8.4,
+   "rateAnnual": 0.000002062099114063571,
+   "draws": 1,
+   "peak": 0.0910078404397,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 33555,
+   "mw": 8.4,
+   "rateAnnual": 0.0000017322115493835373,
+   "draws": 1,
+   "peak": 0.167902222111,
+   "floodedHectares": 12.75,
+   "maxLandDepth": 0.5142890810966492,
+   "ran": true
+  },
+  {
+   "row": 33700,
+   "mw": 8.4,
+   "rateAnnual": 0.000001652194501882775,
+   "draws": 1,
+   "peak": 0.083299958724026,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 33864,
+   "mw": 8.4,
+   "rateAnnual": 0.0000017933538558016426,
+   "draws": 1,
+   "peak": 0.0736900157437256,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34056,
+   "mw": 8.4,
+   "rateAnnual": 0.0000014559535046469778,
+   "draws": 1,
+   "peak": 0.08208205530427999,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34277,
+   "mw": 8.4,
+   "rateAnnual": 0.0000014026844000462589,
+   "draws": 1,
+   "peak": 0.037338250875575005,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34503,
+   "mw": 8.4,
+   "rateAnnual": 0.0000021362900570406445,
+   "draws": 1,
+   "peak": 0.01690438425391416,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34699,
+   "mw": 8.5,
+   "rateAnnual": 0.000026185051402178057,
+   "draws": 1,
+   "peak": 0.045556568762323606,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34716,
+   "mw": 8.5,
+   "rateAnnual": 0.000012612744992383671,
+   "draws": 1,
+   "peak": 0.065007173107494,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34782,
+   "mw": 8.5,
+   "rateAnnual": 0.000003662389296968575,
+   "draws": 1,
+   "peak": 0.049306412018224,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 34907,
+   "mw": 8.5,
+   "rateAnnual": 0.0000017147289336451339,
+   "draws": 1,
+   "peak": 0.095370343044114,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 35059,
+   "mw": 8.5,
+   "rateAnnual": 0.0000012397802877605256,
+   "draws": 1,
+   "peak": 0.10556462696882997,
+   "floodedHectares": 13,
+   "maxLandDepth": 0.3285137414932251,
+   "ran": true
+  },
+  {
+   "row": 35267,
+   "mw": 8.5,
+   "rateAnnual": 0.0000010290506562987241,
+   "draws": 1,
+   "peak": 0.09043039918184,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 35450,
+   "mw": 8.5,
+   "rateAnnual": 0.0000019969393448130406,
+   "draws": 1,
+   "peak": 0.07333682887329812,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 35625,
+   "mw": 8.5,
+   "rateAnnual": 0.0000026867047235672947,
+   "draws": 1,
+   "peak": 0.07645819458451478,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 35828,
+   "mw": 8.5,
+   "rateAnnual": 0.0000018645924724146719,
+   "draws": 1,
+   "peak": 0.079155940141642,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 36072,
+   "mw": 8.5,
+   "rateAnnual": 0.0000011701839539299894,
+   "draws": 1,
+   "peak": 0.16755415966970005,
+   "floodedHectares": 21.5,
+   "maxLandDepth": 0.5610398650169373,
+   "ran": true
+  },
+  {
+   "row": 36364,
+   "mw": 8.5,
+   "rateAnnual": 0.0000015689894304273856,
+   "draws": 1,
+   "peak": 0.0262756547758026,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 36658,
+   "mw": 8.5,
+   "rateAnnual": 0.000002922873400360834,
+   "draws": 1,
+   "peak": 0.03824428676444812,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 36684,
+   "mw": 8.6,
+   "rateAnnual": 0.00003655978406597504,
+   "draws": 1,
+   "peak": 0.09006835464681301,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 36722,
+   "mw": 8.6,
+   "rateAnnual": 0.000004700311322384873,
+   "draws": 1,
+   "peak": 0.066021116652986,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 36802,
+   "mw": 8.6,
+   "rateAnnual": 0.0000048383352413878625,
+   "draws": 1,
+   "peak": 0.056185411828963,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 36913,
+   "mw": 8.6,
+   "rateAnnual": 0.0000017437017816182992,
+   "draws": 1,
+   "peak": 0.14645518951046402,
+   "floodedHectares": 17.25,
+   "maxLandDepth": 0.5537604093551636,
+   "ran": true
+  },
+  {
+   "row": 37035,
+   "mw": 8.6,
+   "rateAnnual": 0.0000021178636081813843,
+   "draws": 1,
+   "peak": 0.14281450673614496,
+   "floodedHectares": 18,
+   "maxLandDepth": 0.5016342401504517,
+   "ran": true
+  },
+  {
+   "row": 37147,
+   "mw": 8.6,
+   "rateAnnual": 0.0000031014553324933197,
+   "draws": 1,
+   "peak": 0.126450431615657,
+   "floodedHectares": 19.25,
+   "maxLandDepth": 0.6651244759559631,
+   "ran": true
+  },
+  {
+   "row": 37282,
+   "mw": 8.6,
+   "rateAnnual": 0.000003258339930809872,
+   "draws": 1,
+   "peak": 0.08766928655285502,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 37452,
+   "mw": 8.6,
+   "rateAnnual": 0.0000014905315015045781,
+   "draws": 1,
+   "peak": 0.04171315876647202,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 37639,
+   "mw": 8.6,
+   "rateAnnual": 0.000005764863804395904,
+   "draws": 1,
+   "peak": 0.022596706572211998,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 37661,
+   "mw": 8.7,
+   "rateAnnual": 0.00002536646023283751,
+   "draws": 1,
+   "peak": 0.0669192731815204,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 37726,
+   "mw": 8.7,
+   "rateAnnual": 0.0000023379606548484734,
+   "draws": 1,
+   "peak": 0.09063549308071998,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 37845,
+   "mw": 8.7,
+   "rateAnnual": 0.000001951492402645538,
+   "draws": 1,
+   "peak": 0.12921289942952002,
+   "floodedHectares": 13.5,
+   "maxLandDepth": 0.3902307450771332,
+   "ran": true
+  },
+  {
+   "row": 38000,
+   "mw": 8.7,
+   "rateAnnual": 0.000003218262140221658,
+   "draws": 1,
+   "peak": 0.17027032418059893,
+   "floodedHectares": 23.25,
+   "maxLandDepth": 0.7413632869720459,
+   "ran": true
+  },
+  {
+   "row": 38147,
+   "mw": 8.7,
+   "rateAnnual": 0.0000020997128952815434,
+   "draws": 1,
+   "peak": 0.1376369289613338,
+   "floodedHectares": 16.75,
+   "maxLandDepth": 0.42648759484291077,
+   "ran": true
+  },
+  {
+   "row": 38340,
+   "mw": 8.7,
+   "rateAnnual": 0.000002457793238876201,
+   "draws": 1,
+   "peak": 0.16876726055874,
+   "floodedHectares": 25.5,
+   "maxLandDepth": 0.7903070449829102,
+   "ran": true
+  },
+  {
+   "row": 38580,
+   "mw": 8.7,
+   "rateAnnual": 0.0000013777211546710983,
+   "draws": 1,
+   "peak": 0.036011637372359,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 38623,
+   "mw": 8.8,
+   "rateAnnual": 0.00002589886763803435,
+   "draws": 1,
+   "peak": 0.0834217752536984,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 38727,
+   "mw": 8.8,
+   "rateAnnual": 0.0000025344410880095594,
+   "draws": 1,
+   "peak": 0.07839659485741,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 38914,
+   "mw": 8.8,
+   "rateAnnual": 0.0000011382041461668502,
+   "draws": 1,
+   "peak": 0.2243779299262,
+   "floodedHectares": 33.75,
+   "maxLandDepth": 0.840063750743866,
+   "ran": true
+  },
+  {
+   "row": 39108,
+   "mw": 8.8,
+   "rateAnnual": 0.00000114043905835963,
+   "draws": 1,
+   "peak": 0.1558247252900587,
+   "floodedHectares": 20.25,
+   "maxLandDepth": 0.505110502243042,
+   "ran": true
+  },
+  {
+   "row": 39380,
+   "mw": 8.8,
+   "rateAnnual": 0.000001243554601489816,
+   "draws": 1,
+   "peak": 0.09465117057411003,
+   "floodedHectares": 0,
+   "maxLandDepth": 0,
+   "ran": false
+  },
+  {
+   "row": 39546,
+   "mw": 8.9,
+   "rateAnnual": 0.000019165564543602672,
+   "draws": 1,
+   "peak": 0.1599043696680223,
+   "floodedHectares": 14.75,
+   "maxLandDepth": 0.499188631772995,
+   "ran": true
+  },
+  {
+   "row": 39649,
+   "mw": 8.9,
+   "rateAnnual": 0.0000014183488157128163,
+   "draws": 1,
+   "peak": 0.20076127376166694,
+   "floodedHectares": 20.5,
+   "maxLandDepth": 0.5518397092819214,
+   "ran": true
+  },
+  {
+   "row": 39885,
+   "mw": 8.9,
+   "rateAnnual": 0.000001333268750055055,
+   "draws": 1,
+   "peak": 0.25868325565578,
+   "floodedHectares": 32.5,
+   "maxLandDepth": 0.9324009418487549,
+   "ran": true
+  },
+  {
+   "row": 40185,
+   "mw": 8.9,
+   "rateAnnual": 7.475748678067913e-7,
+   "draws": 1,
+   "peak": 0.297064454245342,
+   "floodedHectares": 37,
+   "maxLandDepth": 1.3916431665420532,
+   "ran": true
+  },
+  {
+   "row": 40431,
+   "mw": 9,
+   "rateAnnual": 0.000013748508273255357,
+   "draws": 1,
+   "peak": 0.13143556405750503,
+   "floodedHectares": 14,
+   "maxLandDepth": 0.4095662832260132,
+   "ran": true
+  },
+  {
+   "row": 40608,
+   "mw": 9,
+   "rateAnnual": 7.765761224006264e-7,
+   "draws": 1,
+   "peak": 0.3069723278703454,
+   "floodedHectares": 30.25,
+   "maxLandDepth": 0.8279370069503784,
+   "ran": true
+  },
+  {
+   "row": 40960,
+   "mw": 9,
+   "rateAnnual": 6.008547231563862e-7,
+   "draws": 1,
+   "peak": 0.5472765322105405,
+   "floodedHectares": 71.75,
+   "maxLandDepth": 1.635125756263733,
+   "ran": true
+  },
+  {
+   "row": 41274,
+   "mw": 9.1,
+   "rateAnnual": 0.000008585076612647753,
+   "draws": 1,
+   "peak": 0.2378979501933875,
+   "floodedHectares": 27.75,
+   "maxLandDepth": 0.7702157497406006,
+   "ran": true
+  },
+  {
+   "row": 41565,
+   "mw": 9.1,
+   "rateAnnual": 0.000001373371827069091,
+   "draws": 1,
+   "peak": 0.20118633951348489,
+   "floodedHectares": 27,
+   "maxLandDepth": 0.7200204730033875,
+   "ran": true
+  },
+  {
+   "row": 42032,
+   "mw": 9.2,
+   "rateAnnual": 0.000006549092561717645,
+   "draws": 1,
+   "peak": 0.305441871814363,
+   "floodedHectares": 53,
+   "maxLandDepth": 0.9824167490005493,
+   "ran": true
+  },
+  {
+   "row": 42434,
+   "mw": 9.2,
+   "rateAnnual": 5.78007109335884e-7,
+   "draws": 1,
+   "peak": 0.3733112718255215,
+   "floodedHectares": 52.75,
+   "maxLandDepth": 1.0346486568450928,
+   "ran": true
+  },
+  {
+   "row": 42930,
+   "mw": 9.3,
+   "rateAnnual": 3.989153574678653e-7,
+   "draws": 1,
+   "peak": 0.616982848293476,
+   "floodedHectares": 71.75,
+   "maxLandDepth": 2.1616973876953125,
+   "ran": true
+  },
+  {
+   "row": 43746,
+   "mw": 9.4,
+   "rateAnnual": 2.2509011275632302e-7,
+   "draws": 1,
+   "peak": 0.650968257590495,
+   "floodedHectares": 65.25,
+   "maxLandDepth": 2.1690287590026855,
+   "ran": true
+  }
+ ],
+ "offshore": [
+  {
+   "threshold": 0.1,
+   "hits": 25,
+   "rate": 0.007582464608611407,
+   "low": 0.005783017443933141,
+   "high": 0.009512797689228487
+  },
+  {
+   "threshold": 0.25,
+   "hits": 8,
+   "rate": 0.00242638867475565,
+   "low": 0.0013973976089154212,
+   "high": 0.004031277770726653
+  },
+  {
+   "threshold": 0.5,
+   "hits": 3,
+   "rate": 0.0009098957530333688,
+   "low": 0.0003667871074628601,
+   "high": 0.002159788344673465
+  },
+  {
+   "threshold": 0.76,
+   "hits": 0,
+   "rate": 0,
+   "low": 0,
+   "high": 0.0007853154956328747
+  },
+  {
+   "threshold": 1,
+   "hits": 0,
+   "rate": 0,
+   "low": 0,
+   "high": 0.0007853154956328747
+  }
+ ],
+ "flooded": [
+  {
+   "threshold": 1,
+   "hits": 25,
+   "rate": 0.007582464608611407,
+   "low": 0.005783017443933141,
+   "high": 0.009512797689228487
+  },
+  {
+   "threshold": 10,
+   "hits": 25,
+   "rate": 0.007582464608611407,
+   "low": 0.005783017443933141,
+   "high": 0.009512797689228487
+  },
+  {
+   "threshold": 30,
+   "hits": 9,
+   "rate": 0.002729687259100106,
+   "low": 0.0016269903880196078,
+   "high": 0.004382104977123617
+  },
+  {
+   "threshold": 60,
+   "hits": 3,
+   "rate": 0.0009098957530333688,
+   "low": 0.0003667871074628601,
+   "high": 0.002159788344673465
+  },
+  {
+   "threshold": 90,
+   "hits": 0,
+   "rate": 0,
+   "low": 0,
+   "high": 0.0007853154956328747
+  }
+ ]
+}

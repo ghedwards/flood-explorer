@@ -417,6 +417,38 @@ estimate the 1-in-2500-year flood: that would need many scenarios weighted by th
 as a distribution, and calibrated terrain and roughness, none of which is here. The terrain
 is the bundled 5 m grid at mean sea level without tide.
 
+#### A rate-proportional sample of one zone
+
+`scripts/ensemble-ptha.js` draws scenarios of one source zone with probability proportional to
+their annual rate (so common scenarios appear as often as they occur), runs each through the nested
+Gold Coast Seaway model, and estimates how often the zone's scenarios reach given offshore and
+flooded-area levels: the zone's total rate times the fraction of draws that reach the level, with a 90%
+interval on that fraction. Scenarios whose peak at the point is under 0.1 m are not run and count as
+flooding nothing (a 9 cm wave floods about 2 ha). A run of 60 draws for Kermadec-Tonga (`kermadectonga2`,
+Mw 8.4 to 9.6, 10,351 scenarios, total rate 1.8% per year) at hazard point 1450.5 takes about 25 minutes;
+the full report is `docs/validation/ensemble-kermadectonga2-gauge1450.5.json`.
+
+As a check on the sampling, its offshore result can be compared with PTHA18's own curve for that zone at the same
+point (rate of exceeding the stage; PTHA18's interval is its 16th to 84th percentile, the sample's is a 90% sampling interval):
+
+| Offshore peak at least | This sample | PTHA18 curve for the zone |
+|---|---|---|
+| 0.10 m | 1 in 132 years (105 to 173) | 1 in 122 (81 to 245) |
+| 0.25 m | 1 in 412 (248 to 716) | 1 in 464 (256 to 6,100) |
+| 0.50 m | 1 in 1,100 (460 to 2,700) | 1 in 1,650 (840 to unbounded) |
+| 0.76 m | none seen in 60 draws | 1 in 4,700 |
+
+They agree within the intervals, so the sampler reproduces the rates. (The pool leaves out
+Mw below 8.4, which matters little above 0.1 m.) The flooded-area rates it adds, for this zone alone:
+at least 30 ha about 1 in 370 years (230 to 620), and at least 60 ha about 1 in 1,100 (460 to 2,700). Every run with an
+offshore peak of 0.11 m or more flooded at least 13 ha, so the area rates at small sizes follow the offshore
+peak rate directly (the 1 ha and 10 ha rows are the same as the 0.1 m row).
+
+Limits: one source zone (the hazard at a site sums all of them), one magnitude range, one sea level (mean sea
+level, no tide), uncalibrated terrain and roughness, and sixty draws, which cannot resolve rates rarer than about 1
+in 1,000 years. The interval covers sampling error only, not the model's error or PTHA18's own uncertainty. This is the
+structure of a scenario-based estimate, run on a small sample, not an estimate of the site's flood hazard.
+
 How well PTHA18's deep-water waves match reality is tested in
 [docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
 315 PTHA18 scenarios of the 2011 Tohoku earthquake with NOAA DART records at 16 buoys
