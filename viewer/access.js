@@ -1,12 +1,10 @@
 /* Road access over time, for a flood timeline: at each step, which roads are under water, how many buildings
  * are flooded, and how many are cut off (their nearest road no longer reaches the edge of the model by dry
- * roads, though it would if nothing were flooded). Built on the prepared road network (routing.js), so the
- * adjacency, the cells under each road, and the nearest road node of each building are worked out once, not
- * once per step. */
+ * roads, though it would if nothing were flooded). This prepares the road network and the buildings (routing.js:
+ * the adjacency, the cells under each road, the nearest road node of each building) and hands the step loop to
+ * Rust; the road closures and the summary are put together here. */
 
 import { prepareGrid, buildingNodes, dryReachOf } from './routing.js';
-
-const BIT = (bits, base, c) => c >= 0 && (bits[base + (c >>> 5)] & (1 << (c & 31))) !== 0;
 
 /* The distinct cells under the samples along each edge (a road can reopen between peaks, so it is tested at
  * each step); kept with the grid. */
@@ -76,10 +74,12 @@ function summarise(tl, roads, { isoCount, floodCount, closedCount, isoSteps, fir
   };
 }
 
-/* `native`, when given, runs the step loop elsewhere (FloodCore.accessOverTime); its answer is the same. */
-export function timelineAccess(tl, d, P, geo, W, H, native) {
-  const G = prepareGrid(P, geo, W, H), { off, to, edge } = P, nN = P.nN, nE = P.nE, K = tl.steps, wps = tl.wordsPerStep, N = W * H;
-  const ce = cellEdges(P, G, N), net = P.net, nB = d.bx.length;
+/* The step loop is FloodCore.accessOverTime (rust/flood-core/src/access.rs); the flood timeline it analyses only
+ * exists with the WebAssembly model, so there is no JavaScript copy of it. tests/access.test.js checks it against the
+ * earlier per-step version. */
+export function timelineAccess(tl, d, P, geo, W, H, accessOverTime) {
+  const G = prepareGrid(P, geo, W, H), { off, to, edge } = P, nE = P.nE, K = tl.steps, wps = tl.wordsPerStep, N = W * H;
+  const ce = cellEdges(P, G, N), net = P.net;
   const bNode = buildingNodes(P, d.bx, d.by), dryReach = dryReachOf(P);
   const B = buildingsOn(P, G, d, W, H, geo, bNode);
   // road names, by index: ids shared between roads of the same name; -1 for none
@@ -88,91 +88,12 @@ export function timelineAccess(tl, d, P, geo, W, H, native) {
   const edgeName = new Int32Array(nE);
   for (let e = 0; e < nE; e++) edgeName[e] = nameId[net.edges[e][2]];
 
-  if (native) {   // the step loop below, in Rust
-    const r = native({
-      steps: K, wps, cells: N, names: names.length, off, to, edge, nodeCell: G.node, exit: G.exit, dryReach,
-      ceOff: ce.off, ceList: ce.list, edgeName, bCell: B.bCell, bCount: B.count, nodeOff: B.nodeOff, nodeList: B.nodeList,
-      wet: tl.wetBits, deep: tl.deepBits,
-    });
-    const roads = new Map();
-    for (let k = 0, at = 0; k < K; k++) for (let j = 0; j < r.nameCounts[k]; j++) closeRoad(roads, names[r.nameIds[at++]], k);
-    return summarise(tl, roads, r);
-  }
-  const roads = new Map(), edgeStamp = new Int32Array(nE), nameStamp = new Int32Array(names.length), nameFirst = new Int32Array(names.length);
-  const isoSteps = new Int16Array(nB), firstIso = new Int16Array(nB).fill(-1), isoRun = new Int16Array(nB), nowIso = new Int32Array(nB);
-  const isoCount = new Int32Array(K), floodCount = new Int32Array(K), closedCount = new Int32Array(K);
-  const reachBuf = new Uint8Array(nN), q = new Int32Array(nN);
-  let longest = 0, active = [];
-  for (let k = 0; k < K; k++) {
-    const base = k * wps, stamp = k + 1;
-    // edges under deep water: from the deep cells outwards
-    let closed = 0, anyDeep = false;
-    const closedNames = [];
-    for (let w = 0; w < wps; w++) {
-      let bits = tl.deepBits[base + w];
-      if (!bits) continue;
-      anyDeep = true;
-      while (bits) {
-        const low = bits & -bits, cell = (w << 5) + 31 - Math.clz32(low);
-        bits ^= low;
-        if (cell >= N) continue;
-        for (let p = ce.off[cell]; p < ce.off[cell + 1]; p++) {
-          const e = ce.list[p];
-          if (edgeStamp[e] === stamp) continue;
-          edgeStamp[e] = stamp; closed++;
-          const nm = edgeName[e];
-          if (nm < 0) continue;
-          if (nameStamp[nm] !== stamp) { nameStamp[nm] = stamp; nameFirst[nm] = e; closedNames.push(nm); } else if (e < nameFirst[nm]) nameFirst[nm] = e;
-        }
-      }
-    }
-    closedCount[k] = closed;
-    closedNames.sort((x, y) => nameFirst[x] - nameFirst[y]);   // in the order the old edge scan met them
-    for (const nm of closedNames) closeRoad(roads, names[nm], k);
-    // nodes still joined to the edge of the model; with nothing deep, that is every node the whole network joins
-    let reach = dryReach;
-    if (anyDeep) {
-      reach = reachBuf; reach.fill(0);
-      let qt = 0;
-      for (let n = 0; n < nN; n++) if (G.exit[n] && !BIT(tl.deepBits, base, G.node[n])) { reach[n] = 1; q[qt++] = n; }
-      for (let h = 0; h < qt; h++) {
-        const u = q[h];
-        for (let p = off[u]; p < off[u + 1]; p++) {
-          const m = to[p];
-          if (reach[m] || edgeStamp[edge[p]] === stamp || BIT(tl.deepBits, base, G.node[m])) continue;
-          reach[m] = 1; q[qt++] = m;
-        }
-      }
-    }
-    // flooded buildings: wet cells, weighted by the buildings in each
-    let flood = 0;
-    for (let w = 0; w < wps; w++) {
-      let bits = tl.wetBits[base + w];
-      while (bits) {
-        const low = bits & -bits, cell = (w << 5) + 31 - Math.clz32(low);
-        bits ^= low;
-        if (cell < N) flood += B.count[cell];
-      }
-    }
-    floodCount[k] = flood;
-    // cut off: dry buildings whose nearest road node the network joins to the edge but the flood has cut from it
-    const now = [];
-    for (let n = 0; n < nN; n++) {
-      if (!dryReach[n] || reach[n]) continue;
-      for (let p = B.nodeOff[n]; p < B.nodeOff[n + 1]; p++) {
-        const i = B.nodeList[p];
-        if (BIT(tl.wetBits, base, B.bCell[i])) continue;
-        now.push(i); nowIso[i] = stamp;
-      }
-    }
-    for (const i of active) if (nowIso[i] !== stamp) isoRun[i] = 0;
-    for (const i of now) {
-      isoSteps[i]++; isoRun[i]++;
-      if (isoRun[i] > longest) longest = isoRun[i];
-      if (firstIso[i] < 0) firstIso[i] = k;
-    }
-    isoCount[k] = now.length;
-    active = now;
-  }
-  return summarise(tl, roads, { isoCount, floodCount, closedCount, isoSteps, firstIso, longest });
+  const r = accessOverTime({
+    steps: K, wps, cells: N, names: names.length, off, to, edge, nodeCell: G.node, exit: G.exit, dryReach,
+    ceOff: ce.off, ceList: ce.list, edgeName, bCell: B.bCell, bCount: B.count, nodeOff: B.nodeOff, nodeList: B.nodeList,
+    wet: tl.wetBits, deep: tl.deepBits,
+  });
+  const roads = new Map();
+  for (let k = 0, at = 0; k < K; k++) for (let j = 0; j < r.nameCounts[k]; j++) closeRoad(roads, names[r.nameIds[at++]], k);
+  return summarise(tl, roads, r);
 }

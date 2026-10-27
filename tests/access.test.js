@@ -1,5 +1,5 @@
-// The prepared-network access analyses (viewer/access.js, roadImpact in viewer/routing.js) must give exactly what the
-// earlier per-call versions did. The references below are those versions, kept as they were.
+// The prepared-network access analyses (viewer/access.js with the Rust step loop, roadImpact in viewer/routing.js) must
+// give exactly what the earlier per-call versions did. The references below are those versions, kept as they were.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -178,7 +178,7 @@ function town(seed, side, nB, g) {
     };
     const tl = { steps: K, wordsPerStep: words, wetBits: bitsFor(0.9), deepBits: bitsFor(0.5), t0: 6, step: 3 };
     const want = referenceAccess(tl, d, g, W, H);
-    const got = timelineAccess(tl, d, prepareNet(d, F._internal.MinHeap), g, W, H);
+    const got = timelineAccess(tl, d, prepareNet(d, F._internal.MinHeap), g, W, H, F.accessOverTime);
     assert.deepEqual(got, want);
     assert.ok(want.maxIso > 0 && want.roads.length > 2 && want.longest > 0, 'the case exercises closures and cut-off buildings');
   });
@@ -208,7 +208,7 @@ function town(seed, side, nB, g) {
 (async () => {
   const { prepareNet } = await import('../viewer/routing.js');
   const { timelineAccess } = await import('../viewer/access.js');
-  test('the Rust step loop gives the same access timeline as the JavaScript one', () => {
+  test('the Rust step loop matches the earlier per-step version on denser and sparser floods', () => {
     assert.equal(typeof F.accessOverTime, 'function');
     const g = { west: 153.0, east: 153.05, south: -27.5, north: -27.46 }, W = 80, H = 70, N = W * H;
     for (const [seed, density] of [[3, 0.9], [9, 0.3], [12, 1]]) {
@@ -223,10 +223,9 @@ function town(seed, side, nB, g) {
       };
       const tl = { steps: K, wordsPerStep: words, wetBits: bitsFor(density, 1.4), deepBits: bitsFor(density / 2, 1.1), t0: 6, step: 3 };
       const P = prepareNet(d, F._internal.MinHeap);
-      const js = timelineAccess(tl, d, P, g, W, H), rust = timelineAccess(tl, d, P, g, W, H, F.accessOverTime);
-      assert.deepEqual(rust, js, `seed ${seed}`);
-      assert.deepEqual(js, referenceAccess(tl, d, g, W, H));
-      assert.ok(js.maxIso > 0 && js.roads.length > 0, 'the case exercises closures and cut-off buildings');
+      const got = timelineAccess(tl, d, P, g, W, H, F.accessOverTime);
+      assert.deepEqual(got, referenceAccess(tl, d, g, W, H), `seed ${seed}`);
+      assert.ok(got.maxIso > 0 && got.roads.length > 0, 'the case exercises closures and cut-off buildings');
     }
   });
 })();
