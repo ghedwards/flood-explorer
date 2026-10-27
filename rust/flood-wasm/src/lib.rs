@@ -704,6 +704,24 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let r = with_analysis(b.num("a"), |a| inundate(a, &s))?;
             put_run(&mut o, &r, slim);
         }
+        "waterMesh" => {
+            let (col_x, row_z) = (b.f64s("colX").unwrap_or_default(), b.f64s("rowZ").unwrap_or_default());
+            let (surface, depth, wet) = (b.f64s("surface").unwrap_or_default(), b.f32s("depth").unwrap_or_default(), b.u8s("wet").unwrap_or_default());
+            let (dem, frame) = (b.f32s("dem").unwrap_or_default(), b.u8s("frame").unwrap_or_default());
+            let water = if b.has("frame") {
+                mesh::Water::Frame { dem: &dem, frame: &frame, max_d: b.num("maxD") }
+            } else {
+                mesh::Water::Run { surface: &surface, depth: &depth, wet: &wet }
+            };
+            let m = mesh::water_mesh(&mesh::MeshIn {
+                w: b.num("W") as usize, h: b.num("H") as usize, cell: b.num("cell"), skip: b.num("skip") as usize, lift: b.num("lift"),
+                soft: b.num("soft") != 0.0, col_x: &col_x, row_z: &row_z, water,
+            });
+            match m {
+                Some(m) => { o.num("any", 1.0).f32s("positions", &m.positions).f32s("colors", &m.colors).f32s("uvs", &m.uvs).u32s("indices", &m.indices); }
+                None => { o.num("any", 0.0); }
+            }
+        }
         "prepareRun" => {
             let g = |k: &str| b.i32s(k).unwrap_or_default();
             let u = |k: &str| b.u8s(k).unwrap_or_default();

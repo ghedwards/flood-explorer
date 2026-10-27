@@ -223,6 +223,13 @@
       return { closedCount: out.closedCount, floodCount: out.floodCount, isoCount: out.isoCount, isoSteps: out.isoSteps, firstIso: out.firstIso, longest: num(out.longest), nameCounts: out.nameCounts, nameIds: out.nameIds };
     }
 
+    // The water surface as a mesh for the 3D view (viewer/terrain3d.js): a run (surface, depth, wet) or a timeline
+    // frame (dem, frame, maxD). Null when no quad survives.
+    function waterMesh(o) {
+      const out = call('waterMesh', { ...o, maxD: o.maxD == null ? 0 : o.maxD, colX: o.colX || null, rowZ: o.rowZ || null, surface: o.surface ? Float64Array.from(o.surface) : null });
+      return num(out.any) ? { positions: out.positions, colors: out.colors, uvs: out.uvs, indices: out.indices } : null;
+    }
+
     // Which road edges, road nodes and evacuation centres a run floods (viewer/routing.js prepareRun).
     function prepareRoadsRun(o) {
       const out = call('prepareRun', o);
@@ -419,7 +426,7 @@
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, ...Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'depth' && k !== 'vx' && k !== 'vy').map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
-      analyse, streamSurface, inundate, inundateAt, accessOverTime, prepareRoadsRun, impactSweep, flashFlood, stats, hazard, compareRuns,
+      analyse, streamSurface, inundate, inundateAt, accessOverTime, prepareRoadsRun, impactSweep, waterMesh, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
       composeWater: (o) => { const out = call('composeWater', o || {}); return { rgba: out.rgba, count: num(out.count) }; },
     };

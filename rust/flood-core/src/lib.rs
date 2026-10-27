@@ -4,6 +4,7 @@
 
 pub mod access;
 pub mod impact;
+pub mod mesh;
 pub mod fine;
 pub mod voids;
 pub mod flash;
