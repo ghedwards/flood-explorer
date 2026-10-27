@@ -794,6 +794,19 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let g = grid_of(b)?;
             o.f32s("dem", &burn_defences(&g, &levees_of(b)));
         }
+        "terrainRGBA" => {
+            let size = |k: &str| -> Result<usize, String> {
+                let v = b.num(k);
+                if v.is_finite() && v >= 1.0 && v.fract() == 0.0 { Ok(v as usize) } else { Err(format!("terrainRGBA: {} must be a whole number", k)) }
+            };
+            let stops = b.f64s("stops").ok_or("terrainRGBA: missing stops")?;
+            if stops.len() % 4 != 0 { return Err("terrainRGBA: stops are rows of position, r, g, b".into()); }
+            let stops: Vec<[f64; 4]> = stops.chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+            let (dem, valid) = (b.f32s("dem").ok_or("terrainRGBA: missing dem")?, b.u8s("valid").ok_or("terrainRGBA: missing valid")?);
+            let ocean = b.u8s("ocean");
+            let rgba = terrain_rgba(size("W")?, size("H")?, b.num("cell"), &dem, &valid, ocean.as_deref(), &stops)?;
+            o.u8s("rgba", &rgba);
+        }
         "classifyDemGaps" => {
             let mut dem = b.f32s("dem").ok_or("classifyDemGaps: missing dem")?;
             let size = |k: &str| -> Result<usize, String> {

@@ -20,7 +20,7 @@ fn rasterise_polyline(pts: &[(f64, f64)], w: usize, h: usize, out: &mut [u8]) {
     for k in 0..pts.len().saturating_sub(1) {
         let (x0, y0) = pts[k];
         let (x1, y1) = pts[k + 1];
-        let n = ((x1 - x0).hypot(y1 - y0) * 2.0).ceil() + 1.0;
+        let n = (((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)).sqrt() * 2.0).ceil() + 1.0;
         let mut s = 0.0;
         while s <= n {
             let x = js_round(x0 + (x1 - x0) * s / n);

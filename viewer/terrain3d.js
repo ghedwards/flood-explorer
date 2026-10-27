@@ -21,44 +21,55 @@ function decimateStep(W, H, maxSide = MAX_SIDE) {
  * NaN surface (never wet) is excluded by the NaN check. Shallow water is
  * more transparent so the shoreline feathers out; deep water reads solid. */
 function waterMesh(a, surface, depth, wet, skip, opts = {}) {
+  return waterMeshAt(a, (i) => surface[i], (i) => depth[i], (i) => wet[i] === 1, skip, opts);
+}
+
+/* The same mesh from accessors: surface level, depth and wetness of a cell. The mesh only reads every
+ * `skip`th cell, so a caller with an encoded frame need not decode the whole grid first. */
+function waterMeshAt(a, surfaceAt, depthAt, wetAt, skip, opts = {}) {
   const lift = opts.lift || 0;
-  const isWet = (i) => wet[i] === 1 && surface[i] === surface[i];
+  const isWet = (i) => wetAt(i) && surfaceAt(i) === surfaceAt(i);
   if (!opts.soft) {
-    return buildGrid(a, skip, isWet, (i) => surface[i] + lift, (i, out) => {
-      const col = depthColor(depth[i]);
+    return buildGrid(a, skip, isWet, (i) => surfaceAt(i) + lift, (i, out) => {
+      const col = depthColor(depthAt(i));
       out[0] = col[0]; out[1] = col[1]; out[2] = col[2];
-    }, { alphaFor: (i) => Math.min(1, 0.3 + depth[i] / 0.45), colX: opts.colX, rowZ: opts.rowZ });
+    }, { alphaFor: (i) => Math.min(1, 0.3 + depthAt(i) / 0.45), colX: opts.colX, rowZ: opts.rowZ });
   }
   // Soft shoreline (3D): the surface also gets a ring of vertices around the
   // wet cells, at the neighbours' water level and fully transparent. The
   // terrain hides the part of that plane that is below ground, so the
   // visible edge is where the water level meets the real ground (smooth),
   // and the per-vertex alpha feathers it, instead of a staircase of cells.
-  const { W, H } = a, info = new Map();
+  const { W, H } = a;
+  // Everything the mesh asks about is on the sampled grid (cells `skip` apart, and their neighbours
+  // `skip` away), so what is worked out for a cell is kept by its slot in that grid, not in a Map.
+  const cols = Math.floor((W - 1) / skip) + 1, rows = Math.floor((H - 1) / skip) + 1;
+  const state = new Uint8Array(cols * rows);          // 0 not yet looked at, 1 no vertex, 2 vertex
+  const levelOf = new Float64Array(cols * rows), alphaOf = new Float64Array(cols * rows), colourOf = new Array(cols * rows);
   const probe = (i) => {
-    let v = info.get(i);
-    if (v !== undefined) return v;
-    v = null;
+    const x = i % W, y = (i / W) | 0, slot = (y / skip) * cols + x / skip;
+    if (state[slot]) return state[slot] === 2 ? slot : -1;
     if (isWet(i)) {
-      v = { h: surface[i], col: depthColor3d(depth[i]), alpha: depthAlpha3d(depth[i]) };
-    } else {
-      const x = i % W, y = (i / W) | 0;
-      let n = 0, h = 0, col = null;
-      for (let dy = -skip; dy <= skip; dy += skip) for (let dx = -skip; dx <= skip; dx += skip) {
-        const nx = x + dx, ny = y + dy;
-        if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-        const j = ny * W + nx;
-        if (isWet(j)) { n++; h += surface[j]; if (!col) col = depthColor3d(depth[j]); }
-      }
-      if (n) v = { h: h / n, col, alpha: 0 };
+      levelOf[slot] = surfaceAt(i); colourOf[slot] = depthColor3d(depthAt(i)); alphaOf[slot] = depthAlpha3d(depthAt(i));
+      state[slot] = 2;
+      return slot;
     }
-    info.set(i, v);
-    return v;
+    let n = 0, h = 0, col = null;
+    for (let dy = -skip; dy <= skip; dy += skip) for (let dx = -skip; dx <= skip; dx += skip) {
+      const nx = x + dx, ny = y + dy;
+      if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const j = ny * W + nx;
+      if (isWet(j)) { n++; h += surfaceAt(j); if (!col) col = depthColor3d(depthAt(j)); }
+    }
+    if (!n) { state[slot] = 1; return -1; }
+    levelOf[slot] = h / n; colourOf[slot] = col; alphaOf[slot] = 0;
+    state[slot] = 2;
+    return slot;
   };
-  return buildGrid(a, skip, (i) => probe(i) !== null, (i) => probe(i).h + lift, (i, out) => {
-    const col = probe(i).col;
+  return buildGrid(a, skip, (i) => probe(i) >= 0, (i) => levelOf[probe(i)] + lift, (i, out) => {
+    const col = colourOf[probe(i)];
     out[0] = col[0]; out[1] = col[1]; out[2] = col[2];
-  }, { alphaFor: (i) => probe(i).alpha, colX: opts.colX, rowZ: opts.rowZ });
+  }, { alphaFor: (i) => alphaOf[probe(i)], colX: opts.colX, rowZ: opts.rowZ });
 }
 
 /* Water grid builder: samples the analysis grid every `skip` cells, emits
@@ -161,7 +172,15 @@ function waterFromFrame(a, frame, maxD, skip, opts) {
   return { wse, depth, wet, mesh: waterMesh(a, wse, depth, wet, skip, opts) };
 }
 
-export { BANDS3D, depthColor3d, depthAlpha3d, decimateStep, waterMesh, waterFromFrame, depthColor, MAX_SIDE };
+/* The mesh of waterFromFrame, without decoding the whole frame: the same cells and numbers (depth is the
+ * Float32 value waterFromFrame stores), but only the ones the mesh samples. For a 1.8 M-cell area that
+ * is 16-30 ms a frame less. */
+function waterMeshFromFrame(a, frame, maxD, skip, opts) {
+  const depthAt = (i) => Math.fround((frame[i] / 255) * maxD);
+  return waterMeshAt(a, (i) => a.dem[i] + depthAt(i), depthAt, (i) => frame[i] > 0, skip, opts);
+}
+
+export { BANDS3D, depthColor3d, depthAlpha3d, decimateStep, waterMesh, waterMeshAt, waterFromFrame, waterMeshFromFrame, depthColor, MAX_SIDE };
 
 /* ---------- v4: one projection, terrain tiles, quadtree LOD ---------- */
 

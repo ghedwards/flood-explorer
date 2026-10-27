@@ -457,7 +457,7 @@ impl Solver {
             if water[i] <= DRY { mx[i] = 0.0; my[i] = 0.0; }
             else if roughness != 0.0 {
                 // (With no roughness the friction factor is exactly 1, so it is skipped.)
-                let speed = mx[i].hypot(my[i]) / water[i];
+                let speed = (mx[i] * mx[i] + my[i] * my[i]).sqrt() / water[i];
                 let friction = 1.0 + dt * G * roughness.powi(2) * speed / water[i].powf(4.0 / 3.0);
                 mx[i] /= friction; my[i] /= friction;
             }
@@ -470,7 +470,7 @@ impl Solver {
             }
             eta[i] = water[i] - reference[i];
             peak[i] = peak[i].max(eta[i].abs());
-            speed[i] = if water[i] > DRY { mx[i].hypot(my[i]) / water[i] } else { 0.0 };
+            speed[i] = if water[i] > DRY { (mx[i] * mx[i] + my[i] * my[i]).sqrt() / water[i] } else { 0.0 };
             if !speed[i].is_finite() { return Err("non-finite inundation velocity".into()); }
         }
         self.boundary_volume += sponge_exchange;
@@ -842,6 +842,12 @@ mod tests {
             let t = std::time::Instant::now();
             for _ in 0..steps / 200 { s.advance(200).unwrap(); }
             let each = t.elapsed().as_secs_f64() / steps as f64;
+            if let Ok(dir) = std::env::var("STATE_OUT") {
+                for (name, state) in [("a", &s), ("forced", &f)] {
+                    let bytes: Vec<u8> = [&state.water, &state.mx, &state.my].iter().flat_map(|v| v.iter().flat_map(|x| x.to_le_bytes())).collect();
+                    std::fs::write(format!("{dir}/{name}-order{order}.bin"), bytes).unwrap();
+                }
+            }
             let sum = |v: &[f64]| v.iter().fold(0xcbf29ce484222325u64, |a, x| (a ^ x.to_bits()).wrapping_mul(0x100000001b3).rotate_left(5));
             eprintln!("order {order}: checksum water {:016x} mx {:016x} my {:016x}", sum(&s.water), sum(&s.mx), sum(&s.my));
             eprintln!("order {order}: {:.1} us per step, {:.1} ns per cell-step, dt {:.3} s", each * 1e6, each * 1e9 / (w * h) as f64, s.dt);
