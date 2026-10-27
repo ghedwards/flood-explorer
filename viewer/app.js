@@ -1118,10 +1118,8 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   ];   // same colours as BANDS3D in terrain3d.js (the old palest band read as white paint over imagery)
   // opacity per band over imagery: shallow water stays slightly see-through
   const DEPTH_ALPHA = [178, 230, 230, 230, 230];
-  const depthBand = (dep) => { for (let k = 0; k < DEPTH_STOPS.length; k++) if (dep < DEPTH_STOPS[k][0]) return k; return DEPTH_STOPS.length - 1; };
-  const WATER = [109, 147, 173];
   // normal (river or lake) water over imagery: its own teal, clearly visible
-  // but not a flood blue (WATER above stays the relief view's water colour)
+  // but not a flood blue (the relief view's water colour is in render.rs)
   // What is normally water. The normal-level run wets everything below the
   // river's normal surface that connects to it, which on a terrain model
   // includes ground that levees, drains or terrain errors keep dry, and its
@@ -1219,44 +1217,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return F.terrainRGBA(a, HYPSO);
   }
 
-  // Pixels for the current scenario. withTerrain: shaded relief underneath
-  // (static map); otherwise transparent except water (overlay on a basemap).
-  function composeImage(withTerrain) {
-    const a = state.a, run = state.run, base = state.base;
-    const img = withTerrain
-      ? new ImageData(new Uint8ClampedArray(state.terrain), a.W, a.H)
-      : new ImageData(a.W, a.H);
-    const d = img.data;
-    const mode = colorMode(), hz = mode === 'hazard' ? hazardNow() : null, cmp = mode === 'compare' ? compareNow() : null;
-    for (let i = 0; i < a.N; i++) {
-      if (!a.valid[i]) continue;
-      const o = i * 4;
-      let col = null, alpha = 0.88;
-      if (withTerrain && (a.ocean[i] || (base && base.wet[i] && run.wet[i] && !isFlood(i)))) col = WATER;
-      if (cmp) {
-        const k = cmp.diff[i];
-        if (k === 2) col = COMPARE_COLORS.onlyNow;
-        else if (k === 3) col = COMPARE_COLORS.onlyPinned;
-        else if (k === 1 && isFlood(i)) col = COMPARE_COLORS.both;
-      } else if (run.wet[i] && isFlood(i)) {
-        if (hz && hz.cls[i]) col = HAZARD_COLORS[hz.cls[i] - 1];
-        else {
-          col = DEPTH_STOPS[depthBand(run.depth[i])][1];
-        }
-      }
-      if (withTerrain && !col && a.stream[i] && a.acc[i] * (a.cell * a.cell) / 1e6 > state.streamAreaKm2 * 3) { col = WATER; alpha = 0.9; }
-      if (!col) continue;
-      if (withTerrain) {
-        d[o] = d[o] * (1 - alpha) + col[0] * alpha;
-        d[o + 1] = d[o + 1] * (1 - alpha) + col[1] * alpha;
-        d[o + 2] = d[o + 2] * (1 - alpha) + col[2] * alpha;
-      } else {
-        d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
-      }
-    }
-    return img;
-  }
-
   // Water raster for the map overlay (Leaflet imageOverlay): flooded cells
   // in depth/hazard/compare colours, plus — with terrain shading on — the
   // water that belongs to the picture (ocean, still base water, stream
@@ -1265,9 +1225,9 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
   // raster was: (0.88·water) over opaque terrain.
   let waterImg = null;
   // The colours are mapped in Rust (rust/flood-core/src/render.rs `compose_water`).
-  function composeWater() {
+  function composeWater(relief = $('showRelief').checked) {
     const a = state.a, run = state.run, base = state.base;
-    const relief = $('showRelief').checked, area = state.areaKey && areaReg.get(state.areaKey);
+    const area = state.areaKey && areaReg.get(state.areaKey);
     const W = a.W, H = a.H;
     const modeStr = colorMode();
     const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
@@ -1707,10 +1667,15 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 
   function drawStaticMap() {
     const a = state.a;
-    const img = composeImage(true);
+    // the relief with the water over it (the overlay is pre-blended for exactly this)
     const off = state.offscreen;
     off.width = a.W; off.height = a.H;
-    off.getContext('2d').putImageData(img, 0, 0);
+    const octx = off.getContext('2d');
+    octx.putImageData(new ImageData(new Uint8ClampedArray(state.terrain), a.W, a.H), 0, 0);
+    const wc = state.offscreenWater || (state.offscreenWater = document.createElement('canvas'));
+    wc.width = a.W; wc.height = a.H;
+    wc.getContext('2d').putImageData(composeWater(true).img, 0, 0);
+    octx.drawImage(wc, 0, 0);
 
     const canvas = $('map');
     const stage = $('mapWrap');
@@ -3403,7 +3368,6 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
     return a.mainOutlet >= 0 ? a.acc[a.mainOutlet] * 0.05 : 0;
   }
 
-  function isFlood(i) { return !(state.base && state.base.wet[i]) && !state.a.ocean[i]; }
 
   function drawStats(s) {
     if (state.inertial) {
