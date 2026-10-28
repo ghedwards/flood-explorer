@@ -1,0 +1,55 @@
+{
+ "title": "PTHA18 scenarios the map can run",
+ "gaugeID": 1570.2,
+ "lon": 153.94223,
+ "lat": -27.28588,
+ "depthM": 1045,
+ "places": [
+  "pine-estuary",
+  "brisbane-mouth"
+ ],
+ "source": "Geoscience Australia PTHA18, CC BY 4.0, (c) Commonwealth of Australia (Geoscience Australia), read from the NCI THREDDS server",
+ "notes": "Wave heights above mean sea level at the hazard point, with PTHA18's delayed linear friction, trimmed to a window around the peak. annualRate is the rate of the earthquake scenario, not how often the wave happens. A 1 arc-minute linear model: not reliable nearshore.",
+ "scenarios": [
+  {
+   "id": "moderate-kermadec-tonga-kermadectonga2-41565-1570-2",
+   "label": "Moderate (Kermadec-Tonga)",
+   "zone": "kermadectonga2",
+   "row": 41565,
+   "mw": 9.1,
+   "annualRate": 0.000001373371827069091,
+   "offshorePeakM": 0.195,
+   "file": "moderate-kermadec-tonga-kermadectonga2-41565-1570-2.csv"
+  },
+  {
+   "id": "large-new-hebrides-newhebrides2-12022-1570-2",
+   "label": "Large (New Hebrides)",
+   "zone": "newhebrides2",
+   "row": 12022,
+   "mw": 8.9,
+   "annualRate": 0.0000012803411645971416,
+   "offshorePeakM": 0.416,
+   "file": "large-new-hebrides-newhebrides2-12022-1570-2.csv"
+  },
+  {
+   "id": "distant-mega-quake-south-america-southamerica-146274-1570-2",
+   "label": "Distant mega-quake (South America)",
+   "zone": "southamerica",
+   "row": 146274,
+   "mw": 9.5,
+   "annualRate": 7.009056308540752e-7,
+   "offshorePeakM": 0.331,
+   "file": "distant-mega-quake-south-america-southamerica-146274-1570-2.csv"
+  },
+  {
+   "id": "very-large-kermadec-tonga-kermadectonga2-43746-1570-2",
+   "label": "Very large (Kermadec-Tonga)",
+   "zone": "kermadectonga2",
+   "row": 43746,
+   "mw": 9.4,
+   "annualRate": 2.2509011275632302e-7,
+   "offshorePeakM": 0.676,
+   "file": "very-large-kermadec-tonga-kermadectonga2-43746-1570-2.csv"
+  }
+ ]
+}

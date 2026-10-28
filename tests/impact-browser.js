@@ -203,6 +203,17 @@ async function main() {
     assert.ok(live.info.state === 'ready' && live.info.frames >= 120 && live.painted > 100 && live.legendOn, `the run is painted on the map: ${JSON.stringify(live.info)} ${live.painted}`);
     assert.ok(live.cleared, 'the run is removed from the map');
 
+    // a Moreton Bay place with its own tide planes: Brisbane Bar's lowest state runs at the model's -1 m limit
+    const bay = await page.evaluate(async () => {
+      const final = await window.__floodTsunamiRun({ place: 'pine-estuary', label: '^Large', tide: 'LAT', minutes: 30 });
+      const option = [...document.querySelectorAll('#tsTide option')].find((o) => o.value === 'LAT');
+      const info = { ...window.__floodStatus.tsunami };
+      document.getElementById('tsClear').click();
+      return { final, info, label: option && option.textContent };
+    });
+    assert.ok(bay.final && Number.isFinite(bay.final.floodedHectares) && bay.info.state === 'ready' && bay.info.place === 'pine-estuary', `a Pine River run completed: ${JSON.stringify(bay.info)}`);
+    assert.match(bay.label, /run at -1\.00 m/, 'the tide menu says the lowest state runs at -1 m');
+
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `
       + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off`);

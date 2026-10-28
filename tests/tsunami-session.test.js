@@ -24,14 +24,19 @@ async function withFetch(fn) {
 test('scenarios load for each place their manifest lists, and tide levels come from the planes', async () => {
   const s = await load();
   const scenarios = await withFetch(() => s.loadScenarios('http://localhost/site/'));
-  assert.deepEqual([...new Set(scenarios.map(x => x.place))].sort(), ['currumbin', 'gold-coast-seaway']);
+  assert.deepEqual([...new Set(scenarios.map(x => x.place))].sort(), ['brisbane-mouth', 'currumbin', 'gold-coast-seaway', 'pine-estuary']);
   assert.equal(scenarios.filter(x => x.place === 'currumbin').length, 4);
-  assert.ok(scenarios.every(x => x.offshorePeakM > 0 && x.mw >= 8.4 && x.gaugeID === 1450.5));
+  assert.ok(scenarios.every(x => x.offshorePeakM > 0 && x.mw >= 8.4 && x.gaugeID === (['pine-estuary', 'brisbane-mouth'].includes(x.place) ? 1570.2 : 1450.5)));
+  assert.equal(new Set(scenarios.map(x => `${x.gaugeID}:${x.file}`)).size, 8, 'each hazard point has its own four files');
   const levels = s.tideLevels(JSON.parse(read('gold-coast-seaway-tidal-planes.json')));
   assert.deepEqual(levels.map(l => l.state), s.TIDE_STATES);
   assert.equal(levels.find(l => l.state === 'MSL').aboveMsl, 0);
   assert.equal(levels.find(l => l.state === 'HAT').aboveMsl, 1.15);
   assert.throws(() => s.tideLevels({ planes: { HAT: 2 } }), /incomplete/);
+  const bar = s.tideLevels(JSON.parse(read('brisbane-bar-tidal-planes.json')));
+  assert.ok(bar.find(l => l.state === 'LAT').aboveMsl < -1 && s.modelTide(bar.find(l => l.state === 'LAT').aboveMsl) === -1, 'a state below the model\'s limit runs at -1 m');
+  assert.equal(s.modelTide(0.65), 0.65);
+  assert.equal(s.TIDE_STATION['pine-estuary'], 'brisbane-bar');
   assert.equal(s.TIDE_STATION.currumbin, 'gold-coast-seaway');
 });
 
@@ -67,4 +72,23 @@ test('the live run reproduces the offline model: same flooded area and depth for
   assert.ok(Math.abs(result.maxLandDepth - offline.maxLandDepth) < 0.01, `${result.maxLandDepth} vs ${offline.maxLandDepth}`);
   assert.ok(result.floodedHectares > 20 && result.floodedHectares < 50, 'about 34 ha, as the ensemble found');
   assert.ok(s.floodSummary(prepared, frames[0]).floodedHectares === 0, 'nothing is flooded at the start');
+});
+
+
+test('a Moreton Bay place runs live on its own grid and matches the offline model', async () => {
+  const s = await load();
+  const bathymetry = JSON.parse(read('pine-estuary.json'));
+  const scenarios = await withFetch(() => s.loadScenarios('http://localhost/site/'));
+  const large = scenarios.find(x => x.place === 'pine-estuary' && /^Large/.test(x.label));
+  const series = await withFetch(() => s.loadSeries('http://localhost/site/', large));
+  const low = s.prepareRun({ place: 'pine-estuary', bathymetry, series, tide: s.modelTide(-1.154), seconds: 600, frames: 10 });
+  assert.equal(low.grid.cell, 25); assert.equal(low.tide, -1, 'a tide state below the limit runs at -1 m');
+  const prepared = s.prepareRun({ place: 'pine-estuary', bathymetry, series, seconds: 3600, frames: 60 });
+  const { frames } = s.runHere(F, prepared);
+  const result = s.floodSummary(prepared, frames.at(-1));
+  const { runSeries } = require('../scripts/run-series-local.js');
+  const { parseSeriesCsv } = await import('../viewer/tsunami-coupling.js');
+  const offline = await runSeries(parseSeriesCsv(read(`scenarios/${large.file}`)), 3600, { place: 'pine-estuary' });
+  assert.ok(Math.abs(result.floodedHectares - offline.floodedHectares) < 0.05 && Math.abs(result.maxLandDepth - offline.maxLandDepth) < 0.01, `${result.floodedHectares} ha ${result.maxLandDepth} m vs ${offline.floodedHectares} ha ${offline.maxLandDepth} m`);
+  assert.ok(result.floodedHectares > 5 && result.floodedHectares < 30, 'about 15 ha, as the ensemble found');
 });

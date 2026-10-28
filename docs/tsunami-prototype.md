@@ -30,7 +30,7 @@ mean sea level without tide. They are heights at sea on a coarse 1 arc-minute li
 ### Running a scenario live on the main map
 
 The main map has a "Tsunami" tool (the wave icon in its side rail) that runs one curated PTHA18 scenario live in your browser and plays it over the map, in the same Rust /
-WebAssembly worker the lab uses (`viewer/tsunami-worker.js`), so nothing is computed on a server. Pick a modelled place (the Gold Coast Seaway and Currumbin for now), an earthquake, a
+WebAssembly worker the lab uses (`viewer/tsunami-worker.js`), so nothing is computed on a server. Pick a modelled place (the Gold Coast Seaway, Currumbin Creek, the Pine River mouth and the Brisbane River mouth), an earthquake, a
 tide state (LAT to HAT from the place's tidal planes, held for the whole run) and a run length of 30, 60 or 90 minutes, and press Run. A one-hour run takes a few seconds. The picture
 colours land under water by its depth (the same classes as the flood depth key) and the sea by the wave (orange crest, blue drawdown); a time bar and speed control play it back, with
 "land under water now", "most land flooded so far" and "deepest water on land so far" beside it.
@@ -45,6 +45,11 @@ point 1450.5 (667 m deep, 25 km off the Gold Coast) were chosen from the ensembl
 | Distant mega-quake (South America, row 146274) | 9.5 | 0.47 m | 77 ha | 1.39 m |
 | Very large (Kermadec-Tonga, row 42930) | 9.3 | 0.62 m | 72 ha | 2.16 m |
 
+The two Moreton Bay places (Pine River and Brisbane mouth, on 25 m grids) have their own four, chosen the same way at PTHA18 hazard point 1570.2 (1,045 m deep, 35 km offshore) from the Pine River ensemble draws,
+and use Brisbane Bar's tide states. At mean sea level the Pine River grid floods about 14 to 16 ha in all four (Moderate: Mw 9.1 Kermadec-Tonga, wave 0.20 m, 14 ha, 0.43 m deep; Large: Mw 8.9 New Hebrides, 0.42 m, 15 ha,
+0.91 m; Distant: Mw 9.5 South America, 0.33 m, 15 ha, 0.65 m; Very large: Mw 9.4 Kermadec-Tonga, 0.68 m, 16 ha, 1.51 m); the small flat grid saturates, so the depth and the extent reached tell the scenarios apart better than the area. Brisbane Bar's
+lowest tide (LAT) is 1.15 m below its mean sea level and the model starts no lower than -1 m, so that state is run at -1 m, and the tide menu says so.
+
 The page's run gives the same numbers as `scripts/run-series-local.js` (a test and the browser check compare them to the hundredth of a hectare). The panel shows each earthquake's
 annual rate as how rare the earthquake is, not how often such a wave happens. The same limits as above apply: one scenario, the wave applied at the open edges without scaling for depth, a
 first-order shoreline scheme, no defences or drainage, and no validation against a recorded event. It is not a forecast or an evacuation guide.
@@ -58,7 +63,7 @@ South America (Mw 8.4 to 9.6, one hour) at all seven tide states, weighted by ho
 share of draws, over the states, that add at least each depth. `scripts/prepare-tsunami-extents.js` multiplies each zone's share by its annual rate and sums the zones,
 giving a rate per cell, stored as one byte per cell (`viewer/public/tsunami-data/extents/<place>.json`, about 60 KB). The map draws it in six classes, from rarer than
 1 in 2,500 years to more often than 1 in 100 years; cells the sampled scenarios never reach, or reach less often than 1 in 10,000 years, are left clear. For the Gold Coast
-Seaway the most frequently reached cell gets 0.1 m about once in 59 years, 0.3 m about once in 86 years and 1 m about once in 514 years. For Currumbin Creek (the same samples and Seaway tide, its own 25 m grid) the figures are 1 in 61, 1 in 99 and 1 in 682 years. The layer is placed on the map by a
+Seaway the most frequently reached cell gets 0.1 m about once in 59 years, 0.3 m about once in 86 years and 1 m about once in 514 years. For Currumbin Creek (the same samples and Seaway tide, its own 25 m grid) the figures are 1 in 61, 1 in 99 and 1 in 682 years. For the Pine River mouth (hazard point 1570.2 and Brisbane Bar's tide) they are 1 in 79, 1 in 173 and 1 in 5,223 years. The layer is placed on the map by a
 UTM zone 56 transform (checked against GA's published GDA reference point to a millimetre).
 
 "Water added" is the most the wave raises the water above what the tide already covers at the cell, so the tide's own flooding is not counted. As with the ensemble this is a

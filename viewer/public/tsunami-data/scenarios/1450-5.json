@@ -12,44 +12,44 @@
  "notes": "Wave heights above mean sea level at the hazard point, with PTHA18's delayed linear friction, trimmed to a window around the peak. annualRate is the rate of the earthquake scenario, not how often the wave happens. A 1 arc-minute linear model: not reliable nearshore.",
  "scenarios": [
   {
-   "id": "moderate-kermadec-tonga-kermadectonga2-38914",
+   "id": "moderate-kermadec-tonga-kermadectonga2-38914-1450-5",
    "label": "Moderate (Kermadec-Tonga)",
    "zone": "kermadectonga2",
    "row": 38914,
    "mw": 8.8,
    "annualRate": 0.0000011382041461668502,
    "offshorePeakM": 0.224,
-   "file": "moderate-kermadec-tonga-kermadectonga2-38914.csv"
+   "file": "moderate-kermadec-tonga-kermadectonga2-38914-1450-5.csv"
   },
   {
-   "id": "large-new-hebrides-newhebrides2-11816",
+   "id": "large-new-hebrides-newhebrides2-11816-1450-5",
    "label": "Large (New Hebrides)",
    "zone": "newhebrides2",
    "row": 11816,
    "mw": 8.8,
    "annualRate": 0.0000022926719482298004,
    "offshorePeakM": 0.461,
-   "file": "large-new-hebrides-newhebrides2-11816.csv"
+   "file": "large-new-hebrides-newhebrides2-11816-1450-5.csv"
   },
   {
-   "id": "distant-mega-quake-south-america-southamerica-146274",
+   "id": "distant-mega-quake-south-america-southamerica-146274-1450-5",
    "label": "Distant mega-quake (South America)",
    "zone": "southamerica",
    "row": 146274,
    "mw": 9.5,
    "annualRate": 7.009056308540752e-7,
    "offshorePeakM": 0.469,
-   "file": "distant-mega-quake-south-america-southamerica-146274.csv"
+   "file": "distant-mega-quake-south-america-southamerica-146274-1450-5.csv"
   },
   {
-   "id": "very-large-kermadec-tonga-kermadectonga2-42930",
+   "id": "very-large-kermadec-tonga-kermadectonga2-42930-1450-5",
    "label": "Very large (Kermadec-Tonga)",
    "zone": "kermadectonga2",
    "row": 42930,
    "mw": 9.3,
    "annualRate": 3.989153574678653e-7,
    "offshorePeakM": 0.617,
-   "file": "very-large-kermadec-tonga-kermadectonga2-42930.csv"
+   "file": "very-large-kermadec-tonga-kermadectonga2-42930-1450-5.csv"
   }
  ]
 }

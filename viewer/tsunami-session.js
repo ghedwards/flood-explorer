@@ -9,6 +9,10 @@ import { startRun } from './tsunami-runner.js';
 export const TIDE_STATION = { 'gold-coast-seaway': 'gold-coast-seaway', currumbin: 'gold-coast-seaway', 'pine-estuary': 'brisbane-bar', 'brisbane-mouth': 'brisbane-bar' };
 export const TIDE_STATES = ['LAT', 'MLWS', 'MLWN', 'MSL', 'MHWN', 'MHWS', 'HAT'];
 
+// The model starts no lower than this (m above the terrain's zero); a lower tide state, such as Brisbane Bar's LAT, is run here instead.
+export const MIN_TIDE = -1;
+export const modelTide = (aboveMsl) => Math.max(MIN_TIDE, aboveMsl);
+
 // Tide state levels above MSL (m) from a tidal-planes file, in the order of TIDE_STATES.
 export function tideLevels(planesFile) {
   const planes = planesFile?.planes;
