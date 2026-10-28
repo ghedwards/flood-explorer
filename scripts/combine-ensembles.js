@@ -44,7 +44,10 @@ function main(argv) {
   }
   const reports = files.map(file => JSON.parse(fs.readFileSync(file, 'utf8')));
   const combined = { gauge: reports[0]?.gauge, zones: reports.map(r => ({ zone: r.zone, mw: r.mw, poolRate: r.poolRate, count: r.count })), offshore: combine(reports, 'offshore'), flooded: combine(reports, 'flooded') };
-  for (const [name, key, unit] of [['offshore peak at the hazard point', 'offshore', 'm'], ['flooded area', 'flooded', 'ha']]) {
+  // the tide-weighted area the wave adds, only when every zone was run with --tide-weighted
+  if (reports.every(r => r.tideWeightedAdded)) combined.tideWeightedAdded = combine(reports, 'tideWeightedAdded');
+  for (const [name, key, unit] of [['offshore peak at the hazard point', 'offshore', 'm'], ['flooded area', 'flooded', 'ha'], ['area the wave adds to the tide, weighted by how often each tide state occurs', 'tideWeightedAdded', 'ha']]) {
+    if (!combined[key]) continue;
     console.log(`Rate at which the sampled zones together reach each ${name} (interval: zones' half-widths in quadrature):`);
     for (const r of combined[key]) console.log(`  >= ${String(r.threshold).padStart(5)} ${unit}  ${years(r.rate).padEnd(22)} (${years(r.high)} to ${years(r.low)})`);
   }
