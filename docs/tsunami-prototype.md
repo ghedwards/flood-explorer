@@ -27,6 +27,23 @@ mean sea level without tide. They are heights at sea on a coarse 1 arc-minute li
 `node scripts/prepare-tsunami-hazard.js`, which reads the exceedance-rate tables from the NCI THREDDS server in bulk. For example, off the Gold Coast (the point at
 28.0°S 153.67°E, 69 m deep) the 1-in-500-year wave is 1.32 m (range 0.68 to 1.57 m), off Sydney about 0.9 m and off Perth about 0.6 m.
 
+### Modelled flood hazard on the main map
+
+A second layer, "Tsunami flood hazard: modelled areas (experimental)", paints how often the sampled tsunamis put at least a chosen depth of water
+(0.1, 0.3 or 1 m, chosen in the Layers panel) on each 50 m cell of the places the lab models locally. It is built from the same rate-proportional
+samples as the ensemble above: `scripts/ensemble-ptha.js --tide-weighted --cells-out` runs 60 draws of each of Kermadec-Tonga, New Hebrides and
+South America (Mw 8.4 to 9.6, one hour) at all seven tide states, weighted by how often the Seaway gauge sits nearest each, and records for each cell the
+share of draws, over the states, that add at least each depth. `scripts/prepare-tsunami-extents.js` multiplies each zone's share by its annual rate and sums the zones,
+giving a rate per cell, stored as one byte per cell (`viewer/public/tsunami-data/extents/<place>.json`, about 60 KB). The map draws it in six classes, from rarer than
+1 in 2,500 years to more often than 1 in 100 years; cells the sampled scenarios never reach, or reach less often than 1 in 10,000 years, are left clear. For the Gold Coast
+Seaway the most frequently reached cell gets 0.1 m about once in 59 years, 0.3 m about once in 86 years and 1 m about once in 514 years. The layer is placed on the map by a
+UTM zone 56 transform (checked against GA's published GDA reference point to a millimetre).
+
+"Water added" is the most the wave raises the water above what the tide already covers at the cell, so the tide's own flooding is not counted. As with the ensemble this is a
+lower bound from a sample: other zones and smaller earthquakes are left out, the terrain is the bundled grid with no defences or drainage, the offshore wave is applied at the open edges
+without scaling for depth, and the model is not validated against a recorded event. The sampling error is large for rare outcomes. It is a way to see where the sampled scenarios send
+water, not a hazard assessment.
+
 ## Demonstration defaults
 
 The UI starts with an intentionally exaggerated **2.5 m nominal source strength**.

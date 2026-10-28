@@ -159,6 +159,32 @@ async function main() {
     assert.ok(hazard.first.control && hazard.pickerSynced, 'the return-period choice is in the Layers list');
     assert.ok(hazard.zoomedOut > 100 && hazard.zoomedOut < hazard.first.points && hazard.zoomedIn === hazard.first.points, `zoomed out only the coarse set is drawn (${hazard.zoomedOut}), zoomed in all of them (${hazard.zoomedIn} of ${hazard.first.points})`);
 
+    // the modelled-areas tsunami flood hazard layer: one picture per modelled place, restyled by depth
+    const extentsName = 'Tsunami flood hazard: modelled areas (experimental)';
+    await page.evaluate((layer) => { window.__floodTestZoom(-27.953, 153.422, 12); return window.__floodSetOverlay(layer, true); }, extentsName);
+    await page.waitForFunction("window.__floodStatus.tsunamiExtents && window.__floodStatus.tsunamiExtents.state === 'ready' && window.__floodStatus.tsunamiExtents.drawn > 0", null, { timeout: 20000 });
+    const extents = await page.evaluate(async (layer) => {
+      const count = async () => {
+        const img = document.querySelector('img.tsunami-extent');
+        if (!img) return -1;
+        await img.decode();
+        const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, c.width, c.height).data; let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        return n;
+      };
+      const info = { ...window.__floodStatus.tsunamiExtents }, low = await count();
+      const select = document.querySelectorAll('.tsunami-pick select')[1];
+      select.value = '1'; select.dispatchEvent(new Event('change'));
+      const high = await count();
+      const legend = document.getElementById('overlayLegend').textContent;
+      window.__floodSetOverlay(layer, false);
+      return { info, low, high, legend, gone: !document.querySelector('img.tsunami-extent') };
+    }, extentsName);
+    assert.ok(extents.info.places >= 1 && extents.low > 0 && extents.high >= 0 && extents.high < extents.low, `the hazard picture is drawn and shrinks with depth (${extents.low} then ${extents.high} pixels)`);
+    assert.match(extents.legend, /Tsunami flood hazard/); assert.ok(extents.gone, 'the picture is removed with the layer');
+
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `
       + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off`);

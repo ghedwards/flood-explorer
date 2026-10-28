@@ -53,3 +53,7 @@ the gauge minus the prediction, and how often the sea sits nearest each tide sta
 fitted by `scripts/tide-analysis.js`, not read from a published table, so `verified` is false; only three observed years were open, so no sea-level trend
 is removed from the state weights. `scripts/ensemble-ptha.js --tide brisbane-bar` uses them.
 
+`extents/` holds the per-cell tsunami flood rates for the main map's "Tsunami flood hazard" layer, one file per modelled place and an `index.json` listing them
+(built by `scripts/prepare-tsunami-extents.js`; see docs/tsunami-prototype.md). They combine PTHA18 (Geoscience Australia, CC BY 4.0) with the place's terrain and carry
+both attributions; the Gold Coast Seaway grid is CSIRO's, CC BY 4.0.
+

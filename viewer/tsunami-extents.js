@@ -150,7 +150,7 @@ export function makeTsunamiExtentsLayer(L, { indexUrl, onChange = () => {} }) {
       canvas.height = Math.round(canvas.width * (bounds[1][0] - bounds[0][0]) / ((bounds[1][1] - bounds[0][1]) * Math.cos(rad(midLat))));
       const pixels = extentPixels(place, place.codesByDepth[k], canvas.width, canvas.height, bounds);
       canvas.getContext('2d').putImageData(new ImageData(pixels, canvas.width, canvas.height), 0, 0);
-      const image = L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false, className: 'flood-layer', zIndex: 5 });
+      const image = L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false, className: 'flood-layer tsunami-extent', zIndex: 5 });
       images.set(place.id, image); group.addLayer(image);
     }
     info.drawn = images.size;

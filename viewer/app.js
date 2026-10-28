@@ -10,6 +10,7 @@ import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
+import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -1778,6 +1779,9 @@ import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
   // PTHA18's offshore wave heights around Australia, one layer (tsunami-hazard.js)
   const TSUNAMI_HAZARD = 'Tsunami hazard: offshore wave height (PTHA18, experimental)';
   let tsunamiHazard = null;
+  // modelled flood hazard for the places the tsunami lab runs locally (tsunami-extents.js)
+  const TSUNAMI_EXTENTS = 'Tsunami flood hazard: modelled areas (experimental)';
+  let tsunamiExtents = null;
 
   // Available on every real-place map, anywhere in Australia
   const NATIONAL_OVERLAYS = [
@@ -2049,6 +2053,7 @@ import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
       parts.push(`<span><i style="background:linear-gradient(90deg,#e6f3fb,#5aa9d6,#08306b)"></i>${escapeHtml(o.legend)}</span>`);
     });
     if (tsunamiHazard && state.lmap.hasLayer(tsunamiHazard)) parts.push(...tsunamiHazard.legendParts());
+    if (tsunamiExtents && state.lmap.hasLayer(tsunamiExtents)) parts.push(...tsunamiExtents.legendParts());
     if (nat.roadClosuresLayer && state.lmap.hasLayer(nat.roadClosuresLayer)) {
       const n = (nat.readings && nat.readings.roads && nat.readings.roads.items || []).length;
       for (const st of Object.values(ROAD_LEVELS)) parts.push(`<span><i style="background:${st.color}"></i>${escapeHtml(st.label)}</span>`);
@@ -2173,6 +2178,9 @@ import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
       tsunamiHazard = makeTsunamiHazardLayer(L, { url: new URL('tsunami-data/ptha18-hazard.json', document.baseURI).href, onChange: renderOverlayLegend });
       overlays[TSUNAMI_HAZARD] = tsunamiHazard;
       status.tsunamiHazard = tsunamiHazard.info;
+      tsunamiExtents = makeTsunamiExtentsLayer(L, { indexUrl: new URL('tsunami-data/extents/index.json', document.baseURI).href, onChange: renderOverlayLegend });
+      overlays[TSUNAMI_EXTENTS] = tsunamiExtents;
+      status.tsunamiExtents = tsunamiExtents.info;
       overlays['Victorian recorded floods (state)'] = L.tileLayer.wms('https://opendata.maps.vic.gov.au/geoserver/wms', {
         layers: VIC_LAYER, format: 'image/png', transparent: true, opacity: 0.55, zIndex: 4,
         attribution: 'Victorian flood history &copy; State of Victoria (DEECA), CC BY 4.0',
@@ -2497,7 +2505,7 @@ import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
   function layerSection(name) {
     if (name === 'Flooded (red) and cut-off (orange) roads') return 'model';
     if ([...OVERLAYS, ...COUNCIL_OVERLAYS].some((o) => o.name === name)) return 'council';
-    if (name === TSUNAMI_HAZARD) return 'tsunami';
+    if (name === TSUNAMI_HAZARD || name === TSUNAMI_EXTENTS) return 'tsunami';
     if ([...NATIONAL_OVERLAYS, ...STATE_OVERLAYS].some((o) => o.name === name) || name === 'Victorian recorded floods (state)') return 'mapping';
     return 'live';
   }
@@ -2571,6 +2579,7 @@ import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
       const body = sections.get(layerSection(name));
       body.appendChild(lab);
       if (name === TSUNAMI_HAZARD) body.appendChild(tsunamiHazard.periodPicker());
+      if (name === TSUNAMI_EXTENTS) body.appendChild(tsunamiExtents.depthPicker());
       if (hint) body.appendChild(hint);
     });
     updateLayerGroupCounts();
