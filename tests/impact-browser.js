@@ -137,6 +137,28 @@ async function main() {
     assert.ok(timeline && timeline.steps > 20, `a timeline was computed (${await page.evaluate(() => document.getElementById('timelineBox').textContent.slice(0, 200))})`);
     assert.ok(timeline.roadsClosed > 0 && timeline.maxIsolated >= 0, `the access analysis ran (${JSON.stringify(timeline)})`);
 
+    // the tsunami hazard layer: PTHA18's offshore wave heights, loaded on first use and restyled by return period
+    const name = 'Tsunami hazard: offshore wave height (PTHA18, experimental)';
+    const hazardOn = await page.evaluate((layer) => window.__floodSetOverlay(layer, true), name);
+    await page.waitForFunction("window.__floodStatus.tsunamiHazard && window.__floodStatus.tsunamiHazard.state === 'ready'", null, { timeout: 20000 });
+    const hazard = await page.evaluate((layer) => {
+      const first = { on: true, ...window.__floodStatus.tsunamiHazard, legend: document.getElementById('overlayLegend').textContent, control: !!document.querySelector('.tsunami-pick select') };
+      window.__floodTestZoom(-28.5, 134, 4);
+      const zoomedOut = window.__floodStatus.tsunamiHazard.shown;
+      window.__floodTestZoom(-28, 153.9, 9);
+      const zoomedIn = window.__floodStatus.tsunamiHazard.shown;
+      const select = document.querySelector('.tsunami-pick select');
+      select.value = '2500'; select.dispatchEvent(new Event('change'));
+      const second = document.getElementById('overlayLegend').textContent;
+      window.__floodSetOverlay(layer, false);
+      return { first, second, pickerSynced: select.value === '2500', zoomedOut, zoomedIn };
+    }, name);
+    hazard.first.on = hazardOn;
+    assert.ok(hazard.first.on && hazard.first.points > 1500, `the hazard layer loaded ${hazard.first.points} points`);
+    assert.match(hazard.first.legend, /1 in 500 years/); assert.match(hazard.second, /1 in 2500 years/);
+    assert.ok(hazard.first.control && hazard.pickerSynced, 'the return-period choice is in the Layers list');
+    assert.ok(hazard.zoomedOut > 100 && hazard.zoomedOut < hazard.first.points && hazard.zoomedIn === hazard.first.points, `zoomed out only the coarse set is drawn (${hazard.zoomedOut}), zoomed in all of them (${hazard.zoomedIn} of ${hazard.first.points})`);
+
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `
       + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off`);

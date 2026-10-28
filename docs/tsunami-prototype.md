@@ -12,6 +12,21 @@ displacement view, three virtual gauges and CSV export. The canvas uses basin
 coordinates in kilometres for idealised cases. Eight Australian east-coast
 subsets use geographic bounds and show the source latitude/longitude.
 
+## On the main map: offshore tsunami hazard
+
+The main map has a "Tsunami hazard: offshore wave height (PTHA18, experimental)" layer in its Layers panel (section "Tsunami"). It
+draws PTHA18's hazard at about 2,000 hazard points around Australia (the mainland, Tasmania, the Great Barrier Reef, the Coral Sea
+islands and Lord Howe; Indonesia, Timor, Papua New Guinea and New Zealand are cut out, as are the external territories) at roughly 100 m
+depth, coloured by the wave height for a return period chosen in the Layers panel (1 in 100, 250, 500, 1,000 or 2,500 years; 500 to start with).
+Zoomed out, about a third of the points are drawn (those that are the pick of a 0.5 degree cell) so the shelf seas do not show as solid blocks.
+Tapping a point gives the wave height at every return period, with PTHA18's 16th to 84th percentile range at 500 and 2,500 years.
+
+The numbers are PTHA18's logic-tree mean hazard curve summed over every source zone, stochastic-slip scenarios, as the largest wave height above
+mean sea level without tide. They are heights at sea on a coarse 1 arc-minute linear model, not where the land floods. The file
+`viewer/public/tsunami-data/ptha18-hazard.json` (about 150 KB, loaded when the layer is first switched on and cached by the service worker) is built by
+`node scripts/prepare-tsunami-hazard.js`, which reads the exceedance-rate tables from the NCI THREDDS server in bulk. For example, off the Gold Coast (the point at
+28.0°S 153.67°E, 69 m deep) the 1-in-500-year wave is 1.32 m (range 0.68 to 1.57 m), off Sydney about 0.9 m and off Perth about 0.6 m.
+
 ## Demonstration defaults
 
 The UI starts with an intentionally exaggerated **2.5 m nominal source strength**.
