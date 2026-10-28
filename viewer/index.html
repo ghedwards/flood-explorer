@@ -412,12 +412,27 @@
 </aside>
 
 <aside class="sheet float" id="panel-tsunami" data-panel data-side="right" aria-labelledby="h-tsunami" hidden>
-  <div class="sheet-head"><h2 id="h-tsunami">Tsunami run (experimental)</h2><button type="button" class="close" data-close aria-label="Close">×</button></div>
+  <div class="sheet-head"><h2 id="h-tsunami">Tsunami (experimental)</h2><button type="button" class="close" data-close aria-label="Close">×</button></div>
   <div class="sheet-body">
-    <p class="hint">Runs one PTHA18 earthquake scenario through the tsunami lab's Rust / WebAssembly model on a modelled place, here in your browser, and plays it over the map.</p>
-    <div class="stack">
-      <fieldset>
-        <legend class="label">Scenario</legend>
+    <p class="hint">Three questions, from the whole coast down to one event. All modelled, none of it a forecast.</p>
+    <details class="ts-step" open>
+      <summary><b>1</b> How likely is a tsunami?</summary>
+      <label class="ts-check"><input type="checkbox" id="tsHazardOn"> Show offshore wave heights around Australia</label>
+      <div id="tsHazardPick"></div>
+      <p class="hint">Dots are PTHA18 hazard points about 100 m deep offshore: the wave height that is reached or beaten once in the chosen number of years.</p>
+    </details>
+    <details class="ts-step" open>
+      <summary><b>2</b> Where does it flood, and how often?</summary>
+      <label class="ts-check"><input type="checkbox" id="tsExtentsOn"> Show modelled flood-hazard areas</label>
+      <div id="tsExtentsPick"></div>
+      <p class="hint">Available for four places in south-east Queensland. Darker means the water reaches that deep more often.</p>
+    </details>
+    <details class="ts-step" open>
+      <summary><b>3</b> What does one event look like?</summary>
+      <p class="hint">Pick a place (or tap its wave pin on the map), then an earthquake and a tide. The model runs here in your browser and plays over the map.</p>
+      <div class="ts-places" id="tsPlaces"></div>
+      <details class="ts-more">
+        <summary>More options</summary>
         <label class="ts-field">Place <select id="tsPlace" aria-label="Modelled place"></select></label>
         <label class="ts-field">Earthquake <select id="tsScenario" aria-label="Earthquake scenario"></select></label>
         <p class="hint" id="tsScenarioNote"></p>
@@ -425,23 +440,33 @@
         <p class="hint" id="tsTideNote"></p>
         <label class="ts-field">Run for <select id="tsDuration" aria-label="Length of the run"><option value="30">30 minutes</option><option value="60" selected>60 minutes</option><option value="90">90 minutes</option></select></label>
         <div class="ts-actions"><button type="button" class="btn primary" id="tsRun">Run on the map</button><button type="button" class="btn" id="tsClear" hidden>Remove from the map</button></div>
-        <progress id="tsProgress" max="1" hidden aria-labelledby="tsStatus"></progress>
-        <p class="hint" id="tsStatus" role="status" aria-live="polite">Open this panel to load the scenarios.</p>
-      </fieldset>
-      <fieldset id="tsPlayback" hidden>
-        <legend class="label">Playback</legend>
-        <div class="ts-actions"><button type="button" class="btn" id="tsPlay">Play</button><label>Speed <select id="tsSpeed" aria-label="Playback speed"><option value="1">1 min / s</option><option value="5" selected>5 min / s</option><option value="15">15 min / s</option></select></label></div>
-        <label class="ts-field">Simulated time <output id="tsClock">00:00</output><input type="range" id="tsScrub" min="0" max="0" value="0" step="1"></label>
-        <dl class="ts-metrics">
-          <div><dt>Land under water now</dt><dd id="tsNow">none</dd></div>
-          <div><dt>Most land flooded so far</dt><dd id="tsMax">none</dd></div>
-          <div><dt>Deepest water on land so far</dt><dd id="tsDepth">none</dd></div>
-        </dl>
-      </fieldset>
-      <p class="hint ts-limits">Experimental. One earthquake scenario from PTHA18: its wave at a point offshore is fed in at the open edges of a 25 to 50 m terrain grid, with the tide held at the state you choose. The terrain has no defences or drainage, the model is not validated against a recorded event, and this is not a forecast or an evacuation guide. Follow official warnings. Data: PTHA18, Geoscience Australia (CC BY 4.0); terrain per place in the data notes.</p>
-    </div>
+      </details>
+      <p class="hint" id="tsStatus" role="status" aria-live="polite">Pick a place on the map, then a scenario.</p>
+    </details>
+    <p class="hint ts-limits">Experimental. One earthquake scenario from PTHA18: its wave at a point offshore is fed in at the open edges of a 25 to 50 m terrain grid, with the tide held at the state you choose. The terrain has no defences or drainage, the model is not validated against a recorded event, and this is not a forecast or an evacuation guide. Follow official warnings. Data: PTHA18, Geoscience Australia (CC BY 4.0); terrain per place in the data notes.</p>
   </div>
 </aside>
+
+<div class="ts-bar" id="tsBar" hidden role="region" aria-label="Tsunami run">
+  <div class="ts-bar-head"><span id="tsBarTitle">Scenario</span><button type="button" id="tsBarClose" aria-label="Remove the tsunami run from the map">×</button></div>
+  <progress id="tsProgress" max="1" hidden aria-label="Run progress"></progress>
+  <p class="hint" id="tsBarStatus" role="status" aria-live="polite"></p>
+  <div id="tsControls" hidden>
+    <div class="ts-bar-row">
+      <button type="button" class="btn" id="tsPlay">Play</button>
+      <input type="range" id="tsScrub" min="0" max="0" value="0" step="1" aria-label="Simulated time">
+      <output id="tsClock">00:00</output>
+      <select id="tsSpeed" aria-label="Playback speed"><option value="1">1 min/s</option><option value="5" selected>5 min/s</option><option value="15">15 min/s</option></select>
+    </div>
+    <div class="ts-views" id="tsViews" role="group" aria-label="What to show"><button type="button" data-view="now" aria-pressed="true">Now</button><button type="button" data-view="max" aria-pressed="false">Maximum</button><button type="button" data-view="arrival" aria-pressed="false">Arrival time</button></div>
+    <div class="ts-key" id="tsKey"></div>
+    <dl class="ts-metrics">
+      <div><dt>Under water now</dt><dd id="tsNow">none</dd></div>
+      <div><dt>Most flooded so far</dt><dd id="tsMax">none</dd></div>
+      <div><dt>Deepest so far</dt><dd id="tsDepth">none</dd></div>
+    </dl>
+  </div>
+</div>
 
 <!-- Forecast -->
 <aside class="sheet float" id="panel-forecast" data-panel data-side="right" aria-labelledby="floodhubTitle" hidden>

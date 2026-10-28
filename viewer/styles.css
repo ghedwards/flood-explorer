@@ -555,3 +555,41 @@ ol.problems pre { white-space: pre-wrap; font: 11px/1.35 var(--font-data); margi
 .ts-metrics dd { margin: 0; font-weight: 600; }
 .ts-limits { margin-top: 4px; }
 
+
+/* Tsunami on the map (tsunami-panel.js): wave pins, their card, the floating run bar, the side panel's steps */
+.ts-pin span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: #17509c; color: #fff; border: 2px solid #fff; box-shadow: 0 1px 6px rgba(0,0,0,.4); }
+.ts-pin:focus-visible span, .ts-pin:hover span { background: #0c3470; outline: 2px solid #f28e2b; }
+.ts-card { font: 13px/1.35 var(--font-body); min-width: 220px; }
+.ts-card .hint { margin: 2px 0 6px; color: var(--muted); font-size: 12px; }
+.ts-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.ts-chip, .ts-seg button, .ts-views button { font: 13px var(--font-body); padding: 6px 10px; min-height: 36px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); color: var(--ink); cursor: pointer; }
+.ts-chip[aria-pressed="true"], .ts-seg button[aria-pressed="true"], .ts-views button[aria-pressed="true"] { background: #17509c; border-color: #17509c; color: #fff; }
+.ts-chip:disabled, .ts-seg button:disabled { opacity: .55; cursor: progress; }
+.ts-seg, .ts-views { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.ts-bar { position: fixed; z-index: 1100; top: 64px; left: 50%; transform: translateX(-50%); width: min(440px, calc(100vw - 32px)); padding: 8px 12px 10px; border-radius: 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 2px 12px rgba(0,0,0,.28); font: 13px/1.35 var(--font-body); }
+.ts-bar[hidden] { display: none; }
+.ts-bar-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; font-weight: 600; }
+.ts-bar-head button { font-size: 20px; line-height: 1; min-width: 32px; min-height: 32px; border: 0; background: none; color: var(--ink); cursor: pointer; }
+.ts-bar progress { width: 100%; }
+.ts-bar .hint { margin: 2px 0; color: var(--muted); font-size: 12px; }
+.ts-bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.ts-bar-row input[type=range] { flex: 1 1 80px; min-width: 60px; width: auto; }
+.ts-bar-row .btn, .ts-bar-row select, .ts-bar-row output { flex: none; width: auto; }
+.ts-bar-row output { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.ts-bar select { font: 12.5px var(--font-body); padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.ts-key { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 6px 0 2px; font-size: 11.5px; color: var(--muted); }
+.ts-key i { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; vertical-align: -1px; }
+.ts-bar .ts-metrics { margin: 4px 0 0; }
+.ts-bar .ts-metrics div { font-size: 12px; }
+.ts-step { border-top: 1px solid var(--line); padding: 8px 0; }
+.ts-step > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.ts-step > summary b { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 6px; border-radius: 50%; background: #17509c; color: #fff; font-size: 12px; }
+.ts-check { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 13.5px; }
+.ts-places { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.ts-more { margin: 8px 0; }
+.ts-popup .leaflet-popup-content { margin: 10px 12px; }
+.ts-tap .hint { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+@media (max-width: 760px) {
+  .ts-bar { top: auto; bottom: 76px; }
+  .ts-bar[data-mode="ready"] > .hint { display: none; }
+}

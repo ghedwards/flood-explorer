@@ -55,3 +55,43 @@ test('the layer shows a place, paints frames on it and clears', async () => {
   layer.paint({ water: [], eta: [] }, []);   // nothing to paint on after a clear
   assert.equal(calls.filter(c => c[0] === 'overlay').length, 1);
 });
+
+test('a run is summed up per cell: peak depth, arrival after the wave reaches the edge, and when the deepest water came', async () => {
+  const m = await load();
+  // cells: 0 dry land the wave floods, 1 land with 0.5 m of tide cover that the wave never adds to, 2 sea, 3 land the wave never reaches
+  const grid = { depth: Float64Array.from([0, 0.5, 0, 0]) }, land = Uint8Array.from([1, 1, 0, 1]);
+  const frame = (time, water, peak) => ({ time, water: Float64Array.from(water), eta: new Float64Array(4), peak: Float64Array.from(peak) });
+  const frames = [frame(0, [0, 0.5, 0, 0], [0, 0, 0, 0]), frame(30, [0, 0.5, 0.2, 0], [0, 0, 0.2, 0]), frame(60, [0.3, 0.5, 0.6, 0], [0.3, 0, 0.6, 0]), frame(90, [0.1, 0.5, 0.1, 0], [0.3, 0, 0.6, 0])];
+  const derived = m.deriveRun({ grid, land }, frames, { waveAt: 30, summarise: (p, f) => f.time });
+  assert.equal(derived.arrival[0], 30, 'the wave adds 0.1 m or more at 60 s, 30 s after it reached the edge');
+  assert.ok(Number.isNaN(derived.arrival[1]), 'the tide cover is not an arrival');
+  assert.ok(Number.isNaN(derived.arrival[3]));
+  assert.equal(derived.peakAt[0], 60);
+  assert.ok(Math.abs(derived.peak[0] - 0.3) < 1e-6 && Math.abs(derived.peak[1] - 0.5) < 1e-6, 'land peaks include the tide cover');
+  assert.ok(Math.abs(derived.peak[2] - 0.6) < 1e-6, 'the sea peak is the highest wave');
+  assert.deepEqual(derived.summaries, [0, 30, 60, 90]);
+});
+
+test('the maximum and arrival views colour land by depth and by arrival band, and the tap finds its cell', async () => {
+  const m = await load();
+  const map = Int32Array.from([0, 1, 2, 3]), land = Uint8Array.from([1, 1, 0, 1]);
+  const max = m.maxPixels(map, land, Float32Array.from([0.3, 5, 0.4, 0]));
+  assert.deepEqual([...max.slice(0, 4)], [63, 154, 224, 225], 'shallow land is the first depth colour');
+  assert.deepEqual([...max.slice(4, 8)].slice(0, 3), [12, 52, 112], 'deep land is the last');
+  assert.equal(max[11] > 0 && max[11] < 225, true, 'the sea is a translucent crest');
+  assert.equal(max[15], 0, 'dry land is clear');
+  const arr = m.arrivalPixels(map, land, Float32Array.from([240, 1500, NaN, NaN]));
+  assert.deepEqual([...arr.slice(0, 3)], [128, 0, 38], 'within five minutes is the darkest');
+  assert.deepEqual([...arr.slice(4, 7)], [252, 78, 42], '25 minutes falls in the 20 to 40 minute band');
+  assert.equal(arr[11], 0, 'the sea has no arrival colour');
+  assert.deepEqual([0, 300, 301, 3600, 3601].map(m.arrivalClass), [0, 0, 1, 4, 5]);
+  assert.equal(m.viewLegend('arrival').length, 7);
+  assert.match(m.viewLegend('max')[0], /Deepest/);
+  // the place is 8 km by 4.8 km, 4 by 2 cells; its centre is the corner shared by the four middle cells, so just north-west of it is cell 1
+  const { fromMga } = await import('../viewer/tsunami-extents.js');
+  const [lat, lon] = fromMga(537500 + 1000, 6905500 + 4800 - 1200);
+  assert.equal(m.cellIndex(place, lat, lon), 0);
+  const [lat2, lon2] = fromMga(537500 + 7000, 6905500 + 1200);
+  assert.equal(m.cellIndex(place, lat2, lon2), 7);
+  assert.equal(m.cellIndex(place, -10, 150), -1);
+});

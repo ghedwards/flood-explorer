@@ -2304,7 +2304,13 @@ import { effectiveRainSeries } from './flash-2d.js';
       roadsLayer = L.layerGroup();
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
-      tsunamiPanel = initTsunamiPanel({ L, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, onLegend: renderOverlayLegend });
+      tsunamiPanel = initTsunamiPanel({
+        L, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, layers: { hazard: tsunamiHazard, extents: tsunamiExtents },
+        onLegend: renderOverlayLegend, onHint: say,
+        onLayerChange: () => { renderOverlayLegend(); syncLayerLists(); },
+        // on a phone the panel would cover the map the run plays on
+        onRunStart: () => { if (isPhone()) { const panel = $('panel-tsunami'); if (panel && !panel.hidden) { panel.hidden = true; syncPanels(); } } },
+      });
       status.tsunami = tsunamiPanel.info;
       window.__floodTsunamiRun = (options) => tsunamiPanel.runWith(options);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
@@ -3368,6 +3374,7 @@ import { effectiveRainSeries } from './flash-2d.js';
 
   function onGeoClick(e) {
     if (Date.now() < suppressClickUntil) return;   // the end of a box drag
+    if (tsunamiPanel && tsunamiPanel.handleTap(e.latlng)) return;   // a tap inside the tsunami run being shown
     if (state.pendingGeo) { say('Still loading this area…'); return; }
     const hit = areaAt(e.latlng);
     if (!hit) { onNationalClick(e); return; }

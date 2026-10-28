@@ -195,20 +195,61 @@ async function main() {
       let painted = 0;
       if (canvas) { const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) painted++; }
       const info = { ...window.__floodStatus.tsunami };
-      const legendOn = document.getElementById('overlayLegend').textContent.includes('Tsunami run');
-      document.getElementById('tsClear').click();
-      return { final, painted, info, legendOn, cleared: !document.querySelector('canvas.tsunami-live') };
+      const legendOn = document.getElementById('tsKey').textContent.includes('Water on land now') && !document.getElementById('overlayLegend').textContent.includes('Tsunami run');
+      const bar = { shown: !document.getElementById('tsBar').hidden, banner: document.getElementById('tsBarTitle').textContent, panelStillOpen: !document.getElementById('panel-tsunami').hidden };
+      // the maximum and arrival views, and a tap on the map inside the place
+      const views = {};
+      for (const v of ['max', 'arrival']) {
+        document.querySelector(`#tsViews [data-view="${v}"]`).click();
+        const c = document.querySelector('canvas.tsunami-live'); let n = 0;
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        views[v] = { painted: n, key: document.getElementById('tsKey').textContent, pressed: document.querySelector(`#tsViews [data-view="${v}"]`).getAttribute('aria-pressed') };
+      }
+      const pin = !!document.querySelector('.ts-pin');
+      document.getElementById('tsBarClose').click();
+      return { final, painted, info, legendOn, bar, views, pin, cleared: !document.querySelector('canvas.tsunami-live') && document.getElementById('tsBar').hidden };
     });
     assert.ok(live.final && Math.abs(live.final.floodedHectares - 33.8) < 0.3 && Math.abs(live.final.maxLandDepth - 0.84) < 0.02, `the live run matches the offline model: ${JSON.stringify(live.final)}`);
-    assert.ok(live.info.state === 'ready' && live.info.frames >= 120 && live.painted > 100 && live.legendOn, `the run is painted on the map: ${JSON.stringify(live.info)} ${live.painted}`);
+    assert.ok(live.info.state === 'ready' && live.info.frames >= 120 && live.painted > 100 && live.legendOn, `the run is painted on the map: ${JSON.stringify(live.info)} ${live.painted} ${live.legendOn}`);
+    assert.ok(live.bar.shown && /Scenario: Moderate.*tide · not a forecast/.test(live.bar.banner), `the bar says what is being shown: ${JSON.stringify(live.bar)}`);
+    assert.ok(live.views.max.painted > 100 && /Deepest water/.test(live.views.max.key) && live.views.max.pressed === 'true', `the maximum view paints and has its own key: ${JSON.stringify(live.views.max)}`);
+    assert.ok(live.views.arrival.painted > 50 && /within 5 min/.test(live.views.arrival.key), `the arrival view paints its bands: ${JSON.stringify(live.views.arrival)}`);
+    assert.ok(live.pin, 'the modelled place has a wave pin on the map');
     assert.ok(live.cleared, 'the run is removed from the map');
+
+    // the pin's card: scenario chips and the tide steps; a chip runs the scenario, flipping the tide back is instant from the cache, a tap on the flooded land says when the water arrived
+    await page.evaluate(() => document.querySelector('.ts-pin').click());
+    await page.waitForSelector('.ts-card .ts-chip', { timeout: 20000 });
+    const card = await page.evaluate(() => ({ chips: [...document.querySelectorAll('.ts-card .ts-chip')].map((b) => b.textContent), tides: [...document.querySelectorAll('.ts-card .ts-seg button')].map((b) => b.textContent) }));
+    assert.ok(card.chips.length >= 3 && card.tides.join() === 'Low,Mid,High,Highest', `the card offers the scenarios and four tide steps: ${JSON.stringify(card)}`);
+    await page.click('.ts-card .ts-chip');
+    await page.waitForFunction("window.__floodStatus.tsunami.state === 'ready'", null, { timeout: 120000 });
+    const firstTide = await page.evaluate(() => window.__floodStatus.tsunami.tide);
+    const tideStep = async (state) => {
+      await page.evaluate(() => document.querySelector('.ts-pin').click());
+      await page.waitForSelector(`.ts-card [data-tide="${state}"]`);
+      await page.click(`.ts-card [data-tide="${state}"]`);
+      await page.waitForFunction(`window.__floodStatus.tsunami.state === 'ready' && window.__floodStatus.tsunami.tide === '${state}'`, null, { timeout: 120000 });
+    };
+    await tideStep('MHWS'); await tideStep(firstTide);
+    const again = await page.evaluate(() => ({ ...window.__floodStatus.tsunami }));
+    assert.ok(again.cached === true, `flipping the tide back is served from the cache: ${JSON.stringify(again)}`);
+    // a tap on the map inside the place says when the water arrives
+    const tap = await page.evaluate(() => {
+      const m = window.__floodMap, b = m.getBounds(), c = b.getCenter();
+      m.fire('click', { latlng: c, originalEvent: {} });
+      const popup = document.querySelector('.ts-tap');
+      return popup && popup.textContent;
+    });
+    assert.ok(tap && /Water arrives|Stays dry|At sea|Under water/.test(tap), `a tap gives the arrival time: ${tap}`);
+    await page.evaluate(() => document.getElementById('tsBarClose').click());
 
     // a Moreton Bay place with its own tide planes: Brisbane Bar's lowest state runs at the model's -1 m limit
     const bay = await page.evaluate(async () => {
       const final = await window.__floodTsunamiRun({ place: 'pine-estuary', label: '^Large', tide: 'LAT', minutes: 30 });
       const option = [...document.querySelectorAll('#tsTide option')].find((o) => o.value === 'LAT');
       const info = { ...window.__floodStatus.tsunami };
-      document.getElementById('tsClear').click();
+      document.getElementById('tsBarClose').click();
       return { final, info, label: option && option.textContent };
     });
     assert.ok(bay.final && Number.isFinite(bay.final.floodedHectares) && bay.info.state === 'ready' && bay.info.place === 'pine-estuary', `a Pine River run completed: ${JSON.stringify(bay.info)}`);
