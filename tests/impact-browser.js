@@ -137,6 +137,72 @@ async function main() {
     assert.ok(timeline && timeline.steps > 20, `a timeline was computed (${await page.evaluate(() => document.getElementById('timelineBox').textContent.slice(0, 200))})`);
     assert.ok(timeline.roadsClosed > 0 && timeline.maxIsolated >= 0, `the access analysis ran (${JSON.stringify(timeline)})`);
 
+    // the tsunami hazard layer: PTHA18's offshore wave heights, loaded on first use and restyled by return period
+    const name = 'Tsunami hazard: offshore wave height (PTHA18, experimental)';
+    const hazardOn = await page.evaluate((layer) => window.__floodSetOverlay(layer, true), name);
+    await page.waitForFunction("window.__floodStatus.tsunamiHazard && window.__floodStatus.tsunamiHazard.state === 'ready'", null, { timeout: 20000 });
+    const hazard = await page.evaluate((layer) => {
+      const first = { on: true, ...window.__floodStatus.tsunamiHazard, legend: document.getElementById('overlayLegend').textContent, control: !!document.querySelector('.tsunami-pick select') };
+      window.__floodTestZoom(-28.5, 134, 4);
+      const zoomedOut = window.__floodStatus.tsunamiHazard.shown;
+      window.__floodTestZoom(-28, 153.9, 9);
+      const zoomedIn = window.__floodStatus.tsunamiHazard.shown;
+      const select = document.querySelector('.tsunami-pick select');
+      select.value = '2500'; select.dispatchEvent(new Event('change'));
+      const second = document.getElementById('overlayLegend').textContent;
+      window.__floodSetOverlay(layer, false);
+      return { first, second, pickerSynced: select.value === '2500', zoomedOut, zoomedIn };
+    }, name);
+    hazard.first.on = hazardOn;
+    assert.ok(hazard.first.on && hazard.first.points > 1500, `the hazard layer loaded ${hazard.first.points} points`);
+    assert.match(hazard.first.legend, /1 in 500 years/); assert.match(hazard.second, /1 in 2500 years/);
+    assert.ok(hazard.first.control && hazard.pickerSynced, 'the return-period choice is in the Layers list');
+    assert.ok(hazard.zoomedOut > 100 && hazard.zoomedOut < hazard.first.points && hazard.zoomedIn === hazard.first.points, `zoomed out only the coarse set is drawn (${hazard.zoomedOut}), zoomed in all of them (${hazard.zoomedIn} of ${hazard.first.points})`);
+
+    // the modelled-areas tsunami flood hazard layer: one picture per modelled place, restyled by depth
+    const extentsName = 'Tsunami flood hazard: modelled areas (experimental)';
+    await page.evaluate((layer) => { window.__floodTestZoom(-27.953, 153.422, 12); return window.__floodSetOverlay(layer, true); }, extentsName);
+    await page.waitForFunction("window.__floodStatus.tsunamiExtents && window.__floodStatus.tsunamiExtents.state === 'ready' && window.__floodStatus.tsunamiExtents.drawn > 0", null, { timeout: 20000 });
+    const extents = await page.evaluate(async (layer) => {
+      const count = async () => {
+        const img = document.querySelector('img.tsunami-extent');
+        if (!img) return -1;
+        await img.decode();
+        const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, c.width, c.height).data; let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        return n;
+      };
+      const info = { ...window.__floodStatus.tsunamiExtents }, low = await count();
+      const select = document.querySelectorAll('.tsunami-pick select')[1];
+      select.value = '1'; select.dispatchEvent(new Event('change'));
+      const high = await count();
+      const legend = document.getElementById('overlayLegend').textContent;
+      window.__floodSetOverlay(layer, false);
+      return { info, low, high, legend, gone: !document.querySelector('img.tsunami-extent') };
+    }, extentsName);
+    assert.ok(extents.info.places >= 1 && extents.low > 0 && extents.high >= 0 && extents.high < extents.low, `the hazard picture is drawn and shrinks with depth (${extents.low} then ${extents.high} pixels)`);
+    assert.match(extents.legend, /Tsunami flood hazard/); assert.ok(extents.gone, 'the picture is removed with the layer');
+
+    // a live tsunami run in the browser worker: the Moderate Kermadec-Tonga scenario at mean sea level must give what the offline model gives (about 34 ha, 0.84 m)
+    const live = await page.evaluate(async () => {
+      window.__floodOpenPanel('panel-tsunami');
+      const final = await window.__floodTsunamiRun({ place: 'gold-coast-seaway', label: '^Moderate', tide: 'MSL', minutes: 60 });
+      const scrub = document.getElementById('tsScrub');
+      scrub.value = scrub.max; scrub.dispatchEvent(new Event('input'));   // the last frame, where the flood has reached its extent
+      const canvas = document.querySelector('canvas.tsunami-live');
+      let painted = 0;
+      if (canvas) { const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) painted++; }
+      const info = { ...window.__floodStatus.tsunami };
+      const legendOn = document.getElementById('overlayLegend').textContent.includes('Tsunami run');
+      document.getElementById('tsClear').click();
+      return { final, painted, info, legendOn, cleared: !document.querySelector('canvas.tsunami-live') };
+    });
+    assert.ok(live.final && Math.abs(live.final.floodedHectares - 33.8) < 0.3 && Math.abs(live.final.maxLandDepth - 0.84) < 0.02, `the live run matches the offline model: ${JSON.stringify(live.final)}`);
+    assert.ok(live.info.state === 'ready' && live.info.frames >= 120 && live.painted > 100 && live.legendOn, `the run is painted on the map: ${JSON.stringify(live.info)} ${live.painted}`);
+    assert.ok(live.cleared, 'the run is removed from the map');
+
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `
       + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off`);

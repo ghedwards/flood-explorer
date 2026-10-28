@@ -106,7 +106,8 @@ test(
       await page.waitForFunction(() => window.__floodStatus?.national?.loaded);
       await page.evaluate(() => window.__floodOpenPanel('panel-layers'));
       const groups = page.locator('#overlayList .layer-group');
-      assert.equal(await groups.count(), 4);
+      assert.equal(await groups.count(), 5);
+      assert.ok((await groups.locator('summary').allTextContents()).some(t => /Tsunami \(experimental\)/.test(t)), 'the tsunami hazard layer has its own group');
       const council = page.locator('#overlayList [data-group="council"]');
       await council.locator('summary').click();
       assert.equal(await council.evaluate(el => el.open), true);

@@ -12,6 +12,60 @@ displacement view, three virtual gauges and CSV export. The canvas uses basin
 coordinates in kilometres for idealised cases. Eight Australian east-coast
 subsets use geographic bounds and show the source latitude/longitude.
 
+## On the main map: offshore tsunami hazard
+
+The main map has a "Tsunami hazard: offshore wave height (PTHA18, experimental)" layer in its Layers panel (section "Tsunami"). It
+draws PTHA18's hazard at about 2,000 hazard points around Australia (the mainland, Tasmania, the Great Barrier Reef, the Coral Sea
+islands and Lord Howe; Indonesia, Timor, Papua New Guinea and New Zealand are cut out, as are the external territories) at roughly 100 m
+depth, coloured by the wave height for a return period chosen in the Layers panel (1 in 100, 250, 500, 1,000 or 2,500 years; 500 to start with).
+Zoomed out, about a third of the points are drawn (those that are the pick of a 0.5 degree cell) so the shelf seas do not show as solid blocks.
+Tapping a point gives the wave height at every return period, with PTHA18's 16th to 84th percentile range at 500 and 2,500 years.
+
+The numbers are PTHA18's logic-tree mean hazard curve summed over every source zone, stochastic-slip scenarios, as the largest wave height above
+mean sea level without tide. They are heights at sea on a coarse 1 arc-minute linear model, not where the land floods. The file
+`viewer/public/tsunami-data/ptha18-hazard.json` (about 150 KB, loaded when the layer is first switched on and cached by the service worker) is built by
+`node scripts/prepare-tsunami-hazard.js`, which reads the exceedance-rate tables from the NCI THREDDS server in bulk. For example, off the Gold Coast (the point at
+28.0°S 153.67°E, 69 m deep) the 1-in-500-year wave is 1.32 m (range 0.68 to 1.57 m), off Sydney about 0.9 m and off Perth about 0.6 m.
+
+### Running a scenario live on the main map
+
+The main map has a "Tsunami" tool (the wave icon in its side rail) that runs one curated PTHA18 scenario live in your browser and plays it over the map, in the same Rust /
+WebAssembly worker the lab uses (`viewer/tsunami-worker.js`), so nothing is computed on a server. Pick a modelled place (the Gold Coast Seaway and Currumbin for now), an earthquake, a
+tide state (LAT to HAT from the place's tidal planes, held for the whole run) and a run length of 30, 60 or 90 minutes, and press Run. A one-hour run takes a few seconds. The picture
+colours land under water by its depth (the same classes as the flood depth key) and the sea by the wave (orange crest, blue drawdown); a time bar and speed control play it back, with
+"land under water now", "most land flooded so far" and "deepest water on land so far" beside it.
+
+The four scenarios, from `scripts/prepare-tsunami-scenarios.js` (series files in `viewer/public/tsunami-data/scenarios/`, a few KB each), are real PTHA18 earthquakes whose waves at hazard
+point 1450.5 (667 m deep, 25 km off the Gold Coast) were chosen from the ensemble's flooding draws to span the range. At mean sea level the model floods:
+
+| Scenario | Mw | Wave at the point | Land flooded | Deepest |
+|---|---|---|---|---|
+| Moderate (Kermadec-Tonga, row 38914) | 8.8 | 0.22 m | 34 ha | 0.84 m |
+| Large (New Hebrides, row 11816) | 8.8 | 0.46 m | 60 ha | 1.27 m |
+| Distant mega-quake (South America, row 146274) | 9.5 | 0.47 m | 77 ha | 1.39 m |
+| Very large (Kermadec-Tonga, row 42930) | 9.3 | 0.62 m | 72 ha | 2.16 m |
+
+The page's run gives the same numbers as `scripts/run-series-local.js` (a test and the browser check compare them to the hundredth of a hectare). The panel shows each earthquake's
+annual rate as how rare the earthquake is, not how often such a wave happens. The same limits as above apply: one scenario, the wave applied at the open edges without scaling for depth, a
+first-order shoreline scheme, no defences or drainage, and no validation against a recorded event. It is not a forecast or an evacuation guide.
+
+### Modelled flood hazard on the main map
+
+A second layer, "Tsunami flood hazard: modelled areas (experimental)", paints how often the sampled tsunamis put at least a chosen depth of water
+(0.1, 0.3 or 1 m, chosen in the Layers panel) on each 50 m cell of the places the lab models locally. It is built from the same rate-proportional
+samples as the ensemble above: `scripts/ensemble-ptha.js --tide-weighted --cells-out` runs 60 draws of each of Kermadec-Tonga, New Hebrides and
+South America (Mw 8.4 to 9.6, one hour) at all seven tide states, weighted by how often the Seaway gauge sits nearest each, and records for each cell the
+share of draws, over the states, that add at least each depth. `scripts/prepare-tsunami-extents.js` multiplies each zone's share by its annual rate and sums the zones,
+giving a rate per cell, stored as one byte per cell (`viewer/public/tsunami-data/extents/<place>.json`, about 60 KB). The map draws it in six classes, from rarer than
+1 in 2,500 years to more often than 1 in 100 years; cells the sampled scenarios never reach, or reach less often than 1 in 10,000 years, are left clear. For the Gold Coast
+Seaway the most frequently reached cell gets 0.1 m about once in 59 years, 0.3 m about once in 86 years and 1 m about once in 514 years. For Currumbin Creek (the same samples and Seaway tide, its own 25 m grid) the figures are 1 in 61, 1 in 99 and 1 in 682 years. The layer is placed on the map by a
+UTM zone 56 transform (checked against GA's published GDA reference point to a millimetre).
+
+"Water added" is the most the wave raises the water above what the tide already covers at the cell, so the tide's own flooding is not counted. As with the ensemble this is a
+lower bound from a sample: other zones and smaller earthquakes are left out, the terrain is the bundled grid with no defences or drainage, the offshore wave is applied at the open edges
+without scaling for depth, and the model is not validated against a recorded event. The sampling error is large for rare outcomes. It is a way to see where the sampled scenarios send
+water, not a hazard assessment.
+
 ## Demonstration defaults
 
 The UI starts with an intentionally exaggerated **2.5 m nominal source strength**.

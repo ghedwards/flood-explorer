@@ -24,7 +24,7 @@ function load(dir, prefix) {
   return { t, y };
 }
 
-function analyse(dir) {
+function analyse(dir, { published = null, source = 'Maritime Safety Queensland Gold Coast Seaway tide gauge (station 045044A), CC BY 4.0, data.qld.gov.au' } = {}) {
   const obs = load(dir, 'obs'), pred = load(dir, 'pred');
   if (obs.t.length < 20000 || pred.t.length < 20000) throw new Error('Need at least a few months of observed and predicted records.');
   // MSQ moves MSL each year for sea-level rise, so the planes come from the latest predicted year alone, the table's own year
@@ -50,18 +50,17 @@ function analyse(dir) {
   obs.t.forEach((t, i) => { const yr = new Date(t * 3600000).getUTCFullYear(), a = annual.get(yr) || [0, 0]; a[0] += obs.y[i]; a[1]++; annual.set(yr, a); });
   const pts = [...annual].filter(([, a]) => a[1] > 40000).map(([yr, a]) => [yr + 0.5, a[0] / a[1]]);
   const mx = pts.reduce((a, p) => a + p[0], 0) / pts.length, my = pts.reduce((a, p) => a + p[1], 0) / pts.length;
-  const slope = pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0);
+  // fewer than six annual means cannot separate the rise from year-to-year swings (ENSO), so no trend is removed then
+  const slope = pts.length < 6 ? 0 : pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0);
   const moved = obs.t.map((t, i) => obs.y[i] + slope * (lastYear + 0.5 - (new Date(t * 3600000).getUTCFullYear() + 0.5)));
-  const published = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway-tidal-planes.json'), 'utf8')).planes;
   const years = [...new Set(obs.t.map(t => new Date(t * 3600000).getUTCFullYear()))];
   return {
-    source: 'Maritime Safety Queensland Gold Coast Seaway tide gauge (station 045044A), CC BY 4.0, data.qld.gov.au',
+    source,
     observed: { samples: obs.t.length, years, from: new Date(obs.t[0] * 3600000).toISOString().slice(0, 10), to: new Date(obs.t[obs.t.length - 1] * 3600000).toISOString().slice(0, 10) },
     harmonicFitVsPrediction: { year: lastYear, rmsM: r3(Math.sqrt(sq / fitted.length)), samples: pt.length },
     planesFromPredictions: Object.fromEntries(Object.entries(planes).map(([k, v]) => [k, r3(v)])),
     planesFromObservations: Object.fromEntries(Object.entries(obsPlanes).map(([k, v]) => [k, r3(v)])),
-    publishedPlanes: published,
-    publishedMinusPredictions: Object.fromEntries(Object.keys(published).map(k => [k, r3(published[k] - planes[k])])),
+    ...(published && { publishedPlanes: published, publishedMinusPredictions: Object.fromEntries(Object.keys(published).map(k => [k, r3(published[k] - planes[k])])) }),
     constituents: predFit.parts.filter(p => p.amp > 0.01).map(p => ({ name: p.name, ampM: r3(p.amp) })),
     observedMinusPredicted: { n: resid.length, meanM: r3(mean), sdM: r3(sd), p01: r3(pct(resid, 0.01)), p99: r3(pct(resid, 0.99)), min: r3(resid[0]), max: r3(resid[resid.length - 1]) },
     // how often the sea is nearest each plane, measured on the observed levels against the predicted planes
@@ -71,10 +70,13 @@ function analyse(dir) {
 }
 
 if (require.main === module) {
-  const argv = process.argv.slice(2), dir = argv.find(a => !a.startsWith('--')), o = argv.indexOf('--out');
-  if (!dir) { console.error('Usage: node scripts/tide-analysis.js <dir> [--out file.json]'); process.exit(1); }
-  const result = analyse(dir);
+  const argv = process.argv.slice(2), dir = argv.find(a => !a.startsWith('--')), opt = name => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
+  if (!dir) { console.error('Usage: node scripts/tide-analysis.js <dir> [--out file.json] [--published planes.json] [--source "gauge description"] [--planes-out file.json --place "Place name"]'); process.exit(1); }
+  const publishedFile = opt('--published') || (opt('--source') ? null : path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway-tidal-planes.json'));
+  const result = analyse(dir, { published: publishedFile && JSON.parse(fs.readFileSync(publishedFile, 'utf8')).planes, ...(opt('--source') && { source: opt('--source') }) });
   console.log(JSON.stringify(result, null, 2));
-  if (o >= 0) fs.writeFileSync(argv[o + 1], JSON.stringify(result, null, 2) + '\n');
+  if (opt('--out')) fs.writeFileSync(opt('--out'), JSON.stringify(result, null, 2) + '\n');
+  // planes taken from the fit to the latest predicted year, in the shape tide-lib.js reads (not read from a published table, so not verified)
+  if (opt('--planes-out')) fs.writeFileSync(opt('--planes-out'), JSON.stringify({ place: opt('--place'), source: `Harmonic fit to ${result.harmonicFitVsPrediction.year} predicted levels: ${result.source}`, datum: 'Queensland Port Datum (LAT), metres above datum, as the gauge reports', planes: result.planesFromPredictions, verified: false, note: 'Fitted by scripts/tide-analysis.js from the predicted 10-minute levels, not read from a published tidal-planes table; HAT and LAT are the extremes of the fitted tide over 19 years without nodal corrections. Only heights relative to MSL are used by the tide scripts.' }, null, 2) + '\n');
 }
 module.exports = { analyse };

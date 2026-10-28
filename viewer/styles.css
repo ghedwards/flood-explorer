@@ -533,3 +533,25 @@ ol.problems pre { white-space: pre-wrap; font: 11px/1.35 var(--font-data); margi
 .layer-group-body { display: grid; gap: 8px; padding: 12px 0 4px; }
 
 .layer-source { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+
+/* Tsunami hazard layer (tsunami-hazard.js): the return-period choice in the Layers list and the point popup */
+.tsunami-pick { display: grid; gap: 2px; margin: 0 0 6px 26px; font: 12.5px/1.3 var(--font-body); color: var(--ink); }
+.tsunami-pick select { font: 13px var(--font-body); padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.tsunami-pick small { color: var(--muted); }
+.tsunami-pop { font: 13px/1.35 var(--font-body); }
+.tsunami-pop table { border-collapse: collapse; margin: 4px 0; width: 100%; }
+.tsunami-pop th, .tsunami-pop td { text-align: left; padding: 2px 8px 2px 0; font-weight: 400; white-space: nowrap; }
+.tsunami-pop thead th { font-weight: 600; color: var(--muted); }
+.tsunami-pop .hint { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+
+/* Tsunami run panel (tsunami-panel.js) */
+.ts-field { display: grid; gap: 4px; margin: 8px 0; font-size: 13.5px; }
+.ts-field select, #tsSpeed { font: 13.5px var(--font-body); padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.ts-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+#tsProgress { width: 100%; }
+.ts-metrics { display: grid; gap: 4px; margin: 8px 0 0; }
+.ts-metrics div { display: flex; justify-content: space-between; gap: 12px; font-size: 13.5px; }
+.ts-metrics dt { color: var(--muted); }
+.ts-metrics dd { margin: 0; font-weight: 600; }
+.ts-limits { margin-top: 4px; }
+

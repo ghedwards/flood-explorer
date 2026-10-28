@@ -47,3 +47,17 @@ with Maritime Safety Queensland's gauge records.
 `gold-coast-seaway-tide-analysis.json` is the output of `scripts/tide-analysis.js` on those gauge records (observed and
 predicted 10-minute levels at the Seaway, 2016-2025, CC BY 4.0, data.qld.gov.au): fitted tidal constituents, the planes they give,
 the gauge minus the prediction, and how often the sea sits nearest each tide state (`stateWeights`, used by `scripts/tide-sweep.js`).
+
+`brisbane-bar-tidal-planes.json` and `brisbane-bar-tide-analysis.json` are the same for Maritime Safety Queensland's Brisbane Bar gauge
+(2023 to 2025 observed levels and the 2025 and 2026 predictions, CC BY 4.0, data.qld.gov.au), for the Moreton Bay and Brisbane River places. The planes are
+fitted by `scripts/tide-analysis.js`, not read from a published table, so `verified` is false; only three observed years were open, so no sea-level trend
+is removed from the state weights. `scripts/ensemble-ptha.js --tide brisbane-bar` uses them.
+
+`extents/` holds the per-cell tsunami flood rates for the main map's "Tsunami flood hazard" layer, one file per modelled place and an `index.json` listing them
+(built by `scripts/prepare-tsunami-extents.js`; see docs/tsunami-prototype.md). They combine PTHA18 (Geoscience Australia, CC BY 4.0) with the place's terrain and carry
+both attributions; the Gold Coast Seaway grid is CSIRO's, CC BY 4.0.
+
+The `extents/currumbin.json` map is derived from the QldDem terrain (CC BY-SA), so it is shared under the same CC BY-SA terms with the acknowledgements in the terrain file; the Seaway map's terrain is CSIRO's, CC BY 4.0.
+
+The model starts no lower than -1 m, and Brisbane Bar's LAT is 1.15 m below its MSL, so `scripts/ensemble-ptha.js` runs that one state (0.8% of the time) at -1 m and records it in the cell files' `tideLevels`.
+

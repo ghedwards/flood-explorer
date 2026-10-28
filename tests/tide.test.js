@@ -78,3 +78,28 @@ test('a gauge CSV parses, and tide-state weights add to one and follow the level
   assert.equal(Object.values(w).reduce((a, b) => a + b, 0).toFixed(3), '1.000');
   assert.equal(w.LAT, 0.4); assert.equal(w.MSL, 0.4); assert.equal(w.HAT, 0.2);
 });
+
+test('the gauge analysis recovers a synthetic station, with no trend removed from under six years', () => {
+  const os = require('node:os');
+  const { analyse } = require('../scripts/tide-analysis.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tide-'));
+  try {
+    const rows = year => {
+      const out = ['_id,Date,Time,Ind,Reading'];
+      for (let i = 0, t = Date.UTC(year, 0, 1); t < Date.UTC(year + 1, 0, 1); i++, t += 600000) {
+        const d = new Date(t), h = (t - Date.UTC(2020, 0, 1)) / 3600000, pad = n => String(n).padStart(2, '0');
+        const level = 1 + 0.7 * Math.cos(28.9841042 * h * Math.PI / 180) + 0.2 * Math.cos((30 * h + 40) * Math.PI / 180) + 0.15 * Math.cos((15.0410686 * h + 10) * Math.PI / 180);
+        out.push(`${i + 1},${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${year},${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())},9,${level.toFixed(3)}`);
+      }
+      return out.join('\n');
+    };
+    fs.writeFileSync(path.join(dir, 'obs_2024.csv'), rows(2024)); fs.writeFileSync(path.join(dir, 'pred_2024.csv'), rows(2024));
+    const r = analyse(dir, { published: null, source: 'synthetic' });
+    assert.equal(r.source, 'synthetic');
+    assert.ok(Math.abs(r.planesFromPredictions.MSL - 1) < 0.01 && Math.abs(r.planesFromPredictions.MHWS - 1.9) < 0.01 && Math.abs(r.planesFromPredictions.MLWS - 0.1) < 0.01, JSON.stringify(r.planesFromPredictions));
+    assert.equal(r.meanSeaLevelTrendMPerYear, 0);
+    assert.ok(r.harmonicFitVsPrediction.rmsM < 0.01 && r.observedMinusPredicted.sdM < 0.001);
+    assert.equal(r.publishedPlanes, undefined);
+    assert.ok(Math.abs(Object.values(r.stateWeights).reduce((a, b) => a + b, 0) - 1) < 0.001);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
