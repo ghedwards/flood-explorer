@@ -643,6 +643,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     o.f64s("depth", &s.depth);
                     o.f64s("vx", &s.vx);
                     o.f64s("vy", &s.vy);
+                    o.f64s("peak", &s.peak);
                     *slot = None;
                 }
                 Ok(())

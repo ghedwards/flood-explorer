@@ -41,6 +41,8 @@ pub struct Solver {
     scale: Vec<f64>,
     pub vx: Vec<f64>,
     pub vy: Vec<f64>,
+    /// The deepest water each cell has held so far (after each step, boundary cells included).
+    pub peak: Vec<f64>,
 }
 impl Solver {
     pub fn new(grid: Grid, opts: Options) -> Result<Self, String> {
@@ -73,7 +75,8 @@ impl Solver {
         } else {opts.initial_depth}).collect();
         let mut s = Self { grid, opts, depth, time: 0.0, steps: 0, initial_volume: 0.0,
             source_volume: 0.0, boundary_volume: 0.0, qx: vec![0.0;n], qy: vec![0.0;n],
-            outgoing: vec![0.0;n], scale: vec![1.0;n], vx: vec![0.0;n], vy: vec![0.0;n] };
+            outgoing: vec![0.0;n], scale: vec![1.0;n], vx: vec![0.0;n], vy: vec![0.0;n], peak: vec![0.0;n] };
+        s.peak.copy_from_slice(&s.depth);
         s.initial_volume = s.volume();
         Ok(s)
     }
@@ -155,6 +158,7 @@ impl Solver {
                     let h = (self.opts.stages[i]-self.grid.dem[i] as f64).max(0.0);
                     self.boundary_volume += (h-self.depth[i])*area; self.depth[i] = h;
                 }
+                if self.depth[i] > self.peak[i] { self.peak[i] = self.depth[i]; }
             }
             // Update cell velocities from face fluxes (unit-width discharge / depth).
             for i in 0..n {
@@ -215,6 +219,23 @@ mod tests {
         s.depth[1]=1.0;let slope=(s.grid.dem[0] as f64)/s.grid.cell;
         let q=slope.sqrt()/s.opts.roughness;
         assert!((s.flux(0,1,q,1.0)-q).abs()<1e-12);
+    }
+    #[test] fn peak_is_the_deepest_water_each_cell_held_and_never_below_the_final_depth() {
+        // a slope draining to a held outlet: an hour of rain, then none; the rain puddles on the slope and then runs off
+        let (w,h)=(12,1); let mut stages=vec![f64::NAN;w*h]; stages[w-1]=0.0;
+        let mut s=Solver::new(Grid {w,h,cell:10.0,dem:(0..w).map(|i| (w-1-i) as f32*0.5).collect(),valid:None,inflow:None,d8:None},Options {
+            seconds:7200.0,rain_mm_h:0.0,roughness:0.035,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:Some(vec![60.0,0.0]),stages
+        }).unwrap();
+        finish(&mut s);
+        assert!(s.peak.iter().zip(&s.depth).all(|(p,d)| p>=d), "the peak is at least the final depth everywhere");
+        assert!(s.peak[..w-1].iter().all(|p| *p>0.0), "every cell got wet at some point");
+        assert!(s.peak[4]>s.depth[4]+1e-4, "water that ran off left less behind than the peak: {} vs {}",s.peak[4],s.depth[4]);
+        assert!(s.depth[..w-1].iter().all(|d| *d<0.01), "the slope has drained by the end");
+        assert!(s.balance_error().abs()<1e-8);
+    }
+    #[test] fn peak_starts_at_the_initial_water() {
+        let mut s=solver(4,4); s.opts.initial_depth=0.0; s.depth[5]=0.3; s.peak.copy_from_slice(&s.depth);
+        assert_eq!(s.peak[5],0.3); assert_eq!(s.peak[0],0.0);
     }
     #[test] fn rejects_bad_inputs() {
         let s=solver(2,2);let mut o=s.opts.clone();o.roughness=f64::NAN;

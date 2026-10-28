@@ -214,9 +214,32 @@ async function main() {
     assert.ok(bay.final && Number.isFinite(bay.final.floodedHectares) && bay.info.state === 'ready' && bay.info.place === 'pine-estuary', `a Pine River run completed: ${JSON.stringify(bay.info)}`);
     assert.match(bay.label, /run at -1\.00 m/, 'the tide menu says the lowest state runs at -1 m');
 
+    // flash flooding by the 2D solver: the storm's runoff moved over the model's terrain, shown as the deepest water each cell held
+    await page.evaluate(() => window.__floodSetStorm('flash', 120, 1, 'typical'));
+    const screening = await page.evaluate(() => ({ ...window.__floodStatus.flash, methodRow: !document.getElementById('flashMethodRow').hidden, controls: !document.getElementById('flash2dControls').hidden }));
+    assert.ok(screening.methodRow && !screening.controls, 'the method choice shows for flash flooding, and the 2D controls only once chosen');
+    const flashStart = Date.now();
+    await page.evaluate(() => { document.getElementById('flash2dResolution').value = '96'; window.__floodFlash2d({ method: '2d' }); });
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.storm && window.__floodStatus.inertial.running === false", null, { timeout: 180000 });
+    const flashMs = Date.now() - flashStart;
+    const flash2d = await page.evaluate(() => ({ inertial: { ...window.__floodStatus.inertial, vx: undefined, vy: undefined }, status: document.getElementById('flash2dStatus').textContent, summary: document.getElementById('summaryLine').textContent, controls: !document.getElementById('flash2dControls').hidden }));
+    assert.ok(!flash2d.inertial.error && flash2d.inertial.peak === true && flash2d.inertial.storm.effectiveMm > 90 && flash2d.inertial.time >= 3 * 3600 - 1, `the 2D storm run finished: ${JSON.stringify(flash2d.inertial).slice(0, 300)}`);
+    assert.match(flash2d.status, /deepest water each cell held/); assert.match(flash2d.summary, /deepest water over/); assert.ok(flash2d.controls);
+    assert.ok(flash2d.inertial.sourceVolume > 0 && Math.abs(flash2d.inertial.balanceError) < 1e-6 * flash2d.inertial.sourceVolume + 1, `the run conserves water: ${flash2d.inertial.balanceError} of ${flash2d.inertial.sourceVolume} m3`);
+    if (process.env.SHOT_DIR) {   // for looking at by hand
+      await page.evaluate(() => { document.getElementById('panel-tsunami').hidden = true; document.getElementById('flashMethodRow').scrollIntoView({ block: 'start' }); });
+      await page.screenshot({ path: path.join(process.env.SHOT_DIR, 'flash-2d.png') });
+    }
+    // changing the storm drops the 2D result and says so; choosing the screening model again restores it
+    await page.evaluate(() => window.__floodSetStorm('flash', 60, 1, 'typical'));
+    const after = await page.evaluate(() => ({ inertial: window.__floodStatus.inertial, status: document.getElementById('flash2dStatus').textContent }));
+    assert.ok(!after.inertial && /Press Run/.test(after.status), `a changed storm drops the 2D run: ${JSON.stringify(after)}`);
+    await page.evaluate(() => { document.getElementById('flashMethod').value = 'screen'; document.getElementById('flashMethod').dispatchEvent(new Event('change')); });
+    assert.ok(await page.evaluate(() => document.getElementById('flash2dControls').hidden), 'the screening model hides the 2D controls');
+
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `
-      + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off`);
+      + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off; 2D storm run ${flashMs} ms (${flash2d.inertial.W} x ${flash2d.inertial.H} cells, ${flash2d.inertial.steps} steps)`);
   } finally {
     if (browser) await browser.close();
     await new Promise((resolve) => server.close(resolve));

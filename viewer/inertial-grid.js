@@ -25,15 +25,17 @@
     const x = Math.floor((i % a.W) / g.factor), y = Math.floor(Math.floor(i / a.W) / g.factor);
     return x < g.W && y < g.H ? y * g.W + x : -1;
   }
-  function expand(a, g, result) {
+  // `peak` shows the deepest water each cell held over the run (result.peak) instead of the final depth.
+  function expand(a, g, result, { peak = false } = {}) {
+    const depths = peak && result.peak ? result.peak : result.depth;
     const n = a.W * a.H, depth = new Float32Array(n), wet = new Uint8Array(n), level = new Float32Array(n);
     const vx = new Float64Array(n), vy = new Float64Array(n);
     level.fill(NaN);
     for (let i = 0; i < n; i++) {
       const j = cell(g, a, i);
       if (j < 0 || !g.valid[j] || (a.valid && !a.valid[i])) continue;
-      depth[i] = result.depth[j]; wet[i] = depth[i] >= 0.01 ? 1 : 0;
-      level[i] = g.dem[j] + result.depth[j];
+      depth[i] = depths[j]; wet[i] = depth[i] >= 0.01 ? 1 : 0;
+      level[i] = g.dem[j] + depths[j];
       if (result.vx) vx[i] = result.vx[j];
       if (result.vy) vy[i] = result.vy[j];
     }
