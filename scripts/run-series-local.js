@@ -17,7 +17,8 @@ const F = require('../tests/model.js');
 // "Land" is what is dry at `baseline` (default: the starting level), so that runs at
 // different tide levels are measured over the same ground: land that a high tide has
 // already covered is counted as flooded, with its depth is the tide's plus the wave's.
-async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide } = {}) {
+// With `keepPeak`, the result also carries `landPeak`: for each cell that is land at `baseline`, the most water the wave added there (m), and `W`, `H`, `cell`.
+async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide, keepPeak = false } = {}) {
   const { forcingFromSeries } = await import('../viewer/tsunami-coupling.js');
   const { tsunamiGrid } = await import('../viewer/tsunami-grid.js');
   const fine = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway.json')));
@@ -29,8 +30,10 @@ async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide } =
   let frame;
   while (!frame || frame.time < seconds) frame = F.tsunamiStep(200);
   let water = 0, land = 0, covered = 0, tideOnly = 0;
+  const landPeak = keepPeak ? new Float32Array(grid.depth.length) : null;
   for (let i = 0; i < grid.depth.length; i++) {
     if (dry[i] !== 0) { water = Math.max(water, frame.peak[i]); continue; }
+    if (landPeak) landPeak[i] = frame.peak[i];
     const depth = grid.depth[i] + frame.peak[i];
     land = Math.max(land, depth);
     if (depth > .01) covered++;
@@ -41,7 +44,8 @@ async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide } =
   // tideOnlyHectares: what the starting sea level covers before any wave; addedHectares: the
   // difference, land the wave newly covered. Without a tide, flooded and added are the same.
   return { offshorePeak: Math.max(...series.values.map(Math.abs)), maxWaterLevel: water, maxLandDepth: land,
-    floodedHectares: hectares(covered), tideOnlyHectares: hectares(tideOnly), addedHectares: hectares(covered - tideOnly) };
+    floodedHectares: hectares(covered), tideOnlyHectares: hectares(tideOnly), addedHectares: hectares(covered - tideOnly),
+    ...(landPeak && { landPeak, W: grid.W, H: grid.H, cell: grid.cell }) };
 }
 
 async function main(argv) {

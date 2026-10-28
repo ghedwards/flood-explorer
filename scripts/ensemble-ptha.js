@@ -3,7 +3,7 @@
 // scenarios reach given offshore and flooded-area levels.
 //
 //   NODE_USE_ENV_PROXY=1 node scripts/ensemble-ptha.js --zone kermadectonga2 --gauge 1450.5 \
-//       --mw 8.6,9.6 --count 24 [--seconds 3600] [--seed 1] [--jobs N] [--tide-weighted] [--out report.json]
+//       --mw 8.6,9.6 --count 24 [--seconds 3600] [--seed 1] [--jobs N] [--tide-weighted [--cells-out cells.json]] [--out report.json]
 //
 // Scenarios are drawn with probability proportional to their annual rate (systematic
 // sampling), so common scenarios appear in proportion to how often they occur. For a level
@@ -61,6 +61,10 @@ async function main(options) {
   // --tide-weighted: also run every flooding scenario at each tidal-plane state (MSL in the terrain's zero) and weight
   // the states by how often the sea sits nearest each (scripts/tide-analysis.js, from the Seaway gauge)
   let tides = null, weights = null;
+  // --cells-out FILE (with --tide-weighted): also the share of draws (weighted over tide states) that put at least each depth
+  // of water on each local cell, for scripts/prepare-tsunami-extents.js
+  const CELL_DEPTHS = [0.1, 0.3, 1];
+  let cells = null;
   if (options['tide-weighted']) {
     const dir = path.join(__dirname, '../viewer/public/tsunami-data/');
     const planes = JSON.parse(fs.readFileSync(dir + 'gold-coast-seaway-tidal-planes.json', 'utf8'));
@@ -82,7 +86,12 @@ async function main(options) {
         flooded = run.floodedHectares; landDepth = run.maxLandDepth; ran = true;
         // every tide state, measured over the ground that is dry at mean sea level: the wave's own area is what it adds to the tide
         if (tides) byState = Object.fromEntries(await Promise.all(tides.map(async t => {
-          const r = await workers.run(csv, seconds, { tide: t.level, baseline: 0 });
+          const r = await workers.run(csv, seconds, { tide: t.level, baseline: 0, keepPeak: !!options['cells-out'] });
+          if (options['cells-out']) {
+            cells = cells || { W: r.W, H: r.H, cell: r.cell, fraction: CELL_DEPTHS.map(() => new Float64Array(r.W * r.H)) };
+            const share = draw.draws / count * weights[t.state];
+            CELL_DEPTHS.forEach((depth, k) => { for (let i = 0; i < r.landPeak.length; i++) if (r.landPeak[i] >= depth) cells.fraction[k][i] += share; });
+          }
           return [t.state, { floodedHectares: r.floodedHectares, addedHectares: r.addedHectares }];
         })));
       }
@@ -112,6 +121,11 @@ async function main(options) {
     };
     report.tideWeights = weights;
     report.tideWeightedAdded = exceed('area the wave adds to the tide', 'addedHectares', [1, 10, 30, 60, 90], 'ha');
+  }
+  if (cells && options['cells-out']) {
+    const round = a => Array.from(a, v => +v.toPrecision(5));
+    fs.writeFileSync(options['cells-out'], JSON.stringify({ zone, gauge: point.gaugeID, mw: [mwMin, mwMax], count, seed: options.seed ? Number(options.seed) : 1, poolRate: total, W: cells.W, H: cells.H, cell: cells.cell, depths: CELL_DEPTHS, fraction: cells.fraction.map(round) }));
+    console.log(`Wrote ${options['cells-out']}`);
   }
   if (options.out) { fs.writeFileSync(options.out, JSON.stringify(report, null, 1)); console.log(`\nWrote ${options.out}`); }
   return report;
