@@ -71,7 +71,9 @@ async function main(options) {
     if (!/^[a-z-]+$/.test(tideName)) throw new Error('--tide names a tide station such as gold-coast-seaway.');
     const planes = JSON.parse(fs.readFileSync(`${dir}${tideName}-tidal-planes.json`, 'utf8'));
     weights = JSON.parse(fs.readFileSync(`${dir}${tideName}-tide-analysis.json`, 'utf8')).stateWeights;
-    tides = tideLib.STATES.map(state => ({ state, level: tideLib.stateLevel(planes, state) }));
+    // the model starts no lower than -1 m, so a lower state (Brisbane Bar's LAT is 1.15 m below MSL) is run at -1 m and flagged
+    tides = tideLib.STATES.map(state => { const level = tideLib.stateLevel(planes, state); return { state, level: Math.max(-1, level), clamped: level < -1 }; });
+    for (const t of tides) if (t.clamped) console.log(`Tide state ${t.state} is below the model's -1 m limit: run at -1 m.`);
   }
   const workers = createPool(options.jobs ? Number(options.jobs) : defaultJobs());
   let results;
@@ -126,7 +128,7 @@ async function main(options) {
   }
   if (cells && options['cells-out']) {
     const round = a => Array.from(a, v => +v.toPrecision(5));
-    fs.writeFileSync(options['cells-out'], JSON.stringify({ zone, place, tide: options.tide || 'gold-coast-seaway', gauge: point.gaugeID, mw: [mwMin, mwMax], count, seed: options.seed ? Number(options.seed) : 1, poolRate: total, W: cells.W, H: cells.H, cell: cells.cell, depths: CELL_DEPTHS, fraction: cells.fraction.map(round) }));
+    fs.writeFileSync(options['cells-out'], JSON.stringify({ zone, place, tide: options.tide || 'gold-coast-seaway', gauge: point.gaugeID, mw: [mwMin, mwMax], count, seed: options.seed ? Number(options.seed) : 1, poolRate: total, tideLevels: tides.map(t => ({ state: t.state, level: t.level, clamped: t.clamped })), W: cells.W, H: cells.H, cell: cells.cell, depths: CELL_DEPTHS, fraction: cells.fraction.map(round) }));
     console.log(`Wrote ${options['cells-out']}`);
   }
   if (options.out) { fs.writeFileSync(options.out, JSON.stringify(report, null, 1)); console.log(`\nWrote ${options.out}`); }

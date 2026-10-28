@@ -59,3 +59,5 @@ both attributions; the Gold Coast Seaway grid is CSIRO's, CC BY 4.0.
 
 The `extents/currumbin.json` map is derived from the QldDem terrain (CC BY-SA), so it is shared under the same CC BY-SA terms with the acknowledgements in the terrain file; the Seaway map's terrain is CSIRO's, CC BY 4.0.
 
+The model starts no lower than -1 m, and Brisbane Bar's LAT is 1.15 m below its MSL, so `scripts/ensemble-ptha.js` runs that one state (0.8% of the time) at -1 m and records it in the cell files' `tideLevels`.
+
