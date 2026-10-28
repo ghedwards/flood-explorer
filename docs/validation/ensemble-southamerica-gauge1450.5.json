@@ -410,7 +410,37 @@
    "peak": 0.100100899133876,
    "floodedHectares": 11.25,
    "maxLandDepth": 0.21745716035366058,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 11.25,
+     "addedHectares": 11.25
+    },
+    "MHWN": {
+     "floodedHectares": 79,
+     "addedHectares": 9
+    },
+    "MHWS": {
+     "floodedHectares": 123.25,
+     "addedHectares": 7
+    },
+    "HAT": {
+     "floodedHectares": 153.5,
+     "addedHectares": 5.25
+    }
+   }
   },
   {
    "row": 131106,
@@ -490,7 +520,37 @@
    "peak": 0.13125407100722342,
    "floodedHectares": 5.75,
    "maxLandDepth": 0.13044525682926178,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 5.75,
+     "addedHectares": 5.75
+    },
+    "MHWN": {
+     "floodedHectares": 75.25,
+     "addedHectares": 5.25
+    },
+    "MHWS": {
+     "floodedHectares": 119.25,
+     "addedHectares": 3
+    },
+    "HAT": {
+     "floodedHectares": 151.25,
+     "addedHectares": 3
+    }
+   }
   },
   {
    "row": 135693,
@@ -520,7 +580,37 @@
    "peak": 0.1483182081902418,
    "floodedHectares": 7,
    "maxLandDepth": 0.1859695017337799,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 7,
+     "addedHectares": 7
+    },
+    "MHWN": {
+     "floodedHectares": 74.75,
+     "addedHectares": 4.75
+    },
+    "MHWS": {
+     "floodedHectares": 119.75,
+     "addedHectares": 3.5
+    },
+    "HAT": {
+     "floodedHectares": 152.25,
+     "addedHectares": 4
+    }
+   }
   },
   {
    "row": 137811,
@@ -530,7 +620,37 @@
    "peak": 0.11270867461848297,
    "floodedHectares": 10.5,
    "maxLandDepth": 0.17150156199932098,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 10.5,
+     "addedHectares": 10.5
+    },
+    "MHWN": {
+     "floodedHectares": 78.25,
+     "addedHectares": 8.25
+    },
+    "MHWS": {
+     "floodedHectares": 122.25,
+     "addedHectares": 6
+    },
+    "HAT": {
+     "floodedHectares": 153,
+     "addedHectares": 4.75
+    }
+   }
   },
   {
    "row": 138497,
@@ -540,7 +660,37 @@
    "peak": 0.149453482476112,
    "floodedHectares": 17.25,
    "maxLandDepth": 0.49167630076408386,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 17.25,
+     "addedHectares": 17.25
+    },
+    "MHWN": {
+     "floodedHectares": 83,
+     "addedHectares": 13
+    },
+    "MHWS": {
+     "floodedHectares": 127.5,
+     "addedHectares": 11.25
+    },
+    "HAT": {
+     "floodedHectares": 156.5,
+     "addedHectares": 8.25
+    }
+   }
   },
   {
    "row": 139474,
@@ -550,7 +700,37 @@
    "peak": 0.21527730247669602,
    "floodedHectares": 18.5,
    "maxLandDepth": 0.4981635808944702,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 18.5,
+     "addedHectares": 18.5
+    },
+    "MHWN": {
+     "floodedHectares": 83,
+     "addedHectares": 13
+    },
+    "MHWS": {
+     "floodedHectares": 127.5,
+     "addedHectares": 11.25
+    },
+    "HAT": {
+     "floodedHectares": 158,
+     "addedHectares": 9.75
+    }
+   }
   },
   {
    "row": 140234,
@@ -560,7 +740,37 @@
    "peak": 0.1163829684463614,
    "floodedHectares": 2,
    "maxLandDepth": 0.0728875994682312,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 2,
+     "addedHectares": 2
+    },
+    "MHWN": {
+     "floodedHectares": 72.75,
+     "addedHectares": 2.75
+    },
+    "MHWS": {
+     "floodedHectares": 117.5,
+     "addedHectares": 1.25
+    },
+    "HAT": {
+     "floodedHectares": 150,
+     "addedHectares": 1.75
+    }
+   }
   },
   {
    "row": 141272,
@@ -570,7 +780,37 @@
    "peak": 0.179416237064809,
    "floodedHectares": 29.25,
    "maxLandDepth": 0.8551083207130432,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 29.25,
+     "addedHectares": 29.25
+    },
+    "MHWN": {
+     "floodedHectares": 99,
+     "addedHectares": 29
+    },
+    "MHWS": {
+     "floodedHectares": 131.25,
+     "addedHectares": 15
+    },
+    "HAT": {
+     "floodedHectares": 160,
+     "addedHectares": 11.75
+    }
+   }
   },
   {
    "row": 142179,
@@ -580,7 +820,37 @@
    "peak": 0.3139405161562664,
    "floodedHectares": 0.75,
    "maxLandDepth": 0.021159887313842773,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 0.75,
+     "addedHectares": 0.75
+    },
+    "MHWN": {
+     "floodedHectares": 70.25,
+     "addedHectares": 0.25
+    },
+    "MHWS": {
+     "floodedHectares": 116.5,
+     "addedHectares": 0.25
+    },
+    "HAT": {
+     "floodedHectares": 148.5,
+     "addedHectares": 0.25
+    }
+   }
   },
   {
    "row": 143302,
@@ -590,7 +860,37 @@
    "peak": 0.11440089102026947,
    "floodedHectares": 2.25,
    "maxLandDepth": 0.08571772277355194,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 2.25,
+     "addedHectares": 2.25
+    },
+    "MHWN": {
+     "floodedHectares": 72.75,
+     "addedHectares": 2.75
+    },
+    "MHWS": {
+     "floodedHectares": 117.75,
+     "addedHectares": 1.5
+    },
+    "HAT": {
+     "floodedHectares": 150,
+     "addedHectares": 1.75
+    }
+   }
   },
   {
    "row": 144528,
@@ -600,7 +900,37 @@
    "peak": 0.2918232389967531,
    "floodedHectares": 0.75,
    "maxLandDepth": 0.07809954881668091,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWN": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MSL": {
+     "floodedHectares": 0.75,
+     "addedHectares": 0.75
+    },
+    "MHWN": {
+     "floodedHectares": 70.75,
+     "addedHectares": 0.75
+    },
+    "MHWS": {
+     "floodedHectares": 116.5,
+     "addedHectares": 0.25
+    },
+    "HAT": {
+     "floodedHectares": 148.75,
+     "addedHectares": 0.5
+    }
+   }
   },
   {
    "row": 146274,
@@ -610,7 +940,37 @@
    "peak": 0.46888086359026004,
    "floodedHectares": 76.5,
    "maxLandDepth": 1.394508719444275,
-   "ran": true
+   "ran": true,
+   "byState": {
+    "LAT": {
+     "floodedHectares": 0,
+     "addedHectares": 0
+    },
+    "MLWS": {
+     "floodedHectares": 5,
+     "addedHectares": 5
+    },
+    "MLWN": {
+     "floodedHectares": 23.25,
+     "addedHectares": 23.25
+    },
+    "MSL": {
+     "floodedHectares": 76.5,
+     "addedHectares": 76.5
+    },
+    "MHWN": {
+     "floodedHectares": 130.75,
+     "addedHectares": 60.75
+    },
+    "MHWS": {
+     "floodedHectares": 149.75,
+     "addedHectares": 33.5
+    },
+    "HAT": {
+     "floodedHectares": 175.75,
+     "addedHectares": 27.5
+    }
+   }
   }
  ],
  "offshore": [
@@ -678,6 +1038,52 @@
    "rate": 0.0010417785194803538,
    "low": 0.0002329379051465757,
    "high": 0.0044581287894533755
+  },
+  {
+   "threshold": 90,
+   "hits": 0,
+   "rate": 0,
+   "low": 0,
+   "high": 0.0026974237816957693
+  }
+ ],
+ "tideWeights": {
+  "LAT": 0.0088,
+  "MLWS": 0.111,
+  "MLWN": 0.2519,
+  "MSL": 0.2573,
+  "MHWN": 0.2137,
+  "MHWS": 0.1415,
+  "HAT": 0.0158
+ },
+ "tideWeightedAdded": [
+  {
+   "threshold": 1,
+   "hits": 6.645899999999994,
+   "rate": 0.006923555862614478,
+   "low": 0.0037652219462211904,
+   "high": 0.012181753270344473
+  },
+  {
+   "threshold": 10,
+   "hits": 3.248100000000001,
+   "rate": 0.003383800809124138,
+   "low": 0.0014116048612304519,
+   "high": 0.0077613704658693935
+  },
+  {
+   "threshold": 30,
+   "hits": 0.6124999999999999,
+   "rate": 0.0006380893431817165,
+   "low": 0.00010208113900464461,
+   "high": 0.0038164489268449355
+  },
+  {
+   "threshold": 60,
+   "hits": 0.471,
+   "rate": 0.0004906776826752466,
+   "low": 0.00006449576303567684,
+   "high": 0.003571933830637962
   },
   {
    "threshold": 90,
