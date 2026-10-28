@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "build:wasm": "node scripts/build-wasm.js",
     "preserve": "node scripts/build-wasm.js",
-    "test:build": "node --test tests/build/*.test.js"
+    "test:build": "node --test --test-timeout=120000 --test-force-exit tests/build/*.test.js"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -20,9 +20,10 @@ const pack = (p) => JSON.parse(JSON.stringify(p, (k, v) => {
   return v;
 }));
 
-// The newest bundle's worker asset (older builds leave stale chunks behind).
+// The newest bundle's worker asset (older builds leave stale chunks behind). The entry chunk only starts the
+// app, so the reference to the worker is in the app chunk.
 function currentWorker() {
-  const mains = fs.readdirSync(path.join(root, 'assets')).filter((f) => /^main-.*\.js$/.test(f))
+  const mains = fs.readdirSync(path.join(root, 'assets')).filter((f) => /^(main|app)-.*\.js$/.test(f))
     .map((f) => ({ f, t: fs.statSync(path.join(root, 'assets', f)).mtimeMs })).sort((a, b) => b.t - a.t);
   for (const { f } of mains) {
     const m = /fine-worker-[A-Za-z0-9_-]+\.js/.exec(fs.readFileSync(path.join(root, 'assets', f), 'utf8'));
