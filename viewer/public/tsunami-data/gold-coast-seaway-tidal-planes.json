@@ -2,7 +2,16 @@
   "place": "Gold Coast Seaway (Standard Port), Queensland",
   "source": "Maritime Safety Queensland, Semidiurnal Tidal Planes 2026 (https://www.msq.qld.gov.au/_/media/tmronline/msqinternet/msqfiles/home/tides/tidal-planes/2026-semidiurnal-tidal-planes.pdf)",
   "datum": "Queensland Port Datum (LAT 1992), metres above datum",
-  "planes": { "HAT": 2.03, "MHWS": 1.53, "MHWN": 1.24, "MSL": 0.88, "MLWN": 0.51, "MLWS": 0.22, "LAT": 0 },
+  "planes": {
+    "HAT": 2.03,
+    "MHWS": 1.53,
+    "MHWN": 1.24,
+    "MSL": 0.88,
+    "MLWN": 0.51,
+    "MLWS": 0.22,
+    "LAT": 0
+  },
   "verified": false,
-  "note": "These values were read from a search summary of the MSQ table. The PDF itself could not be downloaded from the build environment (HTTP 403), so they have not been checked against it. The 2024 and 2025 tables give the same spring and neap ranges but a lower MSL and HAT (MSL 0.81 and HAT 1.97 in 2024), because MSQ updates MSL for sea-level rise. Only the heights relative to MSL are used by the tide scripts."
+  "note": "These values were read from a search summary of the MSQ table. The PDF itself could not be downloaded from the build environment (HTTP 403), so they have not been checked against it. The 2024 and 2025 tables give the same spring and neap ranges but a lower MSL and HAT (MSL 0.81 and HAT 1.97 in 2024), because MSQ updates MSL for sea-level rise. Only the heights relative to MSL are used by the tide scripts.",
+  "gaugeCheck": "Checked against Maritime Safety Queensland's own Gold Coast Seaway gauge records (2016-2025, CC BY 4.0, data.qld.gov.au) with scripts/tide-analysis.js: planes fitted to the 2026 predicted levels differ from these values by 0.001 m at MHWS and MHWN, 0.013 m at MSL, 0.017 m at HAT, 0.013 m at LAT and 0.035 to 0.037 m at MLWN and MLWS; planes fitted to the 2016-2025 observed levels (MSL rising about 6 mm a year) agree to within 0.013 m except LAT (0.041 m). The values are consistent with the gauge but the published PDF table itself has still not been read, so verified stays false."
 }

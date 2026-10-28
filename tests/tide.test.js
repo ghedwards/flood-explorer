@@ -57,3 +57,24 @@ test('a run at a higher starting sea level counts the tide\'s own cover separate
   assert.ok(high.maxLandDepth > base.maxLandDepth);
   assert.equal(high.offshorePeak, base.offshorePeak);
 });
+
+test('harmonic analysis recovers a known tide and reproduces it', () => {
+  const t = [], y = [], truth = h => 0.9 + 0.6 * Math.cos((28.9841042 * h + 30) * Math.PI / 180) + 0.2 * Math.cos((30 * h + 200) * Math.PI / 180) + 0.15 * Math.cos((15.0410686 * h + 75) * Math.PI / 180);
+  for (let i = 0; i < 24 * 400; i++) { t.push(i); y.push(truth(i)); }
+  const fit = tide.fitHarmonics(t, y), amp = k => fit.parts.find(p => p.name === k);
+  assert.ok(Math.abs(fit.z0 - 0.9) < 1e-6);
+  assert.ok(Math.abs(amp('M2').amp - 0.6) < 1e-6 && Math.abs(amp('S2').amp - 0.2) < 1e-6 && Math.abs(amp('K1').amp - 0.15) < 1e-6);
+  const back = tide.synthesise(fit, t);
+  assert.ok(back.every((v, i) => Math.abs(v - y[i]) < 1e-6), 'the fitted tide reproduces the series, so the phases are right');
+  const p = tide.planesFromFit(fit, 1);
+  assert.ok(Math.abs(p.MHWS - 1.7) < 1e-6 && Math.abs(p.MLWS - 0.1) < 1e-6 && p.HAT <= 0.9 + 0.95 + 1e-6 && p.HAT > 1.6);
+});
+
+test('a gauge CSV parses, and tide-state weights add to one and follow the levels', () => {
+  const g = tide.parseGauge('_id,Date,Time,Ind,Reading\n1,01/01/2025, 00:00 ,9,0.500\n2,1/01/2025,00:10,9,\n3,1/01/2025,00:20,9,1.250\n');
+  assert.deepEqual(g.y, [0.5, 1.25]);
+  assert.ok(Math.abs(g.t[1] - g.t[0] - 20 / 60) < 1e-6);
+  const w = tide.stateWeights([0, 0, 0.88, 0.88, 2.03], planes.planes);
+  assert.equal(Object.values(w).reduce((a, b) => a + b, 0).toFixed(3), '1.000');
+  assert.equal(w.LAT, 0.4); assert.equal(w.MSL, 0.4); assert.equal(w.HAT, 0.2);
+});

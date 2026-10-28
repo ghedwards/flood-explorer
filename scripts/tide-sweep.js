@@ -55,6 +55,14 @@ async function main(argv) {
       console.log(`${path.basename(run.file).slice(0, 30).padEnd(30)}  ${run.state.padEnd(5)}  ${run.tide.toFixed(2).padStart(7)} m  ${r.maxLandDepth.toFixed(2).padStart(10)} m  ${r.tideOnlyHectares.toFixed(0).padStart(7)} ha  ${r.addedHectares.toFixed(0).padStart(11)} ha  ${r.floodedHectares.toFixed(0).padStart(8)} ha`);
     }
   } finally { await pool.close(); }
+  // With every state run, weight each by how often the sea is nearest it (tide-analysis.js, from the Seaway gauge)
+  const analysis = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway-tide-analysis.json'), 'utf8'));
+  if (STATES.every(st => states.includes(st))) {
+    for (const file of [...new Set(rows.map(r => r.file))]) {
+      const mine = rows.filter(r => r.file === file), expected = mine.reduce((a, r) => a + analysis.stateWeights[r.state] * r.floodedHectares, 0);
+      console.log(`${file.slice(0, 30).padEnd(30)}  expected flooded area over the gauge's tide states: ${expected.toFixed(0)} ha`);
+    }
+  } else console.log('Run all seven states (the default is four) to weight them by how often each occurs.');
   return rows;
 }
 

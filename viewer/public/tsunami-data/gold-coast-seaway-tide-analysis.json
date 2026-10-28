@@ -1,0 +1,138 @@
+{
+  "source": "Maritime Safety Queensland Gold Coast Seaway tide gauge (station 045044A), CC BY 4.0, data.qld.gov.au",
+  "observed": {
+    "samples": 480730,
+    "years": [
+      2016,
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "from": "2016-07-14",
+    "to": "2025-12-31"
+  },
+  "harmonicFitVsPrediction": {
+    "year": 2026,
+    "rmsM": 0.017,
+    "samples": 52560
+  },
+  "planesFromPredictions": {
+    "LAT": -0.013,
+    "MLWS": 0.255,
+    "MLWN": 0.547,
+    "MSL": 0.893,
+    "MHWN": 1.239,
+    "MHWS": 1.531,
+    "HAT": 2.047
+  },
+  "planesFromObservations": {
+    "LAT": -0.041,
+    "MLWS": 0.231,
+    "MLWN": 0.523,
+    "MSL": 0.882,
+    "MHWN": 1.242,
+    "MHWS": 1.534,
+    "HAT": 2.024
+  },
+  "publishedPlanes": {
+    "HAT": 2.03,
+    "MHWS": 1.53,
+    "MHWN": 1.24,
+    "MSL": 0.88,
+    "MLWN": 0.51,
+    "MLWS": 0.22,
+    "LAT": 0
+  },
+  "publishedMinusPredictions": {
+    "HAT": -0.017,
+    "MHWS": -0.001,
+    "MHWN": 0.001,
+    "MSL": -0.013,
+    "MLWN": -0.037,
+    "MLWS": -0.035,
+    "LAT": 0.013
+  },
+  "constituents": [
+    {
+      "name": "Sa",
+      "ampM": 0.065
+    },
+    {
+      "name": "Q1",
+      "ampM": 0.024
+    },
+    {
+      "name": "O1",
+      "ampM": 0.118
+    },
+    {
+      "name": "P1",
+      "ampM": 0.055
+    },
+    {
+      "name": "K1",
+      "ampM": 0.198
+    },
+    {
+      "name": "J1",
+      "ampM": 0.012
+    },
+    {
+      "name": "2N2",
+      "ampM": 0.018
+    },
+    {
+      "name": "MU2",
+      "ampM": 0.015
+    },
+    {
+      "name": "N2",
+      "ampM": 0.104
+    },
+    {
+      "name": "NU2",
+      "ampM": 0.02
+    },
+    {
+      "name": "M2",
+      "ampM": 0.492
+    },
+    {
+      "name": "L2",
+      "ampM": 0.02
+    },
+    {
+      "name": "S2",
+      "ampM": 0.146
+    },
+    {
+      "name": "K2",
+      "ampM": 0.057
+    }
+  ],
+  "observedMinusPredicted": {
+    "n": 456508,
+    "meanM": 0.062,
+    "sdM": 0.082,
+    "p01": -0.116,
+    "p99": 0.28,
+    "min": -0.33,
+    "max": 0.559
+  },
+  "stateWeights": {
+    "LAT": 0.0088,
+    "MLWS": 0.111,
+    "MLWN": 0.2519,
+    "MSL": 0.2573,
+    "MHWN": 0.2137,
+    "MHWS": 0.1415,
+    "HAT": 0.0158
+  },
+  "meanSeaLevelTrendMPerYear": 0.006
+}

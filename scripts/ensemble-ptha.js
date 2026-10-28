@@ -3,7 +3,7 @@
 // scenarios reach given offshore and flooded-area levels.
 //
 //   NODE_USE_ENV_PROXY=1 node scripts/ensemble-ptha.js --zone kermadectonga2 --gauge 1450.5 \
-//       --mw 8.6,9.6 --count 24 [--seconds 3600] [--seed 1] [--jobs N] [--out report.json]
+//       --mw 8.6,9.6 --count 24 [--seconds 3600] [--seed 1] [--jobs N] [--tide-weighted] [--out report.json]
 //
 // Scenarios are drawn with probability proportional to their annual rate (systematic
 // sampling), so common scenarios appear in proportion to how often they occur. For a level
@@ -18,7 +18,9 @@
 // roughness, and the interval reflects the sample size only. See docs/tsunami-prototype.md.
 'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
 const lib = require('./ptha-lib.js');
+const tideLib = require('./tide-lib.js');
 const { createPool, defaultJobs, mapLimit } = require('./run-pool.js');
 
 function args(argv) {
@@ -56,22 +58,36 @@ async function main(options) {
   const pool = await lib.findScenarios(get, zone, slipType, { mwMin, mwMax });
   const { draws, total } = lib.sampleByRate(pool, count, lib.seededRandom(options.seed ? Number(options.seed) : 1));
   console.log(`${zone}, Mw ${mwMin}-${mwMax}: ${pool.length} scenarios with a rate, total ${total.toExponential(2)} per year; ${count} draws gave ${draws.length} distinct scenarios.`);
+  // --tide-weighted: also run every flooding scenario at each tidal-plane state (MSL in the terrain's zero) and weight
+  // the states by how often the sea sits nearest each (scripts/tide-analysis.js, from the Seaway gauge)
+  let tides = null, weights = null;
+  if (options['tide-weighted']) {
+    const dir = path.join(__dirname, '../viewer/public/tsunami-data/');
+    const planes = JSON.parse(fs.readFileSync(dir + 'gold-coast-seaway-tidal-planes.json', 'utf8'));
+    weights = JSON.parse(fs.readFileSync(dir + 'gold-coast-seaway-tide-analysis.json', 'utf8')).stateWeights;
+    tides = tideLib.STATES.map(state => ({ state, level: tideLib.stateLevel(planes, state) }));
+  }
   const workers = createPool(options.jobs ? Number(options.jobs) : defaultJobs());
   let results;
   try {
     results = await mapLimit(draws, 3, async draw => {
       const { event, time, stage } = await lib.scenarioStage(get, zone, slipType, draw.row, point.index);
       const peak = stage.reduce((m, v) => Math.max(m, v), 0);
-      let flooded = 0, landDepth = 0, ran = false;
+      let flooded = 0, landDepth = 0, ran = false, byState = null;
       if (peak >= skipBelow) {
         const values = lib.delayedLinearFriction(time, stage);
         const trimmed = lib.trimSeries(time, values, { hours: 3, align: 'peak' });
         const csv = lib.toCsv(trimmed, { zone, slipType, row: draw.row, mw: event.mw, rateAnnual: event.rateAnnual, gaugeID: point.gaugeID, lon: point.lon, lat: point.lat, depth: point.depth, friction: true, scale: 1 });
         const run = await workers.run(csv, seconds);
         flooded = run.floodedHectares; landDepth = run.maxLandDepth; ran = true;
+        // every tide state, measured over the ground that is dry at mean sea level: the wave's own area is what it adds to the tide
+        if (tides) byState = Object.fromEntries(await Promise.all(tides.map(async t => {
+          const r = await workers.run(csv, seconds, { tide: t.level, baseline: 0 });
+          return [t.state, { floodedHectares: r.floodedHectares, addedHectares: r.addedHectares }];
+        })));
       }
       console.log(`row ${String(draw.row).padStart(6)}  Mw ${draw.mw.toFixed(2)}  rate ${draw.rateAnnual.toExponential(2)}  x${draw.draws}  peak ${peak.toFixed(2)} m  ${ran ? `flooded ${flooded.toFixed(0)} ha, max depth ${landDepth.toFixed(2)} m` : 'not run'}`);
-      return { row: draw.row, mw: draw.mw, rateAnnual: draw.rateAnnual, draws: draw.draws, peak, floodedHectares: flooded, maxLandDepth: landDepth, ran };
+      return { row: draw.row, mw: draw.mw, rateAnnual: draw.rateAnnual, draws: draw.draws, peak, floodedHectares: flooded, maxLandDepth: landDepth, ran, ...(byState && { byState }) };
     });
   } finally { await workers.close(); }
   const level = (name, key, thresholds, unit) => {
@@ -85,6 +101,18 @@ async function main(options) {
     offshore: level('offshore peak at the hazard point', 'peak', [0.1, 0.25, 0.5, 0.76, 1.0], 'm'),
     flooded: level('flooded area', 'floodedHectares', [1, 10, 30, 60, 90], 'ha'),
   };
+  if (tides) {
+    // each draw counts at each state in proportion to that state's weight, so the hits are expected hits
+    const spread = key => tides.flatMap(t => results.filter(r => r.byState).map(r => ({ draws: r.draws * weights[t.state], value: r.byState[t.state][key] })));
+    const exceed = (name, key, thresholds, unit) => {
+      console.log(`\nTide-weighted: rate at which this zone's scenarios reach each ${name}:`);
+      const rows = lib.sampledExceedance(spread(key), total, count, thresholds);
+      rows.forEach(r => console.log(`  >= ${String(r.threshold).padStart(5)} ${unit}  ${years(r.rate).padEnd(22)} (${years(r.high)} to ${years(r.low)})`));
+      return rows;
+    };
+    report.tideWeights = weights;
+    report.tideWeightedAdded = exceed('area the wave adds to the tide', 'addedHectares', [1, 10, 30, 60, 90], 'ha');
+  }
   if (options.out) { fs.writeFileSync(options.out, JSON.stringify(report, null, 1)); console.log(`\nWrote ${options.out}`); }
   return report;
 }
