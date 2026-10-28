@@ -3,7 +3,7 @@
 // scenarios reach given offshore and flooded-area levels.
 //
 //   NODE_USE_ENV_PROXY=1 node scripts/ensemble-ptha.js --zone kermadectonga2 --gauge 1450.5 \
-//       --mw 8.6,9.6 --count 24 [--seconds 3600] [--seed 1] [--jobs N] [--tide-weighted [--cells-out cells.json]] [--out report.json]
+//       --mw 8.6,9.6 --count 24 [--seconds 3600] [--seed 1] [--jobs N] [--place ID] [--tide STATION] [--tide-weighted [--cells-out cells.json]] [--out report.json]
 //
 // Scenarios are drawn with probability proportional to their annual rate (systematic
 // sampling), so common scenarios appear in proportion to how often they occur. For a level
@@ -51,6 +51,7 @@ const years = rate => rate > 0 ? `1 in ${rate >= 1 ? (1 / rate).toFixed(1) : Mat
 async function main(options) {
   const { zone, gauge } = options, slipType = options.slip || 'stochastic';
   if (!zone || !gauge) throw new Error('Give --zone and --gauge (and usually --mw MIN,MAX and --count N).');
+  const place = options.place || 'gold-coast-seaway';
   const count = options.count ? Number(options.count) : 24, seconds = options.seconds ? Number(options.seconds) : 3600;
   const skipBelow = options['skip-below'] ? Number(options['skip-below']) : 0.1;
   const [mwMin, mwMax] = options.mw ? String(options.mw).split(',').map(Number) : [8, 10];
@@ -66,9 +67,10 @@ async function main(options) {
   const CELL_DEPTHS = [0.1, 0.3, 1];
   let cells = null;
   if (options['tide-weighted']) {
-    const dir = path.join(__dirname, '../viewer/public/tsunami-data/');
-    const planes = JSON.parse(fs.readFileSync(dir + 'gold-coast-seaway-tidal-planes.json', 'utf8'));
-    weights = JSON.parse(fs.readFileSync(dir + 'gold-coast-seaway-tide-analysis.json', 'utf8')).stateWeights;
+    const dir = path.join(__dirname, '../viewer/public/tsunami-data/'), tideName = options.tide || 'gold-coast-seaway';
+    if (!/^[a-z-]+$/.test(tideName)) throw new Error('--tide names a tide station such as gold-coast-seaway.');
+    const planes = JSON.parse(fs.readFileSync(`${dir}${tideName}-tidal-planes.json`, 'utf8'));
+    weights = JSON.parse(fs.readFileSync(`${dir}${tideName}-tide-analysis.json`, 'utf8')).stateWeights;
     tides = tideLib.STATES.map(state => ({ state, level: tideLib.stateLevel(planes, state) }));
   }
   const workers = createPool(options.jobs ? Number(options.jobs) : defaultJobs());
@@ -82,11 +84,11 @@ async function main(options) {
         const values = lib.delayedLinearFriction(time, stage);
         const trimmed = lib.trimSeries(time, values, { hours: 3, align: 'peak' });
         const csv = lib.toCsv(trimmed, { zone, slipType, row: draw.row, mw: event.mw, rateAnnual: event.rateAnnual, gaugeID: point.gaugeID, lon: point.lon, lat: point.lat, depth: point.depth, friction: true, scale: 1 });
-        const run = await workers.run(csv, seconds);
+        const run = await workers.run(csv, seconds, { place });
         flooded = run.floodedHectares; landDepth = run.maxLandDepth; ran = true;
         // every tide state, measured over the ground that is dry at mean sea level: the wave's own area is what it adds to the tide
         if (tides) byState = Object.fromEntries(await Promise.all(tides.map(async t => {
-          const r = await workers.run(csv, seconds, { tide: t.level, baseline: 0, keepPeak: !!options['cells-out'] });
+          const r = await workers.run(csv, seconds, { place, tide: t.level, baseline: 0, keepPeak: !!options['cells-out'] });
           if (options['cells-out']) {
             cells = cells || { W: r.W, H: r.H, cell: r.cell, fraction: CELL_DEPTHS.map(() => new Float64Array(r.W * r.H)) };
             const share = draw.draws / count * weights[t.state];
@@ -124,7 +126,7 @@ async function main(options) {
   }
   if (cells && options['cells-out']) {
     const round = a => Array.from(a, v => +v.toPrecision(5));
-    fs.writeFileSync(options['cells-out'], JSON.stringify({ zone, gauge: point.gaugeID, mw: [mwMin, mwMax], count, seed: options.seed ? Number(options.seed) : 1, poolRate: total, W: cells.W, H: cells.H, cell: cells.cell, depths: CELL_DEPTHS, fraction: cells.fraction.map(round) }));
+    fs.writeFileSync(options['cells-out'], JSON.stringify({ zone, place, tide: options.tide || 'gold-coast-seaway', gauge: point.gaugeID, mw: [mwMin, mwMax], count, seed: options.seed ? Number(options.seed) : 1, poolRate: total, W: cells.W, H: cells.H, cell: cells.cell, depths: CELL_DEPTHS, fraction: cells.fraction.map(round) }));
     console.log(`Wrote ${options['cells-out']}`);
   }
   if (options.out) { fs.writeFileSync(options.out, JSON.stringify(report, null, 1)); console.log(`\nWrote ${options.out}`); }

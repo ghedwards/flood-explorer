@@ -1,0 +1,16 @@
+{
+  "place": "Brisbane Bar (Brisbane River mouth), Queensland",
+  "source": "Harmonic fit to 2026 predicted levels: Maritime Safety Queensland Brisbane Bar tide gauge (station 046046A), CC BY 4.0, data.qld.gov.au",
+  "datum": "Queensland Port Datum (LAT), metres above datum, as the gauge reports",
+  "planes": {
+    "LAT": 0.193,
+    "MLWS": 0.47,
+    "MLWN": 0.854,
+    "MSL": 1.347,
+    "MHWN": 1.84,
+    "MHWS": 2.224,
+    "HAT": 2.797
+  },
+  "verified": false,
+  "note": "Fitted by scripts/tide-analysis.js from the predicted 10-minute levels, not read from a published tidal-planes table; HAT and LAT are the extremes of the fitted tide over 19 years without nodal corrections. Only heights relative to MSL are used by the tide scripts."
+}

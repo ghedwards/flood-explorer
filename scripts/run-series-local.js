@@ -1,5 +1,4 @@
-// Run PTHA18 series files (from prepare-ptha-series.js) through the nested Gold Coast
-// Seaway model and print the headline numbers, so several scenarios can be compared.
+// Run PTHA18 series files (from prepare-ptha-series.js) through a nested local model (the Gold Coast Seaway unless a place is given) and print the headline numbers, so several scenarios can be compared.
 //
 //   node scripts/run-series-local.js [--seconds 3600] wave1.csv wave2.csv ...
 //
@@ -13,16 +12,17 @@ const path = require('node:path');
 const F = require('../tests/model.js');
 
 // Run one parsed series (see parseSeriesCsv) through the model; returns its headline numbers.
-// `tide` is the sea level the model starts at, in the terrain's datum (metres; -1 to 2).
+// `tide` is the sea level the model starts at, in the terrain's datum (metres; -1 to 2). `place` is one of the local scenes (gold-coast-seaway by default).
 // "Land" is what is dry at `baseline` (default: the starting level), so that runs at
 // different tide levels are measured over the same ground: land that a high tide has
 // already covered is counted as flooded, with its depth is the tide's plus the wave's.
 // With `keepPeak`, the result also carries `landPeak`: for each cell that is land at `baseline`, the most water the wave added there (m), and `W`, `H`, `cell`.
-async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide, keepPeak = false } = {}) {
+async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide, keepPeak = false, place = 'gold-coast-seaway' } = {}) {
   const { forcingFromSeries } = await import('../viewer/tsunami-coupling.js');
   const { tsunamiGrid } = await import('../viewer/tsunami-grid.js');
-  const fine = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway.json')));
-  const options = { preset: 'gold-coast-seaway', bathymetry: fine, amplitude: 0, absorbing: true, width: .45, coupled: true };
+  if (!/^[a-z-]+$/.test(place)) throw new Error('The place is a lower-case id such as gold-coast-seaway or currumbin.');
+  const fine = JSON.parse(fs.readFileSync(path.join(__dirname, `../viewer/public/tsunami-data/${place}.json`)));
+  const options = { preset: place, bathymetry: fine, amplitude: 0, absorbing: true, width: .45, coupled: true };
   const grid = tsunamiGrid({ ...options, tide });
   const dry = baseline === tide ? grid.depth : tsunamiGrid({ ...options, tide: baseline }).depth;
   const forcing = forcingFromSeries({ fine, fineGrid: grid }, series, { maxLocalSeconds: seconds });

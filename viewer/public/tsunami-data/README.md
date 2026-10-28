@@ -47,3 +47,9 @@ with Maritime Safety Queensland's gauge records.
 `gold-coast-seaway-tide-analysis.json` is the output of `scripts/tide-analysis.js` on those gauge records (observed and
 predicted 10-minute levels at the Seaway, 2016-2025, CC BY 4.0, data.qld.gov.au): fitted tidal constituents, the planes they give,
 the gauge minus the prediction, and how often the sea sits nearest each tide state (`stateWeights`, used by `scripts/tide-sweep.js`).
+
+`brisbane-bar-tidal-planes.json` and `brisbane-bar-tide-analysis.json` are the same for Maritime Safety Queensland's Brisbane Bar gauge
+(2023 to 2025 observed levels and the 2025 and 2026 predictions, CC BY 4.0, data.qld.gov.au), for the Moreton Bay and Brisbane River places. The planes are
+fitted by `scripts/tide-analysis.js`, not read from a published table, so `verified` is false; only three observed years were open, so no sea-level trend
+is removed from the state weights. `scripts/ensemble-ptha.js --tide brisbane-bar` uses them.
+
