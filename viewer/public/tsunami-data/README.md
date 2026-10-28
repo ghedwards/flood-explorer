@@ -41,4 +41,9 @@ and fine source grid spacing do not guarantee surveyed bed coverage.
 `gold-coast-seaway-tidal-planes.json` holds the Gold Coast Seaway's tidal planes (Maritime
 Safety Queensland, 2026, heights above Queensland Port Datum) for `scripts/tide-sweep.js`. It is
 not loaded by the viewer. Its `verified` flag is false: the values were read from a search
-summary of the published table and not yet checked against it.
+summary of the published table and not yet checked against the table itself. Its `gaugeCheck` field says how they compare
+with Maritime Safety Queensland's gauge records.
+
+`gold-coast-seaway-tide-analysis.json` is the output of `scripts/tide-analysis.js` on those gauge records (observed and
+predicted 10-minute levels at the Seaway, 2016-2025, CC BY 4.0, data.qld.gov.au): fitted tidal constituents, the planes they give,
+the gauge minus the prediction, and how often the sea sits nearest each tide state (`stateWeights`, used by `scripts/tide-sweep.js`).

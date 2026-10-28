@@ -498,11 +498,21 @@ What it shows, for this terrain and model:
   the tide alone it arrives on covers 70 to 148 ha.
 
 Limits: the planes were read from a search summary of the published table; the PDF could not be downloaded from here,
-so the numbers are not yet checked against it (the file says so). The spring and neap ranges are the same in the 2024, 2025
+so the numbers are not checked against it (the file says so). They have been checked against the gauge instead (below). The spring and neap ranges are the same in the 2024, 2025
 and 2026 tables and only MSL moves, and only heights relative to MSL are used. Putting MSL on the terrain's AVWS datum
-needs a level the table does not give. How often each state occurs is not used at all: weighting
-the states needs a tide prediction (MSQ publishes them, but not in a form that could be fetched from here) or the
-site's harmonic constituents, and would then turn this table into a tide distribution for the ensemble.
+needs a level the table does not give.
+
+**Checked against the Seaway gauge, and how often each state occurs.** Maritime Safety Queensland's Gold Coast Seaway gauge records
+(station 045044A, observed and predicted 10-minute levels for 2016 to 2025, CC BY 4.0, from data.qld.gov.au) are open, so
+`scripts/tide-analysis.js` fits 22 harmonic constituents to them (the fit reproduces the 2026 prediction to 1.7 cm RMS). The planes it gives for 2026
+agree with the table's values to 1 mm at MHWS and MHWN, 13 mm at MSL, 17 mm at HAT and 13 mm at LAT, and to 36 mm at MLWN and MLWS (a symmetric M2 and S2
+rule against MSQ's own definition of the lows); planes from the 2016 to 2025 observed levels agree to within 1.3 cm except LAT (4 cm, an extreme that a fit cannot pin down). The table's values are therefore consistent
+with the gauge, though still not read from the PDF. The same record gives how often the sea sits nearest each state (levels moved to 2026 along the 6 mm per year
+rise in annual mean level): LAT 0.9%, MLWS 11.1%, MLWN 25.2%, MSL 25.7%, MHWN 21.4%, MHWS 14.2%, HAT 1.6%.
+Observed levels run 6 cm above the prediction on average (weather and wave set-up), with 1% of readings more than 12 cm below and 1% more than 28 cm above it, and
+the largest excess 56 cm. `tide-sweep.js` run with all seven states
+(`--states LAT,MLWS,MLWN,MSL,MHWN,MHWS,HAT`) now also prints the expected flooded area over these weights. Both the weights and the
+gauge are at the Seaway itself, so they describe the sea level there, not the tide in the Broadwater behind it.
 
 How well PTHA18's deep-water waves match reality is tested in
 [docs/validation/tohoku-2011-dart.md](validation/tohoku-2011-dart.md), a blind comparison of
