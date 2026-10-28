@@ -25,6 +25,8 @@ const BUILD_ASSETS = [];
 const SHELL = [
   './', 'index.html', 'tsunami.html', 'manifest.webmanifest', ...BUILD_ASSETS,
   ...['places', 'ptha18-hazard', 'gold-coast-seaway', 'pine-estuary', 'brisbane-mouth', 'currumbin', 'sunshine-coast', 'port-macquarie', 'wollongong', 'moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney'].map(id => `tsunami-data/${id}.json`),
+  'tsunami-data/scenarios/index.json', 'tsunami-data/scenarios/1450-5.json',
+  ...['moderate-kermadec-tonga-kermadectonga2-38914', 'large-new-hebrides-newhebrides2-11816', 'distant-mega-quake-south-america-southamerica-146274', 'very-large-kermadec-tonga-kermadectonga2-42930'].map(id => `tsunami-data/scenarios/${id}.csv`), 'tsunami-data/gold-coast-seaway-tidal-planes.json', 'tsunami-data/brisbane-bar-tidal-planes.json',
   'tsunami-data/extents/index.json', 'tsunami-data/extents/gold-coast-seaway.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'data/national/gauges-core.min.json', 'data/national/storages.geojson', 'data/national/readings.json', 'data/national/meta.json',

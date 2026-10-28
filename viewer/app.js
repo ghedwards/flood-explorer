@@ -11,6 +11,7 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
 import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
+import { initTsunamiPanel } from './tsunami-panel.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -1782,6 +1783,7 @@ import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
   // modelled flood hazard for the places the tsunami lab runs locally (tsunami-extents.js)
   const TSUNAMI_EXTENTS = 'Tsunami flood hazard: modelled areas (experimental)';
   let tsunamiExtents = null;
+  let tsunamiPanel = null;   // the Tsunami run panel (tsunami-panel.js), made with the map
 
   // Available on every real-place map, anywhere in Australia
   const NATIONAL_OVERLAYS = [
@@ -2054,6 +2056,7 @@ import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
     });
     if (tsunamiHazard && state.lmap.hasLayer(tsunamiHazard)) parts.push(...tsunamiHazard.legendParts());
     if (tsunamiExtents && state.lmap.hasLayer(tsunamiExtents)) parts.push(...tsunamiExtents.legendParts());
+    if (tsunamiPanel) parts.push(...tsunamiPanel.legendParts());
     if (nat.roadClosuresLayer && state.lmap.hasLayer(nat.roadClosuresLayer)) {
       const n = (nat.readings && nat.readings.roads && nat.readings.roads.items || []).length;
       for (const st of Object.values(ROAD_LEVELS)) parts.push(`<span><i style="background:${st.color}"></i>${escapeHtml(st.label)}</span>`);
@@ -2199,6 +2202,9 @@ import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
       roadsLayer = L.layerGroup();
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
+      tsunamiPanel = initTsunamiPanel({ L, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, onLegend: renderOverlayLegend });
+      status.tsunami = tsunamiPanel.info;
+      window.__floodTsunamiRun = (options) => tsunamiPanel.runWith(options);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
       // the Layers checkboxes add layers directly (layeradd, not overlayadd)
       m.on('layeradd', (e) => { if (e.layer === roadsLayer) roadsLayerOn(); });
@@ -8266,6 +8272,7 @@ import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
     if (id === 'panel-forecast' && typeof renderWatch === 'function' && nat.readings) renderWatch();   // your places may have changed
     const target = $(id);
     if (!target) return;
+    if (id === 'panel-tsunami' && tsunamiPanel) tsunamiPanel.ensureLoaded();
     if (id === 'panel-scenario') target.classList.remove('collapsed');
     document.querySelectorAll('[data-panel]').forEach((p) => {
       if (p === target) return;

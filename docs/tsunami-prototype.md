@@ -27,6 +27,28 @@ mean sea level without tide. They are heights at sea on a coarse 1 arc-minute li
 `node scripts/prepare-tsunami-hazard.js`, which reads the exceedance-rate tables from the NCI THREDDS server in bulk. For example, off the Gold Coast (the point at
 28.0°S 153.67°E, 69 m deep) the 1-in-500-year wave is 1.32 m (range 0.68 to 1.57 m), off Sydney about 0.9 m and off Perth about 0.6 m.
 
+### Running a scenario live on the main map
+
+The main map has a "Tsunami" tool (the wave icon in its side rail) that runs one curated PTHA18 scenario live in your browser and plays it over the map, in the same Rust /
+WebAssembly worker the lab uses (`viewer/tsunami-worker.js`), so nothing is computed on a server. Pick a modelled place (the Gold Coast Seaway and Currumbin for now), an earthquake, a
+tide state (LAT to HAT from the place's tidal planes, held for the whole run) and a run length of 30, 60 or 90 minutes, and press Run. A one-hour run takes a few seconds. The picture
+colours land under water by its depth (the same classes as the flood depth key) and the sea by the wave (orange crest, blue drawdown); a time bar and speed control play it back, with
+"land under water now", "most land flooded so far" and "deepest water on land so far" beside it.
+
+The four scenarios, from `scripts/prepare-tsunami-scenarios.js` (series files in `viewer/public/tsunami-data/scenarios/`, a few KB each), are real PTHA18 earthquakes whose waves at hazard
+point 1450.5 (667 m deep, 25 km off the Gold Coast) were chosen from the ensemble's flooding draws to span the range. At mean sea level the model floods:
+
+| Scenario | Mw | Wave at the point | Land flooded | Deepest |
+|---|---|---|---|---|
+| Moderate (Kermadec-Tonga, row 38914) | 8.8 | 0.22 m | 34 ha | 0.84 m |
+| Large (New Hebrides, row 11816) | 8.8 | 0.46 m | 60 ha | 1.27 m |
+| Distant mega-quake (South America, row 146274) | 9.5 | 0.47 m | 77 ha | 1.39 m |
+| Very large (Kermadec-Tonga, row 42930) | 9.3 | 0.62 m | 72 ha | 2.16 m |
+
+The page's run gives the same numbers as `scripts/run-series-local.js` (a test and the browser check compare them to the hundredth of a hectare). The panel shows each earthquake's
+annual rate as how rare the earthquake is, not how often such a wave happens. The same limits as above apply: one scenario, the wave applied at the open edges without scaling for depth, a
+first-order shoreline scheme, no defences or drainage, and no validation against a recorded event. It is not a forecast or an evacuation guide.
+
 ### Modelled flood hazard on the main map
 
 A second layer, "Tsunami flood hazard: modelled areas (experimental)", paints how often the sampled tsunamis put at least a chosen depth of water

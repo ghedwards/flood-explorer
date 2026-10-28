@@ -185,6 +185,24 @@ async function main() {
     assert.ok(extents.info.places >= 1 && extents.low > 0 && extents.high >= 0 && extents.high < extents.low, `the hazard picture is drawn and shrinks with depth (${extents.low} then ${extents.high} pixels)`);
     assert.match(extents.legend, /Tsunami flood hazard/); assert.ok(extents.gone, 'the picture is removed with the layer');
 
+    // a live tsunami run in the browser worker: the Moderate Kermadec-Tonga scenario at mean sea level must give what the offline model gives (about 34 ha, 0.84 m)
+    const live = await page.evaluate(async () => {
+      window.__floodOpenPanel('panel-tsunami');
+      const final = await window.__floodTsunamiRun({ place: 'gold-coast-seaway', label: '^Moderate', tide: 'MSL', minutes: 60 });
+      const scrub = document.getElementById('tsScrub');
+      scrub.value = scrub.max; scrub.dispatchEvent(new Event('input'));   // the last frame, where the flood has reached its extent
+      const canvas = document.querySelector('canvas.tsunami-live');
+      let painted = 0;
+      if (canvas) { const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) painted++; }
+      const info = { ...window.__floodStatus.tsunami };
+      const legendOn = document.getElementById('overlayLegend').textContent.includes('Tsunami run');
+      document.getElementById('tsClear').click();
+      return { final, painted, info, legendOn, cleared: !document.querySelector('canvas.tsunami-live') };
+    });
+    assert.ok(live.final && Math.abs(live.final.floodedHectares - 33.8) < 0.3 && Math.abs(live.final.maxLandDepth - 0.84) < 0.02, `the live run matches the offline model: ${JSON.stringify(live.final)}`);
+    assert.ok(live.info.state === 'ready' && live.info.frames >= 120 && live.painted > 100 && live.legendOn, `the run is painted on the map: ${JSON.stringify(live.info)} ${live.painted}`);
+    assert.ok(live.cleared, 'the run is removed from the map');
+
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `
       + `routes for ${withRoute.length} of ${routes.length} spots; timeline ${timeline.steps} steps, ${timeline.roadsClosed} roads closed, up to ${timeline.maxIsolated} buildings cut off`);
