@@ -30,6 +30,8 @@
     const depths = peak && result.peak ? result.peak : result.depth;
     const n = a.W * a.H, depth = new Float32Array(n), wet = new Uint8Array(n), level = new Float32Array(n);
     const vx = new Float64Array(n), vy = new Float64Array(n);
+    const track = peak && result.peakClass && result.arrival;   // a storm run: the worst hazard class and the first time each cell flooded
+    const cls = track ? new Uint8Array(n) : null, vel = track ? new Float32Array(n) : null, arrival = track ? new Float32Array(n).fill(NaN) : null;
     level.fill(NaN);
     for (let i = 0; i < n; i++) {
       const j = cell(g, a, i);
@@ -38,8 +40,15 @@
       level[i] = g.dem[j] + depths[j];
       if (result.vx) vx[i] = result.vx[j];
       if (result.vy) vy[i] = result.vy[j];
+      if (track) { cls[i] = result.peakClass[j]; vel[i] = result.peakSpeed[j]; if (result.arrival[j] >= 0) arrival[i] = result.arrival[j]; }
     }
-    return { depth, wet, level, wse: Float64Array.from(level), onPath: new Uint8Array(n), vx, vy };
+    let peakHazard = null;
+    if (track) {
+      const km2 = [0, 0, 0, 0, 0, 0], cellKm2 = (a.cell * a.cell) / 1e6;
+      for (let i = 0; i < n; i++) if (cls[i] && !(a.ocean && a.ocean[i])) km2[cls[i] - 1] += cellKm2;
+      peakHazard = { cls, vel, km2 };
+    }
+    return { depth, wet, level, wse: Float64Array.from(level), onPath: new Uint8Array(n), vx, vy, ...(track && { arrival, peakHazard }) };
   }
   const api = { prepare, cell, expand };
   if (typeof module === 'object') module.exports = api;

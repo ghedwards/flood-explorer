@@ -20,6 +20,15 @@ const HAZARD_COLORS: [[u8; 3]; 6] = [
     [65, 68, 135],
     [68, 1, 84],
 ];
+/// Time until flooded, earliest first (dark red) to latest (pale yellow): up to 15 min, 30 min, 1 h, 2 h, 4 h, longer.
+const ARRIVAL_COLORS: [[u8; 3]; 6] = [
+    [128, 0, 38],
+    [189, 0, 38],
+    [227, 26, 28],
+    [252, 78, 42],
+    [253, 141, 60],
+    [254, 217, 118],
+];
 const WATER: [u8; 3] = [109, 147, 173];
 const NORMAL_WATER: [u8; 3] = [38, 166, 154];
 const CHANNEL_ALPHA: u8 = 180;
@@ -32,7 +41,7 @@ pub struct ComposeParams {
     pub w: usize,
     pub h: usize,
     pub relief: bool,
-    pub mode: u8, // 0 = depth, 1 = hazard, 2 = compare
+    pub mode: u8, // 0 = depth, 1 = hazard, 2 = compare, 3 = time until flooded (the classes in hz_cls, 1 earliest to 6 latest)
     pub flood_a: u8,
     pub stream_a: u8,
     pub cell_km2: f32,
@@ -100,7 +109,8 @@ pub fn compose_water(
     let stream_thr = params.stream_thr;
     let mode = params.mode;
     let relief = params.relief;
-    let is_hazard = mode == 1;
+    let is_hazard = mode == 1 || mode == 3;   // both colour the flooded cells by a class in hz_cls
+    let palette = if mode == 3 { &ARRIVAL_COLORS } else { &HAZARD_COLORS };
     let is_compare = mode == 2;
 
     for i in 0..n {
@@ -139,7 +149,7 @@ pub fn compose_water(
         } else if run_wet[i] != 0 && is_flood {
             if is_hazard && hz_cls[i] != 0 {
                 let ci = (hz_cls[i] as usize).saturating_sub(1).min(5);
-                col = Some(HAZARD_COLORS[ci]);
+                col = Some(palette[ci]);
             } else if !lone_cell(run_wet, i, w, h) {
                 band = depth_band(run_depth[i]) as i32;
                 col = Some(DEPTH_STOPS[band as usize].1);
@@ -197,6 +207,23 @@ mod tests {
         let (rgba, count) = compose_water(&valid, &ocean, &stream, &acc, &sat, &base_wet, &run_wet, &run_depth, &hz, &cmp, &params, None);
         assert_eq!(count, 0);
         assert!(rgba.iter().all(|&x| x == 0));
+    }
+    #[test]
+    fn arrival_mode_colours_flooded_cells_by_their_class_from_its_own_palette() {
+        let w = 3; let h = 1; let n = w * h;
+        let (valid, ocean, stream, acc, sat, base_wet) = (vec![1u8; n], vec![0u8; n], vec![0u8; n], vec![0f32; n], vec![0f32; n], vec![0u8; n]);
+        let run_wet = vec![1u8; n]; let run_depth = vec![1.5f32; n]; let cmp = vec![0i8; n];
+        let hz = vec![1u8, 6, 0];   // earliest, latest, no class (falls back to the depth colour)
+        let draw = |mode: u8| {
+            let params = ComposeParams { w, h, relief: false, mode, flood_a: 255, stream_a: 0, cell_km2: 0.0009, stream_thr: 0.0 };
+            compose_water(&valid, &ocean, &stream, &acc, &sat, &base_wet, &run_wet, &run_depth, &hz, &cmp, &params, None).0
+        };
+        let arrival = draw(3);
+        assert_eq!(&arrival[0..3], &ARRIVAL_COLORS[0]); assert_eq!(&arrival[4..7], &ARRIVAL_COLORS[5]);
+        assert_eq!(&arrival[8..11], &[31, 103, 187], "a cell with no class keeps its depth colour");
+        let hazard = draw(1);
+        assert_eq!(&hazard[0..3], &HAZARD_COLORS[0]); assert_eq!(&hazard[4..7], &HAZARD_COLORS[5]);
+        assert_ne!(ARRIVAL_COLORS, HAZARD_COLORS);
     }
     #[test]
     fn flooded_cell_gets_depth_color() {

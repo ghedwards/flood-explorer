@@ -625,6 +625,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 inflow_cell: if inflow.is_finite() && inflow >= 0.0 {Some(inflow as usize)} else {None},
                 inflow_m3_s: b.num("inflow"), inflow_series: b.f64s("inflowSeries"),
                 rain_series: b.f64s("rainSeries"),
+                series_step_s: b.num("seriesStepS"), arrival_depth: b.num("arrivalDepth"),
                 stages,
             })?;
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
@@ -644,6 +645,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     o.f64s("vx", &s.vx);
                     o.f64s("vy", &s.vy);
                     o.f64s("peak", &s.peak);
+                    o.f64s("peakSpeed", &s.peak_speed);
+                    o.f64s("peakClass", &s.peak_class.iter().map(|c| *c as f64).collect::<Vec<_>>());
+                    o.f64s("arrival", &s.arrival);
                     *slot = None;
                 }
                 Ok(())

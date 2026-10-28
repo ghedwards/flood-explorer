@@ -226,9 +226,31 @@ async function main() {
     assert.ok(!flash2d.inertial.error && flash2d.inertial.peak === true && flash2d.inertial.storm.effectiveMm > 90 && flash2d.inertial.time >= 3 * 3600 - 1, `the 2D storm run finished: ${JSON.stringify(flash2d.inertial).slice(0, 300)}`);
     assert.match(flash2d.status, /deepest water each cell held/); assert.match(flash2d.summary, /deepest water over/); assert.ok(flash2d.controls);
     assert.ok(flash2d.inertial.sourceVolume > 0 && Math.abs(flash2d.inertial.balanceError) < 1e-6 * flash2d.inertial.sourceVolume + 1, `the run conserves water: ${flash2d.inertial.balanceError} of ${flash2d.inertial.sourceVolume} m3`);
+    // the new outputs of a storm run: the worst hazard class, the time until flooded, and a quarter-hour series step
+    const modes = await page.evaluate(() => {
+      const sel = document.getElementById('colorMode'), set = (v) => { sel.value = v; sel.dispatchEvent(new Event('change')); };
+      const enabled = !sel.querySelector('option[value="arrival"]').disabled;
+      set('arrival'); const arrival = document.getElementById('modeLegend').textContent;
+      set('hazard'); const hazard = document.getElementById('modeLegend').textContent;
+      const stats = document.getElementById('stats').textContent, settings = window.__floodStatus.inertial.settings;
+      set('depth');
+      return { enabled, arrival, hazard, wetNever: /wet, never 10 cm/.test(arrival), stats, step: window.__floodStatus.inertial.settings.rainSeries.length, first: /First flooded/.test(stats), settings: { seriesStepS: settings.seriesStepS } };
+    });
+    assert.ok(modes.enabled && /within 15 min/.test(modes.arrival) && /after 4 h/.test(modes.arrival), `the time-until-flooded colours are offered and keyed: ${modes.arrival}`);
+    assert.match(modes.hazard, /worst depth × speed any step reached/); assert.ok(modes.first, `the stats say when flooding starts: ${modes.stats}`);
+    assert.ok(modes.wetNever, 'the key says what the blue cells are');
+    const prop = await page.evaluate(async (g) => { await window.__floodCheckProperty(g[0], g[1], 'storm check'); return window.__floodStatus.property; }, gauge);
+    assert.ok(prop.inModel && prop.model === 'local-inertial' && Number.isFinite(prop.depth) && (prop.arrivalMin === null || prop.arrivalMin >= 0), `the property check reads the 2D storm run: ${JSON.stringify(prop)}`);
+    assert.equal(modes.settings.seriesStepS, 600); assert.equal(modes.step, 6 + 12, 'a one-hour storm and two hours after are 18 ten-minute entries, not 3 hourly ones');
     if (process.env.SHOT_DIR) {   // for looking at by hand
       await page.evaluate(() => { document.getElementById('panel-tsunami').hidden = true; document.getElementById('flashMethodRow').scrollIntoView({ block: 'start' }); });
       await page.screenshot({ path: path.join(process.env.SHOT_DIR, 'flash-2d.png') });
+      await page.evaluate((g) => { document.getElementById('panel-scenario').classList.add('collapsed'); window.__floodTestZoom(g[0], g[1], 11); }, gauge);
+      for (const mode of ['arrival', 'hazard', 'depth']) {
+        await page.evaluate((m) => { const sel = document.getElementById('colorMode'); sel.value = m; sel.dispatchEvent(new Event('change')); }, mode);
+        await page.waitForTimeout(700);
+        await page.screenshot({ path: path.join(process.env.SHOT_DIR, `flash-${mode}.png`) });
+      }
     }
     // changing the storm drops the 2D result and says so; choosing the screening model again restores it
     await page.evaluate(() => window.__floodSetStorm('flash', 60, 1, 'typical'));

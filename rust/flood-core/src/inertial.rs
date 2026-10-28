@@ -2,10 +2,17 @@
 //! Bates, Horritt & Fewtrell (2010), doi:10.1016/j.jhydrol.2010.03.027.
 //! Unit-width face discharge, semi-implicit Manning friction, hydrostatic
 //! face depth and conservative donor-volume limiting. No advective momentum.
+use crate::surface::hazard_class;
 use crate::Grid;
 
 const G: f64 = 9.81;
 const DRY: f64 = 1e-6;
+/// Water shallower than this is not wet for the hazard class (the same 1 cm the page calls wet).
+const HAZARD_MIN_DEPTH: f64 = 0.01;
+/// The default length of one entry of a rain or inflow series: an hour.
+pub const HOURLY: f64 = 3600.0;
+/// The default depth at which a cell counts as flooded for its arrival time (10 cm, where flow is overland flow).
+pub const ARRIVAL_DEPTH: f64 = 0.1;
 
 #[derive(Clone)]
 pub struct Options {
@@ -24,6 +31,15 @@ pub struct Options {
     pub inflow_series: Option<Vec<f64>>,
     /// Prescribed water elevation at reservoir cells; NaN elsewhere.
     pub stages: Vec<f64>,
+    /// Seconds each entry of `rain_series` and `inflow_series` lasts (3600 for hourly series; shorter for
+    /// a burst of rain or a dam-break hydrograph). NaN means hourly.
+    pub series_step_s: f64,
+    /// Depth (m) at which a cell counts as flooded for its arrival time. NaN means 0.1 m.
+    pub arrival_depth: f64,
+}
+impl Options {
+    fn step(&self) -> f64 { if self.series_step_s.is_finite() { self.series_step_s } else { HOURLY } }
+    fn arrival_at(&self) -> f64 { if self.arrival_depth.is_finite() { self.arrival_depth } else { ARRIVAL_DEPTH } }
 }
 
 pub struct Solver {
@@ -43,6 +59,12 @@ pub struct Solver {
     pub vy: Vec<f64>,
     /// The deepest water each cell has held so far (after each step, boundary cells included).
     pub peak: Vec<f64>,
+    /// The fastest flow each cell has had (m/s), from the face discharges, for cells holding at least 1 cm.
+    pub peak_speed: Vec<f64>,
+    /// The worst flood hazard class (1-6, AIDR 7-3; 0 for a cell that was never wet) each cell has had: the class of its depth and speed at each step.
+    pub peak_class: Vec<u8>,
+    /// Seconds from the start until the cell first held `arrival_depth`; -1 if it never did.
+    pub arrival: Vec<f64>,
 }
 impl Solver {
     pub fn new(grid: Grid, opts: Options) -> Result<Self, String> {
@@ -56,11 +78,13 @@ impl Solver {
         if !(opts.seconds.is_finite() && opts.seconds > 0.0 && opts.seconds <= 86400.0
             && opts.rain_mm_h.is_finite() && (0.0..=1000.0).contains(&opts.rain_mm_h)
             && opts.rain_series.as_ref().is_none_or(|s| s.iter().all(|v| v.is_finite() && (0.0..=1000.0).contains(v)))
+            && (opts.series_step_s.is_nan() || (1.0..=86400.0).contains(&opts.series_step_s))
+            && (opts.arrival_depth.is_nan() || (opts.arrival_depth > 0.0 && opts.arrival_depth <= 100.0))
             && opts.roughness.is_finite() && (0.01..=1.0).contains(&opts.roughness)
             && opts.initial_depth.is_finite() && (0.0..=100.0).contains(&opts.initial_depth)
             && opts.inflow_m3_s.is_finite() && (0.0..=100000.0).contains(&opts.inflow_m3_s)
             && opts.inflow_series.as_ref().is_none_or(|s| s.iter().all(|v| v.is_finite() && (0.0..=100000.0).contains(v)))) {
-            return Err("invalid duration, rainfall, roughness, initial depth or inflow".into());
+            return Err("invalid duration, rainfall, series step, arrival depth, roughness, initial depth or inflow".into());
         }
         let active = |i: usize| grid.valid.as_ref().is_none_or(|v| v[i] != 0) && grid.dem[i].is_finite();
         if ! (0..n).any(active) { return Err("terrain has no valid cells".into()); }
@@ -75,8 +99,11 @@ impl Solver {
         } else {opts.initial_depth}).collect();
         let mut s = Self { grid, opts, depth, time: 0.0, steps: 0, initial_volume: 0.0,
             source_volume: 0.0, boundary_volume: 0.0, qx: vec![0.0;n], qy: vec![0.0;n],
-            outgoing: vec![0.0;n], scale: vec![1.0;n], vx: vec![0.0;n], vy: vec![0.0;n], peak: vec![0.0;n] };
+            outgoing: vec![0.0;n], scale: vec![1.0;n], vx: vec![0.0;n], vy: vec![0.0;n], peak: vec![0.0;n],
+            peak_speed: vec![0.0;n], peak_class: vec![0;n], arrival: vec![-1.0;n] };
         s.peak.copy_from_slice(&s.depth);
+        let threshold = s.opts.arrival_at();
+        for i in 0..n { if s.active(i) && !s.opts.stages[i].is_finite() && s.depth[i] >= threshold { s.arrival[i] = 0.0; } }
         s.initial_volume = s.volume();
         Ok(s)
     }
@@ -97,18 +124,24 @@ impl Solver {
     /// Advance a bounded batch. Call between worker yields; 200k steps is a hard budget.
     pub fn advance(&mut self, count: usize) -> Result<(), String> {
         let n = self.depth.len(); let dx = self.grid.cell; let area = dx*dx;
+        let arrival_depth = self.opts.arrival_at();
         for _ in 0..count.min(32) {
             if self.time >= self.opts.seconds { break; }
             if self.steps >= 200000 { return Err("step budget exceeded; shorten the run or use a coarser grid".into()); }
             let max_h = self.depth.iter().copied().fold(0.001, f64::max);
-            let dt = (0.35*dx/(G*max_h).sqrt()).min(5.0).min(self.opts.seconds-self.time);
+            let mut dt = (0.35*dx/(G*max_h).sqrt()).min(5.0).min(self.opts.seconds-self.time);
+            // With a custom series step, steps stop at each series boundary so a short burst is applied exactly.
+            if self.opts.series_step_s.is_finite() {
+                let to_boundary = self.opts.series_step_s - self.time % self.opts.series_step_s;
+                if to_boundary > 1e-9 && to_boundary < dt { dt = to_boundary; }
+            }
             // Include positive sources before fluxes and in the available donor volume.
             for i in 0..n {
                 if self.active(i) && !self.opts.stages[i].is_finite() {
                     let extra = {
                         let r = self.opts.rain_series.as_ref()
                             .and_then(|s| {
-                                let idx = (self.time / 3600.0) as usize;
+                                let idx = (self.time / self.opts.step()) as usize;
                                 s.get(idx.min(s.len().saturating_sub(1))).copied()
                             })
                             .unwrap_or(self.opts.rain_mm_h);
@@ -120,7 +153,7 @@ impl Solver {
             if self.opts.inflow_m3_s > 0.0 || self.opts.inflow_series.as_ref().is_some_and(|s| !s.is_empty()) {
                 let v = self.opts.inflow_series.as_ref()
                     .and_then(|s| {
-                        let idx = (self.time / 3600.0) as usize;
+                        let idx = (self.time / self.opts.step()) as usize;
                         s.get(idx.min(s.len().saturating_sub(1))).copied()
                     })
                     .unwrap_or(self.opts.inflow_m3_s);
@@ -159,6 +192,7 @@ impl Solver {
                     self.boundary_volume += (h-self.depth[i])*area; self.depth[i] = h;
                 }
                 if self.depth[i] > self.peak[i] { self.peak[i] = self.depth[i]; }
+                if self.arrival[i] < 0.0 && self.depth[i] >= arrival_depth && !self.opts.stages[i].is_finite() && self.active(i) { self.arrival[i] = self.time + dt; }
             }
             // Update cell velocities from face fluxes (unit-width discharge / depth).
             for i in 0..n {
@@ -169,6 +203,12 @@ impl Solver {
                 let h = self.depth[i].max(DRY);
                 self.vx[i] = (dr + dl) / (2.0*h);
                 self.vy[i] = (dd + du) / (2.0*h);
+                if self.depth[i] >= HAZARD_MIN_DEPTH && !self.opts.stages[i].is_finite() && self.active(i) {
+                    let v = self.vx[i].hypot(self.vy[i]);
+                    if v > self.peak_speed[i] { self.peak_speed[i] = v; }
+                    let class = hazard_class(self.depth[i], v);
+                    if class > self.peak_class[i] { self.peak_class[i] = class; }
+                }
             }
             self.time += dt; self.steps += 1;
         }
@@ -181,7 +221,7 @@ mod tests {
     use super::*;
     fn solver(w:usize,h:usize) -> Solver {
         Solver::new(Grid {w,h,cell:10.0,dem:vec![0.0;w*h],valid:None,inflow:None,d8:None},Options {
-            seconds:100.0,rain_mm_h:0.0,roughness:0.03,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:None,stages:vec![f64::NAN;w*h]
+            seconds:100.0,rain_mm_h:0.0,roughness:0.03,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:None,stages:vec![f64::NAN;w*h],series_step_s:f64::NAN,arrival_depth:f64::NAN
         }).unwrap()
     }
     fn finish(s:&mut Solver) { while s.time<s.opts.seconds {s.advance(32).unwrap();} }
@@ -224,7 +264,7 @@ mod tests {
         // a slope draining to a held outlet: an hour of rain, then none; the rain puddles on the slope and then runs off
         let (w,h)=(12,1); let mut stages=vec![f64::NAN;w*h]; stages[w-1]=0.0;
         let mut s=Solver::new(Grid {w,h,cell:10.0,dem:(0..w).map(|i| (w-1-i) as f32*0.5).collect(),valid:None,inflow:None,d8:None},Options {
-            seconds:7200.0,rain_mm_h:0.0,roughness:0.035,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:Some(vec![60.0,0.0]),stages
+            seconds:7200.0,rain_mm_h:0.0,roughness:0.035,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:Some(vec![60.0,0.0]),stages,series_step_s:f64::NAN,arrival_depth:f64::NAN
         }).unwrap();
         finish(&mut s);
         assert!(s.peak.iter().zip(&s.depth).all(|(p,d)| p>=d), "the peak is at least the final depth everywhere");
@@ -236,6 +276,52 @@ mod tests {
     #[test] fn peak_starts_at_the_initial_water() {
         let mut s=solver(4,4); s.opts.initial_depth=0.0; s.depth[5]=0.3; s.peak.copy_from_slice(&s.depth);
         assert_eq!(s.peak[5],0.3); assert_eq!(s.peak[0],0.0);
+    }
+    #[test] fn a_series_step_makes_rain_and_inflow_series_sub_hourly() {
+        // 36 mm/h for the first 10 minutes only: 6 mm, not the 36 mm an hourly step would put down
+        let mut s=solver(10,10);s.opts.rain_series=Some(vec![36.0,0.0]);s.opts.series_step_s=600.0;s.opts.seconds=3600.0;
+        finish(&mut s);assert!((s.source_volume-60.0).abs()<1e-6, "{}",s.source_volume);assert!(s.balance_error().abs()<1e-8);
+        let mut hourly=solver(10,10);hourly.opts.rain_series=Some(vec![36.0,0.0]);hourly.opts.seconds=3600.0;
+        finish(&mut hourly);assert!((hourly.source_volume-360.0).abs()<1e-6, "the default step is an hour: {}",hourly.source_volume);
+        // an inflow of 0.2 m3/s for 10 minutes then nothing: 120 m3
+        let mut f=solver(10,10);f.opts.inflow_series=Some(vec![0.2,0.0]);f.opts.inflow_cell=Some(55);f.opts.series_step_s=600.0;f.opts.seconds=1800.0;
+        finish(&mut f);assert!((f.source_volume-120.0).abs()<1e-6, "{}",f.source_volume);
+    }
+    #[test] fn a_short_series_step_is_checked() {
+        let s=solver(2,2);
+        for bad in [0.0,-5.0,0.5,f64::INFINITY,1e6] { let mut o=s.opts.clone();o.series_step_s=bad;assert!(Solver::new(s.grid.clone(),o).is_err(),"{bad}"); }
+        for bad in [0.0,-0.1,1000.0] { let mut o=s.opts.clone();o.arrival_depth=bad;assert!(Solver::new(s.grid.clone(),o).is_err(),"{bad}"); }
+        let mut ok=s.opts.clone();ok.series_step_s=300.0;ok.arrival_depth=0.05;assert!(Solver::new(s.grid,ok).is_ok());
+    }
+    #[test] fn arrival_is_the_first_time_a_cell_holds_the_depth_and_never_for_cells_not_reached() {
+        let (w,h)=(12,1);
+        let mut s=Solver::new(Grid {w,h,cell:10.0,dem:(0..w).map(|i| (w-1-i) as f32*0.5).collect(),valid:Some((0..w).map(|i| if i==w-1 {0} else {1}).collect()),inflow:None,d8:None},Options {
+            seconds:600.0,rain_mm_h:0.0,roughness:0.035,initial_depth:0.0,inflow_cell:Some(0),inflow_m3_s:1.0,inflow_series:None,rain_series:None,stages:vec![f64::NAN;w*h],series_step_s:f64::NAN,arrival_depth:0.02
+        }).unwrap();
+        finish(&mut s);
+        // 1 m3/s into a 100 m2 cell is 1 cm a second, less what runs off down the slope: the source cell holds 2 cm within seconds
+        assert!(s.arrival[0]>0.0 && s.arrival[0]<=10.0, "{}",s.arrival[0]);
+        // the source cell leaks into the next one, which can hold the depth first; from there the front moves down the slope
+        let reached:Vec<f64>=s.arrival[1..w-1].iter().copied().filter(|a| *a>=0.0).collect();
+        assert!(reached.len()>=3 && reached.windows(2).all(|p| p[0]<=p[1]+1e-9), "later further down the slope: {reached:?}");
+        assert_eq!(s.arrival[w-1],-1.0,"a no-data cell is never flooded");
+        // a cell that starts wet enough arrives at time 0
+        let mut o=s.opts.clone();o.initial_depth=0.5;o.inflow_m3_s=0.0;
+        let t=Solver::new(Grid {w:3,h:1,cell:10.0,dem:vec![0.0;3],valid:None,inflow:None,d8:None},Options{stages:vec![f64::NAN;3],..o}).unwrap();
+        assert!(t.arrival.iter().all(|a| *a==0.0));
+    }
+    #[test] fn peak_hazard_class_and_speed_follow_the_worst_moment() {
+        // 3 m of water released at one end of a flat channel: the next cells see deep, fast flow
+        let (w,h)=(8,1);
+        let mut s=Solver::new(Grid {w,h,cell:10.0,dem:vec![0.0;w],valid:None,inflow:None,d8:None},Options {
+            seconds:60.0,rain_mm_h:0.0,roughness:0.03,initial_depth:0.0,inflow_cell:None,inflow_m3_s:0.0,inflow_series:None,rain_series:None,stages:vec![f64::NAN;w],series_step_s:f64::NAN,arrival_depth:f64::NAN
+        }).unwrap();
+        s.depth[0]=3.0;s.peak[0]=3.0;finish(&mut s);
+        assert!(s.peak_speed[1]>1.0, "{}",s.peak_speed[1]);
+        assert!(s.peak_class[1]>=4, "{}",s.peak_class[1]);
+        assert!(s.peak_class.iter().zip(&s.depth).zip(s.vx.iter().zip(&s.vy)).all(|((c,d),(vx,vy))| *d<0.01 || *c>=hazard_class(*d,vx.hypot(*vy))), "the peak class is never below the final class");
+        assert!(s.peak_class[w-1]<=s.peak_class[1], "the far end sees a milder worst case");
+        let dry=solver(3,3); assert!(dry.peak_class.iter().all(|c| *c==0) && dry.peak_speed.iter().all(|v| *v==0.0));
     }
     #[test] fn rejects_bad_inputs() {
         let s=solver(2,2);let mut o=s.opts.clone();o.roughness=f64::NAN;
