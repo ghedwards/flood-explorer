@@ -27,7 +27,7 @@ const SHELL = [
   ...['places', 'ptha18-hazard', 'gold-coast-seaway', 'pine-estuary', 'brisbane-mouth', 'currumbin', 'sunshine-coast', 'port-macquarie', 'wollongong', 'moreton', 'gold-coast', 'coffs', 'newcastle', 'sydney'].map(id => `tsunami-data/${id}.json`),
   'tsunami-data/scenarios/index.json', 'tsunami-data/scenarios/1450-5.json', 'tsunami-data/scenarios/1570-2.json',
   ...['moderate-kermadec-tonga-kermadectonga2-38914-1450-5', 'large-new-hebrides-newhebrides2-11816-1450-5', 'distant-mega-quake-south-america-southamerica-146274-1450-5', 'very-large-kermadec-tonga-kermadectonga2-42930-1450-5', 'moderate-kermadec-tonga-kermadectonga2-41565-1570-2', 'large-new-hebrides-newhebrides2-12022-1570-2', 'distant-mega-quake-south-america-southamerica-146274-1570-2', 'very-large-kermadec-tonga-kermadectonga2-43746-1570-2'].map(id => `tsunami-data/scenarios/${id}.csv`),
-  'tsunami-data/extents/index.json', 'tsunami-data/extents/gold-coast-seaway.json', 'tsunami-data/extents/currumbin.json', 'tsunami-data/extents/pine-estuary.json',
+  'tsunami-data/extents/index.json', 'tsunami-data/extents/gold-coast-seaway.json', 'tsunami-data/extents/currumbin.json', 'tsunami-data/extents/pine-estuary.json', 'tsunami-data/extents/brisbane-mouth.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'data/national/gauges-core.min.json', 'data/national/storages.geojson', 'data/national/readings.json', 'data/national/meta.json',
 ];
