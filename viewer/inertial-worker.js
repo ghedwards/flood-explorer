@@ -11,7 +11,7 @@ self.onmessage = async ({ data }) => {
     do {
       result = core.inertialStep();
       if (result.done) {
-        self.postMessage({ result }, [result.depth.buffer]);
+        self.postMessage({ result }, [result.depth.buffer, ...['peak', 'peakSpeed', 'peakClass', 'arrival'].filter((k) => result[k]).map((k) => result[k].buffer)]);
       } else {
         self.postMessage({ progress: result.time / data.opts.seconds });
         await new Promise((resolve) => setTimeout(resolve, 0));

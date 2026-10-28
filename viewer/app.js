@@ -12,6 +12,7 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
 import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
 import { initTsunamiPanel } from './tsunami-panel.js';
+import { effectiveRainSeries } from './flash-2d.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -890,12 +891,23 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (inertialWorker) inertialWorker.terminate();
     inertialWorker = null;
     $('inertialRun').disabled = false; $('inertialCancel').disabled = true;
+    $('flash2dRun').disabled = false; $('flash2dCancel').disabled = true;
   }
   function resetInertial() {
     stopInertial();
     state.inertial = null; status.inertial = null;
     $('solver').value = 'fast'; solverControls();
     $('inertialStatus').textContent = 'Fast terrain model.';
+    $('flash2dStatus').textContent = flashMethod2d() ? 'Press Run to move this storm\'s water in 2D. The map shows the screening model.' : '';
+  }
+  // Draw a finished 2D run (state.run is set): map, numbers, edges, profile and impact
+  function showInertialRun(a) {
+    state.edges = floodEdges(a, state.run);
+    const arInertial = state.areaKey && areaReg.get(state.areaKey);
+    if (arInertial) arInertial.run = state.run;   // the 3D tiles follow too
+    drawMap(); drawStats(scenario()); renderEdgeNote(); drawProfile(scenario());
+    maybeRenderImpact(); renderRecorded();
+    $('timeSet').hidden = true;
   }
   function startInertial() {
     if (!state.a) { $('inertialStatus').textContent = 'Load a terrain model first.'; return; }
@@ -950,12 +962,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         $('inertialStatus').textContent = `Local-inertial 2D: final depth at ${fmt(r.time / 60, 1)} min, ${Math.round(g.cell)} m cells. Stored ${fmt(r.volume, 1)} m³; added ${fmt(r.sourceVolume, 1)} m³; boundary exchange ${fmt(r.boundaryVolume, 1)} m³; balance error ${r.balanceError.toExponential(2)} m³. Partial edge blocks and blocks with missing terrain are excluded.` + (rainOnly
           ? ' Rain-only run with sealed edges: the rain (a few mm to cm) stays on every cell, so most of the map shows as under 0.5 m — set a gauge inflow or open the sea boundary for channel flooding.'
           : '');
-        state.edges = floodEdges(a, state.run);
-        const arInertial = state.areaKey && areaReg.get(state.areaKey);
-        if (arInertial) arInertial.run = state.run;   // the 3D tiles follow too
-        drawMap(); drawStats(scenario()); renderEdgeNote(); drawProfile(scenario());
-        maybeRenderImpact(); renderRecorded();
-        $('timeSet').hidden = true;
+        showInertialRun(a);
       };
       w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });
     } catch (e) { stopInertial(); $('inertialStatus').textContent = `2D stopped: ${e.message}. Map shows the fast model.`; }
@@ -973,6 +980,66 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       $('inertialStatus').textContent = 'Inputs changed. Run 2D again; map shows the fast preview.';
     }
   });
+
+  /* ---- flash flooding by the 2D solver: the storm's runoff moved by the local-inertial model ---- */
+  const flashMethod2d = () => ctl.floodType.value === 'flash' && $('flashMethod').value === '2d';
+  const flashStatus = (text) => { $('flash2dStatus').textContent = text; };
+  function syncFlashMethod() {
+    $('flashMethodRow').hidden = ctl.floodType.value !== 'flash';
+    if (ctl.floodType.value !== 'flash') $('flashMethod').value = 'screen';
+    $('flash2dControls').hidden = !flashMethod2d();
+  }
+  function startFlash2d() {
+    if (!state.a) { flashStatus('Load a terrain model first.'); return; }
+    if (!F.inertialStart) { flashStatus('The 2D model needs WebAssembly.'); return; }
+    if (ctl.floodType.value !== 'flash') { flashStatus('Choose "Storm: flash flooding" as the flood type.'); return; }
+    runScenario();   // restore the screening preview and drop any older 2D result
+    const seq = inertialSequence, a = state.a, key = state.areaKey;
+    try {
+      const s = storm(), rain = effectiveRainSeries(s, Number($('flash2dAfter').value));
+      if (!(rain.effectiveMm > 0)) { flashStatus('None of this storm\'s rain runs off: the ground soaks it all in. Try more rain, a shorter storm or sealed ground.'); return; }
+      const g = window.FloodInertialGrid.prepare(a, Number($('flash2dResolution').value));
+      const stages = new Float64Array(g.W * g.H).fill(NaN), sea = g.ocean.some(Boolean);
+      if (sea) for (let i = 0; i < stages.length; i++) if (g.ocean[i]) stages[i] = 0;   // the sea is held at its level, so water can drain into it
+      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: rain.series, seriesStepS: rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages };
+      const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
+      inertialWorker = w;
+      $('flash2dRun').disabled = true; $('flash2dCancel').disabled = false; $('flash2dProgress').value = 0;
+      flashStatus(`Running the storm in 2D on ${g.W} × ${g.H} cells (${Math.round(g.cell)} m) for ${fmt(rain.seconds / 3600, 0)} hours. The map shows the screening model until it finishes.`);
+      status.inertial = { running: true, cell: g.cell, storm: true };
+      const fail = (message) => {
+        if (seq !== inertialSequence) return;
+        stopInertial(); status.inertial = { error: message };
+        flashStatus(`2D stopped: ${message}. The map shows the screening model.`);
+      };
+      w.onerror = (e) => { e.preventDefault(); fail(e.message || 'Worker failed'); };
+      w.onmessage = ({ data }) => {
+        if (seq !== inertialSequence || a !== state.a || key !== state.areaKey) return;
+        if (data.error) { fail(data.error); return; }
+        if (data.progress != null) { $('flash2dProgress').value = data.progress; return; }
+        const r = data.result;
+        if (!r) return;
+        stopInertial();
+        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, ...metrics } = r;   // the arrays are in state.run; the summary stays small enough to save in a GeoJSON
+        const { stages: _stages, ...settings } = opts;
+        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
+          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours } };
+        status.inertial = { ...state.inertial, running: false };
+        state.run = window.FloodInertialGrid.expand(a, g, r, { peak: true });
+        state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
+        clearTimeout(impactT);
+        $('colorMode').value = 'depth'; solverControls();
+        $('flash2dProgress').value = 1;
+        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 0)} hours on ${Math.round(g.cell)} m cells. ${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}. ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
+        showInertialRun(a);
+      };
+      w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });
+    } catch (e) { stopInertial(); flashStatus(`2D stopped: ${e.message}. The map shows the screening model.`); }
+  }
+  $('flashMethod').addEventListener('change', () => { syncFlashMethod(); runScenario(); });
+  $('flash2dRun').addEventListener('click', startFlash2d);
+  $('flash2dCancel').addEventListener('click', () => { runScenario(); flashStatus('2D cancelled. The screening model is shown.'); });
+  window.__floodFlash2d = (options) => { if (options && options.method) { $('flashMethod').value = options.method; syncFlashMethod(); } startFlash2d(); };
 
   let impactT = 0, timelineSeq = 0;
   function runScenario() {
@@ -1226,8 +1293,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const area = state.areaKey && areaReg.get(state.areaKey);
     const W = a.W, H = a.H;
     const modeStr = colorMode();
-    const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : 0);
-    const hz = modeStr === 'hazard' ? hazardNow() : null;
+    const modeCode = modeStr === 'hazard' ? 1 : (modeStr === 'compare' ? 2 : (modeStr === 'arrival' ? 3 : 0));
+    const hz = modeStr === 'hazard' ? hazardNow() : (modeStr === 'arrival' ? arrivalNow() : null);
     const cmp = modeStr === 'compare' ? compareNow() : null;
     const valid = a.valid instanceof Uint8Array ? a.valid : new Uint8Array(a.valid || []);
     const ocean = a.ocean instanceof Uint8Array ? a.ocean : new Uint8Array(a.ocean || []);
@@ -1357,13 +1424,42 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   const HAZARD_COLORS = [[253, 231, 37], [122, 209, 81], [34, 168, 132], [42, 120, 142], [65, 68, 135], [68, 1, 84]];
   const HAZARD_TEXT = ['generally safe', 'unsafe for small vehicles', 'unsafe for vehicles, children and the elderly', 'unsafe for vehicles and people', 'unsafe for people and vehicles; buildings need special design', 'unsafe for all; all buildings vulnerable'];
   const COMPARE_COLORS = { onlyNow: [230, 97, 1], onlyPinned: [94, 60, 153], both: [158, 202, 225] };
-  const colorMode = () => { const v = $('colorMode') ? $('colorMode').value : 'depth'; return v === 'compare' && !(state.pinned && state.pinned.key === state.areaKey) ? 'depth' : v; };
+  const colorMode = () => { const v = $('colorMode') ? $('colorMode').value : 'depth'; return (v === 'compare' && !(state.pinned && state.pinned.key === state.areaKey)) || (v === 'arrival' && !(state.run && state.run.arrival)) ? 'depth' : v; };
   // AIDR 7-3 hazard limits [depth m, speed m/s, depth×speed]: the same as
   // flood-core's hazard_class (surface.rs HAZARD_LIMITS); the 5 m layer
   // classifies with them (fine-raster.js)
   const HAZARD_LIMITS = [[0.3, 2.0, 0.3], [0.5, 2.0, 0.6], [1.2, 2.0, 0.6], [2.0, 2.0, 1.0], [4.0, 4.0, 4.0]];
+  // Time until flooded (2D storm runs): the first time each cell held 10 cm, in six bands. The colours are flood-core's ARRIVAL_COLORS (render.rs).
+  const ARRIVAL_EDGES = [900, 1800, 3600, 7200, 14400];
+  const ARRIVAL_COLORS = [[128, 0, 38], [189, 0, 38], [227, 26, 28], [252, 78, 42], [253, 141, 60], [254, 217, 118]];
+  const ARRIVAL_TEXT = ['within 15 min', '15–30 min', '30 min–1 h', '1–2 h', '2–4 h', 'after 4 h'];
+  function arrivalNow() {
+    const run = state.run;
+    if (!state.a || !run || !run.arrival) return null;
+    if (state.arrivalCls && state.arrivalCls.run === run) return state.arrivalCls;
+    const n = run.arrival.length, cls = new Uint8Array(n), km2 = [0, 0, 0, 0, 0, 0], cellKm2 = (state.a.cell * state.a.cell) / 1e6;
+    for (let i = 0; i < n; i++) {
+      const t = run.arrival[i];
+      if (!(t >= 0)) continue;
+      let k = ARRIVAL_EDGES.findIndex((e) => t <= e);
+      if (k < 0) k = 5;
+      cls[i] = k + 1;
+      if (!(state.a.ocean && state.a.ocean[i])) km2[k] += cellKm2;
+    }
+    return (state.arrivalCls = { cls, km2, run });
+  }
+  // the earliest any land cell first held 10 cm, in seconds (null if none did)
+  function firstFlooded(run, a) {
+    let m = Infinity;
+    for (let i = 0; i < run.arrival.length; i++) { const t = run.arrival[i]; if (t >= 0 && t < m && !(a.ocean && a.ocean[i])) m = t; }
+    return Number.isFinite(m) ? m : null;
+  }
   function hazardNow() {
     if (!state.a || !state.run) return null;
+    if (state.run.peakHazard) {   // a 2D storm run: the worst class each cell had at any step, from the solver
+      if (!state.hazard || state.hazard.run !== state.run) state.hazard = Object.assign({}, state.run.peakHazard, { run: state.run });
+      return state.hazard;
+    }
     const vx = state.run.vx, vy = state.run.vy;
     if (!state.hazard || state.hazard.run !== state.run) state.hazard = Object.assign(F.hazard(state.a, state.run, vx, vy), { run: state.run });
     return state.hazard;
@@ -1390,13 +1486,19 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const mode = colorMode();
     const opt = $('colorMode') && $('colorMode').querySelector('option[value="compare"]');
     if (opt) opt.disabled = !(state.pinned && state.pinned.key === state.areaKey);
+    const arrOpt = $('colorMode') && $('colorMode').querySelector('option[value="arrival"]');
+    if (arrOpt) { arrOpt.disabled = !(state.run && state.run.arrival); if (arrOpt.disabled && $('colorMode').value === 'arrival') $('colorMode').value = 'depth'; }
     syncKey();
     const sw = (c) => `<i style="background:rgb(${c.join(',')})"></i>`;
     if (mode === 'hazard') {
       const h = hazardNow();
       box.innerHTML = HAZARD_COLORS.map((c, k) => `<span title="${HAZARD_TEXT[k]}">${sw(c)}H${k + 1}${h ? ` ${fmt(h.km2[k], 1)}` : ''}</span>`).join('')
-        + '<span class="hint">km² · depth × estimated speed (AIDR 7-3)</span>';
+        + `<span class="hint">km² · ${state.run && state.run.peakHazard ? 'the worst depth × speed any step reached' : 'depth × estimated speed'} (AIDR 7-3)</span>`;
       status.hazard = h ? h.km2.map((v) => +v.toFixed(2)) : null;
+    } else if (mode === 'arrival') {
+      const t = arrivalNow();
+      box.innerHTML = ARRIVAL_COLORS.map((c, k) => `<span>${sw(c)}${ARRIVAL_TEXT[k]}${t ? ` ${fmt(t.km2[k], 1)}` : ''}</span>`).join('')
+        + `<span>${sw([63, 154, 224])}wet, never 10 cm</span><span class="hint">km² · time from the start of the rain until a cell first holds 10 cm</span>`;
     } else if (mode === 'compare') {
       const c = compareNow();
       box.innerHTML = `<span>${sw(COMPARE_COLORS.onlyNow)}only now${c ? ` ${fmt(c.km2.onlyNow, 1)} km²` : ''}</span><span>${sw(COMPARE_COLORS.onlyPinned)}only pinned${c ? ` ${fmt(c.km2.onlyPinned, 1)} km²` : ''}</span><span>${sw(COMPARE_COLORS.both)}both</span>`;
@@ -1406,7 +1508,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
 
   // Pin the current scenario to compare later ones against it
   function scenarioLabel() {
-    if (state.inertial) return `Local-inertial 2D, ${fmt(state.inertial.time / 60, 1)} min, ${Math.round(state.inertial.cell)} m grid`;
+    if (state.inertial) return `Local-inertial 2D${state.inertial.peak ? ' storm (peak depth)' : ''}, ${fmt(state.inertial.time / 60, 1)} min, ${Math.round(state.inertial.cell)} m grid`;
     const mode = ctl.floodType.value, parts = [];
     if (mode !== 'flash') parts.push(`gauge ${fmt(parseFloat(ctl.gaugeLevel.value), 2)} m`);
     if (mode !== 'river') parts.push(`${ctl.rainMm.value} mm in ${ctl.stormHours.selectedOptions[0].textContent}`);
@@ -1644,7 +1746,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
 
   let lastChromeKey = null;
   function scheduleMapChrome() {
-    const key = `${colorMode()}|${state.pinned && state.pinned.key === state.areaKey ? state.pinned.run : 'none'}|${state.timeView ? state.timeStep : 'n/a'}|${state.areaKey || ''}`;
+    const key = `${colorMode()}|${state.pinned && state.pinned.key === state.areaKey ? state.pinned.run : 'none'}|${state.timeView ? state.timeStep : 'n/a'}|${state.areaKey || ''}|${state.run && state.run.arrival ? 'storm' : ''}`;
     if (key === lastChromeKey) return;
     lastChromeKey = key;
     renderModeLegend();
@@ -3343,8 +3445,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function drawStats(s) {
     if (state.inertial) {
       const r = state.inertial, st = F.stats(state.a, state.run, null);
-      $('summaryLine').textContent = `Local-inertial 2D · final depth at ${fmt(r.time / 60, 1)} min · ${Math.round(r.cell)} m grid`;
-      $('stats').innerHTML = [['Wet land', fmt(st.wetLandKm2, 2), 'km²'], ['Deeper than 1 m', fmt(st.deepKm2, 2), 'km²'], ['Deepest water', fmt(st.maxDepth, 2), 'm'], ['Simulated time', fmt(r.time / 60, 1), 'min']].map(([k,v,u]) => `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
+      $('summaryLine').textContent = `Local-inertial 2D · ${r.peak ? 'deepest water over' : 'final depth at'} ${fmt(r.time / 60, 1)} min · ${Math.round(r.cell)} m grid`;
+      $('stats').innerHTML = [['Wet land', fmt(st.wetLandKm2, 2), 'km²'], ['Deeper than 1 m', fmt(st.deepKm2, 2), 'km²'], ['Deepest water', fmt(st.maxDepth, 2), 'm'], state.run.arrival ? (() => { const ff = firstFlooded(state.run, state.a); return ['First flooded', ff == null ? 'none' : fmt(ff / 60, 0), ff == null ? '' : 'min after the rain starts']; })() : ['Simulated time', fmt(r.time / 60, 1), 'min']].map(([k,v,u]) => `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
       if ($('btn3d')) $('btn3d').classList.toggle('dim', !(state.a && state.run));
       return;
     }
@@ -5076,6 +5178,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function renderStorm() {
     const mode = ctl.floodType.value, on = mode !== 'river';
     $('stormSet').hidden = !on || scenarioEmpty;
+    syncFlashMethod();
     $('riverSet').hidden = mode === 'flash' || scenarioEmpty;
     $('rainMmOut').textContent = `${ctl.rainMm.value} mm`;
     status.flash = on && state.flash ? Object.assign({ mode }, state.flash) : null;
@@ -6286,7 +6389,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (!a || !run || !g) return false;
     const out = new Float32Array(a.N);
     for (let i = 0; i < a.N; i++) out[i] = run.wet[i] && !(a.ocean && a.ocean[i]) ? Math.round(run.depth[i] * 100) / 100 : -9999;
-    download(new Blob([geoTiffBytes(out, a.W, a.H, g, -9999)], { type: 'image/tiff' }), `flood-depth-${state.inertial ? '2d-final-' : ''}${slug(placeLabel())}.tif`);
+    download(new Blob([geoTiffBytes(out, a.W, a.H, g, -9999)], { type: 'image/tiff' }), `flood-depth-${state.inertial ? (state.inertial.peak ? '2d-peak-' : '2d-final-') : ''}${slug(placeLabel())}.tif`);
     return true;
   }
   function floodGeoJSON() {
@@ -6342,7 +6445,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function downloadGeoJSON() {
     const gj = floodGeoJSON();
     if (!gj) return false;
-    download(new Blob([JSON.stringify(gj)], { type: 'application/geo+json' }), `flood-outline-${state.inertial ? '2d-final-' : ''}${slug(placeLabel())}.geojson`);
+    download(new Blob([JSON.stringify(gj)], { type: 'application/geo+json' }), `flood-outline-${state.inertial ? (state.inertial.peak ? '2d-peak-' : '2d-final-') : ''}${slug(placeLabel())}.geojson`);
     return true;
   }
   function printableReport() {
@@ -6697,7 +6800,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${r.worstRoads.length ? `<p><strong>Roads cut:</strong> ${r.worstRoads.map(([nm, km]) => `${escapeHtml(nm)} (${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`})`).join(', ')}</p>` : ''}
       ${(() => { const ev = d.sites.filter((x) => x.kind === EVAC), evh = r.sitesHit.filter((x) => x.kind === EVAC); return ev.length ? `<p><strong>Evacuation centres:</strong> ${ev.length} mapped here (green on the map)${evh.length ? `, <strong>${evh.length} flooded</strong>: ${evh.map((x) => escapeHtml(x.name)).join(', ')}` : ', none flooded'}. Use <em>Check this property</em> for the dry route to one.</p>` : ''; })()}
       ${r.sitesHit.length ? `<p><strong>Key sites:</strong> ${r.sitesHit.slice(0, 12).map((s) => `${escapeHtml(s.name)} <small>(${s.kind.toLowerCase()}, ${s.depth.toFixed(1)} m)</small>`).join('; ')}${r.sitesHit.length > 12 ? ` and ${r.sitesHit.length - 12} more` : ''}</p>` : ''}
-      ${state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's final water depth on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only, and water keeps moving after this snapshot.</p>` : ''}
+      ${state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's ${state.inertial.peak ? 'deepest water over the run' : 'final water depth'} on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only${state.inertial.peak ? '' : ', and water keeps moving after this snapshot'}.</p>` : ''}
       <p class="hint">Buildings, roads and sites: © OpenStreetMap contributors (ODbL), complete only where mapped${d.copy ? ` (the site's copy from ${escapeHtml(new Date(d.copy.fetched).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }))})` : ''}. People: ABS 2021 Census by SA1, spread across each area's buildings${r.people == null ? ' (not available here right now)' : ''}. Estimates for screening only.</p>`;
     // mark flooded key sites, cut roads and cut-off roads on the map
     if (state.lmap) {
@@ -6855,7 +6958,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     try {
       const m = await recordedMask(rec);
       const s = F.scoreRun(state.a, state.run, m);
-      const html = `<p>${scoreText(s, (state.a.cell * state.a.cell) / 1e6)}</p>${state.inertial ? '<p class="hint">Experimental 2D model: compares the solver\'s final wet extent on its coarse grid.</p>' : ''}`;
+      const html = `<p>${scoreText(s, (state.a.cell * state.a.cell) / 1e6)}</p>${state.inertial ? `<p class="hint">Experimental 2D model: compares the solver's ${state.inertial.peak ? 'peak' : 'final'} wet extent on its coarse grid.</p>` : ''}`;
       area.recScores = area.recScores || {};
       area.recScores[id] = html;
       if (out) out.innerHTML = html;
@@ -8100,8 +8203,11 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (state.inertial && run) {
       const wet = run.wet[c] && !(a.ocean && a.ocean[c]);
       const hz = wet ? hazardNow() : null, cls = hz ? hz.cls[c] : 0;
-      box.textContent = `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, hazard class H${cls || 6} from that cell's depth and water speed` : ''}. Gauge-level thresholds don't apply to this model.`;
-      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, model: 'local-inertial' };
+      const t = run.arrival ? run.arrival[c] : NaN;
+      box.textContent = state.inertial.peak
+        ? `Experimental 2D storm: the deepest water here was ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, worst hazard class H${cls || 6} (depth and water speed at the worst moment)` : ''}${Number.isFinite(t) ? `; water first reached 10 cm about ${fmt(t / 60, 0)} min after the rain started` : wet ? '' : '; it stayed dry'}. Gauge-level thresholds don't apply to this model.`
+        : `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, hazard class H${cls || 6} from that cell's depth and water speed` : ''}. Gauge-level thresholds don't apply to this model.`;
+      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, arrivalMin: Number.isFinite(t) ? +(t / 60).toFixed(1) : null, model: 'local-inertial' };
       rememberPropertyCheck(lat, lon, name);
       return status.property;
     }

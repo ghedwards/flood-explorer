@@ -125,7 +125,7 @@
         <label>Roughness (Manning n) <input id="inertialRoughness" type="number" min="0.01" max="1" value="0.04" step="0.01"></label>
         <label>Sea boundary <select id="inertialBoundary"><option value="closed">Closed edges</option><option value="sea">Hold mapped sea cells at specified level</option></select></label>
         <label>Sea elevation (m, terrain datum) <input id="inertialStage" type="number" min="-20" max="100" value="0" step="0.1"></label>
-        <label>Resolution <select id="inertialResolution"><option value="96">Coarse (up to 96 × 96)</option><option value="192" selected>Standard (up to 192 × 192)</option><option value="384">Fine (up to 384 × 384)</option></select></label>
+        <label>Resolution <select id="inertialResolution"><option value="96">Coarse (up to 96 × 96)</option><option value="192" selected>Standard (up to 192 × 192)</option><option value="384">Fine (up to 384 × 384, slower)</option></select></label>
         <p class="hint">Rainfall is runoff after losses. Unmapped boundaries and missing terrain are closed walls. Terrain is averaged into blocks; narrow channels, drawn defences, pipes and bathymetry are not represented. Results are final depths, not peak depths. Runs are not restored after reload or included in share links.</p>
         <button type="button" class="btn" id="inertialRun">Run 2D model</button>
         <button type="button" class="btn" id="inertialCancel" disabled>Cancel</button>
@@ -169,6 +169,26 @@
           <option value="0" selected>today's</option><option value="1">1 °C warmer</option><option value="1.5">1.5 °C warmer</option>
           <option value="2">2 °C warmer</option><option value="3">3 °C warmer</option>
         </select></label>
+      </div>
+      <div class="storm-row" id="flashMethodRow" hidden>
+        <label>Method <select id="flashMethod" aria-label="How the storm's water moves over the land">
+          <option value="screen" selected>Screening model (fast)</option>
+          <option value="2d">2D water movement (experimental)</option>
+        </select></label>
+      </div>
+      <div id="flash2dControls" hidden>
+        <p class="hint">Runs the storm's rain, less what soaks in, over the terrain with the local-inertial 2D solver. Water moves by the slope of its surface, so it can spread, pond and drain through the storm; the map shows the deepest water each cell held. It is slower than the screening model, and stormwater pipes are not counted.</p>
+        <div class="storm-row">
+          <label>Detail <select id="flash2dResolution" aria-label="Grid detail for the 2D run">
+            <option value="96">Coarse (up to 96 × 96)</option><option value="192" selected>Standard (up to 192 × 192)</option><option value="384">Fine (up to 384 × 384, slower)</option>
+          </select></label>
+          <label>Run on after the rain <select id="flash2dAfter" aria-label="How long the 2D run continues after the rain stops">
+            <option value="1">1 hour</option><option value="2" selected>2 hours</option><option value="4">4 hours</option>
+          </select></label>
+        </div>
+        <div class="storm-row"><button type="button" class="btn small primary" id="flash2dRun">Run 2D for this storm</button><button type="button" class="btn small" id="flash2dCancel" disabled>Cancel</button></div>
+        <progress id="flash2dProgress" max="1" value="0" aria-labelledby="flash2dStatus"></progress>
+        <p class="hint" id="flash2dStatus" role="status" aria-live="polite"></p>
       </div>
       <p class="hint" id="stormSummary" aria-live="polite"></p>
       <p class="hint" id="ifdNote"></p>
@@ -477,6 +497,7 @@
   <label class="show-mode">Show <select id="colorMode" aria-label="What the flood colours show">
     <option value="depth" selected>water depth</option>
     <option value="hazard">hazard (H1–H6)</option>
+    <option value="arrival" disabled>time until flooded (2D storm)</option>
     <option value="compare" disabled>change from pinned scenario</option>
   </select></label>
   <div class="legend" id="modeLegend" hidden aria-live="polite"></div>

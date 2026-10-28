@@ -2,7 +2,7 @@
  * lab's Rust/WebAssembly worker and play the frames over the map. The DOM ids are in index.html (panel-tsunami). Nothing is fetched until the
  * panel is first opened. */
 import { estuaryLocations } from './tsunami-locations.js';
-import { TIDE_STATION, tideLevels, loadScenarios, loadPlace, loadSeries, prepareRun, runInWorker, floodSummary } from './tsunami-session.js';
+import { TIDE_STATION, modelTide, tideLevels, loadScenarios, loadPlace, loadSeries, prepareRun, runInWorker, floodSummary } from './tsunami-session.js';
 import { makeLiveLayer, legendParts } from './tsunami-live.js';
 
 const clock = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
@@ -48,7 +48,7 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, onLegend = ()
     try {
       if (!planes.has(station)) { const r = await fetch(new URL(`tsunami-data/${station}-tidal-planes.json`, baseUrl).href); if (!r.ok) throw new Error(`HTTP ${r.status}`); planes.set(station, tideLevels(await r.json())); }
       const levels = planes.get(station), keep = $('tsTide').value || 'MSL';
-      $('tsTide').innerHTML = levels.map((l) => `<option value="${l.state}">${l.state} (${l.aboveMsl >= 0 ? '+' : ''}${l.aboveMsl.toFixed(2)} m)</option>`).join('');
+      $('tsTide').innerHTML = levels.map((l) => `<option value="${l.state}">${l.state} (${l.aboveMsl >= 0 ? '+' : ''}${l.aboveMsl.toFixed(2)} m${modelTide(l.aboveMsl) !== l.aboveMsl ? `, run at ${modelTide(l.aboveMsl).toFixed(2)} m` : ''})</option>`).join('');
       $('tsTide').value = levels.some((l) => l.state === keep) ? keep : 'MSL';
       $('tsTideNote').textContent = 'Height above mean sea level, held for the whole run. Mean sea level is taken as the terrain’s zero.';
     } catch (error) {
@@ -56,7 +56,7 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, onLegend = ()
       $('tsTideNote').textContent = `The tide levels could not be loaded (${error.message}); the run starts at mean sea level.`;
     }
   }
-  const tideLevel = () => (planes.get(TIDE_STATION[$('tsPlace').value]) || []).find((l) => l.state === $('tsTide').value)?.aboveMsl || 0;
+  const tideLevel = () => modelTide((planes.get(TIDE_STATION[$('tsPlace').value]) || []).find((l) => l.state === $('tsTide').value)?.aboveMsl || 0);
 
   // ---- playback ----
   function show(i) {

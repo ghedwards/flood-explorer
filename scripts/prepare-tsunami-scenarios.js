@@ -27,7 +27,7 @@ async function buildScenario(get, point, pick, slipType = 'stochastic') {
   const peak = stage.reduce((m, v) => Math.max(m, v), 0);
   const trimmed = lib.trimSeries(time, lib.delayedLinearFriction(time, stage), { hours: 3, align: 'peak' });
   const csv = lib.toCsv(trimmed, { zone: pick.zone, slipType, row: pick.row, mw: event.mw, rateAnnual: event.rateAnnual, gaugeID: point.gaugeID, lon: point.lon, lat: point.lat, depth: point.depth, friction: true, scale: 1 });
-  const id = `${slug(pick.label)}-${pick.zone}-${pick.row}`;
+  const id = `${slug(pick.label)}-${pick.zone}-${pick.row}-${slug(String(point.gaugeID))}`;   // the hazard point is in the name: the same scenario has a different wave at another point
   return { csv, entry: { id, label: pick.label, zone: pick.zone, row: pick.row, mw: +event.mw.toFixed(2), annualRate: event.rateAnnual, offshorePeakM: +peak.toFixed(3), file: `${id}.csv` } };
 }
 

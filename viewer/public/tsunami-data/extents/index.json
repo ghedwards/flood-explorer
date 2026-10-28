@@ -1,6 +1,8 @@
 {
  "places": [
+  "brisbane-mouth.json",
   "currumbin.json",
-  "gold-coast-seaway.json"
+  "gold-coast-seaway.json",
+  "pine-estuary.json"
  ]
 }
