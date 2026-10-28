@@ -57,3 +57,5 @@ is removed from the state weights. `scripts/ensemble-ptha.js --tide brisbane-bar
 (built by `scripts/prepare-tsunami-extents.js`; see docs/tsunami-prototype.md). They combine PTHA18 (Geoscience Australia, CC BY 4.0) with the place's terrain and carry
 both attributions; the Gold Coast Seaway grid is CSIRO's, CC BY 4.0.
 
+The `extents/currumbin.json` map is derived from the QldDem terrain (CC BY-SA), so it is shared under the same CC BY-SA terms with the acknowledgements in the terrain file; the Seaway map's terrain is CSIRO's, CC BY 4.0.
+

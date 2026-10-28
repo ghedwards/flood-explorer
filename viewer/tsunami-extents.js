@@ -108,7 +108,7 @@ const DEPTH_KEY = 'flood-tsunami-extent-depth';
 /* The layer: a layer group of one image per place, loaded when first added. `depthPicker()` gives the depth choice for the
  * Layers list. `onChange` is called when the choice or the load state changes, so the page can redraw its legend. */
 export function makeTsunamiExtentsLayer(L, { indexUrl, onChange = () => {} }) {
-  const group = L.layerGroup([], { attribution: 'Tsunami flood hazard: PTHA18 &copy; Geoscience Australia (CC BY 4.0); terrain CSIRO (CC BY 4.0)' });
+  const group = L.layerGroup([], { attribution: 'Tsunami flood hazard: PTHA18 &copy; Geoscience Australia (CC BY 4.0); terrain: CSIRO (CC BY 4.0) and Queensland QldDem (CC BY-SA)' });
   const info = { depth: 0.3, depths: [0.1, 0.3, 1], state: 'idle', places: 0, drawn: 0, error: null };
   let places = null, loading = null, map = null;
   const images = new Map(), pickers = new Set();

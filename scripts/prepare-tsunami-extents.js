@@ -37,7 +37,7 @@ async function build(place, zones) {
     maxRatePerYear: c.depths.map((_, k) => Math.max(...c.rate[k])),
     method: 'A rate-proportional sample of each source zone\'s PTHA18 scenarios, each run through the nested local model at seven tide states (LAT to HAT) weighted by how often the Seaway gauge sits nearest each (scripts/tide-analysis.js). For each cell: the zones\' total rates times the share of draws that add at least the depth.',
     limits: 'A lower bound: other source zones, magnitudes below those sampled and sea-level rise are not included; the terrain is the bundled grid at mean sea level with no defences or drainage; each run is one hour with the tide held at its state; the model is not validated against a recorded event. Sampling error is large for rare outcomes. Not a hazard assessment.',
-    attribution: `PTHA18 (c) Commonwealth of Australia (Geoscience Australia), CC BY 4.0. Terrain: ${terrain.attribution || terrain.source}`, license: 'CC BY 4.0', terrainLicense: terrain.license, prepared: new Date().toISOString().slice(0, 10),
+    attribution: `PTHA18 (c) Commonwealth of Australia (Geoscience Australia), CC BY 4.0. Terrain: ${terrain.attribution || terrain.source}`, license: /SA/i.test(terrain.license || '') ? `${terrain.license} (derived from share-alike terrain)` : 'CC BY 4.0', terrainLicense: terrain.license, prepared: new Date().toISOString().slice(0, 10),
   };
 }
 

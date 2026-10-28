@@ -56,6 +56,9 @@ test('a place file is built from zone files on its grid', async () => {
   assert.ok(Math.abs(m.decodeRate(codes[5]) / 0.004 - 1) < 0.06 && codes[6] === 0);
   assert.deepEqual([file.id, file.zone, file.extent.length, file.depths], ['gold-coast-seaway', 56, 4, [0.1, 0.3, 1]]);
   assert.match(file.limits, /lower bound/);
+  assert.equal(file.license, 'CC BY 4.0', 'CSIRO terrain is CC BY 4.0');
+  const sa = await prep.build('currumbin', [{ zone: 'z', gauge: 1450.5, mw: [8.4, 9.6], count: 60, seed: 1, poolRate: 0.01, W: 160, H: 96, cell: 25, depths: [0.1, 0.3, 1], fraction: [f, f, f] }]);
+  assert.match(sa.license, /CC BY-SA/, 'a map derived from share-alike terrain keeps the share-alike licence');
   await assert.rejects(prep.build('nowhere', []), /at least one|Unknown place/);
   await assert.rejects(prep.build('gold-coast-seaway', [{ zone: 'z', W: 4, H: 2, cell: 50, depths: [0.1], poolRate: 1, fraction: [new Array(8).fill(0)] }]), /not on this place's grid/);
 });

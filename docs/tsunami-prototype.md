@@ -58,7 +58,7 @@ South America (Mw 8.4 to 9.6, one hour) at all seven tide states, weighted by ho
 share of draws, over the states, that add at least each depth. `scripts/prepare-tsunami-extents.js` multiplies each zone's share by its annual rate and sums the zones,
 giving a rate per cell, stored as one byte per cell (`viewer/public/tsunami-data/extents/<place>.json`, about 60 KB). The map draws it in six classes, from rarer than
 1 in 2,500 years to more often than 1 in 100 years; cells the sampled scenarios never reach, or reach less often than 1 in 10,000 years, are left clear. For the Gold Coast
-Seaway the most frequently reached cell gets 0.1 m about once in 59 years, 0.3 m about once in 86 years and 1 m about once in 514 years. The layer is placed on the map by a
+Seaway the most frequently reached cell gets 0.1 m about once in 59 years, 0.3 m about once in 86 years and 1 m about once in 514 years. For Currumbin Creek (the same samples and Seaway tide, its own 25 m grid) the figures are 1 in 61, 1 in 99 and 1 in 682 years. The layer is placed on the map by a
 UTM zone 56 transform (checked against GA's published GDA reference point to a millimetre).
 
 "Water added" is the most the wave raises the water above what the tide already covers at the cell, so the tide's own flooding is not counted. As with the ensemble this is a
