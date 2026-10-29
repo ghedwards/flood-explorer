@@ -566,6 +566,8 @@
         if (!Array.isArray(edges) || !edges.length || edges.some((e) => !(e in codes))) throw new Error('Invalid ocean-facing terrain edges.');
         return call('connectedWaterDepth', { W, H, bed, level, edges: Float64Array.from(edges, (e) => codes[e]), valid: valid || undefined }).depth;
       },
+      // A wave series file (text) to { times, values }: seconds and metres, read and checked in Rust (rust/flood-core/src/series.rs).
+      parseSeries: (text, maxRows) => { const o = call('parseSeries', { text: new TextEncoder().encode(String(text)), ...(maxRows && { maxRows }) }); return { times: o.times, values: o.values }; },
       toMga: (lat, lon, zone = 56) => { const o = call('mga', { a: [lat], b: [lon], zone, mode: 0 }); return [o.a[0], o.b[0]]; },
       fromMga: (easting, northing, zone = 56) => { const o = call('mga', { a: [easting], b: [northing], zone, mode: 1 }); return [o.a[0], o.b[0]]; },
       tsunamiBounds: (place) => Array.from(call('tsunamiBounds', { placeExtent: Float64Array.from(place.extent), placeZone: place.zone ?? 56 }).bounds),

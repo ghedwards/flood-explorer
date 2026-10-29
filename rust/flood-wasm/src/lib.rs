@@ -835,6 +835,13 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let edges: Vec<inundation::Edge> = b.f64s("edges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
             o.f64s("depth", &tsunami_grid::connected_water_depth(&bed, w, h, b.num("level"), &edges, valid.as_deref())?);
         }
+        "parseSeries" => {
+            // a wave series file's text (UTF-8 bytes) to seconds and metres (see series.rs)
+            let bytes = b.u8s("text").ok_or("missing text")?;
+            let max_rows = if b.num("maxRows").is_finite() { b.num("maxRows") as usize } else { series::MAX_ROWS };
+            let (times, values) = series::parse_series_csv(&String::from_utf8_lossy(&bytes), max_rows)?;
+            o.f64s("times", &times).f64s("values", &values);
+        }
         "tsunamiBounds" => {
             // [south, west, north, east] of a place's four corners, degrees
             // (a place's grid size is not needed for its bounds, so the bare locations list works too)
