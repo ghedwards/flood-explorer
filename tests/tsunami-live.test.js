@@ -95,3 +95,26 @@ test('the maximum and arrival views colour land by depth and by arrival band, an
   assert.equal(m.cellIndex(place, lat2, lon2), 7);
   assert.equal(m.cellIndex(place, -10, 150), -1);
 });
+
+test('a run is carried onto an area model cell by cell: land depths and arrivals, dry sea, nothing outside the place', async () => {
+  const m = await import('../viewer/tsunami-impact.js'), ext = await import('../viewer/tsunami-extents.js');
+  const place = { extent: [537500, 6905500, 545500, 6910300], W: 4, H: 2, zone: 56 };
+  const [[south, west], [north, east]] = ext.placeBounds(place);
+  // an area twice the place's width and height, with the place in its middle: 8 x 4 cells, so each place cell is 1 x 1... use 16 x 8 for 2 x 2 area cells per place cell
+  const geo = { west: west - (east - west) / 2, east: east + (east - west) / 2, south: south - (north - south) / 2, north: north + (north - south) / 2 };
+  const a = { W: 16, H: 8, cell: 100, dem: new Float32Array(128).fill(2), valid: new Uint8Array(128).fill(1), ocean: new Uint8Array(128) };
+  a.ocean[5 * 16 + 8] = 1;   // one sea cell inside the place
+  const land = Uint8Array.from([1, 1, 0, 1, 1, 1, 1, 1]);
+  const peak = Float32Array.from([0.5, 2, 0.4, 0, 1, 1, 1, 1]), arrival = Float32Array.from([120, 900, NaN, NaN, 60, 60, 60, 60]);
+  const run = m.tsunamiRunOnArea(a, geo, { bathymetry: place, prepared: { land }, derived: { peak, arrival } });
+  const at = (lat, lon) => { const x = Math.floor((lon - geo.west) / (geo.east - geo.west) * 16), y = Math.floor((geo.north - lat) / (geo.north - geo.south) * 8); return y * 16 + x; };
+  const [lat0, lon0] = ext.fromMga(537500 + 500, 6905500 + 4800 - 300);   // inside place cell 0
+  const i0 = at(lat0, lon0);
+  assert.ok(Math.abs(run.depth[i0] - 0.5) < 1e-6 && run.wet[i0] === 1 && run.arrival[i0] === 120 && Math.abs(run.level[i0] - 2.5) < 1e-5);
+  const [lat2, lon2] = ext.fromMga(537500 + 4500, 6905500 + 4800 - 300);   // place cell 2: sea in the run
+  assert.equal(run.depth[at(lat2, lon2)], 0);
+  assert.equal(run.depth[0], 0, 'outside the place stays dry');
+  assert.equal(run.depth[5 * 16 + 8], 0, 'the area model’s own sea stays dry');
+  assert.ok(run.covered > 0 && run.covered < 128 && run.tsunami === true);
+  assert.ok(run.depth.every((d) => d >= 0) && Number.isNaN(run.arrival[0]));
+});

@@ -15,7 +15,7 @@ export const TIDE_STEPS = [['Low', 'MLWS'], ['Mid', 'MSL'], ['High', 'MHWS'], ['
 const CACHE_RUNS = 4, MEMORY_KEY = 'flood-tsunami-last', PIN_ZOOM = 8, HINT_ZOOM = 9;
 const WAVE = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M2 15c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3M2 19.5c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3M3 9c2-4 5-6 9-6 0 3-1.5 5-4 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, onLegend = () => {}, onRunStart = () => {}, onLayerChange = () => {}, onHint = () => {}, doc = document }) {
+export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, onLegend = () => {}, onRunStart = () => {}, onUseRun = null, onLayerChange = () => {}, onHint = () => {}, doc = document }) {
   const $ = (id) => doc.getElementById(id);
   const live = makeLiveLayer(L, { canvasOverlay });
   const info = { state: 'idle', place: null, scenario: null, tide: 'MSL', error: null, frames: 0, summary: null, view: 'now', cached: false };
@@ -298,6 +298,15 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
     }
   }
   wirePanel();
+  $('tsImpact').hidden = !onUseRun;
+  $('tsImpact').addEventListener('click', async () => {
+    if (!active || !onUseRun) return;
+    const entry = active, note = $('tsImpactNote');
+    $('tsImpact').disabled = true; note.textContent = 'Opening the flood model for this place…';
+    try { note.textContent = await onUseRun({ ...entry, label: scenarioBanner(entry.scenario), tide: entry.tide, minutes: sel.minutes }) || ''; }
+    catch (error) { note.textContent = `Could not use the run (${error.message || error}).`; }
+    finally { $('tsImpact').disabled = false; }
+  });
   $('tsClear').addEventListener('click', clear);
   $('tsBarClose').addEventListener('click', clear);
   $('tsPlay').addEventListener('click', () => { if (!active) return; if (view !== 'now') setView('now'); if (!playing && index >= active.result.frames.length - 1) { clockSeconds = 0; show(0); } setPlaying(!playing); });
@@ -307,6 +316,19 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
 
   return {
     info, layer: live, ensureLoaded, handleTap, openCard,
+    // what a share link keeps of the run on show (null when none), and how a link's run is brought back
+    shareState: () => (active ? { p: active.place, s: active.scenario.id, t: active.tide, m: sel.minutes, v: view } : null),
+    async restore(st) {
+      if (!st || typeof st.p !== 'string' || typeof st.s !== 'string' || !places.includes(st.p)) return false;
+      await ensureLoaded();
+      if (!scenarios || !scenarios.some((x) => x.place === st.p && x.id === st.s)) return false;
+      const tide = ['LAT', 'MLWS', 'MLWN', 'MSL', 'MHWN', 'MHWS', 'HAT'].includes(st.t) ? st.t : 'MSL';
+      pick({ place: st.p, scenario: st.s, tide }); sel.minutes = [30, 60, 90].includes(st.m) ? st.m : 60;
+      if ($('tsDuration')) $('tsDuration').value = String(sel.minutes);
+      const done = await start();
+      if (done && ['now', 'max', 'arrival'].includes(st.v)) { setView(st.v); if (st.v !== 'now') { index = active.result.frames.length - 1; show(index); } }
+      return !!done;
+    },
     // the run's key is in the bar, so the page's own Key card leaves it out
     legendParts: () => [],
     // for tests: run a scenario by label and tide state, and give back the final summary

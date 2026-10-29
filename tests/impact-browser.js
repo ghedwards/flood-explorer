@@ -242,7 +242,24 @@ async function main() {
       return popup && popup.textContent;
     });
     assert.ok(tap && /Water arrives|Stays dry|At sea|Under water/.test(tap), `a tap gives the arrival time: ${tap}`);
+    const mainArea = await page.evaluate(() => (window.__floodAreaInfo().find((x) => x.active) || {}).key);
+    // the run feeds the impact tools: the button opens the flood model here and the impact box counts from the run's depths
+    await page.click('#tsImpact');
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.tsunami", null, { timeout: 120000 });
+    await page.waitForFunction("/Experimental tsunami run/.test(document.getElementById('impactBox').textContent)", null, { timeout: 120000 });
+    const used = await page.evaluate(() => ({ note: document.getElementById('tsImpactNote').textContent, summary: document.getElementById('summaryLine').textContent, impact: { ...window.__floodStatus.impact } }));
+    assert.match(used.note, /Impact tools now use this tsunami run/, `the bar says the run is in use: ${used.note}`);
+    assert.match(used.summary, /Scenario: Moderate.*deepest water/, `the summary names the run: ${used.summary}`);
+    // the run travels in a share link and is played again from it
+    const link = await page.evaluate(() => { const u = window.__floodShareUrl(); const m = /#s=([A-Za-z0-9_-]+)/.exec(u); const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/')); return JSON.parse(new TextDecoder().decode(Uint8Array.from(b, (c) => c.charCodeAt(0)))).tsunami; });
+    assert.ok(link && link.p === 'gold-coast-seaway' && link.t === firstTide && link.m === 60, `the share link carries the run: ${JSON.stringify(link)}`);
     await page.evaluate(() => document.getElementById('tsBarClose').click());
+    await page.evaluate((t) => window.__floodRestore({ v: 1, tsunami: t }), link);
+    await page.waitForFunction("window.__floodStatus.tsunami.state === 'ready' && !document.getElementById('tsBar').hidden", null, { timeout: 60000 });
+    const again2 = await page.evaluate(async () => { return { ...window.__floodStatus.tsunami, barShown: !document.getElementById('tsBar').hidden }; });
+    assert.ok(again2.state === 'ready' && again2.barShown && again2.place === 'gold-coast-seaway', `the link brings the run back: ${JSON.stringify(again2)}`);
+    await page.evaluate(() => document.getElementById('tsBarClose').click());
+    if (mainArea) await page.evaluate((k) => window.__floodActivateArea(k), mainArea);   // back to the area the later checks use
 
     // a Moreton Bay place with its own tide planes: Brisbane Bar's lowest state runs at the model's -1 m limit
     const bay = await page.evaluate(async () => {

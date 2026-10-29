@@ -556,6 +556,8 @@ ol.problems pre { white-space: pre-wrap; font: 11px/1.35 var(--font-data); margi
 .ts-limits { margin-top: 4px; }
 
 
+/* the run's cells are 25 to 50 m: scale them smoothly rather than as hard squares */
+.flood-layer.tsunami-live { image-rendering: auto; }
 /* Tsunami on the map (tsunami-panel.js): wave pins, their card, the floating run bar, the side panel's steps */
 .ts-pin span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: #17509c; color: #fff; border: 2px solid #fff; box-shadow: 0 1px 6px rgba(0,0,0,.4); }
 .ts-pin:focus-visible span, .ts-pin:hover span { background: #0c3470; outline: 2px solid #f28e2b; }
