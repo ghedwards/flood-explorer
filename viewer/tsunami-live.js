@@ -19,14 +19,14 @@ export const depthClass = (depth) => { let c = 0; while (c < DEPTH_EDGES.length 
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 
 // The canvas size for a place: four pixels per cell across, the height from the bounds' shape on the ground.
-export function canvasSize(place, bounds = placeBounds(place)) {
+export function canvasSize(place, bounds) {
   const width = place.W * 4, mid = (bounds[0][0] + bounds[1][0]) / 2;
   const height = Math.round(width * (bounds[1][0] - bounds[0][0]) / ((bounds[1][1] - bounds[0][1]) * Math.cos(mid * Math.PI / 180)));
   return { width, height };
 }
 
 // For each pixel (row 0 the north edge), the index of the grid cell under it, or -1 outside the place: worked out in Rust (FloodCore.tsunamiPixelMap) once per place.
-export const pixelMap = (F, place, width, height, bounds = placeBounds(place)) => F.tsunamiPixelMap(place, [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]], width, height);
+export const pixelMap = (F, place, width, height, bounds = placeBounds(F, place)) => F.tsunamiPixelMap(place, [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]], width, height);
 
 /* RGBA for one frame. `land[c]` is 1 where the ground is dry at mean sea level; those cells are coloured by `frame.water[c]` (water depth now)
  * when it passes MIN_DEPTH, the rest by `frame.eta[c]` (surface change) when it passes MIN_WAVE. */
@@ -102,7 +102,7 @@ export function makeLiveLayer(L, { canvasOverlay, F }) {
   let overlay = null, shown = null, size = null, cells = null, pixels = null;
   group.show = (place) => {
     group.clear();
-    const bounds = placeBounds(place);
+    const bounds = placeBounds(F, place);
     size = canvasSize(place, bounds); cells = pixelMap(F, place, size.width, size.height, bounds); pixels = new Uint8ClampedArray(size.width * size.height * 4);
     overlay = canvasOverlay(bounds, { opacity: 1, interactive: false, className: 'flood-layer tsunami-live', zIndex: 6 });
     group.addLayer(overlay); shown = place;

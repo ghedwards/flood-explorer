@@ -206,6 +206,8 @@ thread_local! {
     static INUNDATION: RefCell<Option<inundation::Solver>> = const { RefCell::new(None) };
     static NEST: RefCell<Option<nest::Nest>> = const { RefCell::new(None) };
     static DAM: RefCell<Option<dam::Run>> = const { RefCell::new(None) };
+    // regional recordings kept for one-way coupled runs that differ only in their local settings, by the key the caller gives
+    static RECORDINGS: RefCell<HashMap<Vec<u8>, (coupling::Recording, f64)>> = RefCell::new(HashMap::new());
     // the ground that is dry at mean sea level in the running tsunami model, and the time the wave reached its edge (what arrival times count from)
     static TSUNAMI_LAND: RefCell<(Vec<u8>, f64)> = const { RefCell::new((Vec::new(), 0.0)) };
     static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
@@ -541,6 +543,24 @@ fn inundation_frame(o: &mut Out, s: &inundation::Solver, extremes: bool) {
     }
 }
 
+// An area model's terrain from the bag (W, H, cell, dem and the optional valid and ocean masks), checked.
+fn area_of(b: &Bag) -> Result<dam::Area, String> {
+    let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+    let dem = b.f64s("dem").ok_or("missing elevations")?;
+    if w == 0 || h == 0 || dem.len() != w.checked_mul(h).ok_or("grid overflow")? { return Err("the elevations do not match the grid".into()); }
+    let (valid, ocean) = (b.u8s("valid").unwrap_or_default(), b.u8s("ocean").unwrap_or_default());
+    if (!valid.is_empty() && valid.len() != dem.len()) || (!ocean.is_empty() && ocean.len() != dem.len()) { return Err("the masks do not match the grid".into()); }
+    Ok(dam::Area { w, h, cell: b.num("cell"), dem, valid, ocean })
+}
+
+// The solver's block grid from the bag (the prefix `g`: gW, gH, gCell, gDem, gValid, gOcean, gFactor).
+fn prepared_of(b: &Bag) -> Result<inertial_grid::Prepared, String> {
+    let (w, h) = (b.num("gW") as usize, b.num("gH") as usize);
+    let (dem, valid, ocean) = (b.f64s("gDem").ok_or("missing the solver grid")?, b.u8s("gValid").ok_or("missing the solver grid")?, b.u8s("gOcean").ok_or("missing the solver grid")?);
+    if w == 0 || h == 0 || dem.len() != w * h || valid.len() != dem.len() || ocean.len() != dem.len() || b.num("gFactor").is_nan() || b.num("gFactor") < 1.0 { return Err("the solver grid is not consistent".into()); }
+    Ok(inertial_grid::Prepared { w, h, cell: b.num("gCell"), dem, valid, ocean, factor: b.num("gFactor") as usize })
+}
+
 fn place_of(b: &Bag, prefix: &str) -> Result<place::Place, String> {
     let extent = b.f64s(&format!("{prefix}Extent")).filter(|v| v.len() == 4).ok_or("missing place extent")?;
     let (w, h) = (b.num(&format!("{prefix}W")), b.num(&format!("{prefix}H")));
@@ -605,6 +625,60 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     let nested = nest::Nest::new(parent, solver, plan, strength, threshold, max_seconds)?;
                     o.num("dt", nested.child.dt).num("nestOffset", nested.offset).num("nestHandovers", handovers as f64).num("nestSnapped", snapped as f64).num("nestPoints", points as f64);
                     NEST.with(|s| *s.borrow_mut() = Some(nested));
+                } else if b.num("couple") == 1.0 || b.num("couple") == 2.0 {
+                    // One-way coupling in Rust: the incoming wave at the open edges comes from a regional run recorded here (1) or from a series (2), and a rising tide can sit on it.
+                    let local_seconds = if b.num("coupleLocalSeconds").is_finite() { b.num("coupleLocalSeconds") } else { 3600.0 };
+                    if b.f64s("levelTimes").is_none() {
+                        if let Some((times, level)) = coupling::level_series(local_seconds, b.num("tideRange"), 44712.0, 60.0) { solver.set_level(times, level)?; }
+                    }
+                    let sea: Vec<inundation::Edge> = b.f64s("nestEdges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+                    let forcing = if b.num("couple") == 2.0 {
+                        let open = coupling::open_edges(&sea, solver.w, solver.h, &solver.reference)?;
+                        coupling::forcing_from_series(&open, &b.f64s("seriesTimes").ok_or("missing series times")?, &b.f64s("seriesValues").ok_or("missing series values")?, local_seconds, 0.02)?
+                    } else {
+                        let mut parent = tsunami::Solver::new(
+                            b.num("nestW") as usize, b.num("nestH") as usize, b.num("nestCell"),
+                            b.f64s("nestDepth").ok_or("missing regional depths")?, b.f64s("nestEta").ok_or("missing regional wave")?, b.num("nestAbsorbing") == 1.0,
+                        )?;
+                        if b.num("nestMethod") == 1.0 { parent.method = tsunami::Method::FiniteVolume; }
+                        if b.num("nestMethod") == 3.0 { parent.method = tsunami::Method::Dispersive; parent.advance(0)?; }
+                        let bounds = b.f64s("nestBounds").filter(|v| v.len() == 4).ok_or("missing regional bounds")?;
+                        let extent = b.f64s("nestExtent").filter(|v| v.len() == 4).ok_or("missing local extent")?;
+                        let geography = nest::Geography { bounds: [bounds[0], bounds[1], bounds[2], bounds[3]], extent: [extent[0], extent[1], extent[2], extent[3]], zone: if b.num("nestZone").is_finite() { b.num("nestZone") as i32 } else { 56 } };
+                        let tuning = nest::Tuning { per_edge: 16, margin: None, ramp: None };
+                        let plan = nest::plan_geographic(&parent, &solver, &geography, &sea, &tuning)?;
+                        let source = b.f64s("coupleSource").filter(|v| v.len() == 2).unwrap_or_else(|| vec![0.0, 0.0]);
+                        let seconds = if b.num("coupleSeconds").is_finite() { b.num("coupleSeconds") } else { coupling::parent_seconds(&plan, parent.cell, (source[0], source[1]), local_seconds, 120.0, 120.0) };
+                        // members of an ensemble that differ only in local settings share one regional run
+                        let key = b.u8s("cacheKey").unwrap_or_default();
+                        let cached = RECORDINGS.with(|c| c.borrow().get(&key).cloned());
+                        let hit = cached.is_some() && !key.is_empty();
+                        o.num("regionalCached", if hit { 1.0 } else { 0.0 });
+                        let (recording, regional_peak) = match cached.filter(|_| !key.is_empty()) {
+                            Some(hit) => hit,
+                            None => {
+                                if seconds / parent.dt > 40_000.0 { return Err("parent run needs too many steps".into()); }
+                                parent.record(&plan.points.iter().map(|p| (p.0, p.1)).collect::<Vec<_>>())?;
+                                while parent.time < seconds { parent.advance(200)?; }
+                                let r = parent.recorded().ok_or("no recording")?;
+                                let made = (coupling::Recording { times: r.times.clone(), values: r.values.clone(), points: r.points }, parent.peak.iter().fold(0.0_f64, |m, v| m.max(*v)));
+                                if !key.is_empty() { RECORDINGS.with(|c| { let mut c = c.borrow_mut(); if c.len() >= 8 { c.clear(); } c.insert(key.clone(), made.clone()); }); }
+                                made
+                            }
+                        };
+                        o.num("regionalSeconds", seconds).num("regionalPeak", regional_peak).num("snapped", plan.snapped as f64);
+                        coupling::forcing_from_recording(&plan, &recording, 120.0, 0.02, local_seconds)?
+                    };
+                    for e in &forcing.edges { solver.set_forcing(e.edge, forcing.times.clone(), e.series.clone(), e.points)?; }
+                    // arrival times count from when the wave reached the model's edge, in the local clock
+                    TSUNAMI_LAND.with(|l| { let mut l = l.borrow_mut(); if !b.num("arrivalOrigin").is_finite() && forcing.arrival.is_finite() { l.1 = forcing.arrival - forcing.offset; } });
+                    let codes: Vec<f64> = forcing.edges.iter().map(|e| match e.edge { inundation::Edge::North => 0.0, inundation::Edge::East => 1.0, inundation::Edge::South => 2.0, inundation::Edge::West => 3.0 }).collect();
+                    o.num("coupled", b.num("couple")).num("arrival", forcing.arrival).num("offset", forcing.offset).num("peak", forcing.peak).num("rows", forcing.times.len() as f64)
+                        .f64s("edgeCodes", &codes).f64s("edgePeak", &forcing.edges.iter().map(|e| e.peak).collect::<Vec<_>>())
+                        .f64s("edgePoints", &forcing.edges.iter().map(|e| e.points as f64).collect::<Vec<_>>()).f64s("edgeSnapped", &forcing.edges.iter().map(|e| e.snapped as f64).collect::<Vec<_>>());
+                    if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
+                    o.num("dt", solver.dt);
+                    INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
                 } else {
                     if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
                     o.num("dt", solver.dt);
@@ -682,6 +756,51 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     Ok(())
                 })?;
             }
+        }
+        "inertialPrepare" => {
+            // the area model's terrain averaged into blocks the 2D solver can take (see inertial_grid.rs)
+            let a = area_of(b)?;
+            let g = inertial_grid::prepare(&a, b.num("maxSide") as usize)?;
+            o.num("W", g.w as f64).num("H", g.h as f64).num("cell", g.cell).num("factor", g.factor as f64).f64s("dem", &g.dem).u8s("valid", &g.valid).u8s("ocean", &g.ocean);
+        }
+        "inertialCell" => {
+            let a = area_of(b)?;
+            let g = prepared_of(b)?;
+            o.num("index", inertial_grid::cell_of(&g, &a, b.num("i") as i64).map_or(-1.0, |c| c as f64));
+        }
+        "inertialExpand" => {
+            // the solver's answer spread over the area model's cells; `peak` shows the deepest water instead of the final depth
+            let a = area_of(b)?;
+            let g = prepared_of(b)?;
+            let n = g.w * g.h;
+            let field = |k: &str| -> Result<Option<Vec<f64>>, String> { match b.f64s(k) { Some(v) if v.len() == n => Ok(Some(v)), Some(_) => Err(format!("the solver's {k} does not match its grid")), None => Ok(None) } };
+            let (depth, peak, vx, vy, class, speed, arrival) = (field("depth")?.ok_or("missing depths")?, field("peak")?, field("vx")?, field("vy")?, field("peakClass")?, field("peakSpeed")?, field("arrival")?);
+            let e = inertial_grid::expand(&a, &g, &inertial_grid::SolverResult { depth: &depth, peak: peak.as_deref(), vx: vx.as_deref(), vy: vy.as_deref(), peak_class: class.as_deref(), peak_speed: speed.as_deref(), arrival: arrival.as_deref() }, b.num("peakMode") == 1.0);
+            o.f32s("depth", &e.depth).u8s("wet", &e.wet).f32s("level", &e.level).f64s("vx", &e.vx).f64s("vy", &e.vy);
+            if let Some(t) = &e.arrival { o.f32s("arrival", t); }
+            if let Some(hz) = &e.hazard { o.u8s("cls", &hz.class).f32s("vel", &hz.speed).f64s("km2", &hz.km2); }
+        }
+        "effectiveRainSeries" => {
+            // a storm's rain less its initial and continuing losses, in short steps, for the 2D solver (see flash.rs)
+            let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
+            let r = flash::effective_rain_series(b.num("rainMm"), b.num("hours"), b.num("initialLoss"), b.num("contLoss"), optional("afterHours", 2.0), optional("stepSeconds", flash::STEP_SECONDS))?;
+            o.f64s("series", &r.series).num("seconds", r.seconds).num("stepSeconds", r.step_seconds).num("stormHours", r.storm_hours).num("rainMm", r.rain_mm)
+                .num("effectiveMm", r.effective_mm).num("capped", if r.capped { 1.0 } else { 0.0 });
+        }
+        "tsunamiBounds" => {
+            // [south, west, north, east] of a place's four corners, degrees
+            // (a place's grid size is not needed for its bounds, so the bare locations list works too)
+            let extent = b.f64s("placeExtent").filter(|v| v.len() == 4).ok_or("missing place extent")?;
+            let zone = if b.num("placeZone").is_finite() { b.num("placeZone") as i32 } else { 56 };
+            o.f64s("bounds", &place::bounds(&place::Place { extent: [extent[0], extent[1], extent[2], extent[3]], w: 1, h: 1, zone }));
+        }
+        "mga" => {
+            // latitude and longitude to MGA easting and northing (mode 0) or back (mode 1), in bulk, for one zone
+            let zone = if b.num("zone").is_finite() { b.num("zone") as i32 } else { 56 };
+            let (first, second) = (b.f64s("a").ok_or("missing coordinates")?, b.f64s("b").ok_or("missing coordinates")?);
+            if first.len() != second.len() { return Err("the coordinate lists differ in length".into()); }
+            let out: Vec<(f64, f64)> = first.iter().zip(&second).map(|(p, q)| if b.num("mode") == 1.0 { geo::from_mga(*p, *q, zone) } else { geo::to_mga(*p, *q, zone) }).collect();
+            o.f64s("a", &out.iter().map(|c| c.0).collect::<Vec<_>>()).f64s("b", &out.iter().map(|c| c.1).collect::<Vec<_>>());
         }
         "tsunamiCell" => {
             // the grid cell of a place under a latitude and longitude, or -1

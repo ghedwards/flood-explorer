@@ -1,6 +1,5 @@
 import { desktopUpdates } from './desktop-updates.js';
 import { createFeedClient } from './feed-health.js';
-import './inertial-grid.js';
 import { fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
 import { HYPSO } from './relief.js';
@@ -14,7 +13,6 @@ import { makeTsunamiExtentsLayer, placeBounds as tsunamiPlaceBounds } from './ts
 import { tsunamiRun } from './tsunami-impact.js';
 import { damText, floodRun as damFloodRun, BREACH_MODES } from './dam-break.js';
 import { initTsunamiPanel } from './tsunami-panel.js';
-import { effectiveRainSeries } from './flash-2d.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -934,7 +932,7 @@ import { effectiveRainSeries } from './flash-2d.js';
   /* A tsunami run from the Tsunami bar becomes the flood run of the area model at that place (opened first if there is none), so the impact numbers,
    * roads, routes and property check all use it. Depths are the run's deepest water on land; hazard classes are the worst depth-and-speed class over the run's frames. */
   async function useTsunamiRun(info) {
-    const [[south, west], [north, east]] = tsunamiPlaceBounds(info.bathymetry);
+    const [[south, west], [north, east]] = tsunamiPlaceBounds(F, info.bathymetry);
     const centre = window.L.latLng((south + north) / 2, (west + east) / 2), name = info.placeName || String(info.scenario.place).replace(/-/g, ' ');
     let hit = areaAt(centre);
     if (!hit) {
@@ -1041,14 +1039,14 @@ import { effectiveRainSeries } from './flash-2d.js';
     const seq = inertialSequence, a = state.a, key = state.areaKey;
     const number = (id) => Number($(id).value);
     try {
-      const g = window.FloodInertialGrid.prepare(a, number('inertialResolution'));
+      const g = F.inertialPrepare(a, number('inertialResolution'));
       const stages = new Float64Array(g.W * g.H).fill(NaN);
       if ($('inertialBoundary').value === 'sea') {
         if (!g.ocean.some(Boolean)) throw new Error('No mapped sea cells at this resolution; choose closed edges or another area.');
         for (let i = 0; i < stages.length; i++) if (g.ocean[i]) stages[i] = number('inertialStage');
       }
       const opts = { seconds: number('inertialMinutes') * 60, rainMmH: number('inertialRain'),
-        inflow: number('inertialInflow'), inflowCell: window.FloodInertialGrid.cell(g, a, state.gauge),
+        inflow: number('inertialInflow'), inflowCell: F.inertialCell(g, a, state.gauge),
         initialDepth: number('inertialInitial'), roughness: number('inertialRoughness'), stages,
         inflowSeries: buildInflowSeries(number('inertialMinutes') * 60),
         rainSeries: buildRainSeries(number('inertialMinutes') * 60) };
@@ -1075,7 +1073,7 @@ import { effectiveRainSeries } from './flash-2d.js';
         const { stages: _stages, ...settings } = opts;
         state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings, boundary: $('inertialBoundary').value };
         status.inertial = { ...state.inertial, running: false };
-        state.run = window.FloodInertialGrid.expand(a, g, r);
+        state.run = F.inertialExpand(a, g, r);
         state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
@@ -1118,9 +1116,9 @@ import { effectiveRainSeries } from './flash-2d.js';
     runScenario();   // restore the screening preview and drop any older 2D result
     const seq = inertialSequence, a = state.a, key = state.areaKey;
     try {
-      const s = storm(), rain = effectiveRainSeries(s, Number($('flash2dAfter').value));
+      const s = storm(), rain = F.effectiveRainSeries(s, Number($('flash2dAfter').value));
       if (!(rain.effectiveMm > 0)) { flashStatus('None of this storm\'s rain runs off: the ground soaks it all in. Try more rain, a shorter storm or sealed ground.'); return; }
-      const g = window.FloodInertialGrid.prepare(a, Number($('flash2dResolution').value));
+      const g = F.inertialPrepare(a, Number($('flash2dResolution').value));
       const stages = new Float64Array(g.W * g.H).fill(NaN), sea = g.ocean.some(Boolean);
       if (sea) for (let i = 0; i < stages.length; i++) if (g.ocean[i]) stages[i] = 0;   // the sea is held at its level, so water can drain into it
       const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: rain.series, seriesStepS: rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages };
@@ -1147,7 +1145,7 @@ import { effectiveRainSeries } from './flash-2d.js';
         state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
           storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours } };
         status.inertial = { ...state.inertial, running: false };
-        state.run = window.FloodInertialGrid.expand(a, g, r, { peak: true });
+        state.run = F.inertialExpand(a, g, r, { peak: true });
         state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
@@ -2406,7 +2404,7 @@ import { effectiveRainSeries } from './flash-2d.js';
       tsunamiHazard = makeTsunamiHazardLayer(L, { url: new URL('tsunami-data/ptha18-hazard.json', document.baseURI).href, onChange: renderOverlayLegend });
       overlays[TSUNAMI_HAZARD] = tsunamiHazard;
       status.tsunamiHazard = tsunamiHazard.info;
-      tsunamiExtents = makeTsunamiExtentsLayer(L, { indexUrl: new URL('tsunami-data/extents/index.json', document.baseURI).href, onChange: renderOverlayLegend });
+      tsunamiExtents = makeTsunamiExtentsLayer(L, { F, indexUrl: new URL('tsunami-data/extents/index.json', document.baseURI).href, onChange: renderOverlayLegend });
       overlays[TSUNAMI_EXTENTS] = tsunamiExtents;
       status.tsunamiExtents = tsunamiExtents.info;
       overlays['Victorian recorded floods (state)'] = L.tileLayer.wms('https://opendata.maps.vic.gov.au/geoserver/wms', {

@@ -18,15 +18,14 @@ const F = require('../tests/model.js');
 // already covered is counted as flooded, with its depth is the tide's plus the wave's.
 // With `keepPeak`, the result also carries `landPeak`: for each cell that is land at `baseline`, the most water the wave added there (m), and `W`, `H`, `cell`.
 async function runSeries(series, seconds = 3600, { tide = 0, baseline = tide, keepPeak = false, place = 'gold-coast-seaway' } = {}) {
-  const { forcingFromSeries } = await import('../viewer/tsunami-coupling.js');
+  const { startRun } = await import('../viewer/tsunami-runner.js');
   const { tsunamiGrid } = await import('../viewer/tsunami-grid.js');
   if (!/^[a-z-]+$/.test(place)) throw new Error('The place is a lower-case id such as gold-coast-seaway or currumbin.');
   const fine = JSON.parse(fs.readFileSync(path.join(__dirname, `../viewer/public/tsunami-data/${place}.json`)));
   const options = { preset: place, bathymetry: fine, amplitude: 0, absorbing: true, width: .45, coupled: true };
   const grid = tsunamiGrid({ ...options, tide });
   const dry = baseline === tide ? grid.depth : tsunamiGrid({ ...options, tide: baseline }).depth;
-  const forcing = forcingFromSeries({ fine, fineGrid: grid }, series, { maxLocalSeconds: seconds });
-  F.tsunamiStart({ ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))) });
+  startRun(F, { grid, coupling: { series, seaEdges: fine.seaEdges, localSeconds: seconds, tide: 0 } });
   let frame;
   while (!frame || frame.time < seconds) frame = F.tsunamiStep(200);
   let water = 0, land = 0, covered = 0, tideOnly = 0;

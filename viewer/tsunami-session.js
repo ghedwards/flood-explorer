@@ -54,7 +54,7 @@ export function prepareRun({ place, bathymetry, series, tide = 0, roughness = 0.
   const land = Uint8Array.from(dry.depth, d => d === 0 ? 1 : 0);
   return {
     grid, land, seconds, frames, place, tide,
-    coupling: { series, scene: { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: grid.W, H: grid.H, depth: grid.depth } }, localSeconds: seconds, tide: 0 },
+    coupling: { series, seaEdges: bathymetry.seaEdges, localSeconds: seconds, tide: 0 },
   };
 }
 

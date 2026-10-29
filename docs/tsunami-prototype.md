@@ -957,5 +957,8 @@ The map's live tsunami run keeps all its numerical work in Rust/WebAssembly. The
 fastest speed, the worst hazard class (Australian Disaster Resilience Guideline 7-3), the time of the deepest water and the first time the water stood 10 cm up
 (`tsunamiStep(steps, true)`); with the dry-land mask it also reports what each frame has flooded so far (`summary`). Where a place sits on the map (the lat/lon bounds, the
 cell under a point, the cell under every pixel of the canvas) and the carrying of a run onto an area model's cells for the impact tools are `rust/flood-core/src/place.rs`
-(`tsunamiCell`, `tsunamiPixelMap`, `tsunamiToArea`). What stays in JavaScript is the colouring, the legends, the words, and the one-way coupling's planning and forcing
-(`viewer/tsunami-coupling.js`), which predates this.
+(`tsunamiCell`, `tsunamiPixelMap`, `tsunamiToArea`). The one-way coupling is Rust too (`rust/flood-core/src/coupling.rs` and `nest.rs`, started with `tsunamiStart` and a `couple` mode): where on the regional grid to read the
+wave for each open edge, Green's-law scaling, the regional run and its recording (kept in the module between runs that share a `cacheKey`), the forcing from that recording or
+from a supplied series, the rising tide and the regional run length. The 2D flash-flood solver's grid adaptation (`inertial_grid.rs`) and effective-rain series (`flash.rs`),
+the dam failure (`dam.rs`) and the map projection (`geo.rs`) are Rust as well. What stays in JavaScript is reading a series file, the colouring and legends, the words, the rate
+codec of the stored hazard extents (shared with the build scripts), the grid construction of the lab page, and the measuring loop of the lab's sensitivity ensemble.

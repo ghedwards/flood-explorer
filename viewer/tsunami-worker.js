@@ -12,11 +12,11 @@ self.onmessage = async ({ data }) => {
     if (!self.FloodCore.tsunamiStart) throw new Error('The tsunami prototype requires WebAssembly.');
     if (data.type === 'ensemble') {
       // Run each member to completion in turn, reporting each as it finishes.
-      const cache = new Map(), started = Date.now();
+      const started = Date.now();
       for (let index = 0; index < data.members.length; index++) {
         const member = data.members[index];
         const result = runMember(self.FloodCore, member, {
-          ...data, cache, onProgress: progress => self.postMessage({ progress: { ...progress, index, count: data.members.length, elapsed: Date.now() - started, overall: (index + (progress.fraction || 0)) / data.members.length } }),
+          ...data, onProgress: progress => self.postMessage({ progress: { ...progress, index, count: data.members.length, elapsed: Date.now() - started, overall: (index + (progress.fraction || 0)) / data.members.length } }),
         });
         self.postMessage({ result: { id: member.id, ...result }, index });
       }

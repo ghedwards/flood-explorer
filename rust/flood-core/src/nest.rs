@@ -23,7 +23,7 @@ const EDGES: [Edge; 4] = [Edge::North, Edge::East, Edge::South, Edge::West];
 const WET_SEARCH: i64 = 8;
 
 /// The handover points of one open edge, as a run of `count` entries in `Plan::points`.
-pub struct EdgeGroup { pub edge: Edge, pub first: usize, pub count: usize }
+pub struct EdgeGroup { pub edge: Edge, pub first: usize, pub count: usize, pub snapped: usize }
 
 /// One regional cell the local model covers: the local sea cells inside it, how strongly it follows them and the scale between their surface and its own.
 pub struct Handover { pub parent: usize, pub weight: f64, pub gain: f64, pub gain_flux: f64, pub children: Vec<usize> }
@@ -68,7 +68,7 @@ pub fn plan_with(parent: &Parent, child: &Child, open: &[Edge], per_edge: usize,
         let horizontal = matches!(edge, Edge::North | Edge::South);
         let length = if horizontal { w } else { h };
         let count = per_edge.min(length);
-        let (first, mut wet) = (points.len(), 0usize);
+        let (first, mut wet, before) = (points.len(), 0usize, snapped);
         for k in 0..count {
             let along = (length - 1).min(((k as f64 + 0.5) / count as f64 * length as f64).floor() as usize);
             let (x, y) = match edge { Edge::North => (along, 0), Edge::South => (along, h - 1), Edge::West => (0, along), Edge::East => (w - 1, along) };
@@ -84,7 +84,7 @@ pub fn plan_with(parent: &Parent, child: &Child, open: &[Edge], per_edge: usize,
             gains.push(if local_depth > 0.0 { green(regional, local_depth) } else { 1.0 });
             points.push(point);
         }
-        if wet > 0 { edges.push(EdgeGroup { edge, first, count }); } else { points.truncate(first); gains.truncate(first); }
+        if wet > 0 { edges.push(EdgeGroup { edge, first, count, snapped: snapped - before }); } else { points.truncate(first); gains.truncate(first); }
     }
     if edges.is_empty() { return Err("no open sea edge of the local scene has open water to drive".into()); }
 

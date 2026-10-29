@@ -2,7 +2,7 @@ import '@fontsource-variable/archivo/standard.css';
 import '@fontsource/ibm-plex-mono/latin-400.css';
 import './tsunami.css';
 import { estuaryIds, estuaryLocations, regionalIds } from './tsunami-locations.js';
-import { parentSeconds, parseSeriesCsv, planCoupling, toParentCell } from './tsunami-coupling.js';
+import { parseSeriesCsv, toParentCell } from './tsunami-coupling.js';
 import { ensemblePlan, summarise } from './tsunami-runner.js';
 import referencePlaces from './public/tsunami-data/places.json';
 import { terrainFor } from './tsunami-terrain.js';
@@ -392,15 +392,13 @@ async function loadParent(id, play) {
 }
 
 // Regional run and handover points for the current local scene.
-function buildCoupling(parent, fineGrid, amplitude = +$('amplitude').value) {
+function buildCoupling(parent, amplitude = +$('amplitude').value) {
   const parentData = parents.get(parent.id);
   const cell = toParentCell(parentData, ...parent.source).map(Math.floor);
   const parentGrid = tsunamiGrid({ preset: parent.id, bathymetry: parentData, source: cell, amplitude, width: +$('offshoreWidth').value, absorbing: true });
-  const plan = planCoupling({ fine: bathymetry, fineGrid, parentData, parentGrid });
-  const localSeconds = totalSeconds();
-  const twoWay = $('nesting').value === 'two-way' && bathymetry?.extent ? { bounds: parentData.bounds, extent: bathymetry.extent, zone: 56, strength: 0.25 } : null;
-  const scene = twoWay ? { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: fineGrid.W, H: fineGrid.H, depth: fineGrid.depth } } : undefined;
-  return { plan, parentGrid, localSeconds, twoWay, scene, tide: +$('tideRange').value, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }), cacheKey: `${amplitude}|${$('offshoreWidth').value}|${Array.from(plan.points).join(',')}` };
+  const twoWay = $('nesting').value === 'two-way' ? { strength: 0.25 } : null;
+  // where to read the wave, how long to run the regional model and the recording are all worked out in Rust when the run starts; runs that differ only in local settings share the key
+  return { parentGrid, bounds: parentData.bounds, extent: bathymetry.extent, zone: 56, source: cell, seaEdges: bathymetry.seaEdges, localSeconds: totalSeconds(), tide: +$('tideRange').value, twoWay, cacheKey: `${parent.id}|${bathymetry.id}|${amplitude}|${$('offshoreWidth').value}` };
 }
 
 function reset(play = false) {
@@ -411,8 +409,8 @@ function reset(play = false) {
     next = tsunamiGrid({ ...options(), bathymetry });
     if (seriesOn()) {
       if (!uploaded) throw new Error('Choose a CSV file of incoming wave heights first.');
-      coupling = { series: uploaded, scene: { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: next.W, H: next.H, depth: next.depth } }, localSeconds: totalSeconds(), tide: +$('tideRange').value };
-    } else if (parent) coupling = buildCoupling(parent, next);
+      coupling = { series: uploaded, seaEdges: bathymetry.seaEdges, localSeconds: totalSeconds(), tide: +$('tideRange').value };
+    } else if (parent) coupling = buildCoupling(parent);
   } catch (error) { fail(error.message); return; }
   if (worker) worker.terminate();
   couplingInfo = null;
@@ -564,8 +562,8 @@ function ensembleMember(factors, parent) {
   const shifted = bathymetry && factors.terrain ? { ...bathymetry, elevation: bathymetry.elevation.map(v => v == null ? v : v + factors.terrain) } : bathymetry;
   const memberGrid = tsunamiGrid({ ...options(), amplitude: factors.amplitude, tide: factors.tide, roughness: factors.roughness, bathymetry: shifted });
   let coupling = null;
-  if (seriesOn()) coupling = { series: uploaded, scene: { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: memberGrid.W, H: memberGrid.H, depth: memberGrid.depth } }, localSeconds: totalSeconds(), tide: +$('tideRange').value };
-  else if (parent) coupling = buildCoupling(parent, memberGrid, factors.amplitude);
+  if (seriesOn()) coupling = { series: uploaded, seaEdges: bathymetry.seaEdges, localSeconds: totalSeconds(), tide: +$('tideRange').value };
+  else if (parent) coupling = buildCoupling(parent, factors.amplitude);
   return { grid: memberGrid, coupling };
 }
 

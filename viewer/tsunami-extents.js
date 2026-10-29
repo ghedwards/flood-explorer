@@ -3,36 +3,9 @@
  * built by scripts/ensemble-ptha.js and scripts/prepare-tsunami-extents.js into tsunami-data/extents/<place>.json. They are a
  * lower bound from a sample of scenarios at mean sea level terrain (see docs/tsunami-prototype.md), not a hazard assessment. */
 
-// ---- MGA (GDA2020 / GDA94 UTM) transform: Kruger series on the GRS80 ellipsoid, accurate to a millimetre inside a zone ----
-const A = 6378137, FLAT = 1 / 298.257222101, K0 = 0.9996, FALSE_E = 500000, FALSE_N = 10000000;
-const N3 = FLAT / (2 - FLAT);
-const R = A / (1 + N3) * (1 + N3 ** 2 / 4 + N3 ** 4 / 64);
-const ALPHA = [N3 / 2 - 2 * N3 ** 2 / 3 + 5 * N3 ** 3 / 16, 13 * N3 ** 2 / 48 - 3 * N3 ** 3 / 5, 61 * N3 ** 3 / 240];
-const BETA = [N3 / 2 - 2 * N3 ** 2 / 3 + 37 * N3 ** 3 / 96, N3 ** 2 / 48 + N3 ** 3 / 15, 17 * N3 ** 3 / 480];
-const DELTA = [2 * N3 - 2 * N3 ** 2 / 3 - 2 * N3 ** 3, 7 * N3 ** 2 / 3 - 8 * N3 ** 3 / 5, 56 * N3 ** 3 / 15];
+// Where a place sits (its MGA extent and grid): the lat/lon bounds, the cell under a point and the cell under every pixel of a canvas laid over it are worked out in Rust
+// (rust/flood-core/src/place.rs and geo.rs, through FloodCore); this file keeps the stored-rate codec, the classes and colours, and the layer.
 const rad = (d) => d * Math.PI / 180;
-export const centralMeridian = (zone) => zone * 6 - 183;
-
-// Latitude and longitude (degrees, southern hemisphere) to easting and northing (m) in an MGA zone (54 to 56 for the east coast).
-export function toMga(lat, lon, zone = 56) {
-  const phi = rad(lat), lam = rad(lon - centralMeridian(zone)), e = 2 * Math.sqrt(N3) / (1 + N3);
-  const t = Math.sinh(Math.atanh(Math.sin(phi)) - e * Math.atanh(e * Math.sin(phi)));
-  const xi = Math.atan2(t, Math.cos(lam)), eta = Math.atanh(Math.sin(lam) / Math.hypot(1, t));
-  let x = xi, y = eta;
-  ALPHA.forEach((a, i) => { const j = 2 * (i + 1); x += a * Math.sin(j * xi) * Math.cosh(j * eta); y += a * Math.cos(j * xi) * Math.sinh(j * eta); });
-  return [FALSE_E + K0 * R * y, FALSE_N + K0 * R * x];
-}
-
-// The inverse: easting and northing to [latitude, longitude] in degrees.
-export function fromMga(easting, northing, zone = 56) {
-  const xi = (northing - FALSE_N) / (K0 * R), eta = (easting - FALSE_E) / (K0 * R);
-  let xi1 = xi, eta1 = eta;
-  BETA.forEach((b, i) => { const j = 2 * (i + 1); xi1 -= b * Math.sin(j * xi) * Math.cosh(j * eta); eta1 -= b * Math.cos(j * xi) * Math.sinh(j * eta); });
-  const chi = Math.asin(Math.sin(xi1) / Math.cosh(eta1));
-  let phi = chi;
-  DELTA.forEach((d, i) => { phi += d * Math.sin(2 * (i + 1) * chi); });
-  return [phi * 180 / Math.PI, centralMeridian(zone) + Math.atan2(Math.sinh(eta1), Math.cos(xi1)) * 180 / Math.PI];
-}
 
 // ---- the stored rates: one byte per cell, 0 = never, else log10(rate per year) = code / 40 - 6 ----
 export const CODE_SCALE = 40, CODE_OFFSET = 6;
@@ -68,46 +41,37 @@ export function decodeBytes(base64) {
 }
 
 // The place's lat/lon bounds [[south, west], [north, east]] from its MGA extent [minE, minN, maxE, maxN].
-export function placeBounds(place) {
-  const [e0, n0, e1, n1] = place.extent, zone = place.zone || 56;
-  const corners = [[e0, n0], [e1, n0], [e0, n1], [e1, n1]].map(([e, n]) => fromMga(e, n, zone));
-  const lats = corners.map((c) => c[0]), lons = corners.map((c) => c[1]);
-  return [[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]];
+export function placeBounds(F, place) {
+  const [south, west, north, east] = F.tsunamiBounds(place);
+  return [[south, west], [north, east]];
 }
 
 // RGBA pixels (`width` x `height`, row 0 the north edge) of one depth's rates over the lat/lon bounds, each pixel looked up in
 // the place's MGA grid (row 0 of the grid is its north edge). Pixels outside the grid or never reached stay transparent.
-export function extentPixels(place, codes, width, height, bounds = placeBounds(place), alpha = 215) {
-  const [e0, n0, e1, n1] = place.extent, zone = place.zone || 56, W = place.W, H = place.H;
-  const [[south, west], [north, east]] = bounds, out = new Uint8ClampedArray(width * height * 4);
-  for (let py = 0; py < height; py++) {
-    const lat = north - (py + 0.5) / height * (north - south);
-    for (let px = 0; px < width; px++) {
-      const lon = west + (px + 0.5) / width * (east - west);
-      const [e, n] = toMga(lat, lon, zone);
-      if (e < e0 || e >= e1 || n < n0 || n >= n1) continue;
-      const cx = Math.floor((e - e0) / (e1 - e0) * W), cy = Math.floor((n1 - n) / (n1 - n0) * H);
-      const c = classOfRate(decodeRate(codes[cy * W + cx]));
-      if (c < 0) continue;
-      const hex = CLASS_COLOURS[c], k = (py * width + px) * 4;
-      out[k] = parseInt(hex.slice(1, 3), 16); out[k + 1] = parseInt(hex.slice(3, 5), 16); out[k + 2] = parseInt(hex.slice(5, 7), 16); out[k + 3] = alpha;
-    }
+export function extentPixels(F, place, codes, width, height, bounds = placeBounds(F, place), alpha = 215) {
+  const cells = F.tsunamiPixelMap(place, [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]], width, height), out = new Uint8ClampedArray(width * height * 4);
+  const colours = CLASS_COLOURS.map((hex) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
+  for (let p = 0; p < cells.length; p++) {
+    if (cells[p] < 0) continue;
+    const c = classOfRate(decodeRate(codes[cells[p]]));
+    if (c < 0) continue;
+    const k = p * 4;
+    out[k] = colours[c][0]; out[k + 1] = colours[c][1]; out[k + 2] = colours[c][2]; out[k + 3] = alpha;
   }
   return out;
 }
 
 // The rate (per year) for the cell under a lat/lon, or null outside the place.
-export function rateAt(place, codes, lat, lon) {
-  const [e0, n0, e1, n1] = place.extent, [e, n] = toMga(lat, lon, place.zone || 56);
-  if (e < e0 || e >= e1 || n < n0 || n >= n1) return null;
-  return decodeRate(codes[Math.floor((n1 - n) / (n1 - n0) * place.H) * place.W + Math.floor((e - e0) / (e1 - e0) * place.W)]);
+export function rateAt(F, place, codes, lat, lon) {
+  const cell = F.tsunamiCell(place, lat, lon);
+  return cell < 0 ? null : decodeRate(codes[cell]);
 }
 
 const DEPTH_KEY = 'flood-tsunami-extent-depth';
 
 /* The layer: a layer group of one image per place, loaded when first added. `depthPicker()` gives the depth choice for the
  * Layers list. `onChange` is called when the choice or the load state changes, so the page can redraw its legend. */
-export function makeTsunamiExtentsLayer(L, { indexUrl, onChange = () => {} }) {
+export function makeTsunamiExtentsLayer(L, { F, indexUrl, onChange = () => {} }) {
   const group = L.layerGroup([], { attribution: 'Tsunami flood hazard: PTHA18 &copy; Geoscience Australia (CC BY 4.0); terrain: CSIRO (CC BY 4.0) and Queensland QldDem (CC BY-SA)' });
   const info = { depth: 0.3, depths: [0.1, 0.3, 1], state: 'idle', places: 0, drawn: 0, error: null };
   let places = null, loading = null, map = null;
@@ -145,10 +109,10 @@ export function makeTsunamiExtentsLayer(L, { indexUrl, onChange = () => {} }) {
     if (!places || !map || !map.hasLayer(group)) return;
     const k = Math.max(0, info.depths.indexOf(info.depth));
     for (const place of places) {
-      const bounds = placeBounds(place), canvas = document.createElement('canvas'), midLat = (bounds[0][0] + bounds[1][0]) / 2;
+      const bounds = placeBounds(F, place), canvas = document.createElement('canvas'), midLat = (bounds[0][0] + bounds[1][0]) / 2;
       canvas.width = place.W * 4;
       canvas.height = Math.round(canvas.width * (bounds[1][0] - bounds[0][0]) / ((bounds[1][1] - bounds[0][1]) * Math.cos(rad(midLat))));
-      const pixels = extentPixels(place, place.codesByDepth[k], canvas.width, canvas.height, bounds);
+      const pixels = extentPixels(F, place, place.codesByDepth[k], canvas.width, canvas.height, bounds);
       canvas.getContext('2d').putImageData(new ImageData(pixels, canvas.width, canvas.height), 0, 0);
       const image = L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false, className: 'flood-layer tsunami-extent', zIndex: 5 });
       images.set(place.id, image); group.addLayer(image);

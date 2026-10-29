@@ -110,7 +110,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
     for (const id of places) {
       const loc = estuaryLocations.find((l) => l.id === id);
       if (!loc) continue;
-      const [[s, w], [n, e]] = placeBounds(loc);
+      const [[s, w], [n, e]] = placeBounds(F, loc);
       const marker = L.marker([(s + n) / 2, (w + e) / 2], {
         icon: L.divIcon({ className: 'ts-pin', html: `<span title="Tsunami scenarios: ${placeName(id)}">${WAVE}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
         keyboard: true, title: `Tsunami scenarios: ${placeName(id)}`, alt: `Tsunami scenarios: ${placeName(id)}`, riseOnHover: true,

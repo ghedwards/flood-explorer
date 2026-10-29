@@ -3,20 +3,21 @@ const assert = require('node:assert/strict');
 
 const F = require('./model.js');
 const load = () => import('../viewer/tsunami-live.js');
+const extLoad = import('../viewer/tsunami-extents.js');
 const place = { extent: [537500, 6905500, 545500, 6910300], W: 4, H: 2 };
 
 test('depth classes follow the legend edges and the canvas keeps the ground shape', async () => {
-  const m = await load();
+  const m = await load(), ext = await extLoad;
   assert.deepEqual([0.1, 0.5, 0.99, 1, 3.9, 4, 10].map(m.depthClass), [0, 1, 1, 2, 3, 4, 4]);
-  const { width, height } = m.canvasSize(place);
+  const { width, height } = m.canvasSize(place, ext.placeBounds(F, place));
   assert.equal(width, 16);
   assert.ok(height >= 8 && height <= 10, `an 8 by 4.8 km place at 16 px across is about 9 px tall, got ${height}`);
   assert.equal(m.legendParts().length, 8);
 });
 
 test('each pixel maps to the cell under it, north at the top, and -1 outside', async () => {
-  const m = await load();
-  const { width, height } = m.canvasSize(place), map = m.pixelMap(F, place, width, height);
+  const m = await load(), ext = await extLoad;
+  const { width, height } = m.canvasSize(place, ext.placeBounds(F, place)), map = m.pixelMap(F, place, width, height);
   assert.equal(map.length, width * height);
   assert.equal(map[0], 0, 'the north-west pixel is cell 0');
   assert.equal(map[width - 1], 3, 'the north-east pixel is the last cell of the first row');
@@ -41,14 +42,14 @@ test('land is coloured by water depth and the sea by the wave, with nothing draw
 });
 
 test('the layer shows a place, paints frames on it and clears', async () => {
-  const m = await load();
+  const m = await load(), ext = await extLoad;
   const calls = [];
   const L = { layerGroup: () => { const layers = new Set(); return { addLayer: l => layers.add(l), removeLayer: l => layers.delete(l), layers }; } };
   const overlay = { setPixels: (rgba, w, h) => calls.push([rgba.length, w, h]) };
   const layer = m.makeLiveLayer(L, { F, canvasOverlay: (bounds, options) => { calls.push(['overlay', bounds[0].length, options.className]); return overlay; } });
   const bounds = layer.show({ ...place, W: 160, H: 96 });
   assert.equal(bounds.length, 2); assert.equal(layer.place().W, 160);
-  const { width, height } = m.canvasSize({ ...place, W: 160, H: 96 });
+  const { width, height } = m.canvasSize({ ...place, W: 160, H: 96 }, ext.placeBounds(F, { ...place, W: 160, H: 96 }));
   layer.paint({ water: new Float64Array(160 * 96), eta: new Float64Array(160 * 96) }, new Uint8Array(160 * 96));
   assert.deepEqual(calls.at(-1), [width * height * 4, width, height]);
   assert.equal(calls[0][2], 'flood-layer tsunami-live');
@@ -73,7 +74,7 @@ test('the maximum and arrival views colour land by depth and by arrival band, an
   assert.equal(m.viewLegend('arrival').length, 7);
   assert.match(m.viewLegend('max')[0], /Deepest/);
   // the place is 8 km by 4.8 km, 4 by 2 cells; its centre is the corner shared by the four middle cells, so just north-west of it is cell 1
-  const { fromMga } = await import('../viewer/tsunami-extents.js');
+  const { fromMga } = F;
   const [lat, lon] = fromMga(537500 + 1000, 6905500 + 4800 - 1200);
   assert.equal(F.tsunamiCell({ ...place, W: 4, H: 2 }, lat, lon), 0);
   const [lat2, lon2] = fromMga(537500 + 7000, 6905500 + 1200);
@@ -84,7 +85,7 @@ test('the maximum and arrival views colour land by depth and by arrival band, an
 test('a run is carried onto an area model by the Rust mapping: land depths, arrivals and hazard, dry sea, nothing outside the place', async () => {
   const m = await import('../viewer/tsunami-impact.js'), ext = await import('../viewer/tsunami-extents.js');
   const place = { extent: [537500, 6905500, 545500, 6910300], W: 4, H: 2, zone: 56 };
-  const [[south, west], [north, east]] = ext.placeBounds(place);
+  const [[south, west], [north, east]] = ext.placeBounds(F, place);
   // an area twice the place's width and height, with the place in its middle: 16 by 8 cells, two area cells to a place cell
   const geo = { west: west - (east - west) / 2, east: east + (east - west) / 2, south: south - (north - south) / 2, north: north + (north - south) / 2 };
   const a = { W: 16, H: 8, cell: 100, dem: new Float32Array(128).fill(2), valid: new Uint8Array(128).fill(1), ocean: new Uint8Array(128) };
@@ -93,11 +94,11 @@ test('a run is carried onto an area model by the Rust mapping: land depths, arri
   const derived = { peak: Float32Array.from([0.5, 2, 0.4, 0, 1, 1, 1, 1]), arrival: Float32Array.from([120, 900, -1, -1, 60, 60, 60, 60]), peakClass: Uint8Array.from([3, 6, 0, 0, 2, 2, 2, 2]), peakSpeed: Float32Array.from([1, 4, 0, 0, 0.5, 0.5, 0.5, 0.5]) };
   const run = m.tsunamiRun(F, a, geo, { bathymetry: place, prepared: { land }, derived });
   const at = (lat, lon) => { const x = Math.floor((lon - geo.west) / (geo.east - geo.west) * 16), y = Math.floor((geo.north - lat) / (geo.north - geo.south) * 8); return y * 16 + x; };
-  const [lat0, lon0] = ext.fromMga(537500 + 500, 6905500 + 4800 - 300);   // inside place cell 0
+  const [lat0, lon0] = F.fromMga(537500 + 500, 6905500 + 4800 - 300);   // inside place cell 0
   const i0 = at(lat0, lon0);
   assert.ok(Math.abs(run.depth[i0] - 0.5) < 1e-6 && run.wet[i0] === 1 && run.arrival[i0] === 120 && Math.abs(run.level[i0] - 2.5) < 1e-5);
   assert.equal(run.peakHazard.cls[i0], 3); assert.ok(Math.abs(run.peakHazard.vel[i0] - 1) < 1e-6);
-  const [lat2, lon2] = ext.fromMga(537500 + 4500, 6905500 + 4800 - 300);   // place cell 2: sea in the run
+  const [lat2, lon2] = F.fromMga(537500 + 4500, 6905500 + 4800 - 300);   // place cell 2: sea in the run
   assert.equal(run.depth[at(lat2, lon2)], 0);
   assert.equal(run.peakHazard.cls[at(lat2, lon2)], 0, 'sea cells carry no class');
   assert.equal(run.depth[0], 0, 'outside the place stays dry');

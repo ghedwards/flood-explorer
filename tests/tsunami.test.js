@@ -148,13 +148,6 @@ test('dispersive WASM waves conserve volume and differ from shallow-water propag
 const dataDir = path.join(__dirname, '../viewer/public/tsunami-data');
 const readData = id => JSON.parse(fs.readFileSync(path.join(dataDir, `${id}.json`)));
 
-test('MGA zone coordinates convert to geographic positions (Geoscience Australia worked example)', async () => {
-  const { mgaToGeographic } = await import('../viewer/tsunami-coupling.js');
-  // Flinders Peak, zone 55: E 273741.2966, N 5796489.7769.
-  const [lon, lat] = mgaToGeographic(273741.2966, 5796489.7769, 55);
-  assert.ok(Math.abs(lon - 144.4248678) < 1e-6 && Math.abs(lat + 37.9510334) < 1e-6, `${lon}, ${lat}`);
-});
-
 test('regional runs record their wave at requested points', async () => {
   const { tsunamiGrid } = await gridModule;
   const grid = tsunamiGrid({ preset: 'flat', amplitude: 1, width: 5, source: [40, 48], absorbing: false });
@@ -187,27 +180,31 @@ test('boundary forcing is validated at the WASM boundary', async () => {
   assert.throws(() => tsunamiGrid({ preset: 'shelf', coupled: true }), /local terrain/);
 });
 
-test('an offshore wave in the regional model drives the nested local model and conserves water', async () => {
+// The coupling a one-way run is started with: where the local scene sits in the regional grid, the offshore source, and how long to run (the rest is Rust)
+async function regionalCoupling(id, parentId, source, { amplitude = 2.5, localSeconds = 600, seconds, tide = 0, width = 10, cacheKey } = {}) {
   const { tsunamiGrid } = await gridModule;
   const C = await import('../viewer/tsunami-coupling.js');
+  const fine = readData(id), parentData = readData(parentId);
+  const cell = C.toParentCell(parentData, ...source).map(Math.floor);
+  const parentGrid = tsunamiGrid({ preset: parentId, bathymetry: parentData, source: cell, amplitude, width });
+  const fineGrid = tsunamiGrid({ preset: id, bathymetry: fine, amplitude, absorbing: true, width: .45, coupled: true });
+  return { fine, fineGrid, coupling: { parentGrid, bounds: parentData.bounds, extent: fine.extent, zone: 56, source: cell, seaEdges: fine.seaEdges, localSeconds, tide, ...(seconds && { seconds }), ...(cacheKey && { cacheKey }) } };
+}
+
+test('an offshore wave in the regional model drives the nested local model and conserves water', async () => {
+  const R = await import('../viewer/tsunami-runner.js');
   for (const [id, parentId, source] of [['currumbin', 'gold-coast', [154.3, -28.0]], ['pine-estuary', 'moreton', [154.3, -27.3]]]) {
-    const fine = readData(id), parentData = readData(parentId);
-    const cell = C.toParentCell(parentData, ...source).map(Math.floor);
-    const parentGrid = tsunamiGrid({ preset: parentId, bathymetry: parentData, source: cell, amplitude: 2.5, width: 10 });
-    const fineGrid = tsunamiGrid({ preset: id, bathymetry: fine, amplitude: 2.5, absorbing: true, width: .45, coupled: true });
+    const { fine, fineGrid, coupling: input } = await regionalCoupling(id, parentId, source);
     assert.equal(fineGrid.absorbing, false, 'the sponge would damp the forced signal');
-    const plan = C.planCoupling({ fine, fineGrid, parentData, parentGrid });
-    assert.deepEqual(plan.edges.map(e => e.name), fine.seaEdges.filter(e => ['north', 'east', 'south', 'west'].includes(e)).sort((a, b) => ['north', 'east', 'south', 'west'].indexOf(a) - ['north', 'east', 'south', 'west'].indexOf(b)));
-    const localSeconds = 600;
-    const rec = F.tsunamiParent(parentGrid, plan.points, C.parentSeconds({ plan, parentGrid, source: cell, localSeconds }));
-    const forcing = C.forcingFromRecording(plan, rec, { maxLocalSeconds: localSeconds });
-    assert.ok(forcing.peak > .02 && forcing.arrival > 600 && forcing.offset >= 0 && forcing.offset <= forcing.arrival);
-    assert.ok(forcing.forceTimes[0] <= 0 && forcing.forceTimes.at(-1) >= localSeconds);
-    const start = { ...fineGrid, ...Object.fromEntries(Object.entries(forcing).filter(([k]) => k.startsWith('force'))) };
-    const { forcingEnd } = F.tsunamiStart(start);
-    assert.ok(forcingEnd >= localSeconds);
+    const { coupling } = R.startRun(F, { grid: fineGrid, coupling: input });
+    const order = ['north', 'east', 'south', 'west'];
+    assert.deepEqual(Object.keys(coupling.edges), fine.seaEdges.filter(e => order.includes(e)).sort((a, b) => order.indexOf(a) - order.indexOf(b)));
+    assert.equal(coupling.source, 'regional');
+    assert.ok(coupling.peak > .02 && coupling.arrival > 600 && coupling.offset >= 0 && coupling.offset <= coupling.arrival && coupling.regionalPeak >= coupling.peak / 2, JSON.stringify(coupling));
+    assert.ok(coupling.regionalSeconds >= 10800 && coupling.regionalSeconds <= 21600);
+    assert.ok(Object.values(coupling.edges).every(e => e.points > 0 && e.peak > 0));
     let result;
-    while (!result || result.time < localSeconds) result = F.tsunamiStep(200);
+    while (!result || result.time < 600) result = F.tsunamiStep(200);
     assert.ok(result.water.every(h => Number.isFinite(h) && h >= 0));
     assert.ok(Math.max(...result.peak) > .005, 'forced wave entered the local model');
     assert.ok(result.boundaryVolume !== 0);
@@ -221,40 +218,32 @@ test('an offshore wave in the regional model drives the nested local model and c
 });
 
 test('coupling refuses scenes outside the regional model and runs that never deliver a wave', async () => {
+  const R = await import('../viewer/tsunami-runner.js');
   const { tsunamiGrid } = await gridModule;
-  const C = await import('../viewer/tsunami-coupling.js');
-  const fine = readData('currumbin'), parentData = readData('moreton');
-  const fineGrid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: 0, width: .45, coupled: true });
-  const parentGrid = tsunamiGrid({ preset: 'moreton', bathymetry: parentData, source: [116, 36], width: 10 });
-  assert.throws(() => C.planCoupling({ fine, fineGrid, parentData, parentGrid }), /outside the regional/);
-  const goldData = readData('gold-coast');
-  const goldGrid = tsunamiGrid({ preset: 'gold-coast', bathymetry: goldData, source: [96, 40], amplitude: 0, width: 10 });
-  const plan = C.planCoupling({ fine, fineGrid, parentData: goldData, parentGrid: goldGrid });
-  const rec = F.tsunamiParent(goldGrid, plan.points, 1800);
-  assert.throws(() => C.forcingFromRecording(plan, rec), /never reaches/);
-  assert.throws(() => C.forcingFromRecording(plan, { ...rec, points: 3 }), /does not match/);
-  assert.throws(() => C.planCoupling({ fine: { ...fine, seaEdges: [] }, fineGrid, parentData: goldData, parentGrid: goldGrid }), /no open sea edges/);
+  // Currumbin lies outside the Moreton Bay regional grid
+  const outside = await regionalCoupling('currumbin', 'moreton', [154.3, -27.3]);
+  assert.throws(() => R.startRun(F, { grid: outside.fineGrid, coupling: outside.coupling }), /outside the regional/);
+  // a source too far for a 30-minute regional run to reach the scene
+  const short = await regionalCoupling('currumbin', 'gold-coast', [154.3, -28.0], { seconds: 600 });
+  assert.throws(() => R.startRun(F, { grid: short.fineGrid, coupling: short.coupling }), /never reaches/);
+  const dry = await regionalCoupling('currumbin', 'gold-coast', [154.3, -28.0]);
+  assert.throws(() => R.startRun(F, { grid: dry.fineGrid, coupling: { ...dry.coupling, seaEdges: [] } }), /no open sea edges/);
+  void tsunamiGrid;
 });
 
 test('two-way nesting runs in the Rust solver: the local model is driven, conserves water, and the regional cells it covers follow it', async () => {
-  const { tsunamiGrid } = await gridModule;
-  const C = await import('../viewer/tsunami-coupling.js');
   const R = await import('../viewer/tsunami-runner.js');
-  const setup = (id, parentId, source) => {
-    const fine = readData(id), parentData = readData(parentId);
-    const cell = C.toParentCell(parentData, ...source).map(Math.floor);
-    const parentGrid = tsunamiGrid({ preset: parentId, bathymetry: parentData, source: cell, amplitude: 2.5, width: 10 });
-    const fineGrid = tsunamiGrid({ preset: id, bathymetry: fine, amplitude: 2.5, absorbing: true, width: .45, coupled: true });
-    const scene = { fine: { seaEdges: fine.seaEdges }, fineGrid: { W: fineGrid.W, H: fineGrid.H, depth: fineGrid.depth } };
+  const setup = async (id, parentId, source) => {
+    const { fineGrid, coupling } = await regionalCoupling(id, parentId, source, { localSeconds: 900 });
     return (strength) => {
-      const { coupling } = R.startRun(F, { grid: fineGrid, coupling: { parentGrid, seconds: 21600, localSeconds: 900, scene, tide: 0, twoWay: { bounds: parentData.bounds, extent: fine.extent, zone: 56, strength } } });
+      const run = R.startRun(F, { grid: fineGrid, coupling: { ...coupling, twoWay: { strength } } });
       let frame;
       while (!frame || frame.time < 900) frame = F.tsunamiStep(200);
-      return { coupling, frame, parentCells: parentGrid.W * parentGrid.H };
+      return { coupling: run.coupling, frame, parentCells: coupling.parentGrid.W * coupling.parentGrid.H };
     };
   };
   // the 8 km Gold Coast Seaway scene covers a couple of 1.5 km regional cells
-  const seaway = setup('gold-coast-seaway', 'gold-coast', [154.3, -28.0]);
+  const seaway = await setup('gold-coast-seaway', 'gold-coast', [154.3, -28.0]);
   const one = seaway(0), two = seaway(0.25);
   assert.equal(two.coupling.source, 'regional-two-way');
   assert.ok(two.coupling.handovers >= 1 && two.coupling.offset > 600, `the local clock starts when the wave arrives: ${two.coupling.offset}`);
@@ -271,7 +260,7 @@ test('two-way nesting runs in the Rust solver: the local model is driven, conser
   assert.ok(diff > 0 && diff < top, `the regional wave is changed near the local grid, not overwhelmed: ${diff} of ${top}`);
   assert.ok(Math.max(...two.frame.peak) < 5 * Math.max(...one.frame.peak) && Math.max(...two.frame.peak) > 0.2 * Math.max(...one.frame.peak), 'the local wave stays the same size');
   // the 4 km Currumbin scene is under three regional cells wide: none is covered enough to follow it, so two-way is exactly one-way and says so
-  const currumbin = setup('currumbin', 'gold-coast', [154.3, -28.0]);
+  const currumbin = await setup('currumbin', 'gold-coast', [154.3, -28.0]);
   const c1 = currumbin(0), c2 = currumbin(0.25);
   assert.equal(c2.coupling.handovers, 0);
   assert.equal(c2.frame.feedbackVolume, 0);
@@ -281,33 +270,31 @@ test('two-way nesting runs in the Rust solver: the local model is driven, conser
 test('wave series files parse strictly and drive the local model with an optional rising tide', async () => {
   const { tsunamiGrid } = await gridModule;
   const C = await import('../viewer/tsunami-coupling.js');
+  const R = await import('../viewer/tsunami-runner.js');
   const parsed = C.parseSeriesCsv('# DART-style export\nseconds,metres\n0,0\n60;0.5\n120\t1.0\n180 0.5\n240,0\n');
   assert.deepEqual([...parsed.times], [0, 60, 120, 180, 240]);
   assert.deepEqual([...parsed.values], [0, .5, 1, .5, 0]);
   for (const bad of ['0,0', '0,0\n0,1', '0,0\n5,abc', '0,0\n5,99', '0,0\n10,1\n5,1']) assert.throws(() => C.parseSeriesCsv(bad), /series|Times|not "seconds|Wave heights/);
   const fine = readData('currumbin');
   const fineGrid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: 0, width: .45, coupled: true });
-  const scene = { fine, fineGrid };
-  assert.deepEqual(C.openEdges(scene), ['north', 'east']);
-  assert.throws(() => C.forcingFromSeries(scene, { times: Float64Array.of(0, 60), values: Float64Array.of(0, 0) }), /no wave/);
+  const drive = (series, extra = {}) => R.startRun(F, { grid: fineGrid, coupling: { series, seaEdges: fine.seaEdges, localSeconds: 600, tide: 0, ...extra } });
+  assert.throws(() => drive({ times: Float64Array.of(0, 60), values: Float64Array.of(0, 0) }), /no wave/);
+  assert.throws(() => R.startRun(F, { grid: fineGrid, coupling: { series: parsed, seaEdges: ['west'], localSeconds: 600 } }), /no sea edge/);
   const times = Float64Array.from({ length: 31 }, (_, i) => i * 20);
   const values = Float64Array.from(times, t => .3 * Math.exp(-(((t - 200) / 80) ** 2)));
-  const forcing = C.forcingFromSeries(scene, { times, values }, { maxLocalSeconds: 600 });
-  assert.ok(Math.abs(forcing.arrival - 80) <= 40 && Math.abs(forcing.peak - .3) < 1e-9);
-  assert.deepEqual(Object.keys(forcing.edges), ['north', 'east']);
-  const start = { ...fineGrid, ...Object.fromEntries(Object.entries(forcing).filter(([k]) => k.startsWith('force'))) };
-  F.tsunamiStart(start);
+  const { coupling } = drive({ times, values });
+  assert.deepEqual(Object.keys(coupling.edges), ['north', 'east']);
+  assert.ok(Math.abs(coupling.arrival - 80) <= 40 && Math.abs(coupling.peak - .3) < 1e-9 && coupling.source === 'series' && coupling.offset === 0);
   let waveOnly;
   while (!waveOnly || waveOnly.time < 600) waveOnly = F.tsunamiStep(200);
   assert.ok(Math.max(...waveOnly.peak) > .1 && Math.abs(waveOnly.volumeError) < 1e-4);
   // A rising tide adds water at the edges on top of the wave, all of it accounted for.
-  F.tsunamiStart({ ...start, ...C.levelSeries(600, 1.0, 4800) });
+  drive({ times, values }, { tide: 1.0 });
   let withTide;
   while (!withTide || withTide.time < 600) withTide = F.tsunamiStep(200);
   assert.ok(withTide.volume > waveOnly.volume && withTide.boundaryVolume > waveOnly.boundaryVolume);
   assert.ok(Math.abs(withTide.volumeError) < 1e-4);
-  assert.equal(C.levelSeries(600, 0), null);
-  assert.throws(() => F.tsunamiStart({ ...start, levelTimes: [0, 1], level: [0, NaN] }), /invalid sea level/);
+  assert.throws(() => F.tsunamiStart({ ...fineGrid, levelTimes: [0, 1], level: [0, NaN] }), /invalid sea level/);
 });
 
 test('variable-depth dispersion runs on shelf and real coastal grids, conserves displacement volume and differs from shallow water', async () => {
@@ -354,29 +341,29 @@ test('an ensemble plan brackets each input on its own and in combination, withou
 
 test('ensemble runs measure arrival, gauge peaks and flooding, and stronger sources give larger responses', async () => {
   const { tsunamiGrid } = await gridModule;
-  const C = await import('../viewer/tsunami-coupling.js');
   const { runMember, ensemblePlan } = await import('../viewer/tsunami-runner.js');
-  const fine = readData('currumbin'), parentData = readData('gold-coast');
-  const cell = C.toParentCell(parentData, 154.3, -28.0).map(Math.floor);
-  const localSeconds = 300, cache = new Map();
-  const member = factors => {
+  const fine = readData('currumbin');
+  const localSeconds = 300, seen = [];
+  const member = async factors => {
     const grid = tsunamiGrid({ preset: 'currumbin', bathymetry: fine, amplitude: factors.amplitude, tide: factors.tide, roughness: factors.roughness, absorbing: true, width: .45, coupled: true });
-    const parentGrid = tsunamiGrid({ preset: 'gold-coast', bathymetry: parentData, source: cell, amplitude: factors.amplitude, width: 10 });
-    const plan = C.planCoupling({ fine, fineGrid: grid, parentData, parentGrid });
-    const seconds = C.parentSeconds({ plan, parentGrid, source: cell, localSeconds });
-    return { grid, coupling: { plan, parentGrid, seconds, localSeconds, tide: 0, cacheKey: `${factors.amplitude}|${Array.from(plan.points).join(',')}` } };
+    const { coupling } = await regionalCoupling('currumbin', 'gold-coast', [154.3, -28.0], { amplitude: factors.amplitude, localSeconds, cacheKey: `currumbin|${factors.amplitude}` });
+    return { grid, coupling, seen };
   };
   const plan = ensemblePlan({ amplitude: 2.5, tide: 0, roughness: .025 }, {}, { terrain: false });
   const probes = [[130, 48], [100, 48], [60, 48]].map(([x, y]) => y * 160 + x);
-  const run = id => runMember(F, member(plan.find(m => m.id === id).factors), { seconds: localSeconds, probes, cache });
-  const base = run('base'), strong = run('amplitude-high'), again = run('tide-high');
+  const run = async id => runMember(F, await member(plan.find(m => m.id === id).factors), { seconds: localSeconds, probes });
+  const base = await run('base'), strong = await run('amplitude-high'), again = await run('tide-high');
   assert.ok(base.arrival.some(t => t != null && t >= 0 && t <= localSeconds));
   assert.ok(base.gaugePeak.every(Number.isFinite) && base.maxSpeed > 0);
   assert.ok(strong.gaugePeak[0] > base.gaugePeak[0], `${strong.gaugePeak[0]} vs ${base.gaugePeak[0]}`);
   assert.ok(strong.maxSpeed >= base.maxSpeed && strong.landDepth >= base.landDepth && strong.floodedHectares >= base.floodedHectares);
   assert.ok([base, strong, again].every(r => Math.abs(r.volumeError) < 1e-3 && r.simulated >= localSeconds));
-  // The regional run is shared by members that differ only in local settings.
-  assert.equal(cache.size, 2);
+  // The regional run is shared by members that differ only in local settings: the tide member reuses the base member's.
+  const { startRun } = await import('../viewer/tsunami-runner.js');
+  const again2 = await member(plan.find(m => m.id === 'tide-high').factors);
+  assert.equal(startRun(F, again2).coupling.regionalCached, true);
+  const other = await member(plan.find(m => m.id === 'amplitude-low').factors);
+  assert.equal(startRun(F, other).coupling.regionalCached, false, 'a different source strength is a different regional run');
 });
 
 test('the second-order scheme is selectable, stays positive and conservative, and is less diffusive on real terrain', async () => {

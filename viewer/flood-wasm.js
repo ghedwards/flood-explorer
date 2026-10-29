@@ -467,6 +467,9 @@
     // Rainfall uplift for a climate warmingC degrees warmer.
     const stormUplift = (hours, warmingC) => num(call('stormUplift', { hours, warming: warmingC }).v);
     const hazardClass = (d, v) => num(call('hazardClass', { d, v }).v);
+    // an area model's terrain, and the solver's block grid, as the fields the Rust side reads
+    const areaBag = (a) => ({ W: a.W, H: a.H, cell: a.cell, dem: a.dem, valid: a.valid || new Uint8Array(0), ocean: a.ocean || new Uint8Array(0) });
+    const gridBag = (g) => ({ gW: g.W, gH: g.H, gCell: g.cell, gDem: g.dem, gValid: g.valid, gOcean: g.ocean, gFactor: g.factor });
 
     // The stream cell nearest (x, y) within r cells whose flow accumulation is at least minAcc; -1 if none.
     const snapToStream = (a, x, y, r, minAcc) => num(call('snapToStream', { a: handleOf(a), x, y, r: r || 0, minAcc: minAcc || 0 }).v);
@@ -510,7 +513,12 @@
       fineRaster, classifyDemGaps, terrainRGBA,
       tsunamiStart: (grid) => {
         const o = call('tsunamiStart', grid);
-        return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null, ...(o.nestOffset && { nest: { offset: num(o.nestOffset), handovers: num(o.nestHandovers), snapped: num(o.nestSnapped), points: num(o.nestPoints) } }) };
+        // `nest` for two-way nesting; `coupled` for a one-way run driven by a regional recording or a series (what it was driven with)
+        return {
+          dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null,
+          ...(o.nestOffset && { nest: { offset: num(o.nestOffset), handovers: num(o.nestHandovers), snapped: num(o.nestSnapped), points: num(o.nestPoints) } }),
+          ...(o.coupled && { coupled: { kind: num(o.coupled), arrival: num(o.arrival), offset: num(o.offset), peak: num(o.peak), rows: num(o.rows), edgeCodes: Array.from(o.edgeCodes), edgePeak: Array.from(o.edgePeak), edgePoints: Array.from(o.edgePoints), edgeSnapped: Array.from(o.edgeSnapped), ...(o.regionalSeconds && { regionalSeconds: num(o.regionalSeconds), regionalPeak: num(o.regionalPeak), regionalCached: num(o.regionalCached) === 1 }) } }),
+        };
       },
       // Run a regional model to the end, returning surface displacement at the
       // requested (x, y) cell coordinates for use as nested boundary forcing.
@@ -528,6 +536,28 @@
           ...(extremes && { peakValue: o.peakValue, peakTime: o.peakTime, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
           ...(o.parentEta && { parentEta: o.parentEta, feedbackVolume: num(o.feedbackVolume) }) };
       },
+      // Grid adaptation for the 2D solver, in Rust (rust/flood-core/src/inertial_grid.rs): the area model's terrain averaged into blocks (`inertialPrepare`), which block an area
+      // cell falls in (`inertialCell`, -1 for none) and the solver's answer spread back over the area's cells as a flood run (`inertialExpand`; `peak` shows the deepest water, and a
+      // storm run's class and arrival give `arrival` and `peakHazard`).
+      inertialPrepare: (a, maxSide) => {
+        const o = call('inertialPrepare', { ...areaBag(a), maxSide });
+        return { W: num(o.W), H: num(o.H), cell: num(o.cell), factor: num(o.factor), dem: o.dem, valid: o.valid, ocean: o.ocean };
+      },
+      inertialCell: (g, a, i) => num(call('inertialCell', { ...areaBag(a), ...gridBag(g), i }).index),
+      inertialExpand: (a, g, r, { peak = false } = {}) => {
+        const o = call('inertialExpand', { ...areaBag(a), ...gridBag(g), depth: r.depth, peak: r.peak, vx: r.vx, vy: r.vy, peakClass: r.peakClass, peakSpeed: r.peakSpeed, arrival: r.arrival, peakMode: peak ? 1 : 0 });
+        return { depth: o.depth, wet: o.wet, level: o.level, wse: Float64Array.from(o.level), onPath: new Uint8Array(o.wet.length), vx: o.vx, vy: o.vy, ...(o.arrival && { arrival: o.arrival, peakHazard: { cls: o.cls, vel: o.vel, km2: Array.from(o.km2) } }) };
+      },
+      // A storm as the 2D solver takes it, in Rust (rust/flood-core/src/flash.rs): the rain less the initial and continuing losses, step by step. Returns { series (mm/h per step),
+      // seconds, stepSeconds, stormHours, rainMm, effectiveMm, capped }.
+      effectiveRainSeries: ({ rainMm, hours, initialLoss, contLoss }, afterHours = 2, stepSeconds = 600) => {
+        const o = call('effectiveRainSeries', { rainMm, hours, initialLoss: initialLoss ?? NaN, contLoss: contLoss ?? NaN, afterHours, stepSeconds });
+        return { series: o.series, seconds: num(o.seconds), stepSeconds: num(o.stepSeconds), stormHours: num(o.stormHours), rainMm: num(o.rainMm), effectiveMm: num(o.effectiveMm), capped: num(o.capped) === 1 };
+      },
+      // Map coordinates in Rust (rust/flood-core/src/geo.rs): latitude and longitude to MGA easting and northing in a zone (default 56) and back, one point at a time.
+      toMga: (lat, lon, zone = 56) => { const o = call('mga', { a: [lat], b: [lon], zone, mode: 0 }); return [o.a[0], o.b[0]]; },
+      fromMga: (easting, northing, zone = 56) => { const o = call('mga', { a: [easting], b: [northing], zone, mode: 1 }); return [o.a[0], o.b[0]]; },
+      tsunamiBounds: (place) => Array.from(call('tsunamiBounds', { placeExtent: Float64Array.from(place.extent), placeZone: place.zone ?? 56 }).bounds),
       // Where a modelled place ({ extent, W, H, zone }) sits on the map: the grid cell under a point, the cell under every pixel of a canvas laid over
       // [south, west, north, east], and a run's extremes carried onto an area model's cells (rust/flood-core/src/place.rs).
       tsunamiCell: (place, lat, lon) => num(call('tsunamiCell', { placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, lat, lon }).index),
