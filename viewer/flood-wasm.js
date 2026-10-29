@@ -571,6 +571,12 @@
         const o = call('ensemblePlan', { amplitude: base.amplitude, tide: base.tide, roughness: base.roughness, ...spread, terrain: terrain ? 1 : 0, varyAmplitude: amplitude ? 1 : 0 });
         return Array.from(o.kind, (k, i) => ({ kind: ['base', 'low', 'high', 'severe', 'mild'][k], input: ['amplitude', 'tide', 'roughness', 'terrain'][o.input[i]] || null, factors: { amplitude: o.factors[4 * i], tide: o.factors[4 * i + 1], roughness: o.factors[4 * i + 2], terrain: o.factors[4 * i + 3] } }));
       },
+      // Stored one-byte hazard rates (rust/flood-core/src/codec.rs): rates per year to codes, codes to { rates, classes } (class -1 is not drawn), rates to classes.
+      encodeRates: (rates) => call('encodeRates', { rates: Float64Array.from(rates) }).codes,
+      decodeRates: (codes) => { const o = call('decodeRates', { codes: Uint8Array.from(codes) }); return { rates: o.rates, classes: o.classes }; },
+      classOfRates: (rates) => call('classOfRates', { rates: Float64Array.from(rates) }).classes,
+      // Heights (Float32Array) of an n x n Terrarium tile from its RGBA bytes.
+      terrarium: (rgba, n) => call('terrarium', { rgba: rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength), n }).heights,
       // The ocean cell [x, y] nearest `target` whose ground lies deeper than `minDepth` below zero, in a grid `width` cells across (rust/flood-core/src/lab.rs); null when there is none.
       waterPoint: (elevation, width, target, minDepth) => { const o = call('waterPoint', { elevation: Float64Array.from(elevation, v => v ?? NaN), width, targetX: target[0], targetY: target[1], minDepth }); const x = num(o.x); return x < 0 ? null : [x, num(o.y)]; },
       // What a frame has flooded on land (depth 0) and its largest speed and peak: { flooded, maxLandDepth, maxSpeed, maxPeak }.

@@ -964,4 +964,4 @@ the dam failure (`dam.rs`) and the map projection (`geo.rs`) are Rust as well. T
 checked in `rust/flood-core/src/tsunami_grid.rs`, and an ensemble member's measures (gauge arrivals, speed, flooded area) are kept by the solver itself. Reading a wave series file
 (`series.rs`, `parseSeries`), the ensemble's runs and the ranges over them (`ensemble.rs`, `ensemblePlan`, `spans`), and the lab page's own numbers (`lab.rs`: the ocean cell
 nearest a spot, what a frame has flooded and its extremes, the terrain heights and colours) are Rust too. What stays in JavaScript is drawing and the words (colouring, legends,
-labels) and the rate codec of the stored hazard extents (shared with the build scripts).
+labels) while the stored hazard-extent rate codec and the Terrarium tile decoding are Rust too (`codec.rs`), used by the page and the build script alike.

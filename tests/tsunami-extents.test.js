@@ -22,7 +22,7 @@ test('rates round-trip through one byte within 6%, and classes follow the rate',
   const m = await load();
   for (const rate of [1e-5, 3e-4, 0.002, 0.01, 0.05, 0.9]) assert.ok(Math.abs(m.decodeRate(m.encodeRate(rate)) / rate - 1) < 0.06, String(rate));
   assert.equal(m.encodeRate(0), 0); assert.equal(m.decodeRate(0), 0);
-  assert.deepEqual([0, 1e-5, 1 / 5000, 1 / 2000, 1 / 800, 1 / 300, 1 / 150, 1 / 50].map(m.classOfRate), [-1, -1, 0, 1, 2, 3, 4, 5]);
+  assert.deepEqual([0, 1e-5, 1 / 5000, 1 / 2000, 1 / 800, 1 / 300, 1 / 150, 1 / 50].map((r) => m.classOfRate(r)), [-1, -1, 0, 1, 2, 3, 4, 5]);
   assert.match(m.yearsText(0.002), /1 in 500 years/); assert.match(m.yearsText(0), /not reached/);
   assert.equal(m.legendParts(0.3).length, 7);
 });

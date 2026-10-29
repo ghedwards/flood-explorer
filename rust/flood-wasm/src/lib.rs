@@ -851,6 +851,27 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             }
             o.i32s("kind", &kind).i32s("input", &input).f64s("factors", &factors);
         }
+        "encodeRates" => {
+            // hazard rates per year to the stored one-byte codes (see codec.rs)
+            let r = b.f64s("rates").ok_or("missing rates")?;
+            o.u8s("codes", &r.iter().map(|v| codec::encode_rate(*v)).collect::<Vec<_>>());
+        }
+        "decodeRates" => {
+            // stored codes to rates per year, and to the hazard class of each (-1 not drawn)
+            let c = b.u8s("codes").ok_or("missing codes")?;
+            let rates: Vec<f64> = c.iter().map(|v| codec::decode_rate(*v)).collect();
+            o.i32s("classes", &rates.iter().map(|r| codec::class_of_rate(*r)).collect::<Vec<_>>()).f64s("rates", &rates);
+        }
+        "classOfRates" => {
+            let r = b.f64s("rates").ok_or("missing rates")?;
+            o.i32s("classes", &r.iter().map(|v| codec::class_of_rate(*v)).collect::<Vec<_>>());
+        }
+        "terrarium" => {
+            let rgba = b.u8s("rgba").ok_or("missing rgba")?;
+            let n = b.num("n") as usize;
+            if rgba.len() < n * n * 4 { return Err("tile has fewer pixels than n x n".into()); }
+            o.f32s("heights", &codec::decode_terrarium(&rgba, n));
+        }
         "waterPoint" => {
             // the ocean cell nearest a target (see lab.rs); x and y are -1 when no cell is deep enough
             let z = b.f64s("elevation").ok_or("missing elevation")?;

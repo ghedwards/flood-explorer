@@ -7,24 +7,15 @@
 // (rust/flood-core/src/place.rs and geo.rs, through FloodCore); this file keeps the stored-rate codec, the classes and colours, and the layer.
 const rad = (d) => d * Math.PI / 180;
 
-// ---- the stored rates: one byte per cell, 0 = never, else log10(rate per year) = code / 40 - 6 ----
-export const CODE_SCALE = 40, CODE_OFFSET = 6;
-export function encodeRate(rate) {
-  if (!(rate > 0)) return 0;
-  return Math.max(1, Math.min(255, Math.round((Math.log10(rate) + CODE_OFFSET) * CODE_SCALE)));
-}
-export const decodeRate = (code) => code ? 10 ** (code / CODE_SCALE - CODE_OFFSET) : 0;
+// ---- the stored rates: one byte per cell, 0 = never, else log10(rate per year) = code / 40 - 6; encoded, decoded and classed in Rust (rust/flood-core/src/codec.rs) ----
+export const encodeRate = (rate, F = globalThis.FloodCore) => F.encodeRates([rate])[0];
+export const decodeRate = (code, F = globalThis.FloodCore) => F.decodeRates([code]).rates[0];
 
 // Classes by how often (years between): rarest first. A cell never reached by the sampled scenarios, or reached less often than
 // the last class, is not drawn.
 export const CLASS_YEARS = [2500, 1000, 500, 250, 100];
 export const CLASS_COLOURS = ['#fde0ef', '#f9b8d9', '#f08cc0', '#d6559f', '#a92d7d', '#6e1b57'];
-export function classOfRate(rate) {
-  if (!(rate > 0) || rate < 1 / CLASS_YEARS[0] / 4) return -1;      // rarer than 1 in 10,000 years: not drawn
-  let c = 0;
-  while (c < CLASS_YEARS.length && rate >= 1 / CLASS_YEARS[c]) c++;
-  return c;                                                          // 0: rarer than 1 in 2,500 ... 5: more often than 1 in 100
-}
+export const classOfRate = (rate, F = globalThis.FloodCore) => F.classOfRates([rate])[0];   // 0: rarer than 1 in 2,500 ... 5: more often than 1 in 100; -1: not drawn
 export const yearsText = (rate) => rate > 0 ? `1 in ${rate >= 1 ? (1 / rate).toFixed(1) : Math.round(1 / rate).toLocaleString('en-AU')} years` : 'not reached by the sampled scenarios';
 
 export function legendParts(depth) {
@@ -51,9 +42,10 @@ export function placeBounds(F, place) {
 export function extentPixels(F, place, codes, width, height, bounds = placeBounds(F, place), alpha = 215) {
   const cells = F.tsunamiPixelMap(place, [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]], width, height), out = new Uint8ClampedArray(width * height * 4);
   const colours = CLASS_COLOURS.map((hex) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
+  const classes = F.decodeRates(codes).classes;
   for (let p = 0; p < cells.length; p++) {
     if (cells[p] < 0) continue;
-    const c = classOfRate(decodeRate(codes[cells[p]]));
+    const c = classes[cells[p]];
     if (c < 0) continue;
     const k = p * 4;
     out[k] = colours[c][0]; out[k + 1] = colours[c][1]; out[k + 2] = colours[c][2]; out[k + 3] = alpha;
@@ -64,7 +56,7 @@ export function extentPixels(F, place, codes, width, height, bounds = placeBound
 // The rate (per year) for the cell under a lat/lon, or null outside the place.
 export function rateAt(F, place, codes, lat, lon) {
   const cell = F.tsunamiCell(place, lat, lon);
-  return cell < 0 ? null : decodeRate(codes[cell]);
+  return cell < 0 ? null : decodeRate(codes[cell], F);
 }
 
 const DEPTH_KEY = 'flood-tsunami-extent-depth';

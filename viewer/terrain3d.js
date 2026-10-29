@@ -120,13 +120,9 @@ export const tileSize = (proj, z) => (2 * MERC_MAX * proj.k) / 2 ** z;
  * the 2D relief agree. */
 export const SEA_LEVEL = -1.5;
 export const terrariumHeight = (r, g, b) => r * 256 + g + b / 256 - 32768;
-export function decodeTerrarium(rgba, n = 256) {
-  const out = new Float32Array(n * n);
-  for (let i = 0; i < n * n; i++) {
-    const h = terrariumHeight(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2]);
-    out[i] = h < SEA_LEVEL ? SEA_LEVEL : h;
-  }
-  return out;
+// Worked out in Rust (rust/flood-core/src/codec.rs, FloodCore.terrarium).
+export function decodeTerrarium(rgba, n = 256, F = globalThis.FloodCore) {
+  return F.terrarium(rgba, n);
 }
 
 /* Bilinear height from an n×n raster covering a tile edge to edge (pixel

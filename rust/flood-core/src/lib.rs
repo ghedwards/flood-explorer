@@ -30,6 +30,7 @@ pub mod tsunami;
 
 pub mod inundation;
 pub mod geo;
+pub mod codec;
 pub mod ensemble;
 pub mod lab;
 pub mod nest;
