@@ -566,6 +566,16 @@
         if (!Array.isArray(edges) || !edges.length || edges.some((e) => !(e in codes))) throw new Error('Invalid ocean-facing terrain edges.');
         return call('connectedWaterDepth', { W, H, bed, level, edges: Float64Array.from(edges, (e) => codes[e]), valid: valid || undefined }).depth;
       },
+      // The runs of a sensitivity ensemble as [{ kind, input, factors: { amplitude, tide, roughness, terrain } }] (rust/flood-core/src/ensemble.rs); kind is 'base', 'low', 'high', 'severe' or 'mild'.
+      ensemblePlan: (base, spread = {}, { terrain = true, amplitude = true } = {}) => {
+        const o = call('ensemblePlan', { amplitude: base.amplitude, tide: base.tide, roughness: base.roughness, ...spread, terrain: terrain ? 1 : 0, varyAmplitude: amplitude ? 1 : 0 });
+        return Array.from(o.kind, (k, i) => ({ kind: ['base', 'low', 'high', 'severe', 'mild'][k], input: ['amplitude', 'tide', 'roughness', 'terrain'][o.input[i]] || null, factors: { amplitude: o.factors[4 * i], tide: o.factors[4 * i + 1], roughness: o.factors[4 * i + 2], terrain: o.factors[4 * i + 3] } }));
+      },
+      // Minimum, maximum and the number of non-finite values in each column of run-major `values` ([{ min, max, missing }], min and max null when none are finite).
+      spans: (values, columns) => {
+        const o = call('spans', { values: Float64Array.from(values), columns });
+        return Array.from(o.missing, (missing, c) => ({ min: Number.isNaN(o.min[c]) ? null : o.min[c], max: Number.isNaN(o.max[c]) ? null : o.max[c], missing }));
+      },
       // A wave series file (text) to { times, values }: seconds and metres, read and checked in Rust (rust/flood-core/src/series.rs).
       parseSeries: (text, maxRows) => { const o = call('parseSeries', { text: new TextEncoder().encode(String(text)), ...(maxRows && { maxRows }) }); return { times: o.times, values: o.values }; },
       toMga: (lat, lon, zone = 56) => { const o = call('mga', { a: [lat], b: [lon], zone, mode: 0 }); return [o.a[0], o.b[0]]; },

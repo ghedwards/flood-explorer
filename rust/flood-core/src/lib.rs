@@ -30,6 +30,7 @@ pub mod tsunami;
 
 pub mod inundation;
 pub mod geo;
+pub mod ensemble;
 pub mod nest;
 pub mod series;
 pub mod tsunami_grid;

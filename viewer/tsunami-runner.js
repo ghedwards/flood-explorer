@@ -37,44 +37,21 @@ export function startRun(F, data, report = () => {}) {
   return { coupling, batch: data.grid.method === 3 ? 16 : 200 };
 }
 
-const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
-
-// The runs of an ensemble. `base` holds the current settings; `spread` how far
-// each is pushed. Terrain is a uniform vertical shift of the bed in metres
-// (negative lowers the ground, which floods more). Duplicates caused by
-// clamping are dropped.
-export function ensemblePlan(base, spread = {}, { terrain = true, amplitude = true } = {}) {
-  const { amplitudePercent = 50, tideMetres = .5, roughnessPercent = 50, terrainMetres = .5 } = spread;
-  const mid = { amplitude: base.amplitude, tide: base.tide, roughness: base.roughness, terrain: 0 };
-  const range = {
-    amplitude: amplitude ? [clamp(base.amplitude * (1 - amplitudePercent / 100), .05, 3), clamp(base.amplitude * (1 + amplitudePercent / 100), .05, 3)] : [base.amplitude, base.amplitude],
-    tide: [clamp(base.tide - tideMetres, -1, 2), clamp(base.tide + tideMetres, -1, 2)],
-    roughness: [clamp(base.roughness * (1 - roughnessPercent / 100), 0, .2), clamp(base.roughness * (1 + roughnessPercent / 100), 0, .2)],
-    terrain: terrain ? [-terrainMetres, terrainMetres] : [0, 0],
-  };
-  const members = [{ id: 'base', label: 'Baseline', group: 'base', factors: mid }];
-  const seen = new Set([JSON.stringify(mid)]);
-  const add = (id, label, group, change) => {
-    const factors = { ...mid, ...change }, key = JSON.stringify(factors);
-    if (seen.has(key)) return;
-    seen.add(key);
-    members.push({ id, label, group, factors });
-  };
+// The runs of an ensemble. `base` holds the current settings; `spread` how far each is pushed. Terrain is a uniform vertical shift of the bed in metres (negative lowers the
+// ground, which floods more). Which runs there are and their factors are worked out in Rust (rust/flood-core/src/ensemble.rs); the words are here.
+export function ensemblePlan(base, spread = {}, options = {}, F = globalThis.FloodCore) {
   const text = {
     amplitude: v => `Source strength ${v.toFixed(2)} m`,
     tide: v => `Initial sea level ${v.toFixed(2)} m`,
     roughness: v => `Manning n ${v.toFixed(3)}`,
     terrain: v => `Terrain ${v > 0 ? '+' : ''}${v.toFixed(2)} m`,
   };
-  for (const key of ['amplitude', 'tide', 'roughness', 'terrain']) {
-    add(`${key}-low`, `${text[key](range[key][0])}`, key, { [key]: range[key][0] });
-    add(`${key}-high`, `${text[key](range[key][1])}`, key, { [key]: range[key][1] });
-  }
-  // Inputs together: towards more flooding (stronger source, higher sea,
-  // smoother ground, lower terrain) and towards less.
-  add('severe', 'All towards more flooding', 'combined', { amplitude: range.amplitude[1], tide: range.tide[1], roughness: range.roughness[0], terrain: range.terrain[0] });
-  add('mild', 'All towards less flooding', 'combined', { amplitude: range.amplitude[0], tide: range.tide[0], roughness: range.roughness[1], terrain: range.terrain[1] });
-  return members;
+  return F.ensemblePlan(base, spread, options).map(({ kind, input, factors }) => {
+    if (kind === 'base') return { id: 'base', label: 'Baseline', group: 'base', factors };
+    if (kind === 'severe') return { id: 'severe', label: 'All towards more flooding', group: 'combined', factors };
+    if (kind === 'mild') return { id: 'mild', label: 'All towards less flooding', group: 'combined', factors };
+    return { id: `${input}-${kind}`, label: text[input](factors[input]), group: input, factors };
+  });
 }
 
 // Run one member to `seconds` and measure it. `probes` are gauge cell indices. Arrival is the first time (kept by the solver every step) a gauge differs from its initial
@@ -96,19 +73,16 @@ export function runMember(F, member, { seconds, probes, threshold = .05, step = 
   };
 }
 
-// Minimum and maximum of each measure over all members (null arrivals are
-// counted separately: that gauge was not reached in that run).
-export function summarise(results) {
-  const span = values => {
-    const finite = values.filter(v => Number.isFinite(v));
-    return { min: finite.length ? Math.min(...finite) : null, max: finite.length ? Math.max(...finite) : null, missing: values.length - finite.length };
-  };
+// Minimum and maximum of each measure over all members (null arrivals are counted separately: that gauge was not reached in that run). The arithmetic is Rust's (`spans`).
+export function summarise(results, F = globalThis.FloodCore) {
   const gauges = results[0]?.arrival.length ?? 0;
+  const column = (pick) => F.spans(results.map(pick), 1)[0];
+  const perGauge = (field) => (gauges ? F.spans(results.flatMap(r => Array.from({ length: gauges }, (_, k) => r[field][k] ?? NaN)), gauges) : []);
   return {
-    arrival: Array.from({ length: gauges }, (_, k) => span(results.map(r => r.arrival[k]))),
-    gaugePeak: Array.from({ length: gauges }, (_, k) => span(results.map(r => r.gaugePeak[k]))),
-    landDepth: span(results.map(r => r.landDepth)),
-    floodedHectares: span(results.map(r => r.floodedHectares)),
-    maxSpeed: span(results.map(r => r.maxSpeed)),
+    arrival: perGauge('arrival'),
+    gaugePeak: perGauge('gaugePeak'),
+    landDepth: column(r => r.landDepth),
+    floodedHectares: column(r => r.floodedHectares),
+    maxSpeed: column(r => r.maxSpeed),
   };
 }

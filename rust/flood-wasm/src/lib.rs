@@ -835,6 +835,30 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let edges: Vec<inundation::Edge> = b.f64s("edges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
             o.f64s("depth", &tsunami_grid::connected_water_depth(&bed, w, h, b.num("level"), &edges, valid.as_deref())?);
         }
+        "ensemblePlan" => {
+            // the runs of a sensitivity ensemble (see ensemble.rs): kind 0 base, 1 low, 2 high, 3 severe, 4 mild; input 0..3 amplitude, tide, roughness, terrain (-1 when none)
+            let d = ensemble::Spread::default();
+            let or = |k: &str, v: f64| if b.num(k).is_finite() { b.num(k) } else { v };
+            let spread = ensemble::Spread { amplitude_percent: or("amplitudePercent", d.amplitude_percent), tide_metres: or("tideMetres", d.tide_metres), roughness_percent: or("roughnessPercent", d.roughness_percent), terrain_metres: or("terrainMetres", d.terrain_metres) };
+            let base = ensemble::Factors { amplitude: b.num("amplitude"), tide: b.num("tide"), roughness: b.num("roughness"), terrain: 0.0 };
+            let members = ensemble::plan(base, &spread, b.num("terrain") != 0.0, b.num("varyAmplitude") != 0.0);
+            let code = |i: ensemble::Input| ensemble::INPUTS.iter().position(|x| *x == i).unwrap() as i32;
+            let (mut kind, mut input, mut factors) = (Vec::new(), Vec::new(), Vec::new());
+            for m in &members {
+                let (k, i) = match m.kind { ensemble::Kind::Base => (0, -1), ensemble::Kind::Low(i) => (1, code(i)), ensemble::Kind::High(i) => (2, code(i)), ensemble::Kind::Severe => (3, -1), ensemble::Kind::Mild => (4, -1) };
+                kind.push(k); input.push(i);
+                factors.extend([m.factors.amplitude, m.factors.tide, m.factors.roughness, m.factors.terrain]);
+            }
+            o.i32s("kind", &kind).i32s("input", &input).f64s("factors", &factors);
+        }
+        "spans" => {
+            // minimum, maximum and count of non-finite values for each of `columns` columns of run-major values
+            let values = b.f64s("values").ok_or("missing values")?;
+            let columns = b.num("columns") as usize;
+            if columns == 0 || values.len() % columns != 0 { return Err("values do not fill the columns".into()); }
+            let spans: Vec<ensemble::Span> = (0..columns).map(|c| ensemble::span(values.iter().skip(c).step_by(columns).copied())).collect();
+            o.f64s("min", &spans.iter().map(|s| s.min).collect::<Vec<_>>()).f64s("max", &spans.iter().map(|s| s.max).collect::<Vec<_>>()).i32s("missing", &spans.iter().map(|s| s.missing as i32).collect::<Vec<_>>());
+        }
         "parseSeries" => {
             // a wave series file's text (UTF-8 bytes) to seconds and metres (see series.rs)
             let bytes = b.u8s("text").ok_or("missing text")?;
