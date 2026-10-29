@@ -106,7 +106,8 @@ test('a run is carried onto an area model cell by cell: land depths and arrivals
   a.ocean[5 * 16 + 8] = 1;   // one sea cell inside the place
   const land = Uint8Array.from([1, 1, 0, 1, 1, 1, 1, 1]);
   const peak = Float32Array.from([0.5, 2, 0.4, 0, 1, 1, 1, 1]), arrival = Float32Array.from([120, 900, NaN, NaN, 60, 60, 60, 60]);
-  const run = m.tsunamiRunOnArea(a, geo, { bathymetry: place, prepared: { land }, derived: { peak, arrival } });
+  const peakClass = Uint8Array.from([3, 6, 0, 0, 2, 2, 2, 2]), peakSpeed = Float32Array.from([1, 4, 0, 0, 0.5, 0.5, 0.5, 0.5]);
+  const run = m.tsunamiRunOnArea(a, geo, { bathymetry: place, prepared: { land }, derived: { peak, arrival, peakClass, peakSpeed } });
   const at = (lat, lon) => { const x = Math.floor((lon - geo.west) / (geo.east - geo.west) * 16), y = Math.floor((geo.north - lat) / (geo.north - geo.south) * 8); return y * 16 + x; };
   const [lat0, lon0] = ext.fromMga(537500 + 500, 6905500 + 4800 - 300);   // inside place cell 0
   const i0 = at(lat0, lon0);
@@ -115,6 +116,20 @@ test('a run is carried onto an area model cell by cell: land depths and arrivals
   assert.equal(run.depth[at(lat2, lon2)], 0);
   assert.equal(run.depth[0], 0, 'outside the place stays dry');
   assert.equal(run.depth[5 * 16 + 8], 0, 'the area model’s own sea stays dry');
+  assert.equal(run.peakHazard.cls[i0], 3); assert.ok(Math.abs(run.peakHazard.vel[i0] - 1) < 1e-6);
+  assert.equal(run.peakHazard.cls[at(lat2, lon2)], 0, 'sea cells carry no class');
+  assert.ok(run.peakHazard.km2[2] > 0 && run.peakHazard.km2.every((k) => k >= 0));
   assert.ok(run.covered > 0 && run.covered < 128 && run.tsunami === true);
   assert.ok(run.depth.every((d) => d >= 0) && Number.isNaN(run.arrival[0]));
+});
+
+test('hazard class and peak speed come from the frames: ADR 7-3 limits, worst over the run, dry cells untouched', async () => {
+  const m = await load();
+  assert.deepEqual([[0.2, 0.5], [0.4, 1], [1.0, 1.0], [1.5, 1.0], [0.3, 3], [5, 0.1], [3, 3.5]].map(([d, v]) => m.hazardClass(d, v)), [1, 2, 4, 5, 5, 6, 6]);
+  const grid = { depth: Float64Array.from([0, 0, 0]) }, land = Uint8Array.from([1, 1, 1]);
+  const frame = (time, water, speed) => ({ time, water: Float64Array.from(water), speed: Float64Array.from(speed), eta: new Float64Array(3), peak: Float64Array.from(water) });
+  const frames = [frame(0, [0, 0, 0], [0, 0, 0]), frame(30, [0.4, 0.2, 0], [1, 0.5, 0]), frame(60, [0.2, 1.5, 0], [0.2, 2.5, 9])];
+  const d = m.deriveRun({ grid, land }, frames);
+  assert.deepEqual([...d.peakClass], [2, 5, 0], 'the worst class over the run; a dry cell stays 0 whatever its speed');
+  assert.deepEqual([...d.peakSpeed].map((v) => +v.toFixed(1)), [1, 2.5, 0]);
 });

@@ -12,6 +12,8 @@ const ha = (value) => value < 0.05 ? 'none' : `${value.toFixed(value < 10 ? 1 : 
 const minutesText = (seconds) => seconds < 90 ? 'under a minute' : `${Math.round(seconds / 60)} minutes`;
 const rateText = (rate) => { if (!(rate > 0)) return 'unknown'; const years = 1 / rate; return years >= 1e6 ? `about 1 in ${(years / 1e6).toFixed(1)} million years` : `about 1 in ${Math.round(years).toLocaleString('en-AU')} years`; };
 export const TIDE_STEPS = [['Low', 'MLWS'], ['Mid', 'MSL'], ['High', 'MHWS'], ['Highest', 'HAT']];
+// keep a popup clear of the page's top bar and bottom rail (the top bar is about 140 px tall on a phone)
+const POPUP_PAD_TOP = [16, window.matchMedia('(max-width: 760px)').matches ? 150 : 80], POPUP_PAD_BOTTOM = [16, window.matchMedia('(max-width: 760px)').matches ? 90 : 20];
 const CACHE_RUNS = 4, MEMORY_KEY = 'flood-tsunami-last', PIN_ZOOM = 8, HINT_ZOOM = 9;
 const WAVE = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M2 15c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3M2 19.5c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3M3 9c2-4 5-6 9-6 0 3-1.5 5-4 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -113,7 +115,7 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
         icon: L.divIcon({ className: 'ts-pin', html: `<span title="Tsunami scenarios: ${placeName(id)}">${WAVE}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
         keyboard: true, title: `Tsunami scenarios: ${placeName(id)}`, alt: `Tsunami scenarios: ${placeName(id)}`, riseOnHover: true,
       });
-      marker.bindPopup(() => { ensureLoaded().then(() => refreshCards()); ensureTides(id).then(fillTide); pick({ place: id }); return buildCard(id); }, { maxWidth: 300, className: 'ts-popup' });
+      marker.bindPopup(() => { ensureLoaded().then(() => refreshCards()); ensureTides(id).then(fillTide); pick({ place: id }); return buildCard(id); }, { maxWidth: 300, className: 'ts-popup', autoPanPaddingTopLeft: POPUP_PAD_TOP, autoPanPaddingBottomRight: POPUP_PAD_BOTTOM });
       pins.set(id, marker);
     }
     map.on('zoomend moveend', syncPins);
@@ -265,7 +267,7 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
         ? (depth > 0.02 ? `Under water to about ${depth.toFixed(1)} m from the tide, but the wave adds little here in this run.` : 'Stays dry in this run.')
         : `Water arrives about ${minutesText(arrival)} after the wave reaches the model’s edge (${ARRIVAL_TEXT[arrivalClass(arrival)]}), and peaks at ${depth.toFixed(1)} m about ${minutesText(derived.peakAt[i])} into the run.`;
     } else text = derived.peak[i] > 0.03 ? `At sea: the highest wave is ${derived.peak[i].toFixed(1)} m above the tide here.` : 'At sea: little wave here.';
-    L.popup({ className: 'ts-popup', maxWidth: 260 }).setLatLng(latlng).setContent(`<div class="ts-tap">${text}<p class="hint">Modelled, experimental. ${active.scenario.label}, ${info.tide} tide.</p></div>`).openOn(map);
+    L.popup({ className: 'ts-popup', maxWidth: 260, autoPanPaddingTopLeft: POPUP_PAD_TOP, autoPanPaddingBottomRight: POPUP_PAD_BOTTOM }).setLatLng(latlng).setContent(`<div class="ts-tap">${text}<p class="hint">Modelled, experimental. ${active.scenario.label}, ${info.tide} tide.</p></div>`).openOn(map);
     return true;
   }
 
@@ -303,7 +305,7 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
     if (!active || !onUseRun) return;
     const entry = active, note = $('tsImpactNote');
     $('tsImpact').disabled = true; note.textContent = 'Opening the flood model for this place…';
-    try { note.textContent = await onUseRun({ ...entry, label: scenarioBanner(entry.scenario), tide: entry.tide, minutes: sel.minutes }) || ''; }
+    try { note.textContent = await onUseRun({ ...entry, placeName: placeName(entry.place), label: scenarioBanner(entry.scenario), tide: entry.tide, minutes: sel.minutes }) || ''; }
     catch (error) { note.textContent = `Could not use the run (${error.message || error}).`; }
     finally { $('tsImpact').disabled = false; }
   });
