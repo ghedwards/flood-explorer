@@ -10,7 +10,8 @@ import { timelineAccess as timelineAccessOn } from './access.js';
 import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
-import { makeTsunamiExtentsLayer } from './tsunami-extents.js';
+import { makeTsunamiExtentsLayer, placeBounds as tsunamiPlaceBounds } from './tsunami-extents.js';
+import { tsunamiRunOnArea } from './tsunami-impact.js';
 import { initTsunamiPanel } from './tsunami-panel.js';
 import { effectiveRainSeries } from './flash-2d.js';
 /* Flood Explorer — viewer
@@ -909,6 +910,40 @@ import { effectiveRainSeries } from './flash-2d.js';
     maybeRenderImpact(); renderRecorded();
     $('timeSet').hidden = true;
   }
+  /* A tsunami run from the Tsunami bar becomes the flood run of the area model at that place (opened first if there is none), so the impact numbers,
+   * roads, routes and property check all use it. Depths are the run's deepest water on land; water speed is not kept, so hazard classes are from depth. */
+  async function useTsunamiRun(info) {
+    const [[south, west], [north, east]] = tsunamiPlaceBounds(info.bathymetry);
+    const centre = window.L.latLng((south + north) / 2, (west + east) / 2), name = String(info.scenario.place).replace(/-/g, ' ');
+    let hit = areaAt(centre);
+    if (!hit) {
+      if (!(await modelHere(centre.lat, centre.lng, { kind: 'coast', name: `Tsunami: ${name}`, quiet: true }))) throw new Error('the terrain for this place could not be loaded');
+      hit = areaAt(centre);
+    } else if (hit.key !== state.areaKey) activateArea(hit.key);
+    await state.ready;
+    const a = state.a, geo = state.geo;
+    if (!a || !geo) throw new Error('no terrain model is open');
+    const run = tsunamiRunOnArea(a, geo, info);
+    if (!run.covered) throw new Error('the flood model here does not cover the modelled place');
+    resetInertial();
+    state.inertial = { peak: true, time: info.prepared.seconds, cell: a.cell, W: a.W, H: a.H, settings: {}, boundary: 'sea', tsunami: { label: info.label, scenario: info.scenario.id, place: info.scenario.place, tide: info.tide, gridCell: info.prepared.grid.cell } };
+    status.inertial = { ...state.inertial, running: false };
+    state.run = run; state.base = null; state.riverRun = null; state.flash = null; state.timeView = false; state.hazard = null;
+    clearTimeout(impactT);
+    $('colorMode').value = 'depth';
+    for (const id of fastSets) $(id).disabled = true;   // the river and storm controls do not apply to this run until it is cleared
+    $('dlReport').disabled = true;
+    showInertialRun(a);
+    const area = areaReg.get(state.areaKey);
+    if (area && area.impact == null && !area.impactLoading) {   // buildings, roads and people are fetched once per area; the counts then follow this run
+      area.impactLoading = true;
+      try { await countImpact(); } finally { area.impactLoading = false; }
+    }
+    if (!isPhone()) openPanel('panel-scenario');
+    return `Impact tools now use this tsunami run on the ${Math.round(a.cell)} m flood model of ${hit ? hit.name : 'this place'} (${run.covered.toLocaleString('en-AU')} cells inside the modelled place). ${isPhone() ? 'Open Scenario for the counts. ' : ''}Change the scenario there to go back to river or storm flooding.`;
+  }
+  window.__floodUseTsunamiRun = (info) => useTsunamiRun(info);
+
   function startInertial() {
     if (!state.a) { $('inertialStatus').textContent = 'Load a terrain model first.'; return; }
     if (!F.inertialStart) { $('inertialStatus').textContent = 'The 2D model needs WebAssembly. It is unavailable in JavaScript-only mode.'; return; }
@@ -1508,6 +1543,7 @@ import { effectiveRainSeries } from './flash-2d.js';
 
   // Pin the current scenario to compare later ones against it
   function scenarioLabel() {
+    if (state.inertial && state.inertial.tsunami) return `${state.inertial.tsunami.label} (deepest water over the run), ${fmt(state.inertial.time / 60, 0)} min, ${Math.round(state.inertial.tsunami.gridCell)} m tsunami grid`;
     if (state.inertial) return `Local-inertial 2D${state.inertial.peak ? ' storm (peak depth)' : ''}, ${fmt(state.inertial.time / 60, 1)} min, ${Math.round(state.inertial.cell)} m grid`;
     const mode = ctl.floodType.value, parts = [];
     if (mode !== 'flash') parts.push(`gauge ${fmt(parseFloat(ctl.gaugeLevel.value), 2)} m`);
@@ -2304,7 +2340,13 @@ import { effectiveRainSeries } from './flash-2d.js';
       roadsLayer = L.layerGroup();
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
-      tsunamiPanel = initTsunamiPanel({ L, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, onLegend: renderOverlayLegend });
+      tsunamiPanel = initTsunamiPanel({
+        L, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, layers: { hazard: tsunamiHazard, extents: tsunamiExtents },
+        onLegend: renderOverlayLegend, onHint: say, onUseRun: useTsunamiRun,
+        onLayerChange: () => { renderOverlayLegend(); syncLayerLists(); },
+        // on a phone the panel would cover the map the run plays on
+        onRunStart: () => { if (isPhone()) { const panel = $('panel-tsunami'); if (panel && !panel.hidden) { panel.hidden = true; syncPanels(); } } },
+      });
       status.tsunami = tsunamiPanel.info;
       window.__floodTsunamiRun = (options) => tsunamiPanel.runWith(options);
       m.on('overlayadd overlayremove zoomend', renderOverlayLegend);
@@ -3368,6 +3410,7 @@ import { effectiveRainSeries } from './flash-2d.js';
 
   function onGeoClick(e) {
     if (Date.now() < suppressClickUntil) return;   // the end of a box drag
+    if (tsunamiPanel && tsunamiPanel.handleTap(e.latlng)) return;   // a tap inside the tsunami run being shown
     if (state.pendingGeo) { say('Still loading this area…'); return; }
     const hit = areaAt(e.latlng);
     if (!hit) { onNationalClick(e); return; }
@@ -3443,6 +3486,13 @@ import { effectiveRainSeries } from './flash-2d.js';
 
 
   function drawStats(s) {
+    if (state.inertial && state.inertial.tsunami) {
+      const r = state.inertial, st = F.stats(state.a, state.run, null), ff = firstFlooded(state.run, state.a);
+      $('summaryLine').textContent = `${r.tsunami.label} · deepest water over ${fmt(r.time / 60, 0)} min · ${Math.round(r.tsunami.gridCell)} m tsunami grid`;
+      $('stats').innerHTML = [['Wet land', fmt(st.wetLandKm2, 2), 'km²'], ['Deeper than 1 m', fmt(st.deepKm2, 2), 'km²'], ['Deepest water', fmt(st.maxDepth, 2), 'm'], ['First flooded', ff == null ? 'none' : fmt(ff / 60, 0), ff == null ? '' : 'min after the wave reaches the model edge']].map(([k, v, u]) => `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
+      if ($('btn3d')) $('btn3d').classList.toggle('dim', !(state.a && state.run));
+      return;
+    }
     if (state.inertial) {
       const r = state.inertial, st = F.stats(state.a, state.run, null);
       $('summaryLine').textContent = `Local-inertial 2D · ${r.peak ? 'deepest water over' : 'final depth at'} ${fmt(r.time / 60, 1)} min · ${Math.round(r.cell)} m grid`;
@@ -6166,7 +6216,11 @@ import { effectiveRainSeries } from './flash-2d.js';
     return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   };
   const unb64 = (txt) => new TextDecoder().decode(Uint8Array.from(atob(txt.replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0)));
-  function shareUrl() { return `${location.origin}${location.pathname}#s=${b64(JSON.stringify(sessionState()))}`; }
+  function shareUrl() {
+    const st = sessionState(), run = tsunamiPanel && tsunamiPanel.shareState();
+    if (run) st.tsunami = run;   // a tsunami run on show travels in the link (not in the saved session: it is only run when asked)
+    return `${location.origin}${location.pathname}#s=${b64(JSON.stringify(st))}`;
+  }
   window.__floodShareUrl = shareUrl;
   function saveSessionSoon() {
     if (restoring) return;
@@ -6239,6 +6293,7 @@ import { effectiveRainSeries } from './flash-2d.js';
         if (a) activateArea(a.key); else if (numberUsed(st.active)) selectPlace(st.active);
       }
       if (st.view) state.lmap.setView([st.view[0], st.view[1]], st.view[2]);
+      if (st.tsunami && tsunamiPanel) tsunamiPanel.restore(st.tsunami).catch(() => {});   // the run in the link, played again
       const n = (st.reports || []).length + (st.pins || []).length + areas.filter((a) => !(st.reports || []).some((r) => r.n === a.n) && !(st.pins || []).some((p) => p.n === a.n)).length;
       status.restore = { ok: true, why, places: n, areas: areas.length };
       if (n) say(why === 'link' ? `Opened ${n} place${n === 1 ? '' : 's'} from the link.` : `Restored ${n} place${n === 1 ? '' : 's'} from your last visit.`);
@@ -6800,7 +6855,7 @@ import { effectiveRainSeries } from './flash-2d.js';
       ${r.worstRoads.length ? `<p><strong>Roads cut:</strong> ${r.worstRoads.map(([nm, km]) => `${escapeHtml(nm)} (${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`})`).join(', ')}</p>` : ''}
       ${(() => { const ev = d.sites.filter((x) => x.kind === EVAC), evh = r.sitesHit.filter((x) => x.kind === EVAC); return ev.length ? `<p><strong>Evacuation centres:</strong> ${ev.length} mapped here (green on the map)${evh.length ? `, <strong>${evh.length} flooded</strong>: ${evh.map((x) => escapeHtml(x.name)).join(', ')}` : ', none flooded'}. Use <em>Check this property</em> for the dry route to one.</p>` : ''; })()}
       ${r.sitesHit.length ? `<p><strong>Key sites:</strong> ${r.sitesHit.slice(0, 12).map((s) => `${escapeHtml(s.name)} <small>(${s.kind.toLowerCase()}, ${s.depth.toFixed(1)} m)</small>`).join('; ')}${r.sitesHit.length > 12 ? ` and ${r.sitesHit.length - 12} more` : ''}</p>` : ''}
-      ${state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's ${state.inertial.peak ? 'deepest water over the run' : 'final water depth'} on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only${state.inertial.peak ? '' : ', and water keeps moving after this snapshot'}.</p>` : ''}
+      ${state.inertial && state.inertial.tsunami ? `<p class="hint"><strong>Experimental tsunami run:</strong> ${escapeHtml(state.inertial.tsunami.label)}. Depths are the deepest water the tsunami model held on land (the tide's own cover counts) on its ${Math.round(state.inertial.tsunami.gridCell)} m grid, laid over this ${Math.round(state.a.cell)} m terrain. Water speed is not kept, so hazard is from depth alone. Building, road and people figures are indicative only; this is not a forecast or an evacuation guide.</p>` : state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's ${state.inertial.peak ? 'deepest water over the run' : 'final water depth'} on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only${state.inertial.peak ? '' : ', and water keeps moving after this snapshot'}.</p>` : ''}
       <p class="hint">Buildings, roads and sites: © OpenStreetMap contributors (ODbL), complete only where mapped${d.copy ? ` (the site's copy from ${escapeHtml(new Date(d.copy.fetched).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }))})` : ''}. People: ABS 2021 Census by SA1, spread across each area's buildings${r.people == null ? ' (not available here right now)' : ''}. Estimates for screening only.</p>`;
     // mark flooded key sites, cut roads and cut-off roads on the map
     if (state.lmap) {
@@ -8204,10 +8259,12 @@ import { effectiveRainSeries } from './flash-2d.js';
       const wet = run.wet[c] && !(a.ocean && a.ocean[c]);
       const hz = wet ? hazardNow() : null, cls = hz ? hz.cls[c] : 0;
       const t = run.arrival ? run.arrival[c] : NaN;
-      box.textContent = state.inertial.peak
+      box.textContent = state.inertial.tsunami
+        ? `Experimental tsunami run (${state.inertial.tsunami.label}): the deepest water here was ${fmt(run.depth[c], 2)} m${Number.isFinite(t) ? `; the wave first put 10 cm on it about ${fmt(t / 60, 0)} min after reaching the model's edge` : wet ? '' : '; it stayed dry'}. Depth comes from the tsunami model's ${Math.round(state.inertial.tsunami.gridCell)} m grid; gauge-level thresholds don't apply.`
+        : state.inertial.peak
         ? `Experimental 2D storm: the deepest water here was ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, worst hazard class H${cls || 6} (depth and water speed at the worst moment)` : ''}${Number.isFinite(t) ? `; water first reached 10 cm about ${fmt(t / 60, 0)} min after the rain started` : wet ? '' : '; it stayed dry'}. Gauge-level thresholds don't apply to this model.`
         : `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, hazard class H${cls || 6} from that cell's depth and water speed` : ''}. Gauge-level thresholds don't apply to this model.`;
-      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, arrivalMin: Number.isFinite(t) ? +(t / 60).toFixed(1) : null, model: 'local-inertial' };
+      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, arrivalMin: Number.isFinite(t) ? +(t / 60).toFixed(1) : null, model: state.inertial.tsunami ? 'tsunami' : 'local-inertial' };
       rememberPropertyCheck(lat, lon, name);
       return status.property;
     }

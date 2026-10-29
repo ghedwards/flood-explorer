@@ -901,3 +901,22 @@ well-defined source and boundary scenarios, and grid refinement,
 then validation against published analytical, laboratory and field benchmarks.
 See [NOAA's modelling overview](https://nctr.pmel.noaa.gov/model.html) and
 [analytical benchmark collection](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html).
+
+## Using it on the main map
+
+Wave pins (`viewer/tsunami-panel.js`) mark the four modelled places from zoom 8. A pin's card has the place's scenarios as chips and the tide as four steps
+(Low = MLWS, Mid = MSL, High = MHWS, Highest = HAT); the full seven-state menu and the run length are under "More options" in the Tsunami panel. A run is
+kept in a small cache (four runs) keyed by place, scenario, tide and length, so going back to a tide already run is instant. The floating bar over the map has
+the playback controls and three views: Now (water on land at the time shown), Maximum (the deepest water each cell held) and Arrival time (seconds from the
+wave reaching the model's edge until it first adds 0.1 m on that cell, in bands from "within 5 min" to "later"). All three come from the 120 stored frames
+(30 s apart in a one-hour run, so times are to that resolution), by `deriveRun` in `viewer/tsunami-live.js`; no solver change. Tapping the map inside the
+place gives the arrival time and peak depth of that cell. On a phone, starting a run closes the panel so the map is visible.
+
+### Feeding a run into the impact tools, and share links
+
+"Use in impact tools" on the run bar makes the run the flood run of the area model at that place (opening a coastal model there if none is loaded), so the
+building, road and people counts, routes and the property check use it. `tsunamiRunOnArea` (`viewer/tsunami-impact.js`) carries each land cell's deepest
+water (the tide's own cover included, as in the run's summary) and its arrival time onto the area's cells; the sea and the area's own ocean cells stay dry.
+Water speed is not kept, so hazard classes there come from depth alone. Changing the scenario returns the area to river or storm flooding. A share link
+carries the run on show (place, scenario, tide, length and view) and plays it again when opened; it is not kept in the saved session, so a run is only
+started when asked for. The run's cells are drawn with smooth scaling rather than hard squares.
