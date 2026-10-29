@@ -851,6 +851,23 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             }
             o.i32s("kind", &kind).i32s("input", &input).f64s("factors", &factors);
         }
+        "waterPoint" => {
+            // the ocean cell nearest a target (see lab.rs); x and y are -1 when no cell is deep enough
+            let z = b.f64s("elevation").ok_or("missing elevation")?;
+            let p = lab::water_point(&z, b.num("width") as usize, (b.num("targetX"), b.num("targetY")), b.num("minDepth"));
+            o.num("x", p.map_or(-1.0, |p| p.0 as f64)).num("y", p.map_or(-1.0, |p| p.1 as f64));
+        }
+        "frameStats" => {
+            // what a frame has flooded and its extremes (see lab.rs)
+            let get = |k: &str| b.f64s(k).unwrap_or_default();
+            let s = lab::frame_stats(&get("depth"), &get("water"), &get("speed"), &get("peak"));
+            o.num("flooded", s.flooded as f64).num("maxLandDepth", s.max_land_depth).num("maxSpeed", s.max_speed).num("maxPeak", s.max_peak);
+        }
+        "terrainColours" => {
+            // display heights and colours of a grid's ground (see lab.rs); NaN marks unknown heights
+            let t = lab::terrain(b.f64s("elevation").ok_or("missing elevation")?, b.u8s("valid").as_deref());
+            o.f64s("elevation", &t.elevation).num("low", t.low).num("high", t.high).u8s("colours", &t.colours);
+        }
         "spans" => {
             // minimum, maximum and count of non-finite values for each of `columns` columns of run-major values
             let values = b.f64s("values").ok_or("missing values")?;

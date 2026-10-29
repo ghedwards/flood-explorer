@@ -571,6 +571,12 @@
         const o = call('ensemblePlan', { amplitude: base.amplitude, tide: base.tide, roughness: base.roughness, ...spread, terrain: terrain ? 1 : 0, varyAmplitude: amplitude ? 1 : 0 });
         return Array.from(o.kind, (k, i) => ({ kind: ['base', 'low', 'high', 'severe', 'mild'][k], input: ['amplitude', 'tide', 'roughness', 'terrain'][o.input[i]] || null, factors: { amplitude: o.factors[4 * i], tide: o.factors[4 * i + 1], roughness: o.factors[4 * i + 2], terrain: o.factors[4 * i + 3] } }));
       },
+      // The ocean cell [x, y] nearest `target` whose ground lies deeper than `minDepth` below zero, in a grid `width` cells across (rust/flood-core/src/lab.rs); null when there is none.
+      waterPoint: (elevation, width, target, minDepth) => { const o = call('waterPoint', { elevation: Float64Array.from(elevation, v => v ?? NaN), width, targetX: target[0], targetY: target[1], minDepth }); const x = num(o.x); return x < 0 ? null : [x, num(o.y)]; },
+      // What a frame has flooded on land (depth 0) and its largest speed and peak: { flooded, maxLandDepth, maxSpeed, maxPeak }.
+      frameStats: (depth, water, speed, peak) => { const o = call('frameStats', { depth, water, speed, peak }); return { flooded: num(o.flooded), maxLandDepth: num(o.maxLandDepth), maxSpeed: num(o.maxSpeed), maxPeak: num(o.maxPeak) }; },
+      // Display heights and colours of ground heights (NaN or null where unknown, `valid` 0 marks unusable cells): { elevation, low, high, colours }.
+      terrainColours: (elevation, valid) => { const o = call('terrainColours', { elevation: Float64Array.from(elevation, v => v ?? NaN), ...(valid && { valid }) }); return { elevation: o.elevation, low: num(o.low), high: num(o.high), colours: o.colours }; },
       // Minimum, maximum and the number of non-finite values in each column of run-major `values` ([{ min, max, missing }], min and max null when none are finite).
       spans: (values, columns) => {
         const o = call('spans', { values: Float64Array.from(values), columns });

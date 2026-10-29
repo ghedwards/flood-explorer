@@ -104,7 +104,7 @@ function labels() {
   $('tideValue').textContent = `${(+$('tide').value).toFixed(2)} m`;
   $('roughnessValue').textContent = (+$('roughness').value).toFixed(3);
   $('lakeValue').textContent = `${(+$('lakeLevel').value).toFixed(2)} m`;
-  $('deepValue').textContent = `${Math.round((bathymetry || localScene()) ? Math.max(...grid.depth) : +$('deep').value).toLocaleString('en-AU')} m`;
+  $('deepValue').textContent = `${Math.round((bathymetry || localScene()) ? deepest() : +$('deep').value).toLocaleString('en-AU')} m`;
   $('couplingHint').textContent = series ? 'Uses your wave series as the incoming wave on every open edge: two columns, seconds from the start of the run and metres above the initial sea level. Nothing is scaled or checked against a datum; the file\'s author owns that.' : coupled ? 'The regional 1.5 km linear model runs first with the offshore source below; its wave at this scene\'s sea edges (scaled to local depth by Green\'s law) enters the nonlinear model as incoming-wave forcing. One-way: the local model does not feed back. Sheltered bays receive little because the regional grid barely resolves their entrances.' : 'Runs the 1.5 km regional model first, then feeds its wave in at this scene\'s open sea edges instead of the local pulse.';
   $('waveSettingsHint').textContent = series ? 'The wave comes from your series; source strength and width do not apply.' : coupled ? 'Offshore source: exaggerated demonstration pulse in the regional model, not a calibrated tsunami scenario. It is not a PTHA18 scenario.' : `${+$('amplitude').value >= 2 ? 'Exaggerated demonstration wave' : 'Hypothetical demonstration wave'}, not a calibrated tsunami scenario. ${localScene() ? 'Shallow water reduces the initial pulse; the actual maximum appears below.' : 'Source strength is displacement from still water, not crest-to-trough wave height.'}`;
   $('amplitudeValue').textContent = `${(+$('amplitude').value).toFixed(2)} m`;
@@ -114,7 +114,7 @@ function labels() {
   $('waveSpeed').textContent = coupled ? '—' : `${(Math.sqrt(9.81 * sourceDepth) * 3.6).toFixed(0)} km/h`;
   $('scenarioName').textContent = $('preset').selectedOptions[0].textContent;
   $('tryDispersive').hidden = $('method').value === 'dispersive';
-  $('methodHint').textContent = $('method').value === 'dispersive' ? `Experimental linear Boussinesq (Peregrine) waves: shorter wavelengths travel more slowly. ${$('preset').value === 'flat' ? 'Uniform depth' : 'Variable depth with reflecting land'}; no breaking or inundation. Source-scale depth/spread ratio: ${(Math.max(...grid.depth) / (+$('width').value * 1000)).toFixed(2)}${$('preset').value === 'flat' ? '' : ' at the deepest water; aim for about 1 or less'}. Weak-dispersion approximation, not a complete gravity-wave model.${$('preset').value === 'flat' ? '' : ' It solves a coupled system every step, so playback may run slower than selected.'}` : localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
+  $('methodHint').textContent = $('method').value === 'dispersive' ? `Experimental linear Boussinesq (Peregrine) waves: shorter wavelengths travel more slowly. ${$('preset').value === 'flat' ? 'Uniform depth' : 'Variable depth with reflecting land'}; no breaking or inundation. Source-scale depth/spread ratio: ${(deepest() / (+$('width').value * 1000)).toFixed(2)}${$('preset').value === 'flat' ? '' : ' at the deepest water; aim for about 1 or less'}. Weak-dispersion approximation, not a complete gravity-wave model.${$('preset').value === 'flat' ? '' : ' It solves a coupled system every step, so playback may run slower than selected.'}` : localScene() ? 'Nonlinear shallow-water flow with wetting/drying, bed slope, advection and Manning resistance. First-order numerical scheme; experimental local wave forcing.' : $('method').value === 'staggered'
     ? 'Staggered-grid propagation with low numerical damping. Both methods solve linear shallow-water equations; neither models onshore flooding.'
     : 'Finite-volume acoustic fluxes with RK2 time stepping. This first-order spatial method damps short waves more. It solves the same linear equations; it does not add inundation physics.';
   $('mapHint').textContent = `${grid.W * grid.cell / 1000} × ${grid.H * grid.cell / 1000} km ${bathymetry ? 'Australian coastal subset' : 'idealised basin'} · ${grid.cell / 1000} km cells · ${coupled ? 'The wave enters from the open sea edges; there is no local source to move.' : localScene() ? ($('preset').value === 'estuary' ? 'Click water to move the local source; the idealised lake can have its own wave.' : 'Click connected bay water to move the local wave source.') : 'Click the ocean to move the hypothetical source.'} Markers 1–3 are virtual gauges.`;
@@ -154,13 +154,10 @@ function coordinates([x, y]) {
   return `${Math.abs(north - (y + .5) / grid.H * (north - south)).toFixed(3)}° S · ${(west + (x + .5) / grid.W * (east - west)).toFixed(3)}° E`;
 }
 
+const deepest = () => globalThis.FloodCore.spans(grid.depth, 1)[0].max;
+
 function waterPoint(elevation, target, minDepth) {
-  let best = null, distance = Infinity;
-  for (let i = 0; i < elevation.length; i++) if (elevation[i] < -minDepth) {
-    const point = [i % 160, Math.floor(i / 160)];
-    const d = Math.hypot(point[0] - target[0], point[1] - target[1]);
-    if (d < distance) { distance = d; best = point; }
-  }
+  const best = globalThis.FloodCore.waterPoint(elevation, 160, target, minDepth);
   if (!best) throw new Error('No suitable ocean cells in this subset.');
   return best;
 }
@@ -323,14 +320,13 @@ function paint() {
   if (terrainVisible && !terrainOnly && !nonlinear()) $('legend').textContent = $('legend').textContent.replace(' · Teal = new flooding', '');
   inspectTerrain();
   if (nonlinear()) {
-    let flooded = 0, maximum = 0;
-    frame.water.forEach((h, i) => { if (grid.depth[i] === 0 && h > .01) { flooded++; maximum = Math.max(maximum, h); } });
-    $('floodArea').textContent = `${(flooded * grid.cell ** 2 / 10000).toFixed(2)} ha (>1 cm)`;
-    $('landDepth').textContent = `${maximum.toFixed(3)} m`;
-    $('currentSpeed').textContent = `${Math.max(...frame.speed).toFixed(3)} m/s`;
+    const stats = globalThis.FloodCore.frameStats(grid.depth, frame.water, frame.speed, frame.peak);
+    $('floodArea').textContent = `${(stats.flooded * grid.cell ** 2 / 10000).toFixed(2)} ha (>1 cm)`;
+    $('landDepth').textContent = `${stats.maxLandDepth.toFixed(3)} m`;
+    $('currentSpeed').textContent = `${stats.maxSpeed.toFixed(3)} m/s`;
     $('massError').textContent = `${frame.volumeError.toExponential(2)} m³ (edge exchange accounted)`;
   }
-  $('peakValue').textContent = `${Math.max(...frame.peak).toFixed(2)} m`;
+  $('peakValue').textContent = `${globalThis.FloodCore.frameStats(grid.depth, frame.water, null, frame.peak).maxPeak.toFixed(2)} m`;
   $('gaugeValues').replaceChildren(...probes.map((point, i) => {
     const span = document.createElement('span');
     const value = sample(frame.eta, point);
@@ -554,7 +550,7 @@ $('export').addEventListener('click', () => {
   const link = document.createElement('a'); link.href = url; link.download = 'tsunami-lab-gauges.csv'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.__tsunamiStatus = () => ({ ensemble: ensemble ? { done: ensemble.done, results: ensemble.results.filter(Boolean).length, runs: ensemble.plan.length } : null, precomputed: !!frames, frames: frames?.length ?? 0, calculating, coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, peak: frame ? Math.max(...frame.peak) : 0, flooded: frame?.water ? frame.water.reduce((n, h, i) => n + (grid.depth[i] === 0 && h > .01 ? 1 : 0), 0) : 0, maxSpeed: frame?.speed ? Math.max(...frame.speed) : 0, volumeError: frame?.volumeError || 0 });
+window.__tsunamiStatus = () => ({ ensemble: ensemble ? { done: ensemble.done, results: ensemble.results.filter(Boolean).length, runs: ensemble.plan.length } : null, precomputed: !!frames, frames: frames?.length ?? 0, calculating, coupled: !!grid?.coupled, couplingSource: couplingInfo?.source ?? null, couplingTide: couplingInfo?.tide ?? 0, couplingArrival: couplingInfo?.arrival ?? null, ready, running, time: frame?.time || 0, engine: 'rust-wasm', method: $('method').value, coast: bathymetry?.id || null, source: [...source], samples: history.length, ...(() => { const s = frame && globalThis.FloodCore.frameStats(grid.depth, frame.water, frame.speed, frame.peak); return { peak: s ? s.maxPeak : 0, flooded: s && frame.water ? s.flooded : 0, maxSpeed: s && frame.speed ? s.maxSpeed : 0 }; })(), volumeError: frame?.volumeError || 0 });
 // ---- Sensitivity ensemble -------------------------------------------------
 let ensembleWorker = null, ensemble = null;
 const minutes = seconds => `${(seconds / 60).toFixed(1)}`;

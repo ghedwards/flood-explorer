@@ -394,3 +394,20 @@ test('the second-order scheme is selectable, stays positive and conservative, an
     assert.ok(rest.speed.every(v => v < 1e-9), scheme);
   }
 });
+
+// The arithmetic is tested in Rust (rust/flood-core/src/lab.rs, ensemble.rs, series.rs); this is the bridge the lab page and the ensemble use.
+test('the lab page numbers come through the WebAssembly bridge', async () => {
+  const water = F.waterPoint(Float64Array.from([5, 5, 5, 5, -50, 5, 5, 5, 5]), 3, [2, 2], 10);
+  assert.deepEqual(water, [1, 1]);
+  assert.equal(F.waterPoint([5, 5], 2, [0, 0], 10), null);
+  const stats = F.frameStats(Float32Array.from([0, 0, 4]), Float32Array.from([.5, .001, 2]), Float32Array.from([.1, 3, 0]), Float32Array.from([1, 8, 2]));
+  assert.equal(stats.flooded, 1);
+  assert.ok(Math.abs(stats.maxLandDepth - .5) < 1e-6 && Math.abs(stats.maxSpeed - 3) < 1e-6 && stats.maxPeak === 8);
+  const { terrainFor } = await import('../viewer/tsunami-terrain.js');
+  const t = terrainFor({ depth: Float32Array.from([100, 0, 0]), valid: Uint8Array.from([1, 1, 0]), bed: Float64Array.from([-100, 20, 7]) }, null, F);
+  assert.deepEqual([t.low, t.high], [-100, 20]);
+  assert.deepEqual([...t.colours.slice(0, 3)], [17, 54, 94]);
+  assert.deepEqual([...t.colours.slice(6, 9)], [110, 119, 107]);
+  assert.deepEqual(F.spans([1, NaN, 3, 4], 2), [{ min: 1, max: 3, missing: 0 }, { min: 4, max: 4, missing: 1 }]);
+  assert.deepEqual(F.parseSeries('0,0\n10,1'), { times: Float64Array.from([0, 10]), values: Float64Array.from([0, 1]) });
+});
