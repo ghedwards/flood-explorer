@@ -8,7 +8,7 @@ import { cellIndex } from './tsunami-live.js';
  * solver's expanded run (depth, wet, level, wse, onPath, vx, vy, arrival), plus `covered`, the number of area cells inside the modelled place. */
 export function tsunamiRunOnArea(a, geo, entry) {
   const { bathymetry: place, prepared, derived } = entry, n = a.W * a.H;
-  const depth = new Float32Array(n), wet = new Uint8Array(n), level = new Float32Array(n).fill(NaN), arrival = new Float32Array(n).fill(NaN);
+  const cls = new Uint8Array(n), vel = new Float32Array(n), depth = new Float32Array(n), wet = new Uint8Array(n), level = new Float32Array(n).fill(NaN), arrival = new Float32Array(n).fill(NaN);
   const [[south, west], [north, east]] = placeBounds(place);
   // only the area cells that can be inside the place are looked up
   const x0 = Math.max(0, Math.floor((west - geo.west) / (geo.east - geo.west) * a.W)), x1 = Math.min(a.W - 1, Math.ceil((east - geo.west) / (geo.east - geo.west) * a.W));
@@ -27,7 +27,14 @@ export function tsunamiRunOnArea(a, geo, entry) {
       if (!(d > 0)) continue;
       depth[i] = d; wet[i] = d >= 0.01 ? 1 : 0; level[i] = a.dem[i] + d;
       if (derived.arrival[c] >= 0) arrival[i] = derived.arrival[c];
+      if (derived.peakClass) { cls[i] = d >= 0.01 ? Math.max(1, derived.peakClass[c]) : 0; vel[i] = derived.peakSpeed[c]; }
     }
   }
-  return { depth, wet, level, wse: Float64Array.from(level), onPath: new Uint8Array(n), vx: new Float64Array(n), vy: new Float64Array(n), arrival, covered, tsunami: true };
+  let peakHazard = null;
+  if (derived.peakClass) {   // the worst class each cell reached, as the 2D storm run provides
+    const km2 = [0, 0, 0, 0, 0, 0], cellKm2 = (a.cell * a.cell) / 1e6;
+    for (let i = 0; i < n; i++) if (cls[i] && !(a.ocean && a.ocean[i])) km2[cls[i] - 1] += cellKm2;
+    peakHazard = { cls, vel, km2 };
+  }
+  return { depth, wet, level, wse: Float64Array.from(level), onPath: new Uint8Array(n), vx: new Float64Array(n), vy: new Float64Array(n), arrival, ...(peakHazard && { peakHazard }), covered, tsunami: true };
 }

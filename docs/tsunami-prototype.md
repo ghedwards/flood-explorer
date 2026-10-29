@@ -917,6 +917,6 @@ place gives the arrival time and peak depth of that cell. On a phone, starting a
 "Use in impact tools" on the run bar makes the run the flood run of the area model at that place (opening a coastal model there if none is loaded), so the
 building, road and people counts, routes and the property check use it. `tsunamiRunOnArea` (`viewer/tsunami-impact.js`) carries each land cell's deepest
 water (the tide's own cover included, as in the run's summary) and its arrival time onto the area's cells; the sea and the area's own ocean cells stay dry.
-Water speed is not kept, so hazard classes there come from depth alone. Changing the scenario returns the area to river or storm flooding. A share link
+Hazard classes (H1 to H6, Australian Disaster Resilience Guideline 7-3) are the worst depth-and-speed class over the run's frames, worked out in `deriveRun` from each frame's water depth and speed; frames are 30 s apart, so a faster moment between frames can be missed and the classes are a lower bound. Changing the scenario returns the area to river or storm flooding. A share link
 carries the run on show (place, scenario, tide, length and view) and plays it again when opened; it is not kept in the saved session, so a run is only
 started when asked for. The run's cells are drawn with smooth scaling rather than hard squares.

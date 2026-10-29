@@ -79,7 +79,7 @@ async function main() {
   let browser;
   try {
     browser = await chromium.launch();
-    const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1300, height: 900 } });
+    const context = await browser.newContext({ serviceWorkers: 'block', viewport: process.env.TS_VIEWPORT ? { width: +process.env.TS_VIEWPORT.split('x')[0], height: +process.env.TS_VIEWPORT.split('x')[1] } : { width: 1300, height: 900 } });   // TS_VIEWPORT=390x844 and TS_SHOTS=dir: look at the tsunami steps on a phone
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push((e.stack || e.message).split('\n').slice(0, 4).join(' | ')));
@@ -214,6 +214,7 @@ async function main() {
     assert.ok(live.bar.shown && /Scenario: Moderate.*tide · not a forecast/.test(live.bar.banner), `the bar says what is being shown: ${JSON.stringify(live.bar)}`);
     assert.ok(live.views.max.painted > 100 && /Deepest water/.test(live.views.max.key) && live.views.max.pressed === 'true', `the maximum view paints and has its own key: ${JSON.stringify(live.views.max)}`);
     assert.ok(live.views.arrival.painted > 50 && /within 5 min/.test(live.views.arrival.key), `the arrival view paints its bands: ${JSON.stringify(live.views.arrival)}`);
+    if (process.env.TS_SHOTS) await page.screenshot({ path: path.join(process.env.TS_SHOTS, 'bar.png') });
     assert.ok(live.pin, 'the modelled place has a wave pin on the map');
     assert.ok(live.cleared, 'the run is removed from the map');
 
@@ -248,6 +249,11 @@ async function main() {
     await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.tsunami", null, { timeout: 120000 });
     await page.waitForFunction("/Experimental tsunami run/.test(document.getElementById('impactBox').textContent)", null, { timeout: 120000 });
     const used = await page.evaluate(() => ({ note: document.getElementById('tsImpactNote').textContent, summary: document.getElementById('summaryLine').textContent, impact: { ...window.__floodStatus.impact } }));
+    const shot = async (name) => { if (process.env.TS_SHOTS) await page.screenshot({ path: path.join(process.env.TS_SHOTS, `${name}.png`) }); };
+    await shot('impact');
+    // the worst hazard class comes from the run's depths and speeds
+    const tsHazard = await page.evaluate(() => { const set = document.getElementById('colorMode'); set.value = 'hazard'; set.dispatchEvent(new Event('change')); const legend = document.getElementById('modeLegend').textContent; const box = document.getElementById('impactBox').textContent; set.value = 'depth'; set.dispatchEvent(new Event('change')); return { legend, tsunami: /Hazard classes \(H1 to H6\)/.test(box) }; });
+    assert.ok(/depth × speed/.test(tsHazard.legend) && tsHazard.tsunami, `hazard classes come from the run: ${JSON.stringify(tsHazard)}`);
     assert.match(used.note, /Impact tools now use this tsunami run/, `the bar says the run is in use: ${used.note}`);
     assert.match(used.summary, /Scenario: Moderate.*deepest water/, `the summary names the run: ${used.summary}`);
     // the run travels in a share link and is played again from it
