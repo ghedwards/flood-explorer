@@ -61,17 +61,24 @@ test('the live run reproduces the offline model: same flooded area and depth for
   const moderate = scenarios.find(x => x.place === 'gold-coast-seaway' && /^Moderate/.test(x.label));
   const series = await withFetch(() => s.loadSeries('http://localhost/site/', moderate));
   const prepared = s.prepareRun({ place: 'gold-coast-seaway', bathymetry, series, seconds: 3600, frames: 60 });
-  const { frames, interval } = s.runHere(F, prepared);
+  const { frames, interval, extremes } = s.runHere(F, prepared);
   assert.ok(frames.length >= 60 && Math.abs(interval - 60) < 1e-9);
   assert.ok(frames.every((f, i) => i === 0 || f.time > frames[i - 1].time));
-  const result = s.floodSummary(prepared, frames.at(-1));
+  const result = frames.at(-1).summary;
   const { runSeries } = require('../scripts/run-series-local.js');
   const { parseSeriesCsv } = await import('../viewer/tsunami-coupling.js');
   const offline = await runSeries(parseSeriesCsv(read(`scenarios/${moderate.file}`)), 3600);
   assert.ok(Math.abs(result.floodedHectares - offline.floodedHectares) < 0.05, `${result.floodedHectares} vs ${offline.floodedHectares}`);
   assert.ok(Math.abs(result.maxLandDepth - offline.maxLandDepth) < 0.01, `${result.maxLandDepth} vs ${offline.maxLandDepth}`);
   assert.ok(result.floodedHectares > 20 && result.floodedHectares < 50, 'about 34 ha, as the ensemble found');
-  assert.ok(s.floodSummary(prepared, frames[0]).floodedHectares === 0, 'nothing is flooded at the start');
+  assert.ok(frames[0].summary.floodedHectares === 0, 'nothing is flooded at the start');
+  // the extremes the solver kept every step: deepest water on land, arrival counted from the wave reaching the edge, the worst hazard class
+  const n = prepared.grid.W * prepared.grid.H;
+  assert.ok(extremes.peakValue.length === n && extremes.arrival.length === n && extremes.peakClass.length === n && extremes.peakSpeed.length === n && extremes.peakTime.length === n);
+  let deepest = 0, arrived = 0, worst = 0;
+  for (let i = 0; i < n; i++) if (prepared.land[i]) { deepest = Math.max(deepest, extremes.peakValue[i]); if (extremes.arrival[i] >= 0) arrived++; worst = Math.max(worst, extremes.peakClass[i]); }
+  assert.ok(Math.abs(deepest - result.maxLandDepth) < 1e-4, `${deepest} vs ${result.maxLandDepth}`);
+  assert.ok(arrived > 0 && worst >= 1 && worst <= 6, `${arrived} cells flooded, worst class ${worst}`);
 });
 
 
@@ -85,7 +92,7 @@ test('a Moreton Bay place runs live on its own grid and matches the offline mode
   assert.equal(low.grid.cell, 25); assert.equal(low.tide, -1, 'a tide state below the limit runs at -1 m');
   const prepared = s.prepareRun({ place: 'pine-estuary', bathymetry, series, seconds: 3600, frames: 60 });
   const { frames } = s.runHere(F, prepared);
-  const result = s.floodSummary(prepared, frames.at(-1));
+  const result = frames.at(-1).summary;
   const { runSeries } = require('../scripts/run-series-local.js');
   const { parseSeriesCsv } = await import('../viewer/tsunami-coupling.js');
   const offline = await runSeries(parseSeriesCsv(read(`scenarios/${large.file}`)), 3600, { place: 'pine-estuary' });

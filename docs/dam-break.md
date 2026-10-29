@@ -1,6 +1,8 @@
 # Dam failure (experimental)
 
-A dam model (one started from a dam's report on the map) has a "Dam failure" section in the Scenario panel. It opens a breach through the dam wall and lets the
+A dam model (one started from a dam's report on the map) has a "Dam failure" section in the Scenario panel. The planning (reservoir, window, breach), the solver, the
+discharge and the mapping of the result back onto the area model are all in Rust (`rust/flood-core/src/dam.rs`, run through the WebAssembly module as `damStart`, `damStep`
+and `damFinish`); the page only passes the area model's arrays and the dam, and reports. It opens a breach through the dam wall and lets the
 reservoir out over the terrain with the lab's nonlinear shallow-water solver (`rust/flood-core/src/inundation.rs`: wetting and drying, first-order Rusanov flux with
 hydrostatic reconstruction), run in a worker (`viewer/dam-worker.js`). The result becomes the area's flood run, so the map, the counts of buildings, roads and people,
 routes and the property check all use it, with hazard classes from the depth and speed the solver saw at their worst.

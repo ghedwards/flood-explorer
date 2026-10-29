@@ -2,17 +2,14 @@ import './runtime-paths.js';
 import './flood-wasm.js';
 import { runDamBreak } from './dam-run.js';
 
-// One dam failure per message: { plan, seconds }. Progress is posted while it runs; the answer is the run's extremes.
-let stop = false;
+// One dam failure per message: { area, params }. The plan is posted as soon as it is made, then progress, then the run's extremes on the area model's cells.
 self.onmessage = async ({ data }) => {
-  if (data.type === 'cancel') { stop = true; return; }
-  stop = false;
   try {
     await self.FloodCoreReady;
-    if (!self.FloodCore.tsunamiStart) throw new Error('The dam-break model requires WebAssembly.');
-    const result = runDamBreak(self.FloodCore, data.plan, { seconds: data.seconds, shouldStop: () => stop, onProgress: (progress) => self.postMessage({ progress }) });
-    const { extremes } = result;
-    self.postMessage({ result }, [extremes.peakDepth.buffer, extremes.peakSpeed.buffer, extremes.peakClass.buffer, extremes.arrival.buffer, result.water.buffer].filter((b, k, all) => all.indexOf(b) === k));
+    if (!self.FloodCore.damStart) throw new Error('The dam-break model requires WebAssembly.');
+    const out = runDamBreak(self.FloodCore, data.area, data.params, { onPlan: (plan) => self.postMessage({ planned: plan }), onProgress: (progress) => self.postMessage({ progress }) });
+    const r = out.result;
+    self.postMessage({ result: out }, [r.depth.buffer, r.wet.buffer, r.level.buffer, r.arrival.buffer, r.cls.buffer, r.vel.buffer].filter((b, k, all) => all.indexOf(b) === k));
   } catch (error) {
     self.postMessage({ error: String(error.message || error) });
   }

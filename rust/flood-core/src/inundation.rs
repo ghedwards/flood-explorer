@@ -41,6 +41,10 @@ impl Forcing {
     }
 }
 
+/// What `Solver::flood_summary` reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloodSummary { pub flooded_hectares: f64, pub max_land_depth: f64, pub flooded_now_hectares: f64 }
+
 /// A breach: the bed of `cells` is lowered from its starting level to `to` between `start` and `start + duration` (seconds), linearly. The water
 /// in each cell keeps its depth, so water held behind a wall that gives way starts to flow through the gap without any water being made or lost.
 struct Breach {
@@ -67,6 +71,8 @@ pub struct Solver {
     pub peak_speed: Vec<f64>,
     pub peak_class: Vec<u8>,
     pub arrival: Vec<f64>,
+    /// When (s) each cell held its deepest water.
+    pub peak_time: Vec<f64>,
     pub arrival_depth: f64,
     pub time: f64,
     pub dt: f64,
@@ -117,7 +123,7 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let water_start = water.clone();
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
-            speed: vec![0.0; n], peak_depth: water_start, peak_speed: vec![0.0; n], peak_class: vec![0; n], arrival: vec![-1.0; n], arrival_depth: 0.1, time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
+            speed: vec![0.0; n], peak_depth: water_start, peak_speed: vec![0.0; n], peak_class: vec![0; n], arrival: vec![-1.0; n], peak_time: vec![0.0; n], arrival_depth: 0.1, time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
             valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), breach: None, level: None, order: 1, scratch: Vec::new(), recon: [Vec::new(), Vec::new()] };
         s.dt = s.stable_dt();
         Ok(s)
@@ -182,6 +188,20 @@ impl Solver {
         let from = cells.iter().map(|c| self.bed[*c]).collect();
         self.breach = Some(Breach { cells, from, to, start, duration });
         Ok(())
+    }
+
+    /// What a run has flooded, over the ground that is dry at mean sea level (`land[i]` is 1 there): the area it has put water on so far (counting the tide's own cover, as the
+    /// model does), the deepest water on it and the area under water now, with hectares from the cell size.
+    pub fn flood_summary(&self, land: &[u8]) -> FloodSummary {
+        let (mut ever, mut now, mut deepest) = (0usize, 0usize, 0.0_f64);
+        for (i, dry) in land.iter().enumerate().take(self.water.len()) {
+            if *dry == 0 { continue; }
+            if self.peak_depth[i] > 0.01 { ever += 1; }
+            if self.peak_depth[i] > deepest { deepest = self.peak_depth[i]; }
+            if self.water[i] > 0.01 { now += 1; }
+        }
+        let ha = self.cell * self.cell / 10000.0;
+        FloodSummary { flooded_hectares: ever as f64 * ha, max_land_depth: deepest, flooded_now_hectares: now as f64 * ha }
     }
 
     /// The depth-integrated transport of every cell (m2/s) in x and y.
@@ -509,7 +529,7 @@ impl Solver {
         let n = self.water.len();
         let (water, mx, my, eta, peak, speed) = (&mut self.water[..n], &mut self.mx[..n], &mut self.my[..n], &mut self.eta[..n], &mut self.peak[..n], &mut self.speed[..n]);
         let (reference, sponge, change) = (&self.reference[..n], &self.sponge[..n], &delta[..n]);
-        let (peak_depth, peak_speed, peak_class, arrival) = (&mut self.peak_depth[..n], &mut self.peak_speed[..n], &mut self.peak_class[..n], &mut self.arrival[..n]);
+        let (peak_depth, peak_speed, peak_class, arrival, peak_time) = (&mut self.peak_depth[..n], &mut self.peak_speed[..n], &mut self.peak_class[..n], &mut self.arrival[..n], &mut self.peak_time[..n]);
         let (arrival_depth, t_end) = (self.arrival_depth, self.time + dt);
         let (roughness, cell) = (self.roughness, self.cell);
         let mut sponge_exchange = 0.0;
@@ -537,7 +557,7 @@ impl Solver {
             peak[i] = peak[i].max(eta[i].abs());
             speed[i] = if water[i] > DRY { (mx[i] * mx[i] + my[i] * my[i]).sqrt() / water[i] } else { 0.0 };
             if !speed[i].is_finite() { return Err("non-finite inundation velocity".into()); }
-            if water[i] > peak_depth[i] { peak_depth[i] = water[i]; }
+            if water[i] > peak_depth[i] { peak_depth[i] = water[i]; peak_time[i] = t_end; }
             if water[i] >= WET_HAZARD {
                 if speed[i] > peak_speed[i] { peak_speed[i] = speed[i]; }
                 let class = crate::surface::hazard_class(water[i], speed[i]);
@@ -628,6 +648,12 @@ mod tests {
             let t = |k: usize| s.arrival[2 * w + wall + k];
             assert!(t(1) > 0.0 && t(5) > t(1) && t(15) > t(5), "arrivals {} {} {}", t(1), t(5), t(15));
             assert_eq!(s.arrival[2 * w + 2], -1.0, "the lake's own cells never see a rise of 10 cm");
+            // the deepest water came later further out than at the gap's edge, and never before the wall gave way; the summary counts the land the water reached
+            assert!(s.peak_time[2 * w + wall + 1] > 0.0 && s.peak_time[2 * w + wall + 1] <= s.time);
+            let land: Vec<u8> = (0..w * 6).map(|i| u8::from(i % w > wall)).collect();
+            let summary = s.flood_summary(&land);
+            assert!(summary.flooded_hectares > 0.0 && summary.max_land_depth > 1.0 && summary.flooded_now_hectares > 0.0 && summary.flooded_now_hectares <= summary.flooded_hectares + 1e-9);
+            assert_eq!(s.flood_summary(&vec![0; w * 6]).flooded_hectares, 0.0);
         }
     }
     #[test]

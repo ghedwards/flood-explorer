@@ -16,6 +16,8 @@ const EDGE_CODES = { north: 0, east: 1, south: 2, west: 3 };
 // run. Returns what the page shows about the coupling, or null.
 export function startRun(F, data, report = () => {}, cache = new Map()) {
   let grid = data.grid, coupling = null;
+  // `land` (1 where the ground is dry at mean sea level) lets the solver report what a run has flooded and its extremes by land and sea (see tsunamiStep)
+  const withLand = (g, origin) => (data.land ? { ...g, land: data.land, arrivalOrigin: origin } : g);
   if (data.coupling) {
     const { plan, parentGrid, seconds, localSeconds, series, scene, tide, cacheKey, twoWay } = data.coupling;
     let forcing;
@@ -24,11 +26,11 @@ export function startRun(F, data, report = () => {}, cache = new Map()) {
       // surface back (rust/flood-core/src/nest.rs). This only passes the two grids and where one sits in the other.
       report({ stage: 'regional' });
       const open = openEdges(scene).map(name => EDGE_CODES[name]);
-      const started = F.tsunamiStart({
+      const started = F.tsunamiStart(withLand({
         ...grid, ...levelSeries(localSeconds, tide), nest: 1, nestW: parentGrid.W, nestH: parentGrid.H, nestCell: parentGrid.cell, nestDepth: parentGrid.depth, nestEta: parentGrid.eta,
         nestAbsorbing: parentGrid.absorbing ? 1 : 0, nestMethod: parentGrid.method, nestBounds: Float64Array.from(twoWay.bounds), nestExtent: Float64Array.from(twoWay.extent), nestZone: twoWay.zone ?? 56,
         nestEdges: Float64Array.from(open), nestStrength: twoWay.strength ?? 0.25, nestMaxSeconds: seconds,
-      });
+      }, 0));
       return { coupling: { source: 'regional-two-way', arrival: started.nest.offset, offset: started.nest.offset, peak: null, edges: {}, regionalPeak: null, handovers: started.nest.handovers, snapped: started.nest.snapped, strength: twoWay.strength ?? 0.25, tide: tide || 0 }, batch: 200 };
     }
     if (series) {
@@ -50,7 +52,7 @@ export function startRun(F, data, report = () => {}, cache = new Map()) {
     grid = { ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))), ...levelSeries(localSeconds, tide) };
     coupling.tide = tide || 0;
   }
-  F.tsunamiStart(grid);
+  F.tsunamiStart(withLand(grid, coupling?.arrival ?? 0));
   return { coupling, batch: grid.method === 3 ? 16 : 200 };
 }
 

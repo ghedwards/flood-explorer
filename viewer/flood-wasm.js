@@ -518,14 +518,29 @@
         const o = call('tsunamiParent', { ...grid, points, seconds });
         return { times: o.times, values: o.values, points: Math.round(num(o.points)), time: num(o.time), dt: num(o.dt), peak: o.peak };
       },
-      // `extremes` also returns what the run has seen so far, kept every step: the deepest water (peakDepth), fastest speed (peakSpeed), worst hazard
-      // class (peakClass, 0 to 6) and first arrival in seconds (arrival, -1 where it did not come).
+      // With the dry-land mask (`land` in the start grid) every frame carries `summary`, what the run has flooded. `extremes` also returns what the run has seen so far, kept every
+      // step: `peakValue` (deepest water on land, highest wave at sea), `peakTime`, `peakSpeed`, `peakClass` (worst hazard class, 0 to 6) and `arrival` (seconds from the
+      // grid's `arrivalOrigin` until the water first stood 10 cm up, -1 where it did not).
       tsunamiStep: (steps, extremes = false) => {
         const o = call('tsunamiStep', { steps, extremes: extremes ? 1 : 0 });
         return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume),
-          ...(extremes && { peakDepth: o.peakDepth, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
+          ...(o.floodedHectares && { summary: { floodedHectares: num(o.floodedHectares), maxLandDepth: num(o.maxLandDepth), floodedNowHectares: num(o.floodedNowHectares) } }),
+          ...(extremes && { peakValue: o.peakValue, peakTime: o.peakTime, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
           ...(o.parentEta && { parentEta: o.parentEta, feedbackVolume: num(o.feedbackVolume) }) };
       },
+      // Where a modelled place ({ extent, W, H, zone }) sits on the map: the grid cell under a point, the cell under every pixel of a canvas laid over
+      // [south, west, north, east], and a run's extremes carried onto an area model's cells (rust/flood-core/src/place.rs).
+      tsunamiCell: (place, lat, lon) => num(call('tsunamiCell', { placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, lat, lon }).index),
+      tsunamiPixelMap: (place, over, width, height) => call('tsunamiPixelMap', { placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, over: Float64Array.from(over), width, height }).map,
+      tsunamiToArea: (area, geo, place, d) => {
+        const o = call('tsunamiToArea', { ...area, geo: Float64Array.from(geo), placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, land: d.land, peak: d.peak, arrival: d.arrival, cls: d.cls, vel: d.vel });
+        return { depth: o.depth, wet: o.wet, level: o.level, arrival: o.arrival, cls: o.cls, vel: o.vel, km2: Array.from(o.km2), covered: num(o.covered) };
+      },
+      // A dam failure on an area model, all in Rust (rust/flood-core/src/dam.rs): start plans the window, breach and reservoir and returns the plan's numbers; step runs the
+      // solver and gives the reservoir's discharge; finish gives the run's extremes on the area model's cells.
+      damStart: (area, params) => { const o = call('damStart', { ...area, ...params }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
+      damStep: (steps) => { const o = call('damStep', { steps }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
+      damFinish: () => { const o = call('damFinish', {}); return { depth: o.depth, wet: o.wet, level: o.level, arrival: o.arrival, cls: o.cls, vel: o.vel, km2: Array.from(o.km2), covered: num(o.covered), edge: num(o.edge) === 1 }; },
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },

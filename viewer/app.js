@@ -11,9 +11,8 @@ import { warningTargets, gaugeForTarget } from './warn-peaks.js';
 import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js';
 import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
 import { makeTsunamiExtentsLayer, placeBounds as tsunamiPlaceBounds } from './tsunami-extents.js';
-import { tsunamiRunOnArea } from './tsunami-impact.js';
-import { planDamBreak, runOnArea as damRunOnArea, damText, BREACH_MODES } from './dam-break.js';
-import { runSeconds as damRunSeconds } from './dam-run.js';
+import { tsunamiRun } from './tsunami-impact.js';
+import { damText, floodRun as damFloodRun, BREACH_MODES } from './dam-break.js';
 import { initTsunamiPanel } from './tsunami-panel.js';
 import { effectiveRainSeries } from './flash-2d.js';
 /* Flood Explorer — viewer
@@ -945,7 +944,7 @@ import { effectiveRainSeries } from './flash-2d.js';
     await state.ready;
     const a = state.a, geo = state.geo;
     if (!a || !geo) throw new Error('no terrain model is open');
-    const run = tsunamiRunOnArea(a, geo, info);
+    const run = tsunamiRun(F, a, geo, info);
     if (!run.covered) throw new Error('the flood model here does not cover the modelled place');
     await applySpecialRun(a, run, {
       seconds: info.prepared.seconds, kind: 'tsunami', title: 'Experimental tsunami run', label: info.label, gridCell: info.prepared.grid.cell, after: "the wave reaches the model's edge",
@@ -992,36 +991,41 @@ import { effectiveRainSeries } from './flash-2d.js';
     if (!(volume > 0)) { damStatus('Enter the volume of water held, in million m³.'); return; }
     const route = [];
     for (let c = state.gauge; c >= 0 && route.length < 5000; c = a.rec[c]) { route.push(c); if (c === dam.below) break; }
-    let plan;
-    try { plan = planDamBreak(a, { gauge: state.gauge, dam, route, downstream: pr.path.filter((c) => c !== dam.below), volume, mode: $('damMode').value, timeScale: parseFloat($('damSpeed').value) || 1 }); }
-    catch (e) { damStatus(`Could not set the dam up: ${e.message}.`); return; }
-    const seconds = damRunSeconds(plan);
     runScenario();   // drop any earlier special run and restore the normal model underneath
     $('damRun').disabled = true; $('damCancel').disabled = false; $('damProgress').value = 0;
-    damStatus(`${damText(plan)}. Running ${Math.round(seconds / 60)} minutes of it on ${plan.W} × ${plan.H} cells of ${Math.round(plan.cell)} m.`);
-    status.dam = { running: true, plan: { W: plan.W, H: plan.H, cell: plan.cell, volume: plan.volume, depth: plan.depth, wall: plan.wallHeight, breachWidth: plan.froehlich.width, breachSeconds: plan.breachSeconds, mode: plan.mode } };
+    damStatus('Setting the dam up…');
+    status.dam = { running: true };
     const w = new Worker(new URL('./dam-worker.js', import.meta.url), { type: 'module' });
     damWorker = w;
-    const fail = (message) => { stopDam(); status.dam = { error: message }; damStatus(`The dam-break run stopped: ${message}.`); };
+    let plan = null;
+    const fail = (message) => { stopDam(); status.dam = { error: message }; damStatus(plan ? `The dam-break run stopped: ${message}.` : `Could not set the dam up: ${message}.`); };
     w.onerror = (e) => { e.preventDefault(); fail(e.message || 'the worker failed'); };
     w.onmessage = async ({ data }) => {
       if (w !== damWorker) return;
       if (data.error) { fail(data.error); return; }
+      if (data.planned) {
+        plan = data.planned;
+        damStatus(`${damText(plan)}. Running ${Math.round(plan.seconds / 60)} minutes of it on ${plan.W} × ${plan.H} cells of ${Math.round(plan.cell)} m.`);
+        status.dam = { running: true, plan: { W: plan.W, H: plan.H, cell: plan.cell, volume: plan.volume, depth: plan.depth, wall: plan.wallHeight, breachWidth: plan.breachWidth, breachSeconds: plan.breachSeconds, mode: $('damMode').value } };
+        return;
+      }
       if (data.progress) { $('damProgress').value = data.progress.fraction; return; }
       if (!data.result) return;
       stopDam();
       if (key !== state.areaKey || a !== state.a) { damStatus('The run finished after you changed place, so it was dropped.'); return; }
-      const r = data.result, run = damRunOnArea(a, plan, r.extremes), mode = BREACH_MODES[plan.mode].label.split(':')[0];
+      const r = data.result, run = damFloodRun(r.result), mode = BREACH_MODES[$('damMode').value].label.split(':')[0];
       $('damProgress').value = 1;
-      const peak = Math.round(r.peakDischarge), froehlich = Math.round(plan.froehlich.peak);
-      status.dam = { done: true, plan: { W: plan.W, H: plan.H, cell: plan.cell, factor: plan.factor, volume: plan.volume, depth: plan.depth, wall: plan.wallHeight, reservoir: plan.reservoirCells, breachCells: plan.breachCells.length, section: plan.section.length, breachSeconds: plan.breachSeconds, width: plan.froehlich.width }, covered: run.covered, edge: run.edge, peakDischarge: peak, froehlichPeak: froehlich, volumeError: r.volumeError, seconds: r.seconds };
+      const peak = Math.round(r.peakDischarge), froehlich = Math.round(plan.froehlichPeak);
+      status.dam = { done: true, plan: { W: plan.W, H: plan.H, cell: plan.cell, factor: plan.factor, volume: plan.volume, depth: plan.depth, wall: plan.wallHeight, reservoir: plan.reservoirCells, breachCells: plan.breachCells, breachSeconds: plan.breachSeconds, width: plan.breachWidth }, covered: run.covered, edge: run.edge, peakDischarge: peak, froehlichPeak: froehlich, volumeError: r.volumeError, seconds: r.seconds };
       await applySpecialRun(a, run, {
         seconds: r.seconds, kind: 'dam', title: 'Experimental dam-failure run', label: `Dam failure (${mode.toLowerCase()})`, gridCell: plan.cell, after: 'the breach began to open',
         note: `${damText(plan)}. The solver's peak discharge through the breach was ${peak.toLocaleString('en-AU')} m³/s (Froehlich's empirical estimate is ${froehlich.toLocaleString('en-AU')} m³/s). The reservoir is given one level depth because the terrain has no lake bed, the wall and breach are cut from the 30 m terrain, and the first-order scheme smears the front: indicative only.${run.edge ? ' The flood reached the edge of the model window, so it may go further than shown.' : ''}`,
       });
-      damStatus(`Done: the reservoir is out through a ${Math.round(plan.froehlich.width)} m breach, peak ${peak.toLocaleString('en-AU')} m³/s about ${Math.round(r.peakDischargeAt / 60)} min in.${run.edge ? ' The flood reached the edge of the model window, so it may go further.' : ''} Impact, roads and property now use this run; change the scenario to go back.`);
+      damStatus(`Done: the reservoir is out through a ${Math.round(plan.breachWidth)} m breach, peak ${peak.toLocaleString('en-AU')} m³/s about ${Math.round(r.peakDischargeAt / 60)} min in.${run.edge ? ' The flood reached the edge of the model window, so it may go further.' : ''} Impact, roads and property now use this run; change the scenario to go back.`);
     };
-    w.postMessage({ plan, seconds });
+    const area = { W: a.W, H: a.H, cell: a.cell, dem: a.dem, valid: a.valid, ocean: a.ocean || new Uint8Array(a.W * a.H) };
+    const params = { gauge: state.gauge, crest: dam.crest, below: dam.below, lake: dam.lake, route: Float64Array.from(route), downstream: Float64Array.from(pr.path.filter((c) => c !== dam.below)), volume, mode: BREACH_MODES[$('damMode').value].code, timeScale: parseFloat($('damSpeed').value) || 1 };
+    w.postMessage({ area, params });
   }
   $('damRun').addEventListener('click', startDamBreak);
   $('damCancel').addEventListener('click', () => { stopDam(); status.dam = { cancelled: true }; damStatus('Cancelled.'); });
@@ -2424,7 +2428,7 @@ import { effectiveRainSeries } from './flash-2d.js';
       overlays['Flooded (red) and cut-off (orange) roads'] = roadsLayer;
       buildLayerLists(m, layers, overlays, first);
       tsunamiPanel = initTsunamiPanel({
-        L, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, layers: { hazard: tsunamiHazard, extents: tsunamiExtents },
+        L, F, map: m, canvasOverlay: fineCanvasOverlay, baseUrl: document.baseURI, layers: { hazard: tsunamiHazard, extents: tsunamiExtents },
         onLegend: renderOverlayLegend, onHint: say, onUseRun: useTsunamiRun,
         onLayerChange: () => { renderOverlayLegend(); syncLayerLists(); },
         // on a phone the panel would cover the map the run plays on

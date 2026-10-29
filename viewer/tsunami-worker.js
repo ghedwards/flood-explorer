@@ -4,7 +4,7 @@ import { runMember, startRun } from './tsunami-runner.js';
 
 const begin = (data, report) => startRun(self.FloodCore, data, report);
 
-const buffers = frames => [...new Set(frames.flatMap(frame => [frame.eta, frame.peak, frame.water, frame.speed]).filter(Boolean).map(v => v.buffer))];
+const buffers = (frames, extremes = {}) => [...new Set([...frames.flatMap(frame => [frame.eta, frame.peak, frame.water, frame.speed]), ...Object.values(extremes)].filter(Boolean).map(v => v.buffer))];
 
 self.onmessage = async ({ data }) => {
   try {
@@ -45,7 +45,9 @@ self.onmessage = async ({ data }) => {
         }
       }
       if (frames.at(-1) !== current) frames.push(current);
-      self.postMessage({ frames, interval, coupling }, buffers(frames));
+      // what the run saw at its worst, kept by the solver every step (not just in the frames)
+      const { peakValue, peakTime, peakSpeed, peakClass, arrival } = self.FloodCore.tsunamiStep(0, true), extremes = { peakValue, peakTime, peakSpeed, peakClass, arrival };
+      self.postMessage({ frames, interval, coupling, extremes }, buffers(frames, extremes));
       return;
     }
     let coupling = null;

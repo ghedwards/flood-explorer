@@ -950,3 +950,12 @@ validation above has a ratio of 8 and a nest 24 cells wide. A useful two-way nes
 25 to 50 m local one; the Rust model is written for any pair of grids, so that is a matter of terrain data and a second `Nest` rather than new solver code. Until
 then treat two-way as a check that the one-way answer is not changed much by the local coast, not as an improvement. In the Seaway scene it moved the regional
 surface by up to 1.5 m of a 2.4 m wave in the two cells the local grid covers, which is not validated against anything.
+
+## Where the numbers are worked out
+
+The map's live tsunami run keeps all its numerical work in Rust/WebAssembly. The solver itself tracks, every step (not just in the 120 stored frames), the deepest water, the
+fastest speed, the worst hazard class (Australian Disaster Resilience Guideline 7-3), the time of the deepest water and the first time the water stood 10 cm up
+(`tsunamiStep(steps, true)`); with the dry-land mask it also reports what each frame has flooded so far (`summary`). Where a place sits on the map (the lat/lon bounds, the
+cell under a point, the cell under every pixel of the canvas) and the carrying of a run onto an area model's cells for the impact tools are `rust/flood-core/src/place.rs`
+(`tsunamiCell`, `tsunamiPixelMap`, `tsunamiToArea`). What stays in JavaScript is the colouring, the legends, the words, and the one-way coupling's planning and forcing
+(`viewer/tsunami-coupling.js`), which predates this.

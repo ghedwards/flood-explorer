@@ -205,6 +205,9 @@ thread_local! {
     static INERTIAL: RefCell<Option<inertial::Solver>> = const { RefCell::new(None) };
     static INUNDATION: RefCell<Option<inundation::Solver>> = const { RefCell::new(None) };
     static NEST: RefCell<Option<nest::Nest>> = const { RefCell::new(None) };
+    static DAM: RefCell<Option<dam::Run>> = const { RefCell::new(None) };
+    // the ground that is dry at mean sea level in the running tsunami model, and the time the wave reached its edge (what arrival times count from)
+    static TSUNAMI_LAND: RefCell<(Vec<u8>, f64)> = const { RefCell::new((Vec::new(), 0.0)) };
     static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
     static ANALYSES: RefCell<Vec<Option<Analysis>>> = const { RefCell::new(Vec::new()) };
     static WAVES: RefCell<Vec<Option<Wave>>> = const { RefCell::new(Vec::new()) };
@@ -519,6 +522,32 @@ fn levees_of(b: &Bag) -> Vec<Levee> {
     out
 }
 
+// What a nonlinear tsunami model reports at a step: its fields; with the dry-land mask, what it has flooded; and on request what it has seen at its worst, kept every step.
+fn inundation_frame(o: &mut Out, s: &inundation::Solver, extremes: bool) {
+    for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
+        o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+    }
+    let (land, origin) = TSUNAMI_LAND.with(|l| l.borrow().clone());
+    if land.len() == s.water.len() {
+        let f = s.flood_summary(&land);
+        o.num("floodedHectares", f.flooded_hectares).num("maxLandDepth", f.max_land_depth).num("floodedNowHectares", f.flooded_now_hectares);
+    }
+    if extremes {
+        // deepest water on land, highest wave at sea; arrival in seconds from the time the wave reached the model's edge (-1 where it did not come)
+        let value: Vec<f32> = (0..s.water.len()).map(|i| if land.get(i).copied().unwrap_or(0) != 0 { s.peak_depth[i] } else { s.peak[i] } as f32).collect();
+        let arrival: Vec<f32> = s.arrival.iter().map(|a| if *a >= 0.0 { (*a - origin).max(0.0) as f32 } else { -1.0 }).collect();
+        o.f32s("peakValue", &value).f32s("peakTime", &s.peak_time.iter().map(|v| *v as f32).collect::<Vec<_>>())
+            .f32s("peakSpeed", &s.peak_speed.iter().map(|v| *v as f32).collect::<Vec<_>>()).f32s("arrival", &arrival).u8s("peakClass", &s.peak_class);
+    }
+}
+
+fn place_of(b: &Bag, prefix: &str) -> Result<place::Place, String> {
+    let extent = b.f64s(&format!("{prefix}Extent")).filter(|v| v.len() == 4).ok_or("missing place extent")?;
+    let (w, h) = (b.num(&format!("{prefix}W")), b.num(&format!("{prefix}H")));
+    if !(w >= 1.0 && h >= 1.0) { return Err("invalid place grid".into()); }
+    Ok(place::Place { extent: [extent[0], extent[1], extent[2], extent[3]], w: w as usize, h: h as usize, zone: if b.num(&format!("{prefix}Zone")).is_finite() { b.num(&format!("{prefix}Zone")) as i32 } else { 56 } })
+}
+
 /// Run one operation. Errors come back as a bag with "error" (UTF-8 bytes).
 pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
     let mut o = Out::default();
@@ -527,6 +556,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             TSUNAMI.with(|s| *s.borrow_mut() = None);
             INUNDATION.with(|s| *s.borrow_mut() = None);
             NEST.with(|s| *s.borrow_mut() = None);
+            TSUNAMI_LAND.with(|l| *l.borrow_mut() = (b.u8s("land").unwrap_or_default(), if b.num("arrivalOrigin").is_finite() { b.num("arrivalOrigin") } else { 0.0 }));
             if b.num("method") == 2.0 {
                 let mut solver = inundation::Solver::new(
                     b.num("W") as usize, b.num("H") as usize, b.num("cell"),
@@ -628,15 +658,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 let s = &n.child;
                 o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
                     .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume).num("feedbackVolume", n.feedback_volume);
-                for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
-                    o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                }
-                if b.num("extremes") == 1.0 {
-                    for (name, values) in [("peakDepth", &s.peak_depth), ("peakSpeed", &s.peak_speed), ("arrival", &s.arrival)] {
-                        o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                    }
-                    o.u8s("peakClass", &s.peak_class);
-                }
+                inundation_frame(&mut o, s, b.num("extremes") == 1.0);
                 o.f32s("parentEta", &n.parent.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
                 Ok(true)
             })?;
@@ -646,16 +668,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 s.advance(steps as usize)?;
                 o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
                     .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume);
-                for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
-                    o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                }
-                // the worst of the whole run so far, kept every step (not just in the frames): deepest water, fastest speed, worst hazard class, first arrival
-                if b.num("extremes") == 1.0 {
-                    for (name, values) in [("peakDepth", &s.peak_depth), ("peakSpeed", &s.peak_speed), ("arrival", &s.arrival)] {
-                        o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                    }
-                    o.u8s("peakClass", &s.peak_class);
-                }
+                inundation_frame(&mut o, s, b.num("extremes") == 1.0);
                 Ok(true)
             })?;
             if !nonlinear {
@@ -669,6 +682,80 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     Ok(())
                 })?;
             }
+        }
+        "tsunamiCell" => {
+            // the grid cell of a place under a latitude and longitude, or -1
+            let p = place_of(b, "place")?;
+            o.num("index", place::cell_index(&p, b.num("lat"), b.num("lon")).map_or(-1.0, |c| c as f64));
+        }
+        "tsunamiPixelMap" => {
+            // the grid cell under every pixel of a canvas laid over [south, west, north, east], row 0 the north edge (-1 outside the place)
+            let p = place_of(b, "place")?;
+            let over = b.f64s("over").filter(|v| v.len() == 4).ok_or("missing canvas bounds")?;
+            let (width, height) = (b.num("width"), b.num("height"));
+            if !(width >= 1.0 && height >= 1.0 && width * height <= 16_000_000.0) { return Err("invalid canvas size".into()); }
+            o.i32s("map", &place::pixel_map(&p, [over[0], over[1], over[2], over[3]], width as usize, height as usize));
+        }
+        "tsunamiToArea" => {
+            // a tsunami run's extremes on an area model's cells (see place.rs)
+            let p = place_of(b, "place")?;
+            let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+            let dem = b.f64s("dem").ok_or("missing elevations")?;
+            if w == 0 || dem.len() != w * h { return Err("the elevations do not match the grid".into()); }
+            let (valid, ocean) = (b.u8s("valid").unwrap_or_default(), b.u8s("ocean").unwrap_or_default());
+            if (!valid.is_empty() && valid.len() != dem.len()) || (!ocean.is_empty() && ocean.len() != dem.len()) { return Err("the masks do not match the grid".into()); }
+            let area = dam::Area { w, h, cell: b.num("cell"), dem, valid, ocean };
+            let over = b.f64s("geo").filter(|v| v.len() == 4).ok_or("missing area bounds")?;
+            let (land, peak, arrival, class, speed) = (b.u8s("land").ok_or("missing land mask")?, b.f64s("peak").ok_or("missing peaks")?, b.f64s("arrival").ok_or("missing arrivals")?, b.u8s("cls").ok_or("missing classes")?, b.f64s("vel").ok_or("missing speeds")?);
+            let n = p.w * p.h;
+            if [land.len(), peak.len(), arrival.len(), class.len(), speed.len()].iter().any(|l| *l != n) { return Err("the run does not match the place grid".into()); }
+            let r = place::run_on_area(&area, [over[0], over[1], over[2], over[3]], &p, &place::Derived { land: &land, peak: &peak, arrival: &arrival, class: &class, speed: &speed });
+            o.f32s("depth", &r.depth).u8s("wet", &r.wet).f32s("level", &r.level).f32s("arrival", &r.arrival).u8s("cls", &r.class).f32s("vel", &r.speed).f64s("km2", &r.km2).num("covered", r.covered as f64);
+        }
+        "damStart" => {
+            // A dam failure on an area model: plan the window, breach and reservoir, and start the solver (see dam.rs).
+            DAM.with(|s| *s.borrow_mut() = None);
+            let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+            let dem = b.f64s("dem").ok_or("missing elevations")?;
+            let indices = |k: &str| b.f64s(k).unwrap_or_default().iter().map(|c| *c as usize).collect::<Vec<_>>();
+            if dem.len() != w.checked_mul(h).ok_or("grid overflow")? || w == 0 { return Err("the elevations do not match the grid".into()); }
+            let (valid, ocean) = (b.u8s("valid").unwrap_or_default(), b.u8s("ocean").unwrap_or_default());
+            if (!valid.is_empty() && valid.len() != dem.len()) || (!ocean.is_empty() && ocean.len() != dem.len()) { return Err("the masks do not match the grid".into()); }
+            let area = dam::Area { w, h, cell: b.num("cell"), dem, valid, ocean };
+            let params = dam::Params {
+                gauge: b.num("gauge") as usize, crest: b.num("crest") as usize, below: b.num("below") as usize, lake: b.num("lake"),
+                route: indices("route"), downstream: indices("downstream"), volume: b.num("volume"), mode: dam::Mode::from_code(b.num("mode")),
+                time_scale: if b.num("timeScale").is_finite() { b.num("timeScale") } else { 1.0 },
+            };
+            let run = dam::Run::start(area, &params)?;
+            let p = &run.plan;
+            o.num("W", p.w as f64).num("H", p.h as f64).num("cell", p.cell).num("factor", p.factor as f64).num("volume", p.volume).num("requested", p.requested)
+                .num("depth", p.depth).num("wallHeight", p.wall_height).num("reservoirCells", p.reservoir_cells as f64).num("breachWidth", p.froehlich.width)
+                .num("breachSeconds", p.breach_seconds).num("breachStart", p.breach_start).num("froehlichPeak", p.froehlich.peak).num("breachCells", p.breach_cells.len() as f64)
+                .num("seconds", p.seconds).num("dt", run.solver.dt);
+            DAM.with(|s| *s.borrow_mut() = Some(run));
+        }
+        "damStep" => {
+            let steps = b.num("steps");
+            if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 { return Err("invalid dam-break step count".into()); }
+            DAM.with(|slot| -> Result<(), String> {
+                let mut slot = slot.borrow_mut();
+                let run = slot.as_mut().ok_or("no active dam-break run")?;
+                run.advance(steps as usize)?;
+                o.num("time", run.solver.time).num("dt", run.solver.dt).num("volumeError", run.solver.volume_error()).num("discharge", run.discharge())
+                    .num("peakDischarge", run.peak_discharge).num("peakDischargeAt", run.peak_discharge_at);
+                Ok(())
+            })?;
+        }
+        "damFinish" => {
+            DAM.with(|slot| -> Result<(), String> {
+                let slot = slot.borrow();
+                let run = slot.as_ref().ok_or("no active dam-break run")?;
+                let r = run.finish();
+                o.f32s("depth", &r.depth).u8s("wet", &r.wet).f32s("level", &r.level).f32s("arrival", &r.arrival).u8s("cls", &r.class).f32s("vel", &r.speed)
+                    .f64s("km2", &r.km2).num("covered", r.covered as f64).num("edge", if r.edge { 1.0 } else { 0.0 });
+                Ok(())
+            })?;
         }
         "inertialStart" => {
             // One simulation per dedicated worker/module instance.

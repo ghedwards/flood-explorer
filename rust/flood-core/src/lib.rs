@@ -31,5 +31,7 @@ pub mod tsunami;
 pub mod inundation;
 pub mod geo;
 pub mod nest;
+pub mod dam;
+pub mod place;
 
 mod dispersion;
