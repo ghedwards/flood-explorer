@@ -29,6 +29,7 @@ test("production entry points are relative and service worker includes lazy bund
     /geotiff-.*\.js$/,
     /flood-worker-.*\.js$/,
     /inertial-worker-.*\.js$/,
+    /dam-worker-.*\.js$/,
     /\.wasm$/,
     /\.woff2$/,
   ])

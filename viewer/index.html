@@ -134,6 +134,22 @@
       <p class="hint" id="inertialStatus" role="status">Fast terrain model.</p>
     </fieldset>
 
+    <fieldset id="damSet" hidden>
+      <legend class="label">Dam failure (experimental)</legend>
+      <p class="hint" id="damInfo"></p>
+      <label class="storm-row">How it fails <select id="damMode" aria-label="How the dam fails">
+        <option value="overtopping">Overtopping: a wider breach</option><option value="piping">Piping: a narrower breach</option>
+      </select></label>
+      <label class="storm-row">Water held (million m³) <input id="damVolume" type="number" min="0.01" max="100000" step="0.01" style="width:110px" aria-label="Volume of water held, in million cubic metres"></label>
+      <label class="storm-row">Breach opens <select id="damSpeed" aria-label="How fast the breach opens">
+        <option value="0.5">twice as fast as the estimate</option><option value="1" selected>at the estimated speed</option><option value="2">half as fast</option>
+      </select></label>
+      <button type="button" class="btn" id="damRun">Break the dam and run it</button>
+      <button type="button" class="btn" id="damCancel" disabled>Cancel</button>
+      <progress id="damProgress" max="1" value="0" aria-label="Dam-break simulation progress"></progress>
+      <p class="hint" id="damStatus" role="status">Opens a breach through the wall and lets the reservoir out over this terrain.</p>
+    </fieldset>
+
     <fieldset id="floodTypeSet">
       <legend class="label">Flood type</legend>
       <select id="floodType" aria-label="Flood type">

@@ -515,7 +515,13 @@
         const o = call('tsunamiParent', { ...grid, points, seconds });
         return { times: o.times, values: o.values, points: Math.round(num(o.points)), time: num(o.time), dt: num(o.dt), peak: o.peak };
       },
-      tsunamiStep: (steps) => { const o = call('tsunamiStep', { steps }); return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume) }; },
+      // `extremes` also returns what the run has seen so far, kept every step: the deepest water (peakDepth), fastest speed (peakSpeed), worst hazard
+      // class (peakClass, 0 to 6) and first arrival in seconds (arrival, -1 where it did not come).
+      tsunamiStep: (steps, extremes = false) => {
+        const o = call('tsunamiStep', { steps, extremes: extremes ? 1 : 0 });
+        return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume),
+          ...(extremes && { peakDepth: o.peakDepth, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }) };
+      },
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },

@@ -12,6 +12,8 @@ import { overlayDrawn, overlayImageUrl, PIXELS_DRAWN } from './overlay-state.js'
 import { makeTsunamiHazardLayer } from './tsunami-hazard.js';
 import { makeTsunamiExtentsLayer, placeBounds as tsunamiPlaceBounds } from './tsunami-extents.js';
 import { tsunamiRunOnArea } from './tsunami-impact.js';
+import { planDamBreak, runOnArea as damRunOnArea, damText, BREACH_MODES } from './dam-break.js';
+import { runSeconds as damRunSeconds } from './dam-run.js';
 import { initTsunamiPanel } from './tsunami-panel.js';
 import { effectiveRainSeries } from './flash-2d.js';
 /* Flood Explorer — viewer
@@ -879,6 +881,7 @@ import { effectiveRainSeries } from './flash-2d.js';
 
   // Each 2D run owns its worker/WASM memory. Termination also cancels startup.
   let inertialWorker = null, inertialSequence = 0;
+  let damWorker = null;   // the dam-failure worker (below), declared here so solverControls can look at it
   const fastSets = ['floodTypeSet', 'riverSet', 'stormSet', 'eventsSet', 'defenceSet', 'timeSet', 'levelPointsSet'];
   function solverControls() {
     const selected = $('solver').value === 'inertial';
@@ -886,6 +889,7 @@ import { effectiveRainSeries } from './flash-2d.js';
     for (const id of fastSets) $(id).disabled = selected;
     $('colorMode').querySelector('option[value="hazard"]').disabled = false;
     $('dlReport').disabled = !!state.inertial;
+    syncDamControls();
   }
   function stopInertial() {
     inertialSequence++;
@@ -910,6 +914,24 @@ import { effectiveRainSeries } from './flash-2d.js';
     maybeRenderImpact(); renderRecorded();
     $('timeSet').hidden = true;
   }
+  /* Show a finished run that came from outside the Scenario panel's solvers (a tsunami, a dam failure) as the area's flood run, so the map, numbers, impact, roads, routes
+   * and property check all use it. `special` says what it is: kind, title, label, gridCell, after (what the arrival times count from), note, seconds. */
+  async function applySpecialRun(a, run, special) {
+    resetInertial();
+    state.inertial = { peak: true, time: special.seconds, cell: a.cell, W: a.W, H: a.H, settings: {}, boundary: 'sea', special };
+    status.inertial = { ...state.inertial, running: false };
+    state.run = run; state.base = null; state.riverRun = null; state.flash = null; state.timeView = false; state.hazard = null;
+    clearTimeout(impactT);
+    $('colorMode').value = 'depth';
+    for (const id of fastSets) $(id).disabled = true;   // the river and storm controls do not apply to this run until it is cleared
+    $('dlReport').disabled = true;
+    showInertialRun(a);
+    const area = areaReg.get(state.areaKey);
+    if (area && area.impact == null && !area.impactLoading) {   // buildings, roads and people are fetched once per area; the counts then follow this run
+      area.impactLoading = true;
+      try { await countImpact(); } finally { area.impactLoading = false; }
+    }
+  }
   /* A tsunami run from the Tsunami bar becomes the flood run of the area model at that place (opened first if there is none), so the impact numbers,
    * roads, routes and property check all use it. Depths are the run's deepest water on land; hazard classes are the worst depth-and-speed class over the run's frames. */
   async function useTsunamiRun(info) {
@@ -925,25 +947,85 @@ import { effectiveRainSeries } from './flash-2d.js';
     if (!a || !geo) throw new Error('no terrain model is open');
     const run = tsunamiRunOnArea(a, geo, info);
     if (!run.covered) throw new Error('the flood model here does not cover the modelled place');
-    resetInertial();
-    state.inertial = { peak: true, time: info.prepared.seconds, cell: a.cell, W: a.W, H: a.H, settings: {}, boundary: 'sea', tsunami: { label: info.label, scenario: info.scenario.id, place: info.scenario.place, tide: info.tide, gridCell: info.prepared.grid.cell } };
-    status.inertial = { ...state.inertial, running: false };
-    state.run = run; state.base = null; state.riverRun = null; state.flash = null; state.timeView = false; state.hazard = null;
-    clearTimeout(impactT);
-    $('colorMode').value = 'depth';
-    for (const id of fastSets) $(id).disabled = true;   // the river and storm controls do not apply to this run until it is cleared
-    $('dlReport').disabled = true;
-    showInertialRun(a);
-    const area = areaReg.get(state.areaKey);
-    if (area && area.impact == null && !area.impactLoading) {   // buildings, roads and people are fetched once per area; the counts then follow this run
-      area.impactLoading = true;
-      try { await countImpact(); } finally { area.impactLoading = false; }
-    }
+    await applySpecialRun(a, run, {
+      seconds: info.prepared.seconds, kind: 'tsunami', title: 'Experimental tsunami run', label: info.label, gridCell: info.prepared.grid.cell, after: "the wave reaches the model's edge",
+      note: `Depths are the deepest water the tsunami model held on land (the tide's own cover counts) on its ${Math.round(info.prepared.grid.cell)} m grid, laid over this ${Math.round(a.cell)} m terrain. Hazard classes (H1 to H6) come from depth and water speed in the run's frames, which are 30 s apart, so a faster moment between frames can be missed.`,
+    });
     if (isPhone()) closePanel('panel-scenario');   // the panel (opened by a new model) would cover the map and the run bar
     else openPanel('panel-scenario');
     return `Impact tools now use this tsunami run on the ${Math.round(a.cell)} m flood model of ${hit ? hit.name : 'this place'} (${run.covered.toLocaleString('en-AU')} cells inside the modelled place). ${isPhone() ? 'Open Scenario for the counts. ' : ''}Change the scenario there to go back to river or storm flooding.`;
   }
   window.__floodUseTsunamiRun = (info) => useTsunamiRun(info);
+
+  /* ---- a dam failure on a dam model: the reservoir let out through a breach by the lab's nonlinear solver (dam-break.js, dam-worker.js) ---- */
+  const damStatus = (text) => { $('damStatus').textContent = text; };
+  function damProps() {
+    const meta = state.areaMeta;
+    if (!isDamModel(meta) || !nat.data) return null;
+    const f = nat.data.storages.find((x) => `storage:${x.properties.id}` === meta.reportId);
+    return f ? f.properties : null;
+  }
+  // The stored volume to offer (ML = thousand m³): the dam's latest reading when there is one, else its full supply
+  function damOfferedML(props) {
+    if (!props || !props.capacity_ml) return null;
+    const fill = storageFill(props);
+    return Math.round(props.capacity_ml * (fill != null ? Math.min(fill, 1) : 1));
+  }
+  function syncDamControls() {
+    const dam = !!(state.a && F.tsunamiStart && isDamModel(state.areaMeta) && state.gauge >= 0);
+    $('damSet').hidden = !dam;
+    if (!dam || damWorker) return;
+    const props = damProps(), ml = damOfferedML(props), fill = props && storageFill(props);
+    $('damInfo').textContent = props ? `${props.name}: ${props.capacity_ml ? `${Math.round(props.capacity_ml).toLocaleString('en-AU')} ML at full supply${fill != null ? `, ${Math.round(fill * 100)}% full now` : ''}` : 'no published capacity'}. The terrain model shows the lake as a flat surface with no bed, so the volume below sets how deep it is made.` : 'This dam’s details are not available.';
+    if (ml != null && !$('damVolume').dataset.edited) $('damVolume').value = (ml / 1000).toFixed(ml < 10000 ? 2 : 1);
+  }
+  $('damVolume').addEventListener('input', () => { $('damVolume').dataset.edited = '1'; });
+  function stopDam() {
+    if (damWorker) damWorker.terminate();
+    damWorker = null; $('damRun').disabled = false; $('damCancel').disabled = true;
+  }
+  function startDamBreak() {
+    if (damWorker || !state.a) return;
+    const a = state.a, key = state.areaKey, pr = riverBelow(a, state.gauge, state.areaMeta), dam = pr && pr.dam;
+    if (!dam) { damStatus('No wall was found below this reservoir in the terrain: the ground does not drop 4 m or more within 5 km of the gauge.'); return; }
+    const volume = parseFloat($('damVolume').value) * 1e6;
+    if (!(volume > 0)) { damStatus('Enter the volume of water held, in million m³.'); return; }
+    const route = [];
+    for (let c = state.gauge; c >= 0 && route.length < 5000; c = a.rec[c]) { route.push(c); if (c === dam.below) break; }
+    let plan;
+    try { plan = planDamBreak(a, { gauge: state.gauge, dam, route, downstream: pr.path.filter((c) => c !== dam.below), volume, mode: $('damMode').value, timeScale: parseFloat($('damSpeed').value) || 1 }); }
+    catch (e) { damStatus(`Could not set the dam up: ${e.message}.`); return; }
+    const seconds = damRunSeconds(plan);
+    runScenario();   // drop any earlier special run and restore the normal model underneath
+    $('damRun').disabled = true; $('damCancel').disabled = false; $('damProgress').value = 0;
+    damStatus(`${damText(plan)}. Running ${Math.round(seconds / 60)} minutes of it on ${plan.W} × ${plan.H} cells of ${Math.round(plan.cell)} m.`);
+    status.dam = { running: true, plan: { W: plan.W, H: plan.H, cell: plan.cell, volume: plan.volume, depth: plan.depth, wall: plan.wallHeight, breachWidth: plan.froehlich.width, breachSeconds: plan.breachSeconds, mode: plan.mode } };
+    const w = new Worker(new URL('./dam-worker.js', import.meta.url), { type: 'module' });
+    damWorker = w;
+    const fail = (message) => { stopDam(); status.dam = { error: message }; damStatus(`The dam-break run stopped: ${message}.`); };
+    w.onerror = (e) => { e.preventDefault(); fail(e.message || 'the worker failed'); };
+    w.onmessage = async ({ data }) => {
+      if (w !== damWorker) return;
+      if (data.error) { fail(data.error); return; }
+      if (data.progress) { $('damProgress').value = data.progress.fraction; return; }
+      if (!data.result) return;
+      stopDam();
+      if (key !== state.areaKey || a !== state.a) { damStatus('The run finished after you changed place, so it was dropped.'); return; }
+      const r = data.result, run = damRunOnArea(a, plan, r.extremes), mode = BREACH_MODES[plan.mode].label.split(':')[0];
+      $('damProgress').value = 1;
+      const peak = Math.round(r.peakDischarge), froehlich = Math.round(plan.froehlich.peak);
+      status.dam = { done: true, plan: { W: plan.W, H: plan.H, cell: plan.cell, factor: plan.factor, volume: plan.volume, depth: plan.depth, wall: plan.wallHeight, reservoir: plan.reservoirCells, breachCells: plan.breachCells.length, section: plan.section.length, breachSeconds: plan.breachSeconds, width: plan.froehlich.width }, covered: run.covered, edge: run.edge, peakDischarge: peak, froehlichPeak: froehlich, volumeError: r.volumeError, seconds: r.seconds };
+      await applySpecialRun(a, run, {
+        seconds: r.seconds, kind: 'dam', title: 'Experimental dam-failure run', label: `Dam failure (${mode.toLowerCase()})`, gridCell: plan.cell, after: 'the breach began to open',
+        note: `${damText(plan)}. The solver's peak discharge through the breach was ${peak.toLocaleString('en-AU')} m³/s (Froehlich's empirical estimate is ${froehlich.toLocaleString('en-AU')} m³/s). The reservoir is given one level depth because the terrain has no lake bed, the wall and breach are cut from the 30 m terrain, and the first-order scheme smears the front: indicative only.${run.edge ? ' The flood reached the edge of the model window, so it may go further than shown.' : ''}`,
+      });
+      damStatus(`Done: the reservoir is out through a ${Math.round(plan.froehlich.width)} m breach, peak ${peak.toLocaleString('en-AU')} m³/s about ${Math.round(r.peakDischargeAt / 60)} min in.${run.edge ? ' The flood reached the edge of the model window, so it may go further.' : ''} Impact, roads and property now use this run; change the scenario to go back.`);
+    };
+    w.postMessage({ plan, seconds });
+  }
+  $('damRun').addEventListener('click', startDamBreak);
+  $('damCancel').addEventListener('click', () => { stopDam(); status.dam = { cancelled: true }; damStatus('Cancelled.'); });
+  window.__floodDamBreak = (options) => { if (options && options.mode) $('damMode').value = options.mode; if (options && options.speed) $('damSpeed').value = String(options.speed); if (options && options.volumeMl) { $('damVolume').value = String(options.volumeMl / 1000); $('damVolume').dataset.edited = '1'; } startDamBreak(); };
 
   function startInertial() {
     if (!state.a) { $('inertialStatus').textContent = 'Load a terrain model first.'; return; }
@@ -1544,7 +1626,7 @@ import { effectiveRainSeries } from './flash-2d.js';
 
   // Pin the current scenario to compare later ones against it
   function scenarioLabel() {
-    if (state.inertial && state.inertial.tsunami) return `${state.inertial.tsunami.label} (deepest water over the run), ${fmt(state.inertial.time / 60, 0)} min, ${Math.round(state.inertial.tsunami.gridCell)} m tsunami grid`;
+    if (state.inertial && state.inertial.special) return `${state.inertial.special.label} (deepest water over the run), ${fmt(state.inertial.time / 60, 0)} min, ${Math.round(state.inertial.special.gridCell)} m grid`;
     if (state.inertial) return `Local-inertial 2D${state.inertial.peak ? ' storm (peak depth)' : ''}, ${fmt(state.inertial.time / 60, 1)} min, ${Math.round(state.inertial.cell)} m grid`;
     const mode = ctl.floodType.value, parts = [];
     if (mode !== 'flash') parts.push(`gauge ${fmt(parseFloat(ctl.gaugeLevel.value), 2)} m`);
@@ -3487,10 +3569,10 @@ import { effectiveRainSeries } from './flash-2d.js';
 
 
   function drawStats(s) {
-    if (state.inertial && state.inertial.tsunami) {
+    if (state.inertial && state.inertial.special) {
       const r = state.inertial, st = F.stats(state.a, state.run, null), ff = firstFlooded(state.run, state.a);
-      $('summaryLine').textContent = `${r.tsunami.label} · deepest water over ${fmt(r.time / 60, 0)} min · ${Math.round(r.tsunami.gridCell)} m tsunami grid`;
-      $('stats').innerHTML = [['Wet land', fmt(st.wetLandKm2, 2), 'km²'], ['Deeper than 1 m', fmt(st.deepKm2, 2), 'km²'], ['Deepest water', fmt(st.maxDepth, 2), 'm'], ['First flooded', ff == null ? 'none' : fmt(ff / 60, 0), ff == null ? '' : 'min after the wave reaches the model edge']].map(([k, v, u]) => `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
+      $('summaryLine').textContent = `${r.special.label} · deepest water over ${fmt(r.time / 60, 0)} min · ${Math.round(r.special.gridCell)} m grid`;
+      $('stats').innerHTML = [['Wet land', fmt(st.wetLandKm2, 2), 'km²'], ['Deeper than 1 m', fmt(st.deepKm2, 2), 'km²'], ['Deepest water', fmt(st.maxDepth, 2), 'm'], ['First flooded', ff == null ? 'none' : fmt(ff / 60, 0), ff == null ? '' : `min after ${state.inertial.special.after}`]].map(([k, v, u]) => `<div class="stat"><div class="label">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join('');
       if ($('btn3d')) $('btn3d').classList.toggle('dim', !(state.a && state.run));
       return;
     }
@@ -6856,7 +6938,7 @@ import { effectiveRainSeries } from './flash-2d.js';
       ${r.worstRoads.length ? `<p><strong>Roads cut:</strong> ${r.worstRoads.map(([nm, km]) => `${escapeHtml(nm)} (${km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`})`).join(', ')}</p>` : ''}
       ${(() => { const ev = d.sites.filter((x) => x.kind === EVAC), evh = r.sitesHit.filter((x) => x.kind === EVAC); return ev.length ? `<p><strong>Evacuation centres:</strong> ${ev.length} mapped here (green on the map)${evh.length ? `, <strong>${evh.length} flooded</strong>: ${evh.map((x) => escapeHtml(x.name)).join(', ')}` : ', none flooded'}. Use <em>Check this property</em> for the dry route to one.</p>` : ''; })()}
       ${r.sitesHit.length ? `<p><strong>Key sites:</strong> ${r.sitesHit.slice(0, 12).map((s) => `${escapeHtml(s.name)} <small>(${s.kind.toLowerCase()}, ${s.depth.toFixed(1)} m)</small>`).join('; ')}${r.sitesHit.length > 12 ? ` and ${r.sitesHit.length - 12} more` : ''}</p>` : ''}
-      ${state.inertial && state.inertial.tsunami ? `<p class="hint"><strong>Experimental tsunami run:</strong> ${escapeHtml(state.inertial.tsunami.label)}. Depths are the deepest water the tsunami model held on land (the tide's own cover counts) on its ${Math.round(state.inertial.tsunami.gridCell)} m grid, laid over this ${Math.round(state.a.cell)} m terrain. Hazard classes (H1 to H6) come from depth and water speed in the run's frames, which are 30 s apart, so a faster moment between frames can be missed. Building, road and people figures are indicative only; this is not a forecast or an evacuation guide.</p>` : state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's ${state.inertial.peak ? 'deepest water over the run' : 'final water depth'} on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only${state.inertial.peak ? '' : ', and water keeps moving after this snapshot'}.</p>` : ''}
+      ${state.inertial && state.inertial.special ? `<p class="hint"><strong>${escapeHtml(state.inertial.special.title)}:</strong> ${escapeHtml(state.inertial.special.label)}. ${escapeHtml(state.inertial.special.note)} Building, road and people figures are indicative only; this is not a forecast or an evacuation guide.</p>` : state.inertial ? `<p class="hint"><strong>Experimental 2D model:</strong> depths are the local-inertial solver's ${state.inertial.peak ? 'deepest water over the run' : 'final water depth'} on its coarse (${Math.round(state.inertial.cell)} m) grid — building, road and people figures are indicative only${state.inertial.peak ? '' : ', and water keeps moving after this snapshot'}.</p>` : ''}
       <p class="hint">Buildings, roads and sites: © OpenStreetMap contributors (ODbL), complete only where mapped${d.copy ? ` (the site's copy from ${escapeHtml(new Date(d.copy.fetched).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }))})` : ''}. People: ABS 2021 Census by SA1, spread across each area's buildings${r.people == null ? ' (not available here right now)' : ''}. Estimates for screening only.</p>`;
     // mark flooded key sites, cut roads and cut-off roads on the map
     if (state.lmap) {
@@ -8260,12 +8342,12 @@ import { effectiveRainSeries } from './flash-2d.js';
       const wet = run.wet[c] && !(a.ocean && a.ocean[c]);
       const hz = wet ? hazardNow() : null, cls = hz ? hz.cls[c] : 0;
       const t = run.arrival ? run.arrival[c] : NaN;
-      box.textContent = state.inertial.tsunami
-        ? `Experimental tsunami run (${state.inertial.tsunami.label}): the deepest water here was ${fmt(run.depth[c], 2)} m${Number.isFinite(t) ? `; the wave first put 10 cm on it about ${fmt(t / 60, 0)} min after reaching the model's edge` : wet ? '' : '; it stayed dry'}. Depth comes from the tsunami model's ${Math.round(state.inertial.tsunami.gridCell)} m grid${wet && cls ? `, worst hazard class H${cls} (depth and water speed, sampled every 30 s)` : ''}; gauge-level thresholds don't apply.`
+      box.textContent = state.inertial.special
+        ? `${state.inertial.special.title} (${state.inertial.special.label}): the deepest water here was ${fmt(run.depth[c], 2)} m${Number.isFinite(t) ? `; the water first stood 10 cm up about ${fmt(t / 60, 0)} min after ${state.inertial.special.after}` : wet ? '' : '; it stayed dry'}${wet && cls ? `, worst hazard class H${cls}` : ''}. ${state.inertial.special.note} Gauge-level thresholds don't apply.`
         : state.inertial.peak
         ? `Experimental 2D storm: the deepest water here was ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, worst hazard class H${cls || 6} (depth and water speed at the worst moment)` : ''}${Number.isFinite(t) ? `; water first reached 10 cm about ${fmt(t / 60, 0)} min after the rain started` : wet ? '' : '; it stayed dry'}. Gauge-level thresholds don't apply to this model.`
         : `Experimental 2D final depth: ${fmt(run.depth[c], 2)} m on a ${Math.round(state.inertial.cell)} m grid${wet ? `, hazard class H${cls || 6} from that cell's depth and water speed` : ''}. Gauge-level thresholds don't apply to this model.`;
-      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, arrivalMin: Number.isFinite(t) ? +(t / 60).toFixed(1) : null, model: state.inertial.tsunami ? 'tsunami' : 'local-inertial' };
+      status.property = { inModel: true, depth: run.depth[c], hazard: wet ? (cls || 6) : null, arrivalMin: Number.isFinite(t) ? +(t / 60).toFixed(1) : null, model: state.inertial.special ? state.inertial.special.kind : 'local-inertial' };
       rememberPropertyCheck(lat, lon, name);
       return status.property;
     }

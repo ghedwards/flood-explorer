@@ -535,6 +535,12 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 )?;
                 if b.num("order") == 2.0 { solver.set_order(2)?; }
                 if let Some(valid) = b.u8s("valid") { solver.set_valid(valid)?; }
+                // A dam wall giving way: the bed of these cells is lowered to the given levels between the start time and start + duration.
+                if let (Some(cells), Some(to)) = (b.f64s("breachCells"), b.f64s("breachTo")) {
+                    solver.set_breach(cells.iter().map(|c| *c as usize).collect(), to, b.num("breachStart"), b.num("breachSeconds"))?;
+                }
+                let arrival_depth = b.num("arrivalDepth");
+                if arrival_depth.is_finite() { solver.set_arrival_depth(arrival_depth)?; }
                 // One-way coupling: each edge carries a series of incoming
                 // surface displacement (samples x points) at shared times.
                 if let Some(times) = b.f64s("forceTimes") {
@@ -598,6 +604,13 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume);
                 for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
                     o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                }
+                // the worst of the whole run so far, kept every step (not just in the frames): deepest water, fastest speed, worst hazard class, first arrival
+                if b.num("extremes") == 1.0 {
+                    for (name, values) in [("peakDepth", &s.peak_depth), ("peakSpeed", &s.peak_speed), ("arrival", &s.arrival)] {
+                        o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                    }
+                    o.u8s("peakClass", &s.peak_class);
                 }
                 Ok(true)
             })?;
