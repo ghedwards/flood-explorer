@@ -4,6 +4,8 @@
 //! Reflecting walls, optional relaxation sponge, semi-implicit Manning friction.
 const G: f64 = 9.81;
 const DRY: f64 = 1e-7;
+/// A cell counts as wet, for the hazard class and the arrival of water, from this depth (m).
+const WET_HAZARD: f64 = 0.01;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Edge { North, East, South, West }
@@ -39,6 +41,20 @@ impl Forcing {
     }
 }
 
+/// What `Solver::flood_summary` reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloodSummary { pub flooded_hectares: f64, pub max_land_depth: f64, pub flooded_now_hectares: f64 }
+
+/// A breach: the bed of `cells` is lowered from its starting level to `to` between `start` and `start + duration` (seconds), linearly. The water
+/// in each cell keeps its depth, so water held behind a wall that gives way starts to flow through the gap without any water being made or lost.
+struct Breach {
+    cells: Vec<usize>,
+    from: Vec<f64>,
+    to: Vec<f64>,
+    start: f64,
+    duration: f64,
+}
+
 pub struct Solver {
     pub w: usize,
     pub h: usize,
@@ -49,6 +65,19 @@ pub struct Solver {
     pub eta: Vec<f64>,
     pub peak: Vec<f64>,
     pub speed: Vec<f64>,
+    /// The deepest water each cell held (m), the worst flood hazard class it saw (0 dry, 1 to 6, from depth and speed), and the first time (s) the water
+    /// stood `arrival_depth` above its starting level (-1 if it never did). Updated every step, so a short fast moment is not missed.
+    pub peak_depth: Vec<f64>,
+    pub peak_speed: Vec<f64>,
+    pub peak_class: Vec<u8>,
+    pub arrival: Vec<f64>,
+    /// When (s) each cell held its deepest water.
+    pub peak_time: Vec<f64>,
+    pub arrival_depth: f64,
+    probes: Vec<usize>,
+    probe_threshold: f64,
+    /// For each probe cell, the first time (s) the surface was more than the threshold from its starting level, up or down (-1 if never). Checked every step.
+    pub probe_arrival: Vec<f64>,
     pub time: f64,
     pub dt: f64,
     pub boundary_volume: f64,
@@ -59,6 +88,7 @@ pub struct Solver {
     sponge: Vec<f64>,
     roughness: f64,
     forcing: Vec<Forcing>,
+    breach: Option<Breach>,
     level: Option<(Vec<f64>, Vec<f64>)>,
     order: u8,
     /// Reused every step instead of allocating the change in (h, mx, my) of every cell.
@@ -95,9 +125,10 @@ impl Solver {
             } }
         }
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
+        let water_start = water.clone();
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
-            speed: vec![0.0; n], time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
-            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), level: None, order: 1, scratch: Vec::new(), recon: [Vec::new(), Vec::new()] };
+            speed: vec![0.0; n], peak_depth: water_start, peak_speed: vec![0.0; n], peak_class: vec![0; n], arrival: vec![-1.0; n], peak_time: vec![0.0; n], arrival_depth: 0.1, probes: Vec::new(), probe_threshold: 0.0, probe_arrival: Vec::new(), time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
+            valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), breach: None, level: None, order: 1, scratch: Vec::new(), recon: [Vec::new(), Vec::new()] };
         s.dt = s.stable_dt();
         Ok(s)
     }
@@ -147,6 +178,73 @@ impl Solver {
         }
         self.sponge.iter_mut().for_each(|v| *v = 0.0);
         self.forcing.push(Forcing { edge, times, values, points });
+        Ok(())
+    }
+
+    /// Lower the bed of `cells` to the levels in `to` between `start` and `start + duration` seconds (a dam wall giving way). Set it before the run starts.
+    pub fn set_breach(&mut self, cells: Vec<usize>, to: Vec<f64>, start: f64, duration: f64) -> Result<(), String> {
+        let n = self.water.len();
+        if self.time != 0.0 || cells.is_empty() || cells.len() != to.len() || cells.iter().any(|c| *c >= n || !self.valid[*c])
+            || to.iter().any(|v| !v.is_finite() || !(-12000.0..=9000.0).contains(v))
+            || !start.is_finite() || start < 0.0 || !duration.is_finite() || duration < 0.0 {
+            return Err("invalid breach: cells must be valid cells of the grid, with finite levels and times".into());
+        }
+        let from = cells.iter().map(|c| self.bed[*c]).collect();
+        self.breach = Some(Breach { cells, from, to, start, duration });
+        Ok(())
+    }
+
+    /// What a run has flooded, over the ground that is dry at mean sea level (`land[i]` is 1 there): the area it has put water on so far (counting the tide's own cover, as the
+    /// model does), the deepest water on it and the area under water now, with hectares from the cell size.
+    pub fn flood_summary(&self, land: &[u8]) -> FloodSummary {
+        let (mut ever, mut now, mut deepest) = (0usize, 0usize, 0.0_f64);
+        for (i, dry) in land.iter().enumerate().take(self.water.len()) {
+            if *dry == 0 { continue; }
+            if self.peak_depth[i] > 0.01 { ever += 1; }
+            if self.peak_depth[i] > deepest { deepest = self.peak_depth[i]; }
+            if self.water[i] > 0.01 { now += 1; }
+        }
+        let ha = self.cell * self.cell / 10000.0;
+        FloodSummary { flooded_hectares: ever as f64 * ha, max_land_depth: deepest, flooded_now_hectares: now as f64 * ha }
+    }
+
+    /// The depth-integrated transport of every cell (m2/s) in x and y.
+    pub fn momentum(&self) -> (&[f64], &[f64]) { (&self.mx, &self.my) }
+
+    /// Watch some cells (gauges): the first time the surface leaves its starting level by more than `threshold` metres, up or down, is kept in `probe_arrival`.
+    pub fn set_probes(&mut self, cells: Vec<usize>, threshold: f64) -> Result<(), String> {
+        if cells.iter().any(|c| *c >= self.water.len()) || threshold.is_nan() || threshold < 0.0 { return Err("invalid gauge cells or threshold".into()); }
+        self.probe_arrival = vec![-1.0; cells.len()];
+        self.probes = cells;
+        self.probe_threshold = threshold;
+        Ok(())
+    }
+
+    /// The fastest water speed any cell has seen (m/s).
+    pub fn max_speed(&self) -> f64 { self.peak_speed.iter().fold(0.0_f64, |m, v| m.max(*v)) }
+
+    /// How deep the water must stand above a cell's starting level to count as having arrived (m).
+    pub fn set_arrival_depth(&mut self, depth: f64) -> Result<(), String> {
+        if !depth.is_finite() || depth <= 0.0 || depth > 100.0 { return Err("the arrival depth must be above 0 and at most 100 m".into()); }
+        self.arrival_depth = depth;
+        Ok(())
+    }
+
+    fn apply_breach(&mut self, time: f64) {
+        let Some(b) = &self.breach else { return };
+        let f = if b.duration <= 0.0 { if time >= b.start { 1.0 } else { 0.0 } } else { ((time - b.start) / b.duration).clamp(0.0, 1.0) };
+        for k in 0..b.cells.len() { self.bed[b.cells[k]] = b.from[k] + (b.to[k] - b.from[k]) * f; }
+    }
+
+    /// Add one more sample to an edge's forcing, at `time` (after its last) with one value per point: for a parent model that runs alongside this one and hands
+    /// its wave over step by step instead of in advance.
+    pub fn push_forcing(&mut self, edge: Edge, time: f64, values: &[f64]) -> Result<(), String> {
+        let Some(f) = self.forcing.iter_mut().find(|f| f.edge == edge) else { return Err("this edge has no forcing to extend".into()) };
+        if values.len() != f.points || !time.is_finite() || time <= *f.times.last().unwrap() || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            return Err("invalid forcing sample".into());
+        }
+        f.times.push(time);
+        f.values.extend_from_slice(values);
         Ok(())
     }
 
@@ -440,12 +538,15 @@ impl Solver {
     }
 
     fn step(&mut self) -> Result<(), String> {
+        self.apply_breach(self.time);
         let dt = self.stable_dt();
         let delta = if self.order == 2 { self.second_order_delta(dt)? } else { self.first_order_delta(dt) };
         // The per-cell update works on plain slices of equal length, so no index is checked.
         let n = self.water.len();
         let (water, mx, my, eta, peak, speed) = (&mut self.water[..n], &mut self.mx[..n], &mut self.my[..n], &mut self.eta[..n], &mut self.peak[..n], &mut self.speed[..n]);
         let (reference, sponge, change) = (&self.reference[..n], &self.sponge[..n], &delta[..n]);
+        let (peak_depth, peak_speed, peak_class, arrival, peak_time) = (&mut self.peak_depth[..n], &mut self.peak_speed[..n], &mut self.peak_class[..n], &mut self.arrival[..n], &mut self.peak_time[..n]);
+        let (arrival_depth, t_end) = (self.arrival_depth, self.time + dt);
         let (roughness, cell) = (self.roughness, self.cell);
         let mut sponge_exchange = 0.0;
         for i in 0..n {
@@ -472,8 +573,16 @@ impl Solver {
             peak[i] = peak[i].max(eta[i].abs());
             speed[i] = if water[i] > DRY { (mx[i] * mx[i] + my[i] * my[i]).sqrt() / water[i] } else { 0.0 };
             if !speed[i].is_finite() { return Err("non-finite inundation velocity".into()); }
+            if water[i] > peak_depth[i] { peak_depth[i] = water[i]; peak_time[i] = t_end; }
+            if water[i] >= WET_HAZARD {
+                if speed[i] > peak_speed[i] { peak_speed[i] = speed[i]; }
+                let class = crate::surface::hazard_class(water[i], speed[i]);
+                if class > peak_class[i] { peak_class[i] = class; }
+            }
+            if arrival[i] < 0.0 && eta[i] >= arrival_depth { arrival[i] = t_end; }
         }
         self.boundary_volume += sponge_exchange;
+        for (k, p) in self.probes.iter().enumerate() { if self.probe_arrival[k] < 0.0 && self.eta[*p].abs() > self.probe_threshold { self.probe_arrival[k] = t_end; } }
         self.time += dt;
         self.dt = self.stable_dt();
         self.scratch = delta;
@@ -521,6 +630,79 @@ mod tests {
             }).sum::<f64>() / w as f64;
             assert!(mean_error < 0.015, "Ritter depth mean absolute error {mean_error}");
         }
+    }
+    // A reservoir of depth h0 behind a one-cell wall that gives way. The discharge through the gap is Ritter's: q = (8/27) sqrt(g) h0^1.5 per metre
+    // of width once the gap is open, and a slower opening gives a smaller and later peak. Water is conserved, the peaks are recorded every step,
+    // and the first arrival of water grows with the distance from the wall.
+    fn reservoir(w: usize, wall: usize, h0: f64, order: u8) -> Solver {
+        let h = 6;
+        let bed: Vec<f64> = (0..w * h).map(|i| if i % w == wall { h0 + 6.0 } else { 0.0 }).collect();
+        let reference: Vec<f64> = (0..w * h).map(|i| if i % w < wall { h0 } else { 0.0 }).collect();
+        let mut s = Solver::new(w, h, 2.0, bed, reference, vec![0.0; w * h], false, 0.0).unwrap();
+        s.set_order(order).unwrap();
+        s
+    }
+    #[test]
+    fn a_wall_that_gives_way_releases_ritters_discharge_and_records_the_worst_hazard() {
+        let (w, wall, h0) = (200usize, 100usize, 4.0_f64);
+        let ritter = 8.0 / 27.0 * G.sqrt() * h0.powf(1.5);
+        for order in [1u8, 2] {
+            let mut s = reservoir(w, wall, h0, order);
+            s.set_breach((0..6).map(|r| r * w + wall).collect(), vec![0.0; 6], 0.0, 0.0).unwrap();
+            let mut flux = Vec::new();
+            while s.time < 10.0 {
+                s.advance(1).unwrap();
+                if s.time > 4.0 { flux.push(s.mx[2 * w + wall]); }
+            }
+            let mean = flux.iter().sum::<f64>() / flux.len() as f64;
+            assert!((mean - ritter).abs() < 0.15 * ritter, "order {order}: discharge {mean} against Ritter's {ritter}");
+            assert!(s.volume_error().abs() < 1e-8 && s.water.iter().all(|v| v.is_finite() && *v >= 0.0));
+            // the worst class near the gap is the top one and falls away downstream; nothing upstream of the lake's own water is flagged dry
+            assert_eq!(s.peak_class[2 * w + wall + 1], 6);
+            assert!(s.peak_class[2 * w + wall + 20] <= s.peak_class[2 * w + wall + 1]);
+            assert!(s.peak_speed[2 * w + wall + 1] > 3.0 && s.peak_depth[2 * w + wall + 1] > 1.0);
+            // arrival: later further from the wall, and never for cells the water did not reach
+            let t = |k: usize| s.arrival[2 * w + wall + k];
+            assert!(t(1) > 0.0 && t(5) > t(1) && t(15) > t(5), "arrivals {} {} {}", t(1), t(5), t(15));
+            assert_eq!(s.arrival[2 * w + 2], -1.0, "the lake's own cells never see a rise of 10 cm");
+            // the deepest water came later further out than at the gap's edge, and never before the wall gave way; the summary counts the land the water reached
+            assert!(s.peak_time[2 * w + wall + 1] > 0.0 && s.peak_time[2 * w + wall + 1] <= s.time);
+            let land: Vec<u8> = (0..w * 6).map(|i| u8::from(i % w > wall)).collect();
+            let summary = s.flood_summary(&land);
+            assert!(summary.flooded_hectares > 0.0 && summary.max_land_depth > 1.0 && summary.flooded_now_hectares > 0.0 && summary.flooded_now_hectares <= summary.flooded_hectares + 1e-9);
+            assert_eq!(s.flood_summary(&vec![0; w * 6]).flooded_hectares, 0.0);
+        }
+    }
+    #[test]
+    fn a_slow_breach_gives_a_later_smaller_peak_than_a_sudden_one() {
+        // a short reservoir, so it drains while the gap opens and a slow opening cannot reach the full discharge
+        let (w, wall, h0) = (200usize, 10usize, 4.0_f64);
+        let run = |duration: f64| {
+            let mut s = reservoir(w, wall, h0, 1);
+            s.set_breach((0..6).map(|r| r * w + wall).collect(), vec![0.0; 6], 2.0, duration).unwrap();
+            let mut peak = (0.0_f64, 0.0_f64);
+            while s.time < 80.0 {
+                s.advance(1).unwrap();
+                let q = s.mx[2 * w + wall];
+                if q > peak.0 { peak = (q, s.time); }
+            }
+            assert!(s.volume_error().abs() < 1e-8);
+            peak
+        };
+        let (sudden, slow) = (run(0.0), run(40.0));
+        assert!(slow.0 < 0.85 * sudden.0, "slow {} sudden {}", slow.0, sudden.0);
+        assert!(slow.1 > sudden.1 + 5.0, "slow at {} sudden at {}", slow.1, sudden.1);
+    }
+    #[test]
+    fn an_invalid_breach_is_refused() {
+        let mut s = reservoir(40, 20, 2.0, 1);
+        assert!(s.set_breach(vec![], vec![], 0.0, 1.0).is_err());
+        assert!(s.set_breach(vec![1_000_000], vec![0.0], 0.0, 1.0).is_err());
+        assert!(s.set_breach(vec![20], vec![f64::NAN], 0.0, 1.0).is_err());
+        assert!(s.set_breach(vec![20], vec![0.0], -1.0, 1.0).is_err());
+        assert!(s.set_arrival_depth(0.0).is_err());
+        s.advance(1).unwrap();
+        assert!(s.set_breach(vec![20], vec![0.0], 0.0, 1.0).is_err(), "not once the run has started");
     }
     #[test]
     fn disconnected_lake_keeps_its_own_level() {

@@ -204,6 +204,12 @@ impl Out {
 thread_local! {
     static INERTIAL: RefCell<Option<inertial::Solver>> = const { RefCell::new(None) };
     static INUNDATION: RefCell<Option<inundation::Solver>> = const { RefCell::new(None) };
+    static NEST: RefCell<Option<nest::Nest>> = const { RefCell::new(None) };
+    static DAM: RefCell<Option<dam::Run>> = const { RefCell::new(None) };
+    // regional recordings kept for one-way coupled runs that differ only in their local settings, by the key the caller gives
+    static RECORDINGS: RefCell<HashMap<Vec<u8>, (coupling::Recording, f64)>> = RefCell::new(HashMap::new());
+    // the ground that is dry at mean sea level in the running tsunami model, and the time the wave reached its edge (what arrival times count from)
+    static TSUNAMI_LAND: RefCell<(Vec<u8>, f64)> = const { RefCell::new((Vec::new(), 0.0)) };
     static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
     static ANALYSES: RefCell<Vec<Option<Analysis>>> = const { RefCell::new(Vec::new()) };
     static WAVES: RefCell<Vec<Option<Wave>>> = const { RefCell::new(Vec::new()) };
@@ -518,6 +524,54 @@ fn levees_of(b: &Bag) -> Vec<Levee> {
     out
 }
 
+// What a nonlinear tsunami model reports at a step: its fields; with the dry-land mask, what it has flooded; and on request what it has seen at its worst, kept every step.
+fn inundation_frame(o: &mut Out, s: &inundation::Solver, extremes: bool) {
+    for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
+        o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+    }
+    let (land, origin) = TSUNAMI_LAND.with(|l| l.borrow().clone());
+    if land.len() == s.water.len() {
+        let f = s.flood_summary(&land);
+        o.num("floodedHectares", f.flooded_hectares).num("maxLandDepth", f.max_land_depth).num("floodedNowHectares", f.flooded_now_hectares);
+    }
+    if !s.probe_arrival.is_empty() {
+        o.f64s("probeArrival", &s.probe_arrival);
+    }
+    if extremes {
+        o.num("maxSpeed", s.max_speed());
+        // deepest water on land, highest wave at sea; arrival in seconds from the time the wave reached the model's edge (-1 where it did not come)
+        let value: Vec<f32> = (0..s.water.len()).map(|i| if land.get(i).copied().unwrap_or(0) != 0 { s.peak_depth[i] } else { s.peak[i] } as f32).collect();
+        let arrival: Vec<f32> = s.arrival.iter().map(|a| if *a >= 0.0 { (*a - origin).max(0.0) as f32 } else { -1.0 }).collect();
+        o.f32s("peakValue", &value).f32s("peakTime", &s.peak_time.iter().map(|v| *v as f32).collect::<Vec<_>>())
+            .f32s("peakSpeed", &s.peak_speed.iter().map(|v| *v as f32).collect::<Vec<_>>()).f32s("arrival", &arrival).u8s("peakClass", &s.peak_class);
+    }
+}
+
+// An area model's terrain from the bag (W, H, cell, dem and the optional valid and ocean masks), checked.
+fn area_of(b: &Bag) -> Result<dam::Area, String> {
+    let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+    let dem = b.f64s("dem").ok_or("missing elevations")?;
+    if w == 0 || h == 0 || dem.len() != w.checked_mul(h).ok_or("grid overflow")? { return Err("the elevations do not match the grid".into()); }
+    let (valid, ocean) = (b.u8s("valid").unwrap_or_default(), b.u8s("ocean").unwrap_or_default());
+    if (!valid.is_empty() && valid.len() != dem.len()) || (!ocean.is_empty() && ocean.len() != dem.len()) { return Err("the masks do not match the grid".into()); }
+    Ok(dam::Area { w, h, cell: b.num("cell"), dem, valid, ocean })
+}
+
+// The solver's block grid from the bag (the prefix `g`: gW, gH, gCell, gDem, gValid, gOcean, gFactor).
+fn prepared_of(b: &Bag) -> Result<inertial_grid::Prepared, String> {
+    let (w, h) = (b.num("gW") as usize, b.num("gH") as usize);
+    let (dem, valid, ocean) = (b.f64s("gDem").ok_or("missing the solver grid")?, b.u8s("gValid").ok_or("missing the solver grid")?, b.u8s("gOcean").ok_or("missing the solver grid")?);
+    if w == 0 || h == 0 || dem.len() != w * h || valid.len() != dem.len() || ocean.len() != dem.len() || b.num("gFactor").is_nan() || b.num("gFactor") < 1.0 { return Err("the solver grid is not consistent".into()); }
+    Ok(inertial_grid::Prepared { w, h, cell: b.num("gCell"), dem, valid, ocean, factor: b.num("gFactor") as usize })
+}
+
+fn place_of(b: &Bag, prefix: &str) -> Result<place::Place, String> {
+    let extent = b.f64s(&format!("{prefix}Extent")).filter(|v| v.len() == 4).ok_or("missing place extent")?;
+    let (w, h) = (b.num(&format!("{prefix}W")), b.num(&format!("{prefix}H")));
+    if !(w >= 1.0 && h >= 1.0) { return Err("invalid place grid".into()); }
+    Ok(place::Place { extent: [extent[0], extent[1], extent[2], extent[3]], w: w as usize, h: h as usize, zone: if b.num(&format!("{prefix}Zone")).is_finite() { b.num(&format!("{prefix}Zone")) as i32 } else { 56 } })
+}
+
 /// Run one operation. Errors come back as a bag with "error" (UTF-8 bytes).
 pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
     let mut o = Out::default();
@@ -525,6 +579,8 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         "tsunamiStart" => {
             TSUNAMI.with(|s| *s.borrow_mut() = None);
             INUNDATION.with(|s| *s.borrow_mut() = None);
+            NEST.with(|s| *s.borrow_mut() = None);
+            TSUNAMI_LAND.with(|l| *l.borrow_mut() = (b.u8s("land").unwrap_or_default(), if b.num("arrivalOrigin").is_finite() { b.num("arrivalOrigin") } else { 0.0 }));
             if b.num("method") == 2.0 {
                 let mut solver = inundation::Solver::new(
                     b.num("W") as usize, b.num("H") as usize, b.num("cell"),
@@ -535,6 +591,14 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 )?;
                 if b.num("order") == 2.0 { solver.set_order(2)?; }
                 if let Some(valid) = b.u8s("valid") { solver.set_valid(valid)?; }
+                // A dam wall giving way: the bed of these cells is lowered to the given levels between the start time and start + duration.
+                if let (Some(cells), Some(to)) = (b.f64s("breachCells"), b.f64s("breachTo")) {
+                    solver.set_breach(cells.iter().map(|c| *c as usize).collect(), to, b.num("breachStart"), b.num("breachSeconds"))?;
+                }
+                let arrival_depth = b.num("arrivalDepth");
+                if arrival_depth.is_finite() { solver.set_arrival_depth(arrival_depth)?; }
+                // gauges: cells whose first departure from their starting level is kept every step
+                if let Some(cells) = b.f64s("probes") { solver.set_probes(cells.iter().map(|c| *c as usize).collect(), if b.num("probeThreshold").is_finite() { b.num("probeThreshold") } else { 0.05 })?; }
                 // One-way coupling: each edge carries a series of incoming
                 // surface displacement (samples x points) at shared times.
                 if let Some(times) = b.f64s("forceTimes") {
@@ -546,9 +610,86 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     }
                 }
                 if let (Some(times), Some(level)) = (b.f64s("levelTimes"), b.f64s("level")) { solver.set_level(times, level)?; }
-                if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
-                o.num("dt", solver.dt);
-                INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
+                if b.num("nest") == 1.0 {
+                    // Two-way nesting: a regional model stepped alongside this one, handing its wave over at the open edges and taking the local surface back.
+                    let parent = tsunami::Solver::new(
+                        b.num("nestW") as usize, b.num("nestH") as usize, b.num("nestCell"),
+                        b.f64s("nestDepth").ok_or("missing regional depths")?, b.f64s("nestEta").ok_or("missing regional wave")?, b.num("nestAbsorbing") == 1.0,
+                    )?;
+                    if b.num("nestMethod") == 3.0 { return Err("two-way nesting needs the staggered regional scheme".into()); }
+                    let bounds = b.f64s("nestBounds").filter(|v| v.len() == 4).ok_or("missing regional bounds")?;
+                    let extent = b.f64s("nestExtent").filter(|v| v.len() == 4).ok_or("missing local extent")?;
+                    let open: Vec<inundation::Edge> = b.f64s("nestEdges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+                    let optional = |k: &str| { let v = b.num(k); if v.is_finite() { Some(v) } else { None } };
+                    let geography = nest::Geography { bounds: [bounds[0], bounds[1], bounds[2], bounds[3]], extent: [extent[0], extent[1], extent[2], extent[3]], zone: if b.num("nestZone").is_finite() { b.num("nestZone") as i32 } else { 56 } };
+                    let tuning = nest::Tuning { per_edge: if b.num("nestPerEdge").is_finite() { b.num("nestPerEdge") as usize } else { 16 }, margin: optional("nestMargin"), ramp: optional("nestRamp") };
+                    let plan = nest::plan_geographic(&parent, &solver, &geography, &open, &tuning)?;
+                    let threshold = if b.num("nestThreshold").is_finite() { b.num("nestThreshold") } else { 0.001 };
+                    let max_seconds = if b.num("nestMaxSeconds").is_finite() { b.num("nestMaxSeconds") } else { 21600.0 };
+                    let strength = if b.num("nestStrength").is_finite() { b.num("nestStrength") } else { 0.25 };
+                    let (handovers, snapped, points) = (plan.handovers.len(), plan.snapped, plan.points.len());
+                    let nested = nest::Nest::new(parent, solver, plan, strength, threshold, max_seconds)?;
+                    o.num("dt", nested.child.dt).num("nestOffset", nested.offset).num("nestHandovers", handovers as f64).num("nestSnapped", snapped as f64).num("nestPoints", points as f64);
+                    NEST.with(|s| *s.borrow_mut() = Some(nested));
+                } else if b.num("couple") == 1.0 || b.num("couple") == 2.0 {
+                    // One-way coupling in Rust: the incoming wave at the open edges comes from a regional run recorded here (1) or from a series (2), and a rising tide can sit on it.
+                    let local_seconds = if b.num("coupleLocalSeconds").is_finite() { b.num("coupleLocalSeconds") } else { 3600.0 };
+                    if b.f64s("levelTimes").is_none() {
+                        if let Some((times, level)) = coupling::level_series(local_seconds, b.num("tideRange"), 44712.0, 60.0) { solver.set_level(times, level)?; }
+                    }
+                    let sea: Vec<inundation::Edge> = b.f64s("nestEdges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+                    let forcing = if b.num("couple") == 2.0 {
+                        let open = coupling::open_edges(&sea, solver.w, solver.h, &solver.reference)?;
+                        coupling::forcing_from_series(&open, &b.f64s("seriesTimes").ok_or("missing series times")?, &b.f64s("seriesValues").ok_or("missing series values")?, local_seconds, 0.02)?
+                    } else {
+                        let mut parent = tsunami::Solver::new(
+                            b.num("nestW") as usize, b.num("nestH") as usize, b.num("nestCell"),
+                            b.f64s("nestDepth").ok_or("missing regional depths")?, b.f64s("nestEta").ok_or("missing regional wave")?, b.num("nestAbsorbing") == 1.0,
+                        )?;
+                        if b.num("nestMethod") == 1.0 { parent.method = tsunami::Method::FiniteVolume; }
+                        if b.num("nestMethod") == 3.0 { parent.method = tsunami::Method::Dispersive; parent.advance(0)?; }
+                        let bounds = b.f64s("nestBounds").filter(|v| v.len() == 4).ok_or("missing regional bounds")?;
+                        let extent = b.f64s("nestExtent").filter(|v| v.len() == 4).ok_or("missing local extent")?;
+                        let geography = nest::Geography { bounds: [bounds[0], bounds[1], bounds[2], bounds[3]], extent: [extent[0], extent[1], extent[2], extent[3]], zone: if b.num("nestZone").is_finite() { b.num("nestZone") as i32 } else { 56 } };
+                        let tuning = nest::Tuning { per_edge: 16, margin: None, ramp: None };
+                        let plan = nest::plan_geographic(&parent, &solver, &geography, &sea, &tuning)?;
+                        let source = b.f64s("coupleSource").filter(|v| v.len() == 2).unwrap_or_else(|| vec![0.0, 0.0]);
+                        let seconds = if b.num("coupleSeconds").is_finite() { b.num("coupleSeconds") } else { coupling::parent_seconds(&plan, parent.cell, (source[0], source[1]), local_seconds, 120.0, 120.0) };
+                        // members of an ensemble that differ only in local settings share one regional run
+                        let key = b.u8s("cacheKey").unwrap_or_default();
+                        let cached = RECORDINGS.with(|c| c.borrow().get(&key).cloned());
+                        let hit = cached.is_some() && !key.is_empty();
+                        o.num("regionalCached", if hit { 1.0 } else { 0.0 });
+                        let (recording, regional_peak) = match cached.filter(|_| !key.is_empty()) {
+                            Some(hit) => hit,
+                            None => {
+                                if seconds / parent.dt > 40_000.0 { return Err("parent run needs too many steps".into()); }
+                                parent.record(&plan.points.iter().map(|p| (p.0, p.1)).collect::<Vec<_>>())?;
+                                while parent.time < seconds { parent.advance(200)?; }
+                                let r = parent.recorded().ok_or("no recording")?;
+                                let made = (coupling::Recording { times: r.times.clone(), values: r.values.clone(), points: r.points }, parent.peak.iter().fold(0.0_f64, |m, v| m.max(*v)));
+                                if !key.is_empty() { RECORDINGS.with(|c| { let mut c = c.borrow_mut(); if c.len() >= 8 { c.clear(); } c.insert(key.clone(), made.clone()); }); }
+                                made
+                            }
+                        };
+                        o.num("regionalSeconds", seconds).num("regionalPeak", regional_peak).num("snapped", plan.snapped as f64);
+                        coupling::forcing_from_recording(&plan, &recording, 120.0, 0.02, local_seconds)?
+                    };
+                    for e in &forcing.edges { solver.set_forcing(e.edge, forcing.times.clone(), e.series.clone(), e.points)?; }
+                    // arrival times count from when the wave reached the model's edge, in the local clock
+                    TSUNAMI_LAND.with(|l| { let mut l = l.borrow_mut(); if !b.num("arrivalOrigin").is_finite() && forcing.arrival.is_finite() { l.1 = forcing.arrival - forcing.offset; } });
+                    let codes: Vec<f64> = forcing.edges.iter().map(|e| match e.edge { inundation::Edge::North => 0.0, inundation::Edge::East => 1.0, inundation::Edge::South => 2.0, inundation::Edge::West => 3.0 }).collect();
+                    o.num("coupled", b.num("couple")).num("arrival", forcing.arrival).num("offset", forcing.offset).num("peak", forcing.peak).num("rows", forcing.times.len() as f64)
+                        .f64s("edgeCodes", &codes).f64s("edgePeak", &forcing.edges.iter().map(|e| e.peak).collect::<Vec<_>>())
+                        .f64s("edgePoints", &forcing.edges.iter().map(|e| e.points as f64).collect::<Vec<_>>()).f64s("edgeSnapped", &forcing.edges.iter().map(|e| e.snapped as f64).collect::<Vec<_>>());
+                    if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
+                    o.num("dt", solver.dt);
+                    INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
+                } else {
+                    if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
+                    o.num("dt", solver.dt);
+                    INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
+                }
             } else {
                 let mut solver = tsunami::Solver::new(
                     b.num("W") as usize, b.num("H") as usize, b.num("cell"),
@@ -590,15 +731,24 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 {
                 return Err("invalid tsunami step count".into());
             }
-            let nonlinear = INUNDATION.with(|slot| -> Result<bool, String> {
+            let nested = NEST.with(|slot| -> Result<bool, String> {
+                let mut slot = slot.borrow_mut();
+                let Some(n) = slot.as_mut() else { return Ok(false); };
+                n.advance(steps as usize)?;
+                let s = &n.child;
+                o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
+                    .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume).num("feedbackVolume", n.feedback_volume);
+                inundation_frame(&mut o, s, b.num("extremes") == 1.0);
+                o.f32s("parentEta", &n.parent.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                Ok(true)
+            })?;
+            let nonlinear = nested || INUNDATION.with(|slot| -> Result<bool, String> {
                 let mut slot = slot.borrow_mut();
                 let Some(s) = slot.as_mut() else { return Ok(false); };
                 s.advance(steps as usize)?;
                 o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
                     .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume);
-                for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
-                    o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
-                }
+                inundation_frame(&mut o, s, b.num("extremes") == 1.0);
                 Ok(true)
             })?;
             if !nonlinear {
@@ -612,6 +762,236 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     Ok(())
                 })?;
             }
+        }
+        "inertialPrepare" => {
+            // the area model's terrain averaged into blocks the 2D solver can take (see inertial_grid.rs)
+            let a = area_of(b)?;
+            let g = inertial_grid::prepare(&a, b.num("maxSide") as usize)?;
+            o.num("W", g.w as f64).num("H", g.h as f64).num("cell", g.cell).num("factor", g.factor as f64).f64s("dem", &g.dem).u8s("valid", &g.valid).u8s("ocean", &g.ocean);
+        }
+        "inertialCell" => {
+            let a = area_of(b)?;
+            let g = prepared_of(b)?;
+            o.num("index", inertial_grid::cell_of(&g, &a, b.num("i") as i64).map_or(-1.0, |c| c as f64));
+        }
+        "inertialExpand" => {
+            // the solver's answer spread over the area model's cells; `peak` shows the deepest water instead of the final depth
+            let a = area_of(b)?;
+            let g = prepared_of(b)?;
+            let n = g.w * g.h;
+            let field = |k: &str| -> Result<Option<Vec<f64>>, String> { match b.f64s(k) { Some(v) if v.len() == n => Ok(Some(v)), Some(_) => Err(format!("the solver's {k} does not match its grid")), None => Ok(None) } };
+            let (depth, peak, vx, vy, class, speed, arrival) = (field("depth")?.ok_or("missing depths")?, field("peak")?, field("vx")?, field("vy")?, field("peakClass")?, field("peakSpeed")?, field("arrival")?);
+            let e = inertial_grid::expand(&a, &g, &inertial_grid::SolverResult { depth: &depth, peak: peak.as_deref(), vx: vx.as_deref(), vy: vy.as_deref(), peak_class: class.as_deref(), peak_speed: speed.as_deref(), arrival: arrival.as_deref() }, b.num("peakMode") == 1.0);
+            o.f32s("depth", &e.depth).u8s("wet", &e.wet).f32s("level", &e.level).f64s("vx", &e.vx).f64s("vy", &e.vy);
+            if let Some(t) = &e.arrival { o.f32s("arrival", t); }
+            if let Some(hz) = &e.hazard { o.u8s("cls", &hz.class).f32s("vel", &hz.speed).f64s("km2", &hz.km2); }
+        }
+        "effectiveRainSeries" => {
+            // a storm's rain less its initial and continuing losses, in short steps, for the 2D solver (see flash.rs)
+            let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
+            let r = flash::effective_rain_series(b.num("rainMm"), b.num("hours"), b.num("initialLoss"), b.num("contLoss"), optional("afterHours", 2.0), optional("stepSeconds", flash::STEP_SECONDS))?;
+            o.f64s("series", &r.series).num("seconds", r.seconds).num("stepSeconds", r.step_seconds).num("stormHours", r.storm_hours).num("rainMm", r.rain_mm)
+                .num("effectiveMm", r.effective_mm).num("capped", if r.capped { 1.0 } else { 0.0 });
+        }
+        "tsunamiGrid" => {
+            // a grid for the tsunami lab, built and checked in Rust (tsunami_grid.rs): kind 0 regional, 1 idealised estuary, 2 local terrain scene
+            let source = b.f64s("source").filter(|v| v.len() == 2).map_or([f64::NAN, f64::NAN], |v| [v[0], v[1]]);
+            let (amplitude, width, absorbing) = (b.num("amplitude"), b.num("width"), b.num("absorbing") == 1.0);
+            let elevation = b.f64s("elevation").unwrap_or_default();
+            let grid = match b.num("kind") as i64 {
+                0 => {
+                    let bounds = b.f64s("bounds").unwrap_or_default();
+                    let basin = if b.num("coast") == 1.0 {
+                        tsunami_grid::Basin::Coast { id_ok: b.num("idOk") == 1.0, w: b.num("bW") as usize, h: b.num("bH") as usize, cell: b.num("bCell"), elevation: &elevation, bounds: &bounds }
+                    } else {
+                        tsunami_grid::Basin::Ideal(match b.num("shape") as i64 { 0 => tsunami_grid::Shape::Flat, 2 => tsunami_grid::Shape::Island, _ => tsunami_grid::Shape::Shelf })
+                    };
+                    tsunami_grid::regional(&tsunami_grid::Regional { basin, deep: b.num("deep"), amplitude, width, source, absorbing, method: if b.num("method").is_finite() { b.num("method") as u8 } else { 255 } })?
+                }
+                1 => tsunami_grid::estuary(&tsunami_grid::Estuary { amplitude, width, source, absorbing, tide: b.num("tide"), roughness: b.num("roughness"), lake_level: b.num("lakeLevel") })?,
+                _ => {
+                    let valid = b.u8s("valid");
+                    let extent = b.f64s("extent").unwrap_or_default();
+                    let sea: Vec<inundation::Edge> = b.f64s("seaEdges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+                    tsunami_grid::local(&tsunami_grid::Local {
+                        terrain: tsunami_grid::LocalTerrain { id_ok: b.num("idOk") == 1.0, w: b.num("bW") as usize, h: b.num("bH") as usize, cell: b.num("bCell"), valid: valid.as_deref(), elevation: &elevation, extent: &extent, sea_edges: &sea },
+                        amplitude, width, source, absorbing, tide: b.num("tide"), roughness: b.num("roughness"), coupled: b.num("coupled") == 1.0,
+                    })?
+                }
+            };
+            o.num("W", grid.w as f64).num("H", grid.h as f64).num("cell", grid.cell).f64s("depth", &grid.depth).f64s("eta", &grid.eta).num("absorbing", f64::from(grid.absorbing))
+                .num("method", f64::from(grid.method)).num("coupled", f64::from(grid.coupled));
+            if let Some(bed) = &grid.bed { o.f64s("bed", bed); }
+            if let Some(valid) = &grid.valid { o.u8s("valid", valid); }
+            if let Some(r) = grid.roughness { o.num("roughness", r); }
+        }
+        "connectedWaterDepth" => {
+            // the sea filled inward from a scene's open edges (see tsunami_grid.rs)
+            let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+            let bed = b.f64s("bed").ok_or("missing bed")?;
+            if w == 0 || h == 0 || bed.len() != w * h { return Err("the bed does not match the grid".into()); }
+            let valid = b.u8s("valid");
+            if valid.as_ref().is_some_and(|v| v.len() != bed.len()) { return Err("the mask does not match the grid".into()); }
+            let edges: Vec<inundation::Edge> = b.f64s("edges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+            o.f64s("depth", &tsunami_grid::connected_water_depth(&bed, w, h, b.num("level"), &edges, valid.as_deref())?);
+        }
+        "ensemblePlan" => {
+            // the runs of a sensitivity ensemble (see ensemble.rs): kind 0 base, 1 low, 2 high, 3 severe, 4 mild; input 0..3 amplitude, tide, roughness, terrain (-1 when none)
+            let d = ensemble::Spread::default();
+            let or = |k: &str, v: f64| if b.num(k).is_finite() { b.num(k) } else { v };
+            let spread = ensemble::Spread { amplitude_percent: or("amplitudePercent", d.amplitude_percent), tide_metres: or("tideMetres", d.tide_metres), roughness_percent: or("roughnessPercent", d.roughness_percent), terrain_metres: or("terrainMetres", d.terrain_metres) };
+            let base = ensemble::Factors { amplitude: b.num("amplitude"), tide: b.num("tide"), roughness: b.num("roughness"), terrain: 0.0 };
+            let members = ensemble::plan(base, &spread, b.num("terrain") != 0.0, b.num("varyAmplitude") != 0.0);
+            let code = |i: ensemble::Input| ensemble::INPUTS.iter().position(|x| *x == i).unwrap() as i32;
+            let (mut kind, mut input, mut factors) = (Vec::new(), Vec::new(), Vec::new());
+            for m in &members {
+                let (k, i) = match m.kind { ensemble::Kind::Base => (0, -1), ensemble::Kind::Low(i) => (1, code(i)), ensemble::Kind::High(i) => (2, code(i)), ensemble::Kind::Severe => (3, -1), ensemble::Kind::Mild => (4, -1) };
+                kind.push(k); input.push(i);
+                factors.extend([m.factors.amplitude, m.factors.tide, m.factors.roughness, m.factors.terrain]);
+            }
+            o.i32s("kind", &kind).i32s("input", &input).f64s("factors", &factors);
+        }
+        "encodeRates" => {
+            // hazard rates per year to the stored one-byte codes (see codec.rs)
+            let r = b.f64s("rates").ok_or("missing rates")?;
+            o.u8s("codes", &r.iter().map(|v| codec::encode_rate(*v)).collect::<Vec<_>>());
+        }
+        "decodeRates" => {
+            // stored codes to rates per year, and to the hazard class of each (-1 not drawn)
+            let c = b.u8s("codes").ok_or("missing codes")?;
+            let rates: Vec<f64> = c.iter().map(|v| codec::decode_rate(*v)).collect();
+            o.i32s("classes", &rates.iter().map(|r| codec::class_of_rate(*r)).collect::<Vec<_>>()).f64s("rates", &rates);
+        }
+        "classOfRates" => {
+            let r = b.f64s("rates").ok_or("missing rates")?;
+            o.i32s("classes", &r.iter().map(|v| codec::class_of_rate(*v)).collect::<Vec<_>>());
+        }
+        "terrarium" => {
+            let rgba = b.u8s("rgba").ok_or("missing rgba")?;
+            let n = b.num("n") as usize;
+            if rgba.len() < n * n * 4 { return Err("tile has fewer pixels than n x n".into()); }
+            o.f32s("heights", &codec::decode_terrarium(&rgba, n));
+        }
+        "waterPoint" => {
+            // the ocean cell nearest a target (see lab.rs); x and y are -1 when no cell is deep enough
+            let z = b.f64s("elevation").ok_or("missing elevation")?;
+            let p = lab::water_point(&z, b.num("width") as usize, (b.num("targetX"), b.num("targetY")), b.num("minDepth"));
+            o.num("x", p.map_or(-1.0, |p| p.0 as f64)).num("y", p.map_or(-1.0, |p| p.1 as f64));
+        }
+        "frameStats" => {
+            // what a frame has flooded and its extremes (see lab.rs)
+            let get = |k: &str| b.f64s(k).unwrap_or_default();
+            let s = lab::frame_stats(&get("depth"), &get("water"), &get("speed"), &get("peak"));
+            o.num("flooded", s.flooded as f64).num("maxLandDepth", s.max_land_depth).num("maxSpeed", s.max_speed).num("maxPeak", s.max_peak);
+        }
+        "terrainColours" => {
+            // display heights and colours of a grid's ground (see lab.rs); NaN marks unknown heights
+            let t = lab::terrain(b.f64s("elevation").ok_or("missing elevation")?, b.u8s("valid").as_deref());
+            o.f64s("elevation", &t.elevation).num("low", t.low).num("high", t.high).u8s("colours", &t.colours);
+        }
+        "spans" => {
+            // minimum, maximum and count of non-finite values for each of `columns` columns of run-major values
+            let values = b.f64s("values").ok_or("missing values")?;
+            let columns = b.num("columns") as usize;
+            if columns == 0 || values.len() % columns != 0 { return Err("values do not fill the columns".into()); }
+            let spans: Vec<ensemble::Span> = (0..columns).map(|c| ensemble::span(values.iter().skip(c).step_by(columns).copied())).collect();
+            o.f64s("min", &spans.iter().map(|s| s.min).collect::<Vec<_>>()).f64s("max", &spans.iter().map(|s| s.max).collect::<Vec<_>>()).i32s("missing", &spans.iter().map(|s| s.missing as i32).collect::<Vec<_>>());
+        }
+        "parseSeries" => {
+            // a wave series file's text (UTF-8 bytes) to seconds and metres (see series.rs)
+            let bytes = b.u8s("text").ok_or("missing text")?;
+            let max_rows = if b.num("maxRows").is_finite() { b.num("maxRows") as usize } else { series::MAX_ROWS };
+            let (times, values) = series::parse_series_csv(&String::from_utf8_lossy(&bytes), max_rows)?;
+            o.f64s("times", &times).f64s("values", &values);
+        }
+        "tsunamiBounds" => {
+            // [south, west, north, east] of a place's four corners, degrees
+            // (a place's grid size is not needed for its bounds, so the bare locations list works too)
+            let extent = b.f64s("placeExtent").filter(|v| v.len() == 4).ok_or("missing place extent")?;
+            let zone = if b.num("placeZone").is_finite() { b.num("placeZone") as i32 } else { 56 };
+            o.f64s("bounds", &place::bounds(&place::Place { extent: [extent[0], extent[1], extent[2], extent[3]], w: 1, h: 1, zone }));
+        }
+        "mga" => {
+            // latitude and longitude to MGA easting and northing (mode 0) or back (mode 1), in bulk, for one zone
+            let zone = if b.num("zone").is_finite() { b.num("zone") as i32 } else { 56 };
+            let (first, second) = (b.f64s("a").ok_or("missing coordinates")?, b.f64s("b").ok_or("missing coordinates")?);
+            if first.len() != second.len() { return Err("the coordinate lists differ in length".into()); }
+            let out: Vec<(f64, f64)> = first.iter().zip(&second).map(|(p, q)| if b.num("mode") == 1.0 { geo::from_mga(*p, *q, zone) } else { geo::to_mga(*p, *q, zone) }).collect();
+            o.f64s("a", &out.iter().map(|c| c.0).collect::<Vec<_>>()).f64s("b", &out.iter().map(|c| c.1).collect::<Vec<_>>());
+        }
+        "tsunamiCell" => {
+            // the grid cell of a place under a latitude and longitude, or -1
+            let p = place_of(b, "place")?;
+            o.num("index", place::cell_index(&p, b.num("lat"), b.num("lon")).map_or(-1.0, |c| c as f64));
+        }
+        "tsunamiPixelMap" => {
+            // the grid cell under every pixel of a canvas laid over [south, west, north, east], row 0 the north edge (-1 outside the place)
+            let p = place_of(b, "place")?;
+            let over = b.f64s("over").filter(|v| v.len() == 4).ok_or("missing canvas bounds")?;
+            let (width, height) = (b.num("width"), b.num("height"));
+            if !(width >= 1.0 && height >= 1.0 && width * height <= 16_000_000.0) { return Err("invalid canvas size".into()); }
+            o.i32s("map", &place::pixel_map(&p, [over[0], over[1], over[2], over[3]], width as usize, height as usize));
+        }
+        "tsunamiToArea" => {
+            // a tsunami run's extremes on an area model's cells (see place.rs)
+            let p = place_of(b, "place")?;
+            let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+            let dem = b.f64s("dem").ok_or("missing elevations")?;
+            if w == 0 || dem.len() != w * h { return Err("the elevations do not match the grid".into()); }
+            let (valid, ocean) = (b.u8s("valid").unwrap_or_default(), b.u8s("ocean").unwrap_or_default());
+            if (!valid.is_empty() && valid.len() != dem.len()) || (!ocean.is_empty() && ocean.len() != dem.len()) { return Err("the masks do not match the grid".into()); }
+            let area = dam::Area { w, h, cell: b.num("cell"), dem, valid, ocean };
+            let over = b.f64s("geo").filter(|v| v.len() == 4).ok_or("missing area bounds")?;
+            let (land, peak, arrival, class, speed) = (b.u8s("land").ok_or("missing land mask")?, b.f64s("peak").ok_or("missing peaks")?, b.f64s("arrival").ok_or("missing arrivals")?, b.u8s("cls").ok_or("missing classes")?, b.f64s("vel").ok_or("missing speeds")?);
+            let n = p.w * p.h;
+            if [land.len(), peak.len(), arrival.len(), class.len(), speed.len()].iter().any(|l| *l != n) { return Err("the run does not match the place grid".into()); }
+            let r = place::run_on_area(&area, [over[0], over[1], over[2], over[3]], &p, &place::Derived { land: &land, peak: &peak, arrival: &arrival, class: &class, speed: &speed });
+            o.f32s("depth", &r.depth).u8s("wet", &r.wet).f32s("level", &r.level).f32s("arrival", &r.arrival).u8s("cls", &r.class).f32s("vel", &r.speed).f64s("km2", &r.km2).num("covered", r.covered as f64);
+        }
+        "damStart" => {
+            // A dam failure on an area model: plan the window, breach and reservoir, and start the solver (see dam.rs).
+            DAM.with(|s| *s.borrow_mut() = None);
+            let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+            let dem = b.f64s("dem").ok_or("missing elevations")?;
+            let indices = |k: &str| b.f64s(k).unwrap_or_default().iter().map(|c| *c as usize).collect::<Vec<_>>();
+            if dem.len() != w.checked_mul(h).ok_or("grid overflow")? || w == 0 { return Err("the elevations do not match the grid".into()); }
+            let (valid, ocean) = (b.u8s("valid").unwrap_or_default(), b.u8s("ocean").unwrap_or_default());
+            if (!valid.is_empty() && valid.len() != dem.len()) || (!ocean.is_empty() && ocean.len() != dem.len()) { return Err("the masks do not match the grid".into()); }
+            let area = dam::Area { w, h, cell: b.num("cell"), dem, valid, ocean };
+            let params = dam::Params {
+                gauge: b.num("gauge") as usize, crest: b.num("crest") as usize, below: b.num("below") as usize, lake: b.num("lake"),
+                route: indices("route"), downstream: indices("downstream"), volume: b.num("volume"), mode: dam::Mode::from_code(b.num("mode")),
+                time_scale: if b.num("timeScale").is_finite() { b.num("timeScale") } else { 1.0 },
+            };
+            let run = dam::Run::start(area, &params)?;
+            let p = &run.plan;
+            o.num("W", p.w as f64).num("H", p.h as f64).num("cell", p.cell).num("factor", p.factor as f64).num("volume", p.volume).num("requested", p.requested)
+                .num("depth", p.depth).num("wallHeight", p.wall_height).num("reservoirCells", p.reservoir_cells as f64).num("breachWidth", p.froehlich.width)
+                .num("breachSeconds", p.breach_seconds).num("breachStart", p.breach_start).num("froehlichPeak", p.froehlich.peak).num("breachCells", p.breach_cells.len() as f64)
+                .num("seconds", p.seconds).num("dt", run.solver.dt);
+            DAM.with(|s| *s.borrow_mut() = Some(run));
+        }
+        "damStep" => {
+            let steps = b.num("steps");
+            if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 { return Err("invalid dam-break step count".into()); }
+            DAM.with(|slot| -> Result<(), String> {
+                let mut slot = slot.borrow_mut();
+                let run = slot.as_mut().ok_or("no active dam-break run")?;
+                run.advance(steps as usize)?;
+                o.num("time", run.solver.time).num("dt", run.solver.dt).num("volumeError", run.solver.volume_error()).num("discharge", run.discharge())
+                    .num("peakDischarge", run.peak_discharge).num("peakDischargeAt", run.peak_discharge_at);
+                Ok(())
+            })?;
+        }
+        "damFinish" => {
+            DAM.with(|slot| -> Result<(), String> {
+                let slot = slot.borrow();
+                let run = slot.as_ref().ok_or("no active dam-break run")?;
+                let r = run.finish();
+                o.f32s("depth", &r.depth).u8s("wet", &r.wet).f32s("level", &r.level).f32s("arrival", &r.arrival).u8s("cls", &r.class).f32s("vel", &r.speed)
+                    .f64s("km2", &r.km2).num("covered", r.covered as f64).num("edge", if r.edge { 1.0 } else { 0.0 });
+                Ok(())
+            })?;
         }
         "inertialStart" => {
             // One simulation per dedicated worker/module instance.

@@ -32,6 +32,22 @@ function floatTiff(W, H, data) {
   return buf;
 }
 
+// A reservoir behind a wall in the middle of the window: a flat lake (100 m, 30 by 20 cells) with high banks on every side except a 3-cell wall (103 m) to the east, and
+// a floodplain falling away beyond it. The gauge is the window's centre, in the lake.
+function damValley(W, H) {
+  const dem = new Float32Array(W * H), cx = W >> 1, cy = H >> 1;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const dx = x - cx, dy = Math.abs(y - cy);
+    let z;
+    if (dx < -16 || (dx <= 17 && dy >= 12)) z = 110 + Math.max(0, -dx - 16) * 0.5 + Math.max(0, dy - 12) * 0.5;   // banks and hills round the lake
+    else if (dx <= 15) z = dy < 10 ? 100 : 105;                                                                     // the lake and its shore
+    else if (dx <= 17) z = dy < 12 ? 103 : 110;                                                                     // the wall
+    else z = 94 - 0.1 * (dx - 17) + 0.05 * dy;                                                                      // the floodplain below
+    dem[y * W + x] = z;
+  }
+  return dem;
+}
+
 // An OpenStreetMap (Overpass) answer for the query's box: a street grid with shared nodes, 4,000 buildings, a school
 // and two evacuation centres
 function overpassFor(query) {
@@ -84,13 +100,14 @@ async function main() {
     const errors = [];
     page.on('pageerror', (e) => errors.push((e.stack || e.message).split('\n').slice(0, 4).join(' | ')));
     const asked = { elevation: 0, osm: 0 };
+    let damTerrain = false;   // serve a reservoir behind a wall instead of the synthetic valley while a dam model is built
     await context.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.hostname === '127.0.0.1') return route.continue();
       if (/services\.ga\.gov\.au/.test(url.hostname) && /WCSServer/.test(url.pathname) && /DEM_SRTM/.test(url.pathname)) {
         asked.elevation++;
         const W = Number(url.searchParams.get('width') || url.searchParams.get('WIDTH')) || 667, H = Number(url.searchParams.get('height') || url.searchParams.get('HEIGHT')) || W;
-        const g = F.syntheticTerrain({ W, H, cell: 30 });
+        const g = damTerrain ? { dem: damValley(W, H) } : F.syntheticTerrain({ W, H, cell: 30 });
         return route.fulfill({ contentType: 'image/tiff', body: floatTiff(W, H, g.dem) });
       }
       if (/overpass|maps\.mail\.ru/.test(url.hostname)) {
@@ -246,7 +263,7 @@ async function main() {
     const mainArea = await page.evaluate(() => (window.__floodAreaInfo().find((x) => x.active) || {}).key);
     // the run feeds the impact tools: the button opens the flood model here and the impact box counts from the run's depths
     await page.click('#tsImpact');
-    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.tsunami", null, { timeout: 120000 });
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.special && window.__floodStatus.inertial.special.kind === 'tsunami'", null, { timeout: 120000 });
     await page.waitForFunction("/Experimental tsunami run/.test(document.getElementById('impactBox').textContent)", null, { timeout: 120000 });
     const used = await page.evaluate(() => ({ note: document.getElementById('tsImpactNote').textContent, summary: document.getElementById('summaryLine').textContent, impact: { ...window.__floodStatus.impact } }));
     const shot = async (name) => { if (process.env.TS_SHOTS) await page.screenshot({ path: path.join(process.env.TS_SHOTS, `${name}.png`) }); };
@@ -322,6 +339,26 @@ async function main() {
     assert.ok(!after.inertial && /Press Run/.test(after.status), `a changed storm drops the 2D run: ${JSON.stringify(after)}`);
     await page.evaluate(() => { document.getElementById('flashMethod').value = 'screen'; document.getElementById('flashMethod').dispatchEvent(new Event('change')); });
     assert.ok(await page.evaluate(() => document.getElementById('flash2dControls').hidden), 'the screening model hides the 2D controls');
+
+    // a dam failure: a dam model on a reservoir behind a wall, broken and run; the flood floods the floodplain below, and the impact tools use it
+    damTerrain = true;
+    const damOk = await page.evaluate(() => window.__floodModelHere(-27.2, 152.6, { kind: 'river', name: 'Test dam', reportId: 'storage:test', quiet: true }));   // a dam model is one started from a storage report
+    damTerrain = false;
+    assert.equal(damOk, true, 'the dam model was built');
+    const wall = await page.evaluate(() => window.__floodDam());
+    assert.ok(wall && wall.lake === 100, `the wall below the reservoir was found: ${JSON.stringify(wall)}`);
+    assert.ok(await page.evaluate(() => !document.getElementById('damSet').hidden), 'the dam-failure controls show for a dam model');
+    await page.evaluate(() => window.__floodDamBreak({ mode: 'overtopping', speed: 0.5, volumeMl: 3000 }));
+    await page.waitForFunction("window.__floodStatus.dam && (window.__floodStatus.dam.done || window.__floodStatus.dam.error)", null, { timeout: 240000 });
+    const dam = await page.evaluate(() => ({ ...window.__floodStatus.dam, text: document.getElementById('damStatus').textContent, summary: document.getElementById('summaryLine').textContent, inertial: window.__floodStatus.inertial && window.__floodStatus.inertial.special && window.__floodStatus.inertial.special.kind }));
+    assert.ok(dam.done && dam.covered > 5000 && dam.inertial === 'dam', `the dam failure ran and became the area's flood run: ${JSON.stringify(dam)}`);
+    assert.ok(Math.abs(dam.volumeError) < 0.002 * 3e6, `water is conserved: ${dam.volumeError}`);
+    assert.ok(dam.peakDischarge > 50 && dam.peakDischarge < 20 * dam.froehlichPeak, `a plausible peak discharge: ${dam.peakDischarge} against ${dam.froehlichPeak}: ${JSON.stringify(dam)}`);
+    assert.match(dam.summary, /Dam failure/, dam.summary);
+    await page.waitForFunction("/Experimental dam-failure run/.test(document.getElementById('impactBox').textContent)", null, { timeout: 120000 });
+    const damHazard = await page.evaluate(() => { const set = document.getElementById('colorMode'); set.value = 'hazard'; set.dispatchEvent(new Event('change')); const legend = document.getElementById('modeLegend').textContent; set.value = 'depth'; set.dispatchEvent(new Event('change')); return legend; });
+    assert.match(damHazard, /depth × speed/, 'hazard classes are offered for the dam failure');
+    await shot('dam');
 
     assert.deepEqual(errors, [], 'no page errors');
     console.log(`impact: ${impact.bWet} of ${impact.buildings} buildings flooded, ${impact.cutKm} km of road cut (sweep ${impact.timing.sweepMs} ms); `

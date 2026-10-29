@@ -160,7 +160,8 @@ test('a long series is trimmed to the arrival, scaled and written with its prove
 });
 
 test('the example PTHA18 series loads in the lab and drives the nested local model', async () => {
-  const { parseSeriesCsv, forcingFromSeries } = await couplingModule;
+  const { parseSeriesCsv } = await couplingModule;
+  const { startRun } = await import('../viewer/tsunami-runner.js');
   const { tsunamiGrid } = await gridModule;
   const text = fs.readFileSync(path.join(__dirname, '../docs/examples/ptha18-southamerica-142847-gauge1450.5.csv'), 'utf8');
   assert.match(text, /Geoscience Australia PTHA18, CC BY 4.0/);
@@ -168,9 +169,8 @@ test('the example PTHA18 series loads in the lab and drives the nested local mod
   assert.ok(series.times.length > 300 && series.times.length < 400 && series.times[0] >= 0 && series.times[0] < 60 && Math.max(...series.values.map(Math.abs)) > .05 && Math.max(...series.values.map(Math.abs)) < .2);
   const fine = JSON.parse(fs.readFileSync(path.join(__dirname, '../viewer/public/tsunami-data/gold-coast-seaway.json')));
   const grid = tsunamiGrid({ preset: 'gold-coast-seaway', bathymetry: fine, amplitude: 0, absorbing: true, width: .45, coupled: true });
-  const forcing = forcingFromSeries({ fine, fineGrid: grid }, series, { maxLocalSeconds: 900 });
-  assert.deepEqual(Object.keys(forcing.edges).sort(), ['east', 'north']);
-  F.tsunamiStart({ ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([k]) => k.startsWith('force'))) });
+  const { coupling } = startRun(F, { grid, coupling: { series, seaEdges: fine.seaEdges, localSeconds: 900, tide: 0 } });
+  assert.deepEqual(Object.keys(coupling.edges).sort(), ['east', 'north']);
   let frame;
   while (!frame || frame.time < 900) frame = F.tsunamiStep(200);
   assert.ok(frame.water.every(h => Number.isFinite(h) && h >= 0));

@@ -7,121 +7,82 @@
 // pushed towards more flooding, and towards less). It brackets the model's
 // response to those inputs. It is not a sample from probability distributions,
 // so its ranges are not confidence intervals or hazard probabilities.
-import { forcingFromRecording, forcingFromSeries, levelSeries } from './tsunami-coupling.js';
+const EDGE_CODES = { north: 0, east: 1, south: 2, west: 3 }, EDGE_NAMES = ['north', 'east', 'south', 'west'];
 
-// Start a run, first computing any nested forcing. `cache` keeps regional
-// recordings so members that differ only in local settings share one regional
-// run. Returns what the page shows about the coupling, or null.
-export function startRun(F, data, report = () => {}, cache = new Map()) {
-  let grid = data.grid, coupling = null;
-  if (data.coupling) {
-    const { plan, parentGrid, seconds, localSeconds, series, scene, tide, cacheKey } = data.coupling;
-    let forcing;
-    if (series) {
-      // A supplied wave series replaces the regional model.
-      forcing = forcingFromSeries(scene, series, { maxLocalSeconds: localSeconds });
-      coupling = { source: 'series', arrival: forcing.arrival, offset: 0, peak: forcing.peak, edges: forcing.edges, rows: series.times.length };
-    } else {
-      // Regional run first (about a second), then the local model starts
-      // with its recorded wave as boundary forcing.
-      report({ stage: 'regional' });
-      let recording = cacheKey && cache.get(cacheKey);
-      if (!recording) {
-        recording = F.tsunamiParent(parentGrid, plan.points, seconds);
-        if (cacheKey) cache.set(cacheKey, recording);
-      }
-      forcing = forcingFromRecording(plan, recording, { maxLocalSeconds: localSeconds });
-      coupling = { source: 'regional', arrival: forcing.arrival, offset: forcing.offset, peak: forcing.peak, edges: forcing.edges, regionalSeconds: seconds, regionalPeak: Math.max(...recording.peak) };
-    }
-    grid = { ...grid, ...Object.fromEntries(Object.entries(forcing).filter(([key]) => key.startsWith('force'))), ...levelSeries(localSeconds, tide) };
-    coupling.tide = tide || 0;
+/* Start a run. The grid is the local model's; `data.coupling`, when there is one, says how its open edges are driven, and everything that follows is Rust (see
+ * rust/flood-core/src/coupling.rs and nest.rs): a regional offshore run recorded at handover points (`parentGrid`, `bounds`, `extent`, `zone`, `source`, optionally `seconds`
+ * and a `cacheKey` so runs that differ only in local settings share one regional run), a supplied `series`, or two-way nesting (`twoWay: { strength }`), with an optional
+ * rising `tide` over `localSeconds`. `seaEdges` are the local scene's open-sea edge names. `data.land` (1 where the ground is dry at mean sea level) lets the solver report what a
+ * run has flooded and its extremes (see tsunamiStep). Returns what the page shows about the coupling, or null, and how many steps to take at once. */
+export function startRun(F, data, report = () => {}) {
+  const c = data.coupling, withLand = (g) => ({ ...g, ...(data.land && { land: data.land }), ...(data.probes && { probes: Float64Array.from(data.probes), probeThreshold: data.probeThreshold }) });
+  if (!c) { F.tsunamiStart(withLand(data.grid)); return { coupling: null, batch: data.grid.method === 3 ? 16 : 200 }; }
+  const sea = Float64Array.from((c.seaEdges || []).map(name => EDGE_CODES[name]));
+  const parent = c.parentGrid && { nestW: c.parentGrid.W, nestH: c.parentGrid.H, nestCell: c.parentGrid.cell, nestDepth: c.parentGrid.depth, nestEta: c.parentGrid.eta, nestAbsorbing: c.parentGrid.absorbing ? 1 : 0, nestMethod: c.parentGrid.method, nestBounds: Float64Array.from(c.bounds), nestExtent: Float64Array.from(c.extent), nestZone: c.zone ?? 56 };
+  let mode;
+  if (c.series) mode = { couple: 2, seriesTimes: c.series.times, seriesValues: c.series.values };
+  else if (c.twoWay) mode = { nest: 1, ...parent, nestStrength: c.twoWay.strength ?? 0.25 };
+  else mode = { couple: 1, ...parent, coupleSource: Float64Array.from(c.source), ...(c.seconds && { coupleSeconds: c.seconds }), ...(c.cacheKey && { cacheKey: new TextEncoder().encode(c.cacheKey) }) };
+  if (!c.series) report({ stage: 'regional' });
+  const started = F.tsunamiStart(withLand({ ...data.grid, ...mode, nestEdges: sea, coupleLocalSeconds: c.localSeconds, tideRange: c.tide || 0 }));
+  const tide = c.tide || 0;
+  if (c.twoWay && !c.series) {
+    const n = started.nest;
+    return { coupling: { source: 'regional-two-way', arrival: n.offset, offset: n.offset, peak: null, edges: {}, regionalPeak: null, handovers: n.handovers, snapped: n.snapped, strength: c.twoWay.strength ?? 0.25, tide }, batch: 200 };
   }
-  F.tsunamiStart(grid);
-  return { coupling, batch: grid.method === 3 ? 16 : 200 };
+  const k = started.coupled, edges = Object.fromEntries(k.edgeCodes.map((code, i) => [EDGE_NAMES[code], { points: k.edgePoints[i], peak: k.edgePeak[i], snapped: k.edgeSnapped[i] }]));
+  const coupling = c.series
+    ? { source: 'series', arrival: k.arrival, offset: 0, peak: k.peak, edges, rows: k.rows, tide }
+    : { source: 'regional', arrival: k.arrival, offset: k.offset, peak: k.peak, edges, regionalSeconds: k.regionalSeconds, regionalPeak: k.regionalPeak, regionalCached: k.regionalCached, tide };
+  return { coupling, batch: data.grid.method === 3 ? 16 : 200 };
 }
 
-const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
-
-// The runs of an ensemble. `base` holds the current settings; `spread` how far
-// each is pushed. Terrain is a uniform vertical shift of the bed in metres
-// (negative lowers the ground, which floods more). Duplicates caused by
-// clamping are dropped.
-export function ensemblePlan(base, spread = {}, { terrain = true, amplitude = true } = {}) {
-  const { amplitudePercent = 50, tideMetres = .5, roughnessPercent = 50, terrainMetres = .5 } = spread;
-  const mid = { amplitude: base.amplitude, tide: base.tide, roughness: base.roughness, terrain: 0 };
-  const range = {
-    amplitude: amplitude ? [clamp(base.amplitude * (1 - amplitudePercent / 100), .05, 3), clamp(base.amplitude * (1 + amplitudePercent / 100), .05, 3)] : [base.amplitude, base.amplitude],
-    tide: [clamp(base.tide - tideMetres, -1, 2), clamp(base.tide + tideMetres, -1, 2)],
-    roughness: [clamp(base.roughness * (1 - roughnessPercent / 100), 0, .2), clamp(base.roughness * (1 + roughnessPercent / 100), 0, .2)],
-    terrain: terrain ? [-terrainMetres, terrainMetres] : [0, 0],
-  };
-  const members = [{ id: 'base', label: 'Baseline', group: 'base', factors: mid }];
-  const seen = new Set([JSON.stringify(mid)]);
-  const add = (id, label, group, change) => {
-    const factors = { ...mid, ...change }, key = JSON.stringify(factors);
-    if (seen.has(key)) return;
-    seen.add(key);
-    members.push({ id, label, group, factors });
-  };
+// The runs of an ensemble. `base` holds the current settings; `spread` how far each is pushed. Terrain is a uniform vertical shift of the bed in metres (negative lowers the
+// ground, which floods more). Which runs there are and their factors are worked out in Rust (rust/flood-core/src/ensemble.rs); the words are here.
+export function ensemblePlan(base, spread = {}, options = {}, F = globalThis.FloodCore) {
   const text = {
     amplitude: v => `Source strength ${v.toFixed(2)} m`,
     tide: v => `Initial sea level ${v.toFixed(2)} m`,
     roughness: v => `Manning n ${v.toFixed(3)}`,
     terrain: v => `Terrain ${v > 0 ? '+' : ''}${v.toFixed(2)} m`,
   };
-  for (const key of ['amplitude', 'tide', 'roughness', 'terrain']) {
-    add(`${key}-low`, `${text[key](range[key][0])}`, key, { [key]: range[key][0] });
-    add(`${key}-high`, `${text[key](range[key][1])}`, key, { [key]: range[key][1] });
-  }
-  // Inputs together: towards more flooding (stronger source, higher sea,
-  // smoother ground, lower terrain) and towards less.
-  add('severe', 'All towards more flooding', 'combined', { amplitude: range.amplitude[1], tide: range.tide[1], roughness: range.roughness[0], terrain: range.terrain[0] });
-  add('mild', 'All towards less flooding', 'combined', { amplitude: range.amplitude[0], tide: range.tide[0], roughness: range.roughness[1], terrain: range.terrain[1] });
-  return members;
+  return F.ensemblePlan(base, spread, options).map(({ kind, input, factors }) => {
+    if (kind === 'base') return { id: 'base', label: 'Baseline', group: 'base', factors };
+    if (kind === 'severe') return { id: 'severe', label: 'All towards more flooding', group: 'combined', factors };
+    if (kind === 'mild') return { id: 'mild', label: 'All towards less flooding', group: 'combined', factors };
+    return { id: `${input}-${kind}`, label: text[input](factors[input]), group: input, factors };
+  });
 }
 
-// Run one member to `seconds` and measure it. `probes` are gauge cell indices.
-// Arrival is the first time (to the sampling step) a gauge differs from its
-// initial level by more than `threshold`; the current speed is likewise
-// sampled at the end of each step batch, so it is a lower bound on the
-// instantaneous maximum.
-export function runMember(F, member, { seconds, probes, threshold = .05, step = 20, cache, onProgress = () => {} }) {
-  startRun(F, member, report => onProgress({ ...report, fraction: 0 }), cache);
+// Run one member to `seconds` and measure it. `probes` are gauge cell indices. Arrival is the first time (kept by the solver every step) a gauge differs from its initial
+// level by more than `threshold`; the speed is the fastest any cell reached in any step. The flooded area and depth are over the ground that is dry at the member's starting
+// level, as the solver's own summary counts them.
+export function runMember(F, member, { seconds, probes, threshold = .05, step = 20, onProgress = () => {} }) {
   const { depth, valid } = member.grid;
+  const land = Uint8Array.from(depth, (d, i) => (d === 0 && valid?.[i] !== 0 ? 1 : 0));
+  startRun(F, { ...member, land, probes, probeThreshold: threshold }, report => onProgress({ ...report, fraction: 0 }));
   let frame = F.tsunamiStep(0);
-  const arrival = probes.map(() => null);
-  let maxSpeed = 0;
   while (frame.time < seconds) {
     frame = F.tsunamiStep(Math.max(1, Math.min(step, Math.ceil((seconds - frame.time) / frame.dt))));
-    probes.forEach((index, k) => { if (arrival[k] == null && Math.abs(frame.eta[index]) > threshold) arrival[k] = frame.time; });
-    for (const v of frame.speed) if (v > maxSpeed) maxSpeed = v;
     onProgress({ stage: 'local', fraction: Math.min(1, frame.time / seconds), seconds: frame.time });
   }
-  let landDepth = 0, flooded = 0;
-  for (let i = 0; i < depth.length; i++) {
-    if (depth[i] !== 0 || valid?.[i] === 0) continue;
-    if (frame.peak[i] > landDepth) landDepth = frame.peak[i];
-    if (frame.peak[i] > .01) flooded++;
-  }
+  const end = F.tsunamiStep(0, true);
   return {
-    arrival, gaugePeak: probes.map(index => frame.peak[index]), landDepth,
-    floodedHectares: flooded * member.grid.cell ** 2 / 10000, maxSpeed, volumeError: frame.volumeError, simulated: frame.time,
+    arrival: probes.map((_, k) => (end.probeArrival[k] >= 0 ? end.probeArrival[k] : null)), gaugePeak: probes.map(index => end.peak[index]), landDepth: end.summary.maxLandDepth,
+    floodedHectares: end.summary.floodedHectares, maxSpeed: end.maxSpeed, volumeError: end.volumeError, simulated: end.time,
   };
 }
 
-// Minimum and maximum of each measure over all members (null arrivals are
-// counted separately: that gauge was not reached in that run).
-export function summarise(results) {
-  const span = values => {
-    const finite = values.filter(v => Number.isFinite(v));
-    return { min: finite.length ? Math.min(...finite) : null, max: finite.length ? Math.max(...finite) : null, missing: values.length - finite.length };
-  };
+// Minimum and maximum of each measure over all members (null arrivals are counted separately: that gauge was not reached in that run). The arithmetic is Rust's (`spans`).
+export function summarise(results, F = globalThis.FloodCore) {
   const gauges = results[0]?.arrival.length ?? 0;
+  const column = (pick) => F.spans(results.map(pick), 1)[0];
+  const perGauge = (field) => (gauges ? F.spans(results.flatMap(r => Array.from({ length: gauges }, (_, k) => r[field][k] ?? NaN)), gauges) : []);
   return {
-    arrival: Array.from({ length: gauges }, (_, k) => span(results.map(r => r.arrival[k]))),
-    gaugePeak: Array.from({ length: gauges }, (_, k) => span(results.map(r => r.gaugePeak[k]))),
-    landDepth: span(results.map(r => r.landDepth)),
-    floodedHectares: span(results.map(r => r.floodedHectares)),
-    maxSpeed: span(results.map(r => r.maxSpeed)),
+    arrival: perGauge('arrival'),
+    gaugePeak: perGauge('gaugePeak'),
+    landDepth: column(r => r.landDepth),
+    floodedHectares: column(r => r.floodedHectares),
+    maxSpeed: column(r => r.maxSpeed),
   };
 }

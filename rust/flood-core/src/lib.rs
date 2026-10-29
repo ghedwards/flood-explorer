@@ -29,5 +29,16 @@ pub mod inertial;
 pub mod tsunami;
 
 pub mod inundation;
+pub mod geo;
+pub mod codec;
+pub mod ensemble;
+pub mod lab;
+pub mod nest;
+pub mod series;
+pub mod tsunami_grid;
+pub mod inertial_grid;
+pub mod coupling;
+pub mod dam;
+pub mod place;
 
 mod dispersion;

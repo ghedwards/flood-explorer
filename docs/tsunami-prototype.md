@@ -635,7 +635,7 @@ and a browser test switches the Gold Coast Seaway scene in and out of coupling, 
 
 Limits, in order of importance:
 
-- **One-way and linear upstream.** The local model never feeds back. The
+- **One-way and linear upstream** (unless you choose two-way nesting, below, which in these scenes changes almost nothing). The local model never feeds back. The
   regional model is linear and its coastal depths are floored at 10 m, so
   amplitudes near the coast are only indicative; Green's law is a
   correction for slowly varying depth, not a substitute for nesting.
@@ -920,3 +920,48 @@ water (the tide's own cover included, as in the run's summary) and its arrival t
 Hazard classes (H1 to H6, Australian Disaster Resilience Guideline 7-3) are the worst depth-and-speed class over the run's frames, worked out in `deriveRun` from each frame's water depth and speed; frames are 30 s apart, so a faster moment between frames can be missed and the classes are a lower bound. Changing the scenario returns the area to river or storm flooding. A share link
 carries the run on show (place, scenario, tide, length and view) and plays it again when opened; it is not kept in the saved session, so a run is only
 started when asked for. The run's cells are drawn with smooth scaling rather than hard squares.
+
+## Two-way nesting (experimental, all in Rust)
+
+The **Nesting** choice under the offshore-wave controls (`tsunami.html`, regional incoming wave only) steps the regional model and the local one together and lets
+them exchange both ways. All of it is in `rust/flood-core/src/nest.rs`, run through the WebAssembly module; the page only passes the two grids and where one sits in
+the other (`viewer/tsunami-runner.js`), and the MGA transform it needs is `rust/flood-core/src/geo.rs`.
+
+- **Down.** Each regional step, the regional surface at the handover points along the local open edges (the same points and Green's-law scale as one-way) is added to
+  the local forcing as a new sample (`inundation::Solver::push_forcing`), so the regional model is always a step ahead of the local one.
+- **Up.** Whenever the local model reaches the regional model's time, every regional cell the local grid mostly covers (at least 60% of its area, with sea in it) moves a
+  share `strength` (0.25 here) of the way to the mean surface displacement and transport of the local sea cells inside it, scaled back by the inverse of the same law.
+  The weight is zero for the first 65% of the way in from the open edge and rises to one over the next 17%, so the regional wave entering the local model is left alone
+  and the feedback acts near the coast. Only the regional surface and the transports between handed-over cells change, so it is a relaxation, not an exact flux
+  match; the water it moves is reported (`feedbackVolume`). With `strength` 0 it is exactly one-way (a test checks the regional model is bit-for-bit what it is alone).
+- **Clock.** The regional model runs alone until the wave first passes 1 mm at a handover point; the local clock starts there (one-way starts 120 s before the
+  wave passes 2% of its peak, which needs the whole regional run in advance).
+
+**What it was checked against.** A one-dimensional shelf (100 m deep to a 12 m shelf, a wall at the coast), with a 640 m regional grid and an 80 m local grid over its
+last 24 regional cells. The true coast is 240 m inside the regional wall, so the regional model alone brings the reflected wave back at the wrong time. Against a
+single 80 m grid over the whole strip, the regional wave at a probe west of the local grid had a root-mean-square error of 0.055 m (54% of the signal) alone and with
+one-way nesting (identical, as the regional model is untouched), and 0.027 m (26%) with two-way nesting at strength 0.25: about half. Without the transports the
+feedback made it worse (0.20 m at strength 1); with them the error was between 0.027 and 0.05 m for every strength and margin tried (0.005 to 1; 1 to 20 regional
+cells), best near 0.02 for a short margin and 0.25 for the default one. Some error remains because the reference grid is itself first-order and dissipative.
+
+**The lab's scenes are too small for it to matter.** The local scenes are 4 to 8 km across and the regional cells 1.5 km, so the local grid covers 0 to 2 regional
+cells: Gold Coast Seaway hands over 2, Currumbin, Pine River and the Brisbane River mouth none (and then the run is exactly one-way, and the page says so). The
+validation above has a ratio of 8 and a nest 24 cells wide. A useful two-way nest here needs an intermediate level (say 250 m) between the 1.5 km regional grid and the
+25 to 50 m local one; the Rust model is written for any pair of grids, so that is a matter of terrain data and a second `Nest` rather than new solver code. Until
+then treat two-way as a check that the one-way answer is not changed much by the local coast, not as an improvement. In the Seaway scene it moved the regional
+surface by up to 1.5 m of a 2.4 m wave in the two cells the local grid covers, which is not validated against anything.
+
+## Where the numbers are worked out
+
+The map's live tsunami run keeps all its numerical work in Rust/WebAssembly. The solver itself tracks, every step (not just in the 120 stored frames), the deepest water, the
+fastest speed, the worst hazard class (Australian Disaster Resilience Guideline 7-3), the time of the deepest water and the first time the water stood 10 cm up
+(`tsunamiStep(steps, true)`); with the dry-land mask it also reports what each frame has flooded so far (`summary`). Where a place sits on the map (the lat/lon bounds, the
+cell under a point, the cell under every pixel of the canvas) and the carrying of a run onto an area model's cells for the impact tools are `rust/flood-core/src/place.rs`
+(`tsunamiCell`, `tsunamiPixelMap`, `tsunamiToArea`). The one-way coupling is Rust too (`rust/flood-core/src/coupling.rs` and `nest.rs`, started with `tsunamiStart` and a `couple` mode): where on the regional grid to read the
+wave for each open edge, Green's-law scaling, the regional run and its recording (kept in the module between runs that share a `cacheKey`), the forcing from that recording or
+from a supplied series, the rising tide and the regional run length. The 2D flash-flood solver's grid adaptation (`inertial_grid.rs`) and effective-rain series (`flash.rs`),
+the dam failure (`dam.rs`) and the map projection (`geo.rs`) are Rust as well. The lab's grids (the idealised basins and estuary, the prefetched coastal grids and the local terrain scenes, with their starting waves and the connected-water fill) are built and
+checked in `rust/flood-core/src/tsunami_grid.rs`, and an ensemble member's measures (gauge arrivals, speed, flooded area) are kept by the solver itself. Reading a wave series file
+(`series.rs`, `parseSeries`), the ensemble's runs and the ranges over them (`ensemble.rs`, `ensemblePlan`, `spans`), and the lab page's own numbers (`lab.rs`: the ocean cell
+nearest a spot, what a frame has flooded and its extremes, the terrain heights and colours) are Rust too. What stays in JavaScript is drawing and the words (colouring, legends,
+labels) while the stored hazard-extent rate codec and the Terrarium tile decoding are Rust too (`codec.rs`), used by the page and the build script alike.

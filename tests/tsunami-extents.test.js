@@ -1,26 +1,28 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const prep = require('../scripts/prepare-tsunami-extents.js');
+const F = require('./model.js');
 
 const load = () => import('../viewer/tsunami-extents.js');
 
-test('MGA coordinates match the published GDA reference point and round-trip', async () => {
+test('MGA coordinates match the published GDA reference point and round-trip (Rust, through the bridge)', async () => {
   const m = await load();
   const lat = -(37 + 57 / 60 + 3.7203 / 3600), lon = 144 + 25 / 60 + 29.5244 / 3600;     // Flinders Peak, zone 55 (GA's GDA technical manual)
-  const [e, n] = m.toMga(lat, lon, 55);
+  const [e, n] = F.toMga(lat, lon, 55);
   assert.ok(Math.abs(e - 273741.297) < 0.005 && Math.abs(n - 5796489.777) < 0.005, `${e} ${n}`);
-  const [la, lo] = m.fromMga(e, n, 55);
+  const [la, lo] = F.fromMga(e, n, 55);
   assert.ok(Math.abs(la - lat) < 1e-9 && Math.abs(lo - lon) < 1e-9);
-  assert.deepEqual(m.toMga(0, 153, 56).map(Math.round), [500000, 10000000]);
-  const [[s, w], [nn, ee]] = m.placeBounds({ extent: [537500, 6905500, 545500, 6910300], W: 160, H: 96 });
+  assert.deepEqual(F.toMga(0, 153, 56).map(Math.round), [500000, 10000000]);
+  const [[s, w], [nn, ee]] = m.placeBounds(F, { extent: [537500, 6905500, 545500, 6910300], W: 160, H: 96 });
   assert.ok(s > -28 && nn < -27.9 && w > 153.37 && ee < 153.48, 'the Seaway extent is at Southport');
+  assert.deepEqual(m.placeBounds(F, { extent: [537500, 6905500, 545500, 6910300] }), [[s, w], [nn, ee]], 'the bare location (an extent, no grid size) has bounds too');
 });
 
 test('rates round-trip through one byte within 6%, and classes follow the rate', async () => {
   const m = await load();
   for (const rate of [1e-5, 3e-4, 0.002, 0.01, 0.05, 0.9]) assert.ok(Math.abs(m.decodeRate(m.encodeRate(rate)) / rate - 1) < 0.06, String(rate));
   assert.equal(m.encodeRate(0), 0); assert.equal(m.decodeRate(0), 0);
-  assert.deepEqual([0, 1e-5, 1 / 5000, 1 / 2000, 1 / 800, 1 / 300, 1 / 150, 1 / 50].map(m.classOfRate), [-1, -1, 0, 1, 2, 3, 4, 5]);
+  assert.deepEqual([0, 1e-5, 1 / 5000, 1 / 2000, 1 / 800, 1 / 300, 1 / 150, 1 / 50].map((r) => m.classOfRate(r)), [-1, -1, 0, 1, 2, 3, 4, 5]);
   assert.match(m.yearsText(0.002), /1 in 500 years/); assert.match(m.yearsText(0), /not reached/);
   assert.equal(m.legendParts(0.3).length, 7);
 });
@@ -30,13 +32,13 @@ test('pixels are painted from the cell under them, north at the top, and left cl
   const place = { extent: [537500, 6905500, 545500, 6910300], W: 4, H: 2 };
   const codes = new Uint8Array(8);
   codes[0] = m.encodeRate(1 / 150);         // north-west cell
-  const px = m.extentPixels(place, codes, 40, 20);
+  const px = m.extentPixels(F, place, codes, 40, 20);
   const at = (x, y) => px.slice((y * 40 + x) * 4, (y * 40 + x) * 4 + 4);
-  const [[s, w], [n, e]] = m.placeBounds(place);
+  const [[s, w], [n, e]] = m.placeBounds(F, place);
   assert.equal(at(1, 1)[3], 215, 'the north-west corner is drawn');
   assert.equal(at(38, 18)[3], 0, 'the south-east corner has nothing');
   assert.deepEqual([...at(1, 1).slice(0, 3)], [0xa9, 0x2d, 0x7d], 'a rate of 1 in 150 years is the 1 in 100 to 1 in 250 class');
-  assert.ok(m.rateAt(place, codes, n - 0.001, w + 0.001) > 0 && m.rateAt(place, codes, s + 0.001, e - 0.001) === 0 && m.rateAt(place, codes, 0, 0) === null);
+  assert.ok(m.rateAt(F, place, codes, n - 0.001, w + 0.001) > 0 && m.rateAt(F, place, codes, s + 0.001, e - 0.001) === 0 && m.rateAt(F, place, codes, 0, 0) === null);
 });
 
 test('zone files combine by their rates and must share a grid', () => {

@@ -4,8 +4,8 @@
  * index.html; nothing is fetched until a pin or the panel is first used. */
 import { estuaryLocations } from './tsunami-locations.js';
 import { placeBounds } from './tsunami-extents.js';
-import { TIDE_STATION, modelTide, tideLevels, loadScenarios, loadPlace, loadSeries, prepareRun, runInWorker, floodSummary } from './tsunami-session.js';
-import { makeLiveLayer, deriveRun, cellIndex, maxPixels, arrivalPixels, viewLegend, ARRIVAL_TEXT, arrivalClass } from './tsunami-live.js';
+import { TIDE_STATION, modelTide, tideLevels, loadScenarios, loadPlace, loadSeries, prepareRun, runInWorker } from './tsunami-session.js';
+import { makeLiveLayer, maxPixels, arrivalPixels, viewLegend, ARRIVAL_TEXT, arrivalClass } from './tsunami-live.js';
 
 const clock = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 const ha = (value) => value < 0.05 ? 'none' : `${value.toFixed(value < 10 ? 1 : 0)} ha`;
@@ -17,9 +17,9 @@ const POPUP_PAD_TOP = [16, window.matchMedia('(max-width: 760px)').matches ? 150
 const CACHE_RUNS = 4, MEMORY_KEY = 'flood-tsunami-last', PIN_ZOOM = 8, HINT_ZOOM = 9;
 const WAVE = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M2 15c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3M2 19.5c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3 2.5 3 5 3M3 9c2-4 5-6 9-6 0 3-1.5 5-4 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, onLegend = () => {}, onRunStart = () => {}, onUseRun = null, onLayerChange = () => {}, onHint = () => {}, doc = document }) {
+export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {}, onLegend = () => {}, onRunStart = () => {}, onUseRun = null, onLayerChange = () => {}, onHint = () => {}, doc = document }) {
   const $ = (id) => doc.getElementById(id);
-  const live = makeLiveLayer(L, { canvasOverlay });
+  const live = makeLiveLayer(L, { canvasOverlay, F });
   const info = { state: 'idle', place: null, scenario: null, tide: 'MSL', error: null, frames: 0, summary: null, view: 'now', cached: false };
   const sel = { place: null, scenario: null, tide: 'MSL', minutes: 60 };
   let scenarios = null, loading = null, run = null, active = null, playing = false, index = 0, clockSeconds = 0, last = 0, raf = 0, view = 'now', hinted = false;
@@ -110,7 +110,7 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
     for (const id of places) {
       const loc = estuaryLocations.find((l) => l.id === id);
       if (!loc) continue;
-      const [[s, w], [n, e]] = placeBounds(loc);
+      const [[s, w], [n, e]] = placeBounds(F, loc);
       const marker = L.marker([(s + n) / 2, (w + e) / 2], {
         icon: L.divIcon({ className: 'ts-pin', html: `<span title="Tsunami scenarios: ${placeName(id)}">${WAVE}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
         keyboard: true, title: `Tsunami scenarios: ${placeName(id)}`, alt: `Tsunami scenarios: ${placeName(id)}`, riseOnHover: true,
@@ -195,9 +195,11 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
     status('Running the model in a Rust / WebAssembly worker…');
     run = runInWorker(prepared, { onProgress: (p) => { if (p.stage === 'local' || p.fraction != null) { $('tsProgress').value = p.fraction || 0; status(`Running the model: ${Math.round((p.fraction || 0) * 100)}% (${clock(p.seconds || 0)} of ${clock(prepared.seconds)} simulated)`); } } });
     const result = await run.promise; run = null;
-    const derived = deriveRun(prepared, result.frames, { summarise: floodSummary, waveAt: result.coupling?.arrival ?? 0 });
-    // only the last frame's whole-run arrays are needed now; drop the rest to keep a few runs in memory
-    result.frames.forEach((f, k) => { if (k < result.frames.length - 1) { delete f.peak; delete f.speed; } });
+    // what the run did, all worked out by the Rust solver: the extremes it kept every step, and what each frame had flooded so far
+    const { peakValue, peakTime, peakClass, peakSpeed, arrival } = result.extremes;
+    const derived = { peak: peakValue, peakAt: peakTime, peakClass, peakSpeed, arrival, summaries: result.frames.map((f) => f.summary) };
+    // the frames are only played back (surface and water now); drop the rest to keep a few runs in memory
+    result.frames.forEach((f) => { delete f.peak; delete f.speed; });
     return { key: id, place: scenario.place, scenario, tide: sel.tide, prepared, result, derived, bathymetry };
   }
 
@@ -258,12 +260,12 @@ export function initTsunamiPanel({ L, map, canvasOverlay, baseUrl, layers = {}, 
   // A tap on the map inside the place being shown: say when the water arrives and how deep it gets there. Returns true when it handled the tap.
   function handleTap(latlng) {
     if (!active || !map.hasLayer(live)) return false;
-    const { bathymetry, prepared, derived } = active, i = cellIndex(bathymetry, latlng.lat, latlng.lng);
+    const { bathymetry, prepared, derived } = active, i = F.tsunamiCell(bathymetry, latlng.lat, latlng.lng);
     if (i < 0) return false;
     let text;
     if (prepared.land[i]) {
       const depth = derived.peak[i], arrival = derived.arrival[i];
-      text = Number.isNaN(arrival)
+      text = !(arrival >= 0)
         ? (depth > 0.02 ? `Under water to about ${depth.toFixed(1)} m from the tide, but the wave adds little here in this run.` : 'Stays dry in this run.')
         : `Water arrives about ${minutesText(arrival)} after the wave reaches the model’s edge (${ARRIVAL_TEXT[arrivalClass(arrival)]}), and peaks at ${depth.toFixed(1)} m about ${minutesText(derived.peakAt[i])} into the run.`;
     } else text = derived.peak[i] > 0.03 ? `At sea: the highest wave is ${derived.peak[i].toFixed(1)} m above the tide here.` : 'At sea: little wave here.';

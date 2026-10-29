@@ -22,4 +22,6 @@ if (impl === 'wasm') {
 } else if (impl === 'native') {
   F = W.create(W.addonRunner(require(path.resolve(process.env.FLOOD_NODE_ADDON))));
 } else throw new Error(`unknown FLOOD_IMPL ${impl}`);
+// the viewer's grid builders (viewer/tsunami-grid.js) find the wave model here, as they find it on the page
+globalThis.FloodCore = F;
 module.exports = F;

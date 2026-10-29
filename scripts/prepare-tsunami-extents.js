@@ -23,7 +23,7 @@ function combineZones(zones) {
 }
 
 async function build(place, zones) {
-  const { encodeRate } = await import('../viewer/tsunami-extents.js');
+  const F = require('../tests/model.js');
   const { estuaryLocations } = await import('../viewer/tsunami-locations.js');
   const location = estuaryLocations.find(l => l.id === place);
   if (!location) throw new Error(`Unknown place ${place}.`);
@@ -32,7 +32,7 @@ async function build(place, zones) {
   if (c.W !== terrain.W || c.H !== terrain.H || c.cell !== terrain.cell) throw new Error('The zone files are not on this place\'s grid.');
   return {
     id: place, name: location.name.replace(/ · terrain test$/, ''), zone: 56, extent: terrain.extent, W: c.W, H: c.H, cell: c.cell, projection: terrain.projection,
-    depths: c.depths, codes: c.rate.map(r => Buffer.from(Uint8Array.from(r, encodeRate)).toString('base64')),
+    depths: c.depths, codes: c.rate.map(r => Buffer.from(F.encodeRates(r)).toString('base64')),
     zones: zones.map(z => ({ zone: z.zone, mw: z.mw, draws: z.count, annualRate: z.poolRate, seed: z.seed })), gauge: zones[0].gauge,
     maxRatePerYear: c.depths.map((_, k) => Math.max(...c.rate[k])),
     method: 'A rate-proportional sample of each source zone\'s PTHA18 scenarios, each run through the nested local model at seven tide states (LAT to HAT) weighted by how often the Seaway gauge sits nearest each (scripts/tide-analysis.js). For each cell: the zones\' total rates times the share of draws that add at least the depth.',

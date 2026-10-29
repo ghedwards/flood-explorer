@@ -467,6 +467,9 @@
     // Rainfall uplift for a climate warmingC degrees warmer.
     const stormUplift = (hours, warmingC) => num(call('stormUplift', { hours, warming: warmingC }).v);
     const hazardClass = (d, v) => num(call('hazardClass', { d, v }).v);
+    // an area model's terrain, and the solver's block grid, as the fields the Rust side reads
+    const areaBag = (a) => ({ W: a.W, H: a.H, cell: a.cell, dem: a.dem, valid: a.valid || new Uint8Array(0), ocean: a.ocean || new Uint8Array(0) });
+    const gridBag = (g) => ({ gW: g.W, gH: g.H, gCell: g.cell, gDem: g.dem, gValid: g.valid, gOcean: g.ocean, gFactor: g.factor });
 
     // The stream cell nearest (x, y) within r cells whose flow accumulation is at least minAcc; -1 if none.
     const snapToStream = (a, x, y, r, minAcc) => num(call('snapToStream', { a: handleOf(a), x, y, r: r || 0, minAcc: minAcc || 0 }).v);
@@ -508,14 +511,101 @@
       polygonMask, netLoad, netGrid, netBuildings, netCensus, netRun, netRoute, netImpact, netAccess,
       syntheticTerrain, parseAsciiGrid, downsample, cleanNodata, lineCells, stormUplift, hazardClass, snapToStream, mainStem, encodeWhiteboxD8, mergeRuns, scoreRun, calibrateLevels,
       fineRaster, classifyDemGaps, terrainRGBA,
-      tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
+      tsunamiStart: (grid) => {
+        const o = call('tsunamiStart', grid);
+        // `nest` for two-way nesting; `coupled` for a one-way run driven by a regional recording or a series (what it was driven with)
+        return {
+          dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null,
+          ...(o.nestOffset && { nest: { offset: num(o.nestOffset), handovers: num(o.nestHandovers), snapped: num(o.nestSnapped), points: num(o.nestPoints) } }),
+          ...(o.coupled && { coupled: { kind: num(o.coupled), arrival: num(o.arrival), offset: num(o.offset), peak: num(o.peak), rows: num(o.rows), edgeCodes: Array.from(o.edgeCodes), edgePeak: Array.from(o.edgePeak), edgePoints: Array.from(o.edgePoints), edgeSnapped: Array.from(o.edgeSnapped), ...(o.regionalSeconds && { regionalSeconds: num(o.regionalSeconds), regionalPeak: num(o.regionalPeak), regionalCached: num(o.regionalCached) === 1 }) } }),
+        };
+      },
       // Run a regional model to the end, returning surface displacement at the
       // requested (x, y) cell coordinates for use as nested boundary forcing.
       tsunamiParent: (grid, points, seconds) => {
         const o = call('tsunamiParent', { ...grid, points, seconds });
         return { times: o.times, values: o.values, points: Math.round(num(o.points)), time: num(o.time), dt: num(o.dt), peak: o.peak };
       },
-      tsunamiStep: (steps) => { const o = call('tsunamiStep', { steps }); return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume) }; },
+      // With the dry-land mask (`land` in the start grid) every frame carries `summary`, what the run has flooded. `extremes` also returns what the run has seen so far, kept every
+      // step: `peakValue` (deepest water on land, highest wave at sea), `peakTime`, `peakSpeed`, `peakClass` (worst hazard class, 0 to 6) and `arrival` (seconds from the
+      // grid's `arrivalOrigin` until the water first stood 10 cm up, -1 where it did not).
+      tsunamiStep: (steps, extremes = false) => {
+        const o = call('tsunamiStep', { steps, extremes: extremes ? 1 : 0 });
+        return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume),
+          ...(o.floodedHectares && { summary: { floodedHectares: num(o.floodedHectares), maxLandDepth: num(o.maxLandDepth), floodedNowHectares: num(o.floodedNowHectares) } }),
+          ...(o.probeArrival && { probeArrival: Array.from(o.probeArrival) }),
+          ...(extremes && { maxSpeed: num(o.maxSpeed), peakValue: o.peakValue, peakTime: o.peakTime, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
+          ...(o.parentEta && { parentEta: o.parentEta, feedbackVolume: num(o.feedbackVolume) }) };
+      },
+      // Grid adaptation for the 2D solver, in Rust (rust/flood-core/src/inertial_grid.rs): the area model's terrain averaged into blocks (`inertialPrepare`), which block an area
+      // cell falls in (`inertialCell`, -1 for none) and the solver's answer spread back over the area's cells as a flood run (`inertialExpand`; `peak` shows the deepest water, and a
+      // storm run's class and arrival give `arrival` and `peakHazard`).
+      inertialPrepare: (a, maxSide) => {
+        const o = call('inertialPrepare', { ...areaBag(a), maxSide });
+        return { W: num(o.W), H: num(o.H), cell: num(o.cell), factor: num(o.factor), dem: o.dem, valid: o.valid, ocean: o.ocean };
+      },
+      inertialCell: (g, a, i) => num(call('inertialCell', { ...areaBag(a), ...gridBag(g), i }).index),
+      inertialExpand: (a, g, r, { peak = false } = {}) => {
+        const o = call('inertialExpand', { ...areaBag(a), ...gridBag(g), depth: r.depth, peak: r.peak, vx: r.vx, vy: r.vy, peakClass: r.peakClass, peakSpeed: r.peakSpeed, arrival: r.arrival, peakMode: peak ? 1 : 0 });
+        return { depth: o.depth, wet: o.wet, level: o.level, wse: Float64Array.from(o.level), onPath: new Uint8Array(o.wet.length), vx: o.vx, vy: o.vy, ...(o.arrival && { arrival: o.arrival, peakHazard: { cls: o.cls, vel: o.vel, km2: Array.from(o.km2) } }) };
+      },
+      // A storm as the 2D solver takes it, in Rust (rust/flood-core/src/flash.rs): the rain less the initial and continuing losses, step by step. Returns { series (mm/h per step),
+      // seconds, stepSeconds, stormHours, rainMm, effectiveMm, capped }.
+      effectiveRainSeries: ({ rainMm, hours, initialLoss, contLoss }, afterHours = 2, stepSeconds = 600) => {
+        const o = call('effectiveRainSeries', { rainMm, hours, initialLoss: initialLoss ?? NaN, contLoss: contLoss ?? NaN, afterHours, stepSeconds });
+        return { series: o.series, seconds: num(o.seconds), stepSeconds: num(o.stepSeconds), stormHours: num(o.stormHours), rainMm: num(o.rainMm), effectiveMm: num(o.effectiveMm), capped: num(o.capped) === 1 };
+      },
+      // Map coordinates in Rust (rust/flood-core/src/geo.rs): latitude and longitude to MGA easting and northing in a zone (default 56) and back, one point at a time.
+      // The lab's grids, built and checked in Rust (rust/flood-core/src/tsunami_grid.rs): `kind` 0 regional, 1 idealised estuary, 2 local terrain scene.
+      tsunamiGrid: (opts) => {
+        const o = call('tsunamiGrid', opts), n = (k) => (o[k] === undefined ? undefined : num(o[k]));
+        return { W: n('W'), H: n('H'), cell: n('cell'), depth: o.depth, eta: o.eta, absorbing: n('absorbing'), method: n('method'), coupled: n('coupled'), bed: o.bed, valid: o.valid, roughness: n('roughness') };
+      },
+      connectedWaterDepth: (bed, W, H, level, edges = ['east'], valid = null) => {
+        const codes = { north: 0, east: 1, south: 2, west: 3 };
+        if (!Array.isArray(edges) || !edges.length || edges.some((e) => !(e in codes))) throw new Error('Invalid ocean-facing terrain edges.');
+        return call('connectedWaterDepth', { W, H, bed, level, edges: Float64Array.from(edges, (e) => codes[e]), valid: valid || undefined }).depth;
+      },
+      // The runs of a sensitivity ensemble as [{ kind, input, factors: { amplitude, tide, roughness, terrain } }] (rust/flood-core/src/ensemble.rs); kind is 'base', 'low', 'high', 'severe' or 'mild'.
+      ensemblePlan: (base, spread = {}, { terrain = true, amplitude = true } = {}) => {
+        const o = call('ensemblePlan', { amplitude: base.amplitude, tide: base.tide, roughness: base.roughness, ...spread, terrain: terrain ? 1 : 0, varyAmplitude: amplitude ? 1 : 0 });
+        return Array.from(o.kind, (k, i) => ({ kind: ['base', 'low', 'high', 'severe', 'mild'][k], input: ['amplitude', 'tide', 'roughness', 'terrain'][o.input[i]] || null, factors: { amplitude: o.factors[4 * i], tide: o.factors[4 * i + 1], roughness: o.factors[4 * i + 2], terrain: o.factors[4 * i + 3] } }));
+      },
+      // Stored one-byte hazard rates (rust/flood-core/src/codec.rs): rates per year to codes, codes to { rates, classes } (class -1 is not drawn), rates to classes.
+      encodeRates: (rates) => call('encodeRates', { rates: Float64Array.from(rates) }).codes,
+      decodeRates: (codes) => { const o = call('decodeRates', { codes: Uint8Array.from(codes) }); return { rates: o.rates, classes: o.classes }; },
+      classOfRates: (rates) => call('classOfRates', { rates: Float64Array.from(rates) }).classes,
+      // Heights (Float32Array) of an n x n Terrarium tile from its RGBA bytes.
+      terrarium: (rgba, n) => call('terrarium', { rgba: rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength), n }).heights,
+      // The ocean cell [x, y] nearest `target` whose ground lies deeper than `minDepth` below zero, in a grid `width` cells across (rust/flood-core/src/lab.rs); null when there is none.
+      waterPoint: (elevation, width, target, minDepth) => { const o = call('waterPoint', { elevation: Float64Array.from(elevation, v => v ?? NaN), width, targetX: target[0], targetY: target[1], minDepth }); const x = num(o.x); return x < 0 ? null : [x, num(o.y)]; },
+      // What a frame has flooded on land (depth 0) and its largest speed and peak: { flooded, maxLandDepth, maxSpeed, maxPeak }.
+      frameStats: (depth, water, speed, peak) => { const o = call('frameStats', { depth, water, speed, peak }); return { flooded: num(o.flooded), maxLandDepth: num(o.maxLandDepth), maxSpeed: num(o.maxSpeed), maxPeak: num(o.maxPeak) }; },
+      // Display heights and colours of ground heights (NaN or null where unknown, `valid` 0 marks unusable cells): { elevation, low, high, colours }.
+      terrainColours: (elevation, valid) => { const o = call('terrainColours', { elevation: Float64Array.from(elevation, v => v ?? NaN), ...(valid && { valid }) }); return { elevation: o.elevation, low: num(o.low), high: num(o.high), colours: o.colours }; },
+      // Minimum, maximum and the number of non-finite values in each column of run-major `values` ([{ min, max, missing }], min and max null when none are finite).
+      spans: (values, columns) => {
+        const o = call('spans', { values: Float64Array.from(values), columns });
+        return Array.from(o.missing, (missing, c) => ({ min: Number.isNaN(o.min[c]) ? null : o.min[c], max: Number.isNaN(o.max[c]) ? null : o.max[c], missing }));
+      },
+      // A wave series file (text) to { times, values }: seconds and metres, read and checked in Rust (rust/flood-core/src/series.rs).
+      parseSeries: (text, maxRows) => { const o = call('parseSeries', { text: new TextEncoder().encode(String(text)), ...(maxRows && { maxRows }) }); return { times: o.times, values: o.values }; },
+      toMga: (lat, lon, zone = 56) => { const o = call('mga', { a: [lat], b: [lon], zone, mode: 0 }); return [o.a[0], o.b[0]]; },
+      fromMga: (easting, northing, zone = 56) => { const o = call('mga', { a: [easting], b: [northing], zone, mode: 1 }); return [o.a[0], o.b[0]]; },
+      tsunamiBounds: (place) => Array.from(call('tsunamiBounds', { placeExtent: Float64Array.from(place.extent), placeZone: place.zone ?? 56 }).bounds),
+      // Where a modelled place ({ extent, W, H, zone }) sits on the map: the grid cell under a point, the cell under every pixel of a canvas laid over
+      // [south, west, north, east], and a run's extremes carried onto an area model's cells (rust/flood-core/src/place.rs).
+      tsunamiCell: (place, lat, lon) => num(call('tsunamiCell', { placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, lat, lon }).index),
+      tsunamiPixelMap: (place, over, width, height) => call('tsunamiPixelMap', { placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, over: Float64Array.from(over), width, height }).map,
+      tsunamiToArea: (area, geo, place, d) => {
+        const o = call('tsunamiToArea', { ...area, geo: Float64Array.from(geo), placeExtent: Float64Array.from(place.extent), placeW: place.W, placeH: place.H, placeZone: place.zone ?? 56, land: d.land, peak: d.peak, arrival: d.arrival, cls: d.cls, vel: d.vel });
+        return { depth: o.depth, wet: o.wet, level: o.level, arrival: o.arrival, cls: o.cls, vel: o.vel, km2: Array.from(o.km2), covered: num(o.covered) };
+      },
+      // A dam failure on an area model, all in Rust (rust/flood-core/src/dam.rs): start plans the window, breach and reservoir and returns the plan's numbers; step runs the
+      // solver and gives the reservoir's discharge; finish gives the run's extremes on the area model's cells.
+      damStart: (area, params) => { const o = call('damStart', { ...area, ...params }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
+      damStep: (steps) => { const o = call('damStep', { steps }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
+      damFinish: () => { const o = call('damFinish', {}); return { depth: o.depth, wet: o.wet, level: o.level, arrival: o.arrival, cls: o.cls, vel: o.vel, km2: Array.from(o.km2), covered: num(o.covered), edge: num(o.edge) === 1 }; },
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },

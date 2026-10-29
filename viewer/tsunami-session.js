@@ -54,27 +54,13 @@ export function prepareRun({ place, bathymetry, series, tide = 0, roughness = 0.
   const land = Uint8Array.from(dry.depth, d => d === 0 ? 1 : 0);
   return {
     grid, land, seconds, frames, place, tide,
-    coupling: { series, scene: { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: grid.W, H: grid.H, depth: grid.depth } }, localSeconds: seconds, tide: 0 },
+    coupling: { series, seaEdges: bathymetry.seaEdges, localSeconds: seconds, tide: 0 },
   };
 }
 
-// What a run is worth reporting: for the frame at or after `time`, the land flooded so far (over the ground that is dry at MSL), in hectares,
-// and the deepest water on it, counting the tide's own cover as the model does.
-export function floodSummary(prepared, frame) {
-  const { grid, land } = prepared;
-  let cells = 0, deepest = 0, now = 0;
-  for (let i = 0; i < land.length; i++) {
-    if (!land[i]) continue;
-    const depth = grid.depth[i] + frame.peak[i];
-    if (depth > 0.01) cells++;
-    if (depth > deepest) deepest = depth;
-    if (frame.water[i] > 0.01) now++;
-  }
-  const hectares = n => n * grid.cell ** 2 / 10000;
-  return { floodedHectares: hectares(cells), maxLandDepth: deepest, floodedNowHectares: hectares(now) };
-}
-
-/* Run in the lab's worker. Returns { promise, cancel }; the promise resolves to { frames, interval, coupling }.
+/* Run in the lab's worker. Returns { promise, cancel }; the promise resolves to { frames, interval, coupling, extremes }. Each frame carries `summary` (what the run has flooded so far:
+ * floodedHectares, maxLandDepth, floodedNowHectares), and `extremes` is what the run saw at its worst, kept by the solver every step: peakValue (deepest water on land, highest wave at sea),
+ * peakTime, peakSpeed, peakClass and arrival (seconds from the wave reaching the model's edge until 10 cm of water, -1 where it never came).
  * `onProgress({ fraction, seconds })` is called while it runs. */
 export function runInWorker(prepared, { onProgress = () => {}, createWorker = () => new Worker(new URL('./tsunami-worker.js', import.meta.url), { type: 'module' }) } = {}) {
   const worker = createWorker();
@@ -85,10 +71,10 @@ export function runInWorker(prepared, { onProgress = () => {}, createWorker = ()
     worker.onmessage = ({ data }) => {
       if (data.error) { worker.terminate(); reject(new Error(data.error)); return; }
       if (data.progress) { onProgress(data.progress); return; }
-      if (data.frames) { worker.terminate(); resolve({ frames: data.frames, interval: data.interval, coupling: data.coupling }); }
+      if (data.frames) { worker.terminate(); resolve({ frames: data.frames, interval: data.interval, coupling: data.coupling, extremes: data.extremes }); }
     };
   });
-  worker.postMessage({ type: 'precompute', grid: prepared.grid, coupling: prepared.coupling, seconds: prepared.seconds, frames: prepared.frames });
+  worker.postMessage({ type: 'precompute', grid: prepared.grid, coupling: prepared.coupling, land: prepared.land, seconds: prepared.seconds, frames: prepared.frames });
   return { promise, cancel: () => { worker.terminate(); settle.reject(new Error('cancelled')); } };
 }
 
@@ -103,5 +89,6 @@ export function runHere(F, prepared) {
     if (current.time >= Math.min(next, prepared.seconds) - 1e-9) { frames.push(current); while (next <= current.time) next += interval; }
   }
   if (frames.at(-1) !== current) frames.push(current);
-  return { frames, interval };
+  const { peakValue, peakTime, peakSpeed, peakClass, arrival } = F.tsunamiStep(0, true);
+  return { frames, interval, extremes: { peakValue, peakTime, peakSpeed, peakClass, arrival } };
 }
