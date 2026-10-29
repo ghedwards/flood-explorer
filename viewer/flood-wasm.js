@@ -508,7 +508,10 @@
       polygonMask, netLoad, netGrid, netBuildings, netCensus, netRun, netRoute, netImpact, netAccess,
       syntheticTerrain, parseAsciiGrid, downsample, cleanNodata, lineCells, stormUplift, hazardClass, snapToStream, mainStem, encodeWhiteboxD8, mergeRuns, scoreRun, calibrateLevels,
       fineRaster, classifyDemGaps, terrainRGBA,
-      tsunamiStart: (grid) => { const o = call('tsunamiStart', grid); return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null }; },
+      tsunamiStart: (grid) => {
+        const o = call('tsunamiStart', grid);
+        return { dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null, ...(o.nestOffset && { nest: { offset: num(o.nestOffset), handovers: num(o.nestHandovers), snapped: num(o.nestSnapped), points: num(o.nestPoints) } }) };
+      },
       // Run a regional model to the end, returning surface displacement at the
       // requested (x, y) cell coordinates for use as nested boundary forcing.
       tsunamiParent: (grid, points, seconds) => {
@@ -520,7 +523,8 @@
       tsunamiStep: (steps, extremes = false) => {
         const o = call('tsunamiStep', { steps, extremes: extremes ? 1 : 0 });
         return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume),
-          ...(extremes && { peakDepth: o.peakDepth, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }) };
+          ...(extremes && { peakDepth: o.peakDepth, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
+          ...(o.parentEta && { parentEta: o.parentEta, feedbackVolume: num(o.feedbackVolume) }) };
       },
       inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },

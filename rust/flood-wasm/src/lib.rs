@@ -204,6 +204,7 @@ impl Out {
 thread_local! {
     static INERTIAL: RefCell<Option<inertial::Solver>> = const { RefCell::new(None) };
     static INUNDATION: RefCell<Option<inundation::Solver>> = const { RefCell::new(None) };
+    static NEST: RefCell<Option<nest::Nest>> = const { RefCell::new(None) };
     static TSUNAMI: RefCell<Option<tsunami::Solver>> = const { RefCell::new(None) };
     static ANALYSES: RefCell<Vec<Option<Analysis>>> = const { RefCell::new(Vec::new()) };
     static WAVES: RefCell<Vec<Option<Wave>>> = const { RefCell::new(Vec::new()) };
@@ -525,6 +526,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         "tsunamiStart" => {
             TSUNAMI.with(|s| *s.borrow_mut() = None);
             INUNDATION.with(|s| *s.borrow_mut() = None);
+            NEST.with(|s| *s.borrow_mut() = None);
             if b.num("method") == 2.0 {
                 let mut solver = inundation::Solver::new(
                     b.num("W") as usize, b.num("H") as usize, b.num("cell"),
@@ -552,9 +554,32 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     }
                 }
                 if let (Some(times), Some(level)) = (b.f64s("levelTimes"), b.f64s("level")) { solver.set_level(times, level)?; }
-                if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
-                o.num("dt", solver.dt);
-                INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
+                if b.num("nest") == 1.0 {
+                    // Two-way nesting: a regional model stepped alongside this one, handing its wave over at the open edges and taking the local surface back.
+                    let parent = tsunami::Solver::new(
+                        b.num("nestW") as usize, b.num("nestH") as usize, b.num("nestCell"),
+                        b.f64s("nestDepth").ok_or("missing regional depths")?, b.f64s("nestEta").ok_or("missing regional wave")?, b.num("nestAbsorbing") == 1.0,
+                    )?;
+                    if b.num("nestMethod") == 3.0 { return Err("two-way nesting needs the staggered regional scheme".into()); }
+                    let bounds = b.f64s("nestBounds").filter(|v| v.len() == 4).ok_or("missing regional bounds")?;
+                    let extent = b.f64s("nestExtent").filter(|v| v.len() == 4).ok_or("missing local extent")?;
+                    let open: Vec<inundation::Edge> = b.f64s("nestEdges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+                    let optional = |k: &str| { let v = b.num(k); if v.is_finite() { Some(v) } else { None } };
+                    let geography = nest::Geography { bounds: [bounds[0], bounds[1], bounds[2], bounds[3]], extent: [extent[0], extent[1], extent[2], extent[3]], zone: if b.num("nestZone").is_finite() { b.num("nestZone") as i32 } else { 56 } };
+                    let tuning = nest::Tuning { per_edge: if b.num("nestPerEdge").is_finite() { b.num("nestPerEdge") as usize } else { 16 }, margin: optional("nestMargin"), ramp: optional("nestRamp") };
+                    let plan = nest::plan_geographic(&parent, &solver, &geography, &open, &tuning)?;
+                    let threshold = if b.num("nestThreshold").is_finite() { b.num("nestThreshold") } else { 0.001 };
+                    let max_seconds = if b.num("nestMaxSeconds").is_finite() { b.num("nestMaxSeconds") } else { 21600.0 };
+                    let strength = if b.num("nestStrength").is_finite() { b.num("nestStrength") } else { 0.25 };
+                    let (handovers, snapped, points) = (plan.handovers.len(), plan.snapped, plan.points.len());
+                    let nested = nest::Nest::new(parent, solver, plan, strength, threshold, max_seconds)?;
+                    o.num("dt", nested.child.dt).num("nestOffset", nested.offset).num("nestHandovers", handovers as f64).num("nestSnapped", snapped as f64).num("nestPoints", points as f64);
+                    NEST.with(|s| *s.borrow_mut() = Some(nested));
+                } else {
+                    if let Some(end) = solver.forcing_end() { o.num("forcingEnd", end); }
+                    o.num("dt", solver.dt);
+                    INUNDATION.with(|s| *s.borrow_mut() = Some(solver));
+                }
             } else {
                 let mut solver = tsunami::Solver::new(
                     b.num("W") as usize, b.num("H") as usize, b.num("cell"),
@@ -596,7 +621,26 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             if !steps.is_finite() || !(0.0..=200.0).contains(&steps) || steps.fract() != 0.0 {
                 return Err("invalid tsunami step count".into());
             }
-            let nonlinear = INUNDATION.with(|slot| -> Result<bool, String> {
+            let nested = NEST.with(|slot| -> Result<bool, String> {
+                let mut slot = slot.borrow_mut();
+                let Some(n) = slot.as_mut() else { return Ok(false); };
+                n.advance(steps as usize)?;
+                let s = &n.child;
+                o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
+                    .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume).num("feedbackVolume", n.feedback_volume);
+                for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
+                    o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                }
+                if b.num("extremes") == 1.0 {
+                    for (name, values) in [("peakDepth", &s.peak_depth), ("peakSpeed", &s.peak_speed), ("arrival", &s.arrival)] {
+                        o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                    }
+                    o.u8s("peakClass", &s.peak_class);
+                }
+                o.f32s("parentEta", &n.parent.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                Ok(true)
+            })?;
+            let nonlinear = nested || INUNDATION.with(|slot| -> Result<bool, String> {
                 let mut slot = slot.borrow_mut();
                 let Some(s) = slot.as_mut() else { return Ok(false); };
                 s.advance(steps as usize)?;

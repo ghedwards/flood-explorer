@@ -236,6 +236,48 @@ test('coupling refuses scenes outside the regional model and runs that never del
   assert.throws(() => C.planCoupling({ fine: { ...fine, seaEdges: [] }, fineGrid, parentData: goldData, parentGrid: goldGrid }), /no open sea edges/);
 });
 
+test('two-way nesting runs in the Rust solver: the local model is driven, conserves water, and the regional cells it covers follow it', async () => {
+  const { tsunamiGrid } = await gridModule;
+  const C = await import('../viewer/tsunami-coupling.js');
+  const R = await import('../viewer/tsunami-runner.js');
+  const setup = (id, parentId, source) => {
+    const fine = readData(id), parentData = readData(parentId);
+    const cell = C.toParentCell(parentData, ...source).map(Math.floor);
+    const parentGrid = tsunamiGrid({ preset: parentId, bathymetry: parentData, source: cell, amplitude: 2.5, width: 10 });
+    const fineGrid = tsunamiGrid({ preset: id, bathymetry: fine, amplitude: 2.5, absorbing: true, width: .45, coupled: true });
+    const scene = { fine: { seaEdges: fine.seaEdges }, fineGrid: { W: fineGrid.W, H: fineGrid.H, depth: fineGrid.depth } };
+    return (strength) => {
+      const { coupling } = R.startRun(F, { grid: fineGrid, coupling: { parentGrid, seconds: 21600, localSeconds: 900, scene, tide: 0, twoWay: { bounds: parentData.bounds, extent: fine.extent, zone: 56, strength } } });
+      let frame;
+      while (!frame || frame.time < 900) frame = F.tsunamiStep(200);
+      return { coupling, frame, parentCells: parentGrid.W * parentGrid.H };
+    };
+  };
+  // the 8 km Gold Coast Seaway scene covers a couple of 1.5 km regional cells
+  const seaway = setup('gold-coast-seaway', 'gold-coast', [154.3, -28.0]);
+  const one = seaway(0), two = seaway(0.25);
+  assert.equal(two.coupling.source, 'regional-two-way');
+  assert.ok(two.coupling.handovers >= 1 && two.coupling.offset > 600, `the local clock starts when the wave arrives: ${two.coupling.offset}`);
+  for (const r of [one, two]) {
+    assert.ok(r.frame.water.every(h => Number.isFinite(h) && h >= 0));
+    assert.ok(Math.max(...r.frame.peak) > .005, 'the regional wave entered the local model');
+    assert.ok(Math.abs(r.frame.volumeError) < 1e-4, `water conserved: ${r.frame.volumeError}`);
+    assert.equal(r.frame.parentEta.length, r.parentCells);
+  }
+  assert.equal(one.frame.feedbackVolume, 0, 'with no strength nothing is fed back');
+  assert.ok(two.frame.feedbackVolume !== 0, 'with strength the regional model takes water from the local one');
+  let diff = 0, top = 0;
+  for (let i = 0; i < one.parentCells; i++) { diff = Math.max(diff, Math.abs(one.frame.parentEta[i] - two.frame.parentEta[i])); top = Math.max(top, Math.abs(one.frame.parentEta[i])); }
+  assert.ok(diff > 0 && diff < top, `the regional wave is changed near the local grid, not overwhelmed: ${diff} of ${top}`);
+  assert.ok(Math.max(...two.frame.peak) < 5 * Math.max(...one.frame.peak) && Math.max(...two.frame.peak) > 0.2 * Math.max(...one.frame.peak), 'the local wave stays the same size');
+  // the 4 km Currumbin scene is under three regional cells wide: none is covered enough to follow it, so two-way is exactly one-way and says so
+  const currumbin = setup('currumbin', 'gold-coast', [154.3, -28.0]);
+  const c1 = currumbin(0), c2 = currumbin(0.25);
+  assert.equal(c2.coupling.handovers, 0);
+  assert.equal(c2.frame.feedbackVolume, 0);
+  assert.ok(c1.frame.eta.every((v, i) => v === c2.frame.eta[i]) && c1.frame.parentEta.every((v, i) => v === c2.frame.parentEta[i]));
+});
+
 test('wave series files parse strictly and drive the local model with an optional rising tide', async () => {
   const { tsunamiGrid } = await gridModule;
   const C = await import('../viewer/tsunami-coupling.js');

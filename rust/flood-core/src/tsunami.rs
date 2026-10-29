@@ -42,8 +42,11 @@ pub struct Solver {
 /// Surface displacement sampled at fixed points (fractional cell coordinates,
 /// cell centres at i + 0.5) after every step. Used as one-way boundary
 /// forcing for a finer nested model.
+/// Four cell indices and their weights: how a point reads the surface.
+pub type Tap = [(usize, f64); 4];
+
 pub struct Recorder {
-    taps: Vec<[(usize, f64); 4]>,
+    taps: Vec<Tap>,
     pub times: Vec<f64>,
     /// Row-major [sample][point].
     pub values: Vec<f64>,
@@ -86,11 +89,9 @@ impl Solver {
             recorder: None, method: Method::Staggered, mx: vec![0.0; w * h], my: vec![0.0; w * h] })
     }
 
-    /// Start recording eta at the given points, including the current state.
-    /// A point's value is the bilinear mean over its wet neighbouring cells,
-    /// so coastal points do not read the zero of reflecting land.
-    pub fn record(&mut self, points: &[(f64, f64)]) -> Result<(), String> {
-        if points.is_empty() || points.len() > 1024 { return Err("record between 1 and 1024 points".into()); }
+    /// Interpolation taps for points (fractional cell coordinates, cell centres at i + 0.5): the bilinear mean over each point's wet neighbours, so coastal points
+    /// do not read the zero of reflecting land. Used by the recorder and by the nested model's live sampling.
+    pub fn make_taps(&self, points: &[(f64, f64)]) -> Result<Vec<Tap>, String> {
         let mut taps = Vec::with_capacity(points.len());
         for &(px, py) in points {
             if !px.is_finite() || !py.is_finite() || px < 0.5 || py < 0.5 || px > self.w as f64 - 0.5 || py > self.h as f64 - 0.5 {
@@ -112,6 +113,39 @@ impl Solver {
             for t in &mut tap { t.1 /= total; }
             taps.push(tap);
         }
+        Ok(taps)
+    }
+
+    /// Move the transport through an interior x face (between cells x - 1 and x of row y) a share `alpha` of the way to `target` (m2/s). Only the staggered scheme has face
+    /// transports; a face with land on either side is left alone.
+    pub fn nudge_flux_x(&mut self, x: usize, y: usize, target: f64, alpha: f64) {
+        if self.method == Method::FiniteVolume || x == 0 || x >= self.w || y >= self.h { return; }
+        let right = y * self.w + x;
+        if self.depth[right] > 0.0 && self.depth[right - 1] > 0.0 {
+            let q = &mut self.qx[y * (self.w + 1) + x];
+            *q += alpha * (target - *q);
+        }
+    }
+
+    /// The same for an interior y face (between rows y - 1 and y of column x).
+    pub fn nudge_flux_y(&mut self, x: usize, y: usize, target: f64, alpha: f64) {
+        if self.method == Method::FiniteVolume || y == 0 || y >= self.h || x >= self.w { return; }
+        let below = y * self.w + x;
+        if self.depth[below] > 0.0 && self.depth[below - self.w] > 0.0 {
+            let q = &mut self.qy[below];
+            *q += alpha * (target - *q);
+        }
+    }
+
+    /// The surface displacement at each tap now.
+    pub fn sample(&self, taps: &[Tap]) -> Vec<f64> {
+        taps.iter().map(|tap| tap.iter().map(|(i, w)| self.eta[*i] * w).sum()).collect()
+    }
+
+    /// Start recording eta at the given points, including the current state.
+    pub fn record(&mut self, points: &[(f64, f64)]) -> Result<(), String> {
+        if points.is_empty() || points.len() > 1024 { return Err("record between 1 and 1024 points".into()); }
+        let taps = self.make_taps(points)?;
         let mut recorder = Recorder { points: taps.len(), taps, times: Vec::new(), values: Vec::new() };
         recorder.sample(self.time, &self.eta);
         self.recorder = Some(recorder);

@@ -7,7 +7,9 @@
 // pushed towards more flooding, and towards less). It brackets the model's
 // response to those inputs. It is not a sample from probability distributions,
 // so its ranges are not confidence intervals or hazard probabilities.
-import { forcingFromRecording, forcingFromSeries, levelSeries } from './tsunami-coupling.js';
+import { forcingFromRecording, forcingFromSeries, levelSeries, openEdges } from './tsunami-coupling.js';
+
+const EDGE_CODES = { north: 0, east: 1, south: 2, west: 3 };
 
 // Start a run, first computing any nested forcing. `cache` keeps regional
 // recordings so members that differ only in local settings share one regional
@@ -15,8 +17,20 @@ import { forcingFromRecording, forcingFromSeries, levelSeries } from './tsunami-
 export function startRun(F, data, report = () => {}, cache = new Map()) {
   let grid = data.grid, coupling = null;
   if (data.coupling) {
-    const { plan, parentGrid, seconds, localSeconds, series, scene, tide, cacheKey } = data.coupling;
+    const { plan, parentGrid, seconds, localSeconds, series, scene, tide, cacheKey, twoWay } = data.coupling;
     let forcing;
+    if (twoWay && !series) {
+      // Two-way nesting is all in the Rust solver: the regional model is stepped beside the local one, hands its wave over at the open edges and takes the local
+      // surface back (rust/flood-core/src/nest.rs). This only passes the two grids and where one sits in the other.
+      report({ stage: 'regional' });
+      const open = openEdges(scene).map(name => EDGE_CODES[name]);
+      const started = F.tsunamiStart({
+        ...grid, ...levelSeries(localSeconds, tide), nest: 1, nestW: parentGrid.W, nestH: parentGrid.H, nestCell: parentGrid.cell, nestDepth: parentGrid.depth, nestEta: parentGrid.eta,
+        nestAbsorbing: parentGrid.absorbing ? 1 : 0, nestMethod: parentGrid.method, nestBounds: Float64Array.from(twoWay.bounds), nestExtent: Float64Array.from(twoWay.extent), nestZone: twoWay.zone ?? 56,
+        nestEdges: Float64Array.from(open), nestStrength: twoWay.strength ?? 0.25, nestMaxSeconds: seconds,
+      });
+      return { coupling: { source: 'regional-two-way', arrival: started.nest.offset, offset: started.nest.offset, peak: null, edges: {}, regionalPeak: null, handovers: started.nest.handovers, snapped: started.nest.snapped, strength: twoWay.strength ?? 0.25, tide: tide || 0 }, batch: 200 };
+    }
     if (series) {
       // A supplied wave series replaces the regional model.
       forcing = forcingFromSeries(scene, series, { maxLocalSeconds: localSeconds });

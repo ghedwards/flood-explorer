@@ -3,7 +3,7 @@
 // model's open sea edges; the local solver receives it as incoming-wave
 // boundary forcing. Pure functions only, so the worker and the tests share them.
 //
-// Not two-way: the local model does not feed back to the regional one, and the
+// Not two-way (there is a two-way option, all in Rust: rust/flood-core/src/nest.rs): the local model does not feed back to the regional one here, and the
 // regional run is linear on a 1.5 km grid with coastal depths floored at 10 m.
 // The forced signal is therefore only as good as the regional solution at the
 // handover points (see docs/tsunami-prototype.md).

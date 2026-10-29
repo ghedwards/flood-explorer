@@ -79,6 +79,7 @@ function labels() {
   $('couplingControls').hidden = !parentOf($('preset').value);
   const series = seriesOn();
   $('offshoreWidthControl').hidden = !coupled || series;
+  $('nestingControl').hidden = !coupled || series;
   $('waveFileControl').hidden = !series;
   $('amplitude').parentElement.hidden = series;
   $('incoming').parentElement.hidden = !coupled;
@@ -94,8 +95,9 @@ function labels() {
     else $('couplingSource').textContent = `${parent.source[0].toFixed(2)}°E ${Math.abs(parent.source[1]).toFixed(2)}°S · ${(+$('amplitude').value).toFixed(2)} m nominal · ${$('offshoreWidth').value} km wide`;
     $('couplingArrival').textContent = !c ? (series ? 'Waiting for the series…' : 'Running the regional model…')
       : c.source === 'series' ? `${(c.arrival / 60).toFixed(1)} min into the local run`
+      : c.source === 'regional-two-way' ? `local clock starts ${(c.offset / 60).toFixed(0)} min after the offshore source, when the wave first passes 1 mm at a handover point`
       : `${(c.arrival / 60).toFixed(0)} min after the offshore source · local clock starts ${(c.offset / 60).toFixed(0)} min after it`;
-    $('couplingPeak').textContent = c ? `${c.peak.toFixed(2)} m (${Object.entries(c.edges).map(([name, e]) => `${name} ${e.peak.toFixed(2)}`).join(', ')}) ${c.source === 'series' ? '' : ` · regional peak anywhere ${c.regionalPeak.toFixed(2)} m`}${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : '—';
+    $('couplingPeak').textContent = c && c.source === 'regional-two-way' ? `two-way: ${c.handovers} regional cells follow the local model (strength ${c.strength})${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : c ? `${c.peak.toFixed(2)} m (${Object.entries(c.edges).map(([name, e]) => `${name} ${e.peak.toFixed(2)}`).join(', ')}) ${c.source === 'series' ? '' : ` · regional peak anywhere ${c.regionalPeak.toFixed(2)} m`}${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : '—';
   }
   $('tideValue').textContent = `${(+$('tide').value).toFixed(2)} m`;
   $('roughnessValue').textContent = (+$('roughness').value).toFixed(3);
@@ -396,7 +398,9 @@ function buildCoupling(parent, fineGrid, amplitude = +$('amplitude').value) {
   const parentGrid = tsunamiGrid({ preset: parent.id, bathymetry: parentData, source: cell, amplitude, width: +$('offshoreWidth').value, absorbing: true });
   const plan = planCoupling({ fine: bathymetry, fineGrid, parentData, parentGrid });
   const localSeconds = totalSeconds();
-  return { plan, parentGrid, localSeconds, tide: +$('tideRange').value, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }), cacheKey: `${amplitude}|${$('offshoreWidth').value}|${Array.from(plan.points).join(',')}` };
+  const twoWay = $('nesting').value === 'two-way' && bathymetry?.extent ? { bounds: parentData.bounds, extent: bathymetry.extent, zone: 56, strength: 0.25 } : null;
+  const scene = twoWay ? { fine: { seaEdges: bathymetry.seaEdges }, fineGrid: { W: fineGrid.W, H: fineGrid.H, depth: fineGrid.depth } } : undefined;
+  return { plan, parentGrid, localSeconds, twoWay, scene, tide: +$('tideRange').value, seconds: parentSeconds({ plan, parentGrid, source: cell, localSeconds }), cacheKey: `${amplitude}|${$('offshoreWidth').value}|${Array.from(plan.points).join(',')}` };
 }
 
 function reset(play = false) {
@@ -491,7 +495,7 @@ $('reset').addEventListener('click', () => {
 $('scrub').addEventListener('input', () => { running = false; seek(+$('scrub').value); playClock = frame.time; });
 $('preset').addEventListener('change', changeScene);
 $('tryDispersive').addEventListener('click', () => { $('preset').value = 'flat'; $('method').value = 'dispersive'; changeScene(); });
-for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'tideRange', 'precompute', 'scheme']) $(id).addEventListener('change', () => reset());
+for (const id of ['deep', 'amplitude', 'width', 'absorbing', 'duration', 'method', 'tide', 'roughness', 'lakeLevel', 'coupled', 'offshoreWidth', 'incoming', 'nesting', 'tideRange', 'precompute', 'scheme']) $(id).addEventListener('change', () => reset());
 for (const id of ['deep', 'amplitude', 'width', 'tide', 'roughness', 'lakeLevel', 'offshoreWidth', 'tideRange']) $(id).addEventListener('input', labels);
 $('waveFile').addEventListener('change', async () => {
   const file = $('waveFile').files[0];

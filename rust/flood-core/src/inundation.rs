@@ -184,6 +184,9 @@ impl Solver {
         Ok(())
     }
 
+    /// The depth-integrated transport of every cell (m2/s) in x and y.
+    pub fn momentum(&self) -> (&[f64], &[f64]) { (&self.mx, &self.my) }
+
     /// How deep the water must stand above a cell's starting level to count as having arrived (m).
     pub fn set_arrival_depth(&mut self, depth: f64) -> Result<(), String> {
         if !depth.is_finite() || depth <= 0.0 || depth > 100.0 { return Err("the arrival depth must be above 0 and at most 100 m".into()); }
@@ -195,6 +198,18 @@ impl Solver {
         let Some(b) = &self.breach else { return };
         let f = if b.duration <= 0.0 { if time >= b.start { 1.0 } else { 0.0 } } else { ((time - b.start) / b.duration).clamp(0.0, 1.0) };
         for k in 0..b.cells.len() { self.bed[b.cells[k]] = b.from[k] + (b.to[k] - b.from[k]) * f; }
+    }
+
+    /// Add one more sample to an edge's forcing, at `time` (after its last) with one value per point: for a parent model that runs alongside this one and hands
+    /// its wave over step by step instead of in advance.
+    pub fn push_forcing(&mut self, edge: Edge, time: f64, values: &[f64]) -> Result<(), String> {
+        let Some(f) = self.forcing.iter_mut().find(|f| f.edge == edge) else { return Err("this edge has no forcing to extend".into()) };
+        if values.len() != f.points || !time.is_finite() || time <= *f.times.last().unwrap() || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            return Err("invalid forcing sample".into());
+        }
+        f.times.push(time);
+        f.values.extend_from_slice(values);
+        Ok(())
     }
 
     /// External sea level change (m) at all forced edges, e.g. a tide. Unlike
