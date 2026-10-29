@@ -15,7 +15,7 @@ const EDGE_CODES = { north: 0, east: 1, south: 2, west: 3 }, EDGE_NAMES = ['nort
  * rising `tide` over `localSeconds`. `seaEdges` are the local scene's open-sea edge names. `data.land` (1 where the ground is dry at mean sea level) lets the solver report what a
  * run has flooded and its extremes (see tsunamiStep). Returns what the page shows about the coupling, or null, and how many steps to take at once. */
 export function startRun(F, data, report = () => {}) {
-  const c = data.coupling, withLand = (g) => (data.land ? { ...g, land: data.land } : g);
+  const c = data.coupling, withLand = (g) => ({ ...g, ...(data.land && { land: data.land }), ...(data.probes && { probes: Float64Array.from(data.probes), probeThreshold: data.probeThreshold }) });
   if (!c) { F.tsunamiStart(withLand(data.grid)); return { coupling: null, batch: data.grid.method === 3 ? 16 : 200 }; }
   const sea = Float64Array.from((c.seaEdges || []).map(name => EDGE_CODES[name]));
   const parent = c.parentGrid && { nestW: c.parentGrid.W, nestH: c.parentGrid.H, nestCell: c.parentGrid.cell, nestDepth: c.parentGrid.depth, nestEta: c.parentGrid.eta, nestAbsorbing: c.parentGrid.absorbing ? 1 : 0, nestMethod: c.parentGrid.method, nestBounds: Float64Array.from(c.bounds), nestExtent: Float64Array.from(c.extent), nestZone: c.zone ?? 56 };
@@ -77,32 +77,22 @@ export function ensemblePlan(base, spread = {}, { terrain = true, amplitude = tr
   return members;
 }
 
-// Run one member to `seconds` and measure it. `probes` are gauge cell indices.
-// Arrival is the first time (to the sampling step) a gauge differs from its
-// initial level by more than `threshold`; the current speed is likewise
-// sampled at the end of each step batch, so it is a lower bound on the
-// instantaneous maximum.
+// Run one member to `seconds` and measure it. `probes` are gauge cell indices. Arrival is the first time (kept by the solver every step) a gauge differs from its initial
+// level by more than `threshold`; the speed is the fastest any cell reached in any step. The flooded area and depth are over the ground that is dry at the member's starting
+// level, as the solver's own summary counts them.
 export function runMember(F, member, { seconds, probes, threshold = .05, step = 20, onProgress = () => {} }) {
-  startRun(F, member, report => onProgress({ ...report, fraction: 0 }));
   const { depth, valid } = member.grid;
+  const land = Uint8Array.from(depth, (d, i) => (d === 0 && valid?.[i] !== 0 ? 1 : 0));
+  startRun(F, { ...member, land, probes, probeThreshold: threshold }, report => onProgress({ ...report, fraction: 0 }));
   let frame = F.tsunamiStep(0);
-  const arrival = probes.map(() => null);
-  let maxSpeed = 0;
   while (frame.time < seconds) {
     frame = F.tsunamiStep(Math.max(1, Math.min(step, Math.ceil((seconds - frame.time) / frame.dt))));
-    probes.forEach((index, k) => { if (arrival[k] == null && Math.abs(frame.eta[index]) > threshold) arrival[k] = frame.time; });
-    for (const v of frame.speed) if (v > maxSpeed) maxSpeed = v;
     onProgress({ stage: 'local', fraction: Math.min(1, frame.time / seconds), seconds: frame.time });
   }
-  let landDepth = 0, flooded = 0;
-  for (let i = 0; i < depth.length; i++) {
-    if (depth[i] !== 0 || valid?.[i] === 0) continue;
-    if (frame.peak[i] > landDepth) landDepth = frame.peak[i];
-    if (frame.peak[i] > .01) flooded++;
-  }
+  const end = F.tsunamiStep(0, true);
   return {
-    arrival, gaugePeak: probes.map(index => frame.peak[index]), landDepth,
-    floodedHectares: flooded * member.grid.cell ** 2 / 10000, maxSpeed, volumeError: frame.volumeError, simulated: frame.time,
+    arrival: probes.map((_, k) => (end.probeArrival[k] >= 0 ? end.probeArrival[k] : null)), gaugePeak: probes.map(index => end.peak[index]), landDepth: end.summary.maxLandDepth,
+    floodedHectares: end.summary.floodedHectares, maxSpeed: end.maxSpeed, volumeError: end.volumeError, simulated: end.time,
   };
 }
 

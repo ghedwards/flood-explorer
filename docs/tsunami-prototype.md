@@ -960,5 +960,7 @@ cell under a point, the cell under every pixel of the canvas) and the carrying o
 (`tsunamiCell`, `tsunamiPixelMap`, `tsunamiToArea`). The one-way coupling is Rust too (`rust/flood-core/src/coupling.rs` and `nest.rs`, started with `tsunamiStart` and a `couple` mode): where on the regional grid to read the
 wave for each open edge, Green's-law scaling, the regional run and its recording (kept in the module between runs that share a `cacheKey`), the forcing from that recording or
 from a supplied series, the rising tide and the regional run length. The 2D flash-flood solver's grid adaptation (`inertial_grid.rs`) and effective-rain series (`flash.rs`),
-the dam failure (`dam.rs`) and the map projection (`geo.rs`) are Rust as well. What stays in JavaScript is reading a series file, the colouring and legends, the words, the rate
-codec of the stored hazard extents (shared with the build scripts), the grid construction of the lab page, and the measuring loop of the lab's sensitivity ensemble.
+the dam failure (`dam.rs`) and the map projection (`geo.rs`) are Rust as well. The lab's grids (the idealised basins and estuary, the prefetched coastal grids and the local terrain scenes, with their starting waves and the connected-water fill) are built and
+checked in `rust/flood-core/src/tsunami_grid.rs`, and an ensemble member's measures (gauge arrivals, speed, flooded area) are kept by the solver itself. What stays in JavaScript is
+reading a series file, the colouring and legends, the words, the min/max summary across ensemble members, and the rate codec of the stored hazard extents (shared with the build
+scripts).

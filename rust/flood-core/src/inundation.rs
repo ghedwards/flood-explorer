@@ -74,6 +74,10 @@ pub struct Solver {
     /// When (s) each cell held its deepest water.
     pub peak_time: Vec<f64>,
     pub arrival_depth: f64,
+    probes: Vec<usize>,
+    probe_threshold: f64,
+    /// For each probe cell, the first time (s) the surface was more than the threshold from its starting level, up or down (-1 if never). Checked every step.
+    pub probe_arrival: Vec<f64>,
     pub time: f64,
     pub dt: f64,
     pub boundary_volume: f64,
@@ -123,7 +127,7 @@ impl Solver {
         let initial_volume = water.iter().sum::<f64>() * cell * cell;
         let water_start = water.clone();
         let mut s = Self { w, h, cell, bed, water, reference, peak: eta.iter().map(|e| e.abs()).collect(), eta,
-            speed: vec![0.0; n], peak_depth: water_start, peak_speed: vec![0.0; n], peak_class: vec![0; n], arrival: vec![-1.0; n], peak_time: vec![0.0; n], arrival_depth: 0.1, time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
+            speed: vec![0.0; n], peak_depth: water_start, peak_speed: vec![0.0; n], peak_class: vec![0; n], arrival: vec![-1.0; n], peak_time: vec![0.0; n], arrival_depth: 0.1, probes: Vec::new(), probe_threshold: 0.0, probe_arrival: Vec::new(), time: 0.0, dt: 0.0, boundary_volume: 0.0, initial_volume,
             valid: vec![true; n], mx: vec![0.0; n], my: vec![0.0; n], sponge, roughness, forcing: Vec::new(), breach: None, level: None, order: 1, scratch: Vec::new(), recon: [Vec::new(), Vec::new()] };
         s.dt = s.stable_dt();
         Ok(s)
@@ -206,6 +210,18 @@ impl Solver {
 
     /// The depth-integrated transport of every cell (m2/s) in x and y.
     pub fn momentum(&self) -> (&[f64], &[f64]) { (&self.mx, &self.my) }
+
+    /// Watch some cells (gauges): the first time the surface leaves its starting level by more than `threshold` metres, up or down, is kept in `probe_arrival`.
+    pub fn set_probes(&mut self, cells: Vec<usize>, threshold: f64) -> Result<(), String> {
+        if cells.iter().any(|c| *c >= self.water.len()) || threshold.is_nan() || threshold < 0.0 { return Err("invalid gauge cells or threshold".into()); }
+        self.probe_arrival = vec![-1.0; cells.len()];
+        self.probes = cells;
+        self.probe_threshold = threshold;
+        Ok(())
+    }
+
+    /// The fastest water speed any cell has seen (m/s).
+    pub fn max_speed(&self) -> f64 { self.peak_speed.iter().fold(0.0_f64, |m, v| m.max(*v)) }
 
     /// How deep the water must stand above a cell's starting level to count as having arrived (m).
     pub fn set_arrival_depth(&mut self, depth: f64) -> Result<(), String> {
@@ -566,6 +582,7 @@ impl Solver {
             if arrival[i] < 0.0 && eta[i] >= arrival_depth { arrival[i] = t_end; }
         }
         self.boundary_volume += sponge_exchange;
+        for (k, p) in self.probes.iter().enumerate() { if self.probe_arrival[k] < 0.0 && self.eta[*p].abs() > self.probe_threshold { self.probe_arrival[k] = t_end; } }
         self.time += dt;
         self.dt = self.stable_dt();
         self.scratch = delta;

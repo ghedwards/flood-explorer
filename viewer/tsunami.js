@@ -1,6 +1,8 @@
 import '@fontsource-variable/archivo/standard.css';
 import '@fontsource/ibm-plex-mono/latin-400.css';
 import './tsunami.css';
+import './runtime-paths.js';
+import './flood-wasm.js';
 import { estuaryIds, estuaryLocations, regionalIds } from './tsunami-locations.js';
 import { parseSeriesCsv, toParentCell } from './tsunami-coupling.js';
 import { ensemblePlan, summarise } from './tsunami-runner.js';
@@ -678,6 +680,11 @@ if (new URLSearchParams(location.search).get('scheme') === 'second') $('scheme')
 if (new URLSearchParams(location.search).get('precompute') === '1') $('precompute').checked = true;
 if (new URLSearchParams(location.search).get('coupled') === '1') $('coupled').checked = true;
 if (new URLSearchParams(location.search).get('method') === 'dispersive') $('method').value = 'dispersive';
-if (initialScene && [...$('preset').options].some(option => option.value === initialScene)) { $('preset').value = initialScene; changeScene(); }
-else reset();
+// the grids are built in Rust, so the wave model loads first
+const start = () => {
+  if (initialScene && [...$('preset').options].some(option => option.value === initialScene)) { $('preset').value = initialScene; changeScene(); }
+  else reset();
+};
+$('status').textContent = 'Loading the wave model…';
+window.FloodCoreReady.then(start, (error) => { $('status').textContent = `The wave model could not load (${error.message || error}).`; });
 requestAnimationFrame(animate);

@@ -31,6 +31,7 @@ pub mod tsunami;
 pub mod inundation;
 pub mod geo;
 pub mod nest;
+pub mod tsunami_grid;
 pub mod inertial_grid;
 pub mod coupling;
 pub mod dam;

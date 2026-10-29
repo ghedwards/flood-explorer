@@ -533,7 +533,8 @@
         const o = call('tsunamiStep', { steps, extremes: extremes ? 1 : 0 });
         return { eta: o.eta, peak: o.peak, water: o.water, speed: o.speed, time: num(o.time), dt: num(o.dt), volume: num(o.volume), volumeError: num(o.volumeError), boundaryVolume: num(o.boundaryVolume),
           ...(o.floodedHectares && { summary: { floodedHectares: num(o.floodedHectares), maxLandDepth: num(o.maxLandDepth), floodedNowHectares: num(o.floodedNowHectares) } }),
-          ...(extremes && { peakValue: o.peakValue, peakTime: o.peakTime, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
+          ...(o.probeArrival && { probeArrival: Array.from(o.probeArrival) }),
+          ...(extremes && { maxSpeed: num(o.maxSpeed), peakValue: o.peakValue, peakTime: o.peakTime, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival }),
           ...(o.parentEta && { parentEta: o.parentEta, feedbackVolume: num(o.feedbackVolume) }) };
       },
       // Grid adaptation for the 2D solver, in Rust (rust/flood-core/src/inertial_grid.rs): the area model's terrain averaged into blocks (`inertialPrepare`), which block an area
@@ -555,6 +556,16 @@
         return { series: o.series, seconds: num(o.seconds), stepSeconds: num(o.stepSeconds), stormHours: num(o.stormHours), rainMm: num(o.rainMm), effectiveMm: num(o.effectiveMm), capped: num(o.capped) === 1 };
       },
       // Map coordinates in Rust (rust/flood-core/src/geo.rs): latitude and longitude to MGA easting and northing in a zone (default 56) and back, one point at a time.
+      // The lab's grids, built and checked in Rust (rust/flood-core/src/tsunami_grid.rs): `kind` 0 regional, 1 idealised estuary, 2 local terrain scene.
+      tsunamiGrid: (opts) => {
+        const o = call('tsunamiGrid', opts), n = (k) => (o[k] === undefined ? undefined : num(o[k]));
+        return { W: n('W'), H: n('H'), cell: n('cell'), depth: o.depth, eta: o.eta, absorbing: n('absorbing'), method: n('method'), coupled: n('coupled'), bed: o.bed, valid: o.valid, roughness: n('roughness') };
+      },
+      connectedWaterDepth: (bed, W, H, level, edges = ['east'], valid = null) => {
+        const codes = { north: 0, east: 1, south: 2, west: 3 };
+        if (!Array.isArray(edges) || !edges.length || edges.some((e) => !(e in codes))) throw new Error('Invalid ocean-facing terrain edges.');
+        return call('connectedWaterDepth', { W, H, bed, level, edges: Float64Array.from(edges, (e) => codes[e]), valid: valid || undefined }).depth;
+      },
       toMga: (lat, lon, zone = 56) => { const o = call('mga', { a: [lat], b: [lon], zone, mode: 0 }); return [o.a[0], o.b[0]]; },
       fromMga: (easting, northing, zone = 56) => { const o = call('mga', { a: [easting], b: [northing], zone, mode: 1 }); return [o.a[0], o.b[0]]; },
       tsunamiBounds: (place) => Array.from(call('tsunamiBounds', { placeExtent: Float64Array.from(place.extent), placeZone: place.zone ?? 56 }).bounds),

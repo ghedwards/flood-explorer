@@ -534,7 +534,11 @@ fn inundation_frame(o: &mut Out, s: &inundation::Solver, extremes: bool) {
         let f = s.flood_summary(&land);
         o.num("floodedHectares", f.flooded_hectares).num("maxLandDepth", f.max_land_depth).num("floodedNowHectares", f.flooded_now_hectares);
     }
+    if !s.probe_arrival.is_empty() {
+        o.f64s("probeArrival", &s.probe_arrival);
+    }
     if extremes {
+        o.num("maxSpeed", s.max_speed());
         // deepest water on land, highest wave at sea; arrival in seconds from the time the wave reached the model's edge (-1 where it did not come)
         let value: Vec<f32> = (0..s.water.len()).map(|i| if land.get(i).copied().unwrap_or(0) != 0 { s.peak_depth[i] } else { s.peak[i] } as f32).collect();
         let arrival: Vec<f32> = s.arrival.iter().map(|a| if *a >= 0.0 { (*a - origin).max(0.0) as f32 } else { -1.0 }).collect();
@@ -593,6 +597,8 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 }
                 let arrival_depth = b.num("arrivalDepth");
                 if arrival_depth.is_finite() { solver.set_arrival_depth(arrival_depth)?; }
+                // gauges: cells whose first departure from their starting level is kept every step
+                if let Some(cells) = b.f64s("probes") { solver.set_probes(cells.iter().map(|c| *c as usize).collect(), if b.num("probeThreshold").is_finite() { b.num("probeThreshold") } else { 0.05 })?; }
                 // One-way coupling: each edge carries a series of incoming
                 // surface displacement (samples x points) at shared times.
                 if let Some(times) = b.f64s("forceTimes") {
@@ -786,6 +792,48 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let r = flash::effective_rain_series(b.num("rainMm"), b.num("hours"), b.num("initialLoss"), b.num("contLoss"), optional("afterHours", 2.0), optional("stepSeconds", flash::STEP_SECONDS))?;
             o.f64s("series", &r.series).num("seconds", r.seconds).num("stepSeconds", r.step_seconds).num("stormHours", r.storm_hours).num("rainMm", r.rain_mm)
                 .num("effectiveMm", r.effective_mm).num("capped", if r.capped { 1.0 } else { 0.0 });
+        }
+        "tsunamiGrid" => {
+            // a grid for the tsunami lab, built and checked in Rust (tsunami_grid.rs): kind 0 regional, 1 idealised estuary, 2 local terrain scene
+            let source = b.f64s("source").filter(|v| v.len() == 2).map_or([f64::NAN, f64::NAN], |v| [v[0], v[1]]);
+            let (amplitude, width, absorbing) = (b.num("amplitude"), b.num("width"), b.num("absorbing") == 1.0);
+            let elevation = b.f64s("elevation").unwrap_or_default();
+            let grid = match b.num("kind") as i64 {
+                0 => {
+                    let bounds = b.f64s("bounds").unwrap_or_default();
+                    let basin = if b.num("coast") == 1.0 {
+                        tsunami_grid::Basin::Coast { id_ok: b.num("idOk") == 1.0, w: b.num("bW") as usize, h: b.num("bH") as usize, cell: b.num("bCell"), elevation: &elevation, bounds: &bounds }
+                    } else {
+                        tsunami_grid::Basin::Ideal(match b.num("shape") as i64 { 0 => tsunami_grid::Shape::Flat, 2 => tsunami_grid::Shape::Island, _ => tsunami_grid::Shape::Shelf })
+                    };
+                    tsunami_grid::regional(&tsunami_grid::Regional { basin, deep: b.num("deep"), amplitude, width, source, absorbing, method: if b.num("method").is_finite() { b.num("method") as u8 } else { 255 } })?
+                }
+                1 => tsunami_grid::estuary(&tsunami_grid::Estuary { amplitude, width, source, absorbing, tide: b.num("tide"), roughness: b.num("roughness"), lake_level: b.num("lakeLevel") })?,
+                _ => {
+                    let valid = b.u8s("valid");
+                    let extent = b.f64s("extent").unwrap_or_default();
+                    let sea: Vec<inundation::Edge> = b.f64s("seaEdges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+                    tsunami_grid::local(&tsunami_grid::Local {
+                        terrain: tsunami_grid::LocalTerrain { id_ok: b.num("idOk") == 1.0, w: b.num("bW") as usize, h: b.num("bH") as usize, cell: b.num("bCell"), valid: valid.as_deref(), elevation: &elevation, extent: &extent, sea_edges: &sea },
+                        amplitude, width, source, absorbing, tide: b.num("tide"), roughness: b.num("roughness"), coupled: b.num("coupled") == 1.0,
+                    })?
+                }
+            };
+            o.num("W", grid.w as f64).num("H", grid.h as f64).num("cell", grid.cell).f64s("depth", &grid.depth).f64s("eta", &grid.eta).num("absorbing", f64::from(grid.absorbing))
+                .num("method", f64::from(grid.method)).num("coupled", f64::from(grid.coupled));
+            if let Some(bed) = &grid.bed { o.f64s("bed", bed); }
+            if let Some(valid) = &grid.valid { o.u8s("valid", valid); }
+            if let Some(r) = grid.roughness { o.num("roughness", r); }
+        }
+        "connectedWaterDepth" => {
+            // the sea filled inward from a scene's open edges (see tsunami_grid.rs)
+            let (w, h) = (b.num("W") as usize, b.num("H") as usize);
+            let bed = b.f64s("bed").ok_or("missing bed")?;
+            if w == 0 || h == 0 || bed.len() != w * h { return Err("the bed does not match the grid".into()); }
+            let valid = b.u8s("valid");
+            if valid.as_ref().is_some_and(|v| v.len() != bed.len()) { return Err("the mask does not match the grid".into()); }
+            let edges: Vec<inundation::Edge> = b.f64s("edges").unwrap_or_default().iter().filter_map(|c| inundation::Edge::from_code(*c as usize)).collect();
+            o.f64s("depth", &tsunami_grid::connected_water_depth(&bed, w, h, b.num("level"), &edges, valid.as_deref())?);
         }
         "tsunamiBounds" => {
             // [south, west, north, east] of a place's four corners, degrees
