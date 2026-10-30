@@ -695,7 +695,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                                 parent.record(&plan.points.iter().map(|p| (p.0, p.1)).collect::<Vec<_>>())?;
                                 while parent.time < seconds { parent.advance(200)?; }
                                 let r = parent.recorded().ok_or("no recording")?;
-                                let made = (coupling::Recording { times: r.times.clone(), values: r.values.clone(), points: r.points }, parent.peak.iter().fold(0.0_f64, |m, v| m.max(*v)));
+                                let made = (coupling::Recording { times: r.times.clone(), values: r.values.clone(), transport: r.transport.clone(), points: r.points }, parent.peak.iter().fold(0.0_f64, |m, v| m.max(*v)));
                                 if !key.is_empty() { RECORDINGS.with(|c| { let mut c = c.borrow_mut(); if c.len() >= 8 { c.clear(); } c.insert(key.clone(), made.clone()); }); }
                                 made
                             }
@@ -703,7 +703,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                         o.num("regionalSeconds", seconds).num("regionalPeak", regional_peak).num("snapped", plan.snapped as f64);
                         coupling::forcing_from_recording(&plan, &recording, 120.0, 0.02, local_seconds)?
                     };
-                    for e in &forcing.edges { solver.set_forcing(e.edge, forcing.times.clone(), e.series.clone(), e.points)?; }
+                    for e in &forcing.edges { solver.set_forcing_with_flow(e.edge, forcing.times.clone(), e.series.clone(), e.flows.clone(), e.points)?; }
                     // arrival times count from when the wave reached the model's edge, in the local clock
                     TSUNAMI_LAND.with(|l| { let mut l = l.borrow_mut(); if !b.num("arrivalOrigin").is_finite() && forcing.arrival.is_finite() { l.1 = forcing.arrival - forcing.offset; } });
                     let codes: Vec<f64> = forcing.edges.iter().map(|e| match e.edge { inundation::Edge::North => 0.0, inundation::Edge::East => 1.0, inundation::Edge::South => 2.0, inundation::Edge::West => 3.0 }).collect();

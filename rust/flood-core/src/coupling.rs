@@ -8,11 +8,25 @@ use crate::nest::Plan;
 
 /// A regional recording: surface displacement at the plan's points, row-major [sample][point].
 #[derive(Clone)]
-pub struct Recording { pub times: Vec<f64>, pub values: Vec<f64>, pub points: usize }
+pub struct Recording {
+    pub times: Vec<f64>,
+    pub values: Vec<f64>,
+    /// The regional transport at the same points (m2/s, x then y), row-major [sample][point][2]; empty when the regional scheme has none.
+    pub transport: Vec<f64>,
+    pub points: usize,
+}
 
 /// What one open edge is driven with.
 #[derive(Debug)]
-pub struct EdgeForcing { pub edge: Edge, pub points: usize, pub series: Vec<f64>, pub peak: f64, pub snapped: usize }
+pub struct EdgeForcing {
+    pub edge: Edge,
+    pub points: usize,
+    pub series: Vec<f64>,
+    /// The regional transport into the model through this edge, scaled to the local depth, laid out like `series`; empty when the recording has none (and for a series).
+    pub flows: Vec<f64>,
+    pub peak: f64,
+    pub snapped: usize,
+}
 
 #[derive(Debug)]
 pub struct Forcing {
@@ -55,7 +69,17 @@ pub fn forcing_from_recording(plan: &Plan, rec: &Recording, lead: f64, threshold
         let mut series = Vec::with_capacity(keep.len() * e.count);
         for s in &keep { for k in 0..e.count { series.push(scaled[s * points + e.first + k]); } }
         let edge_peak = series.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-        EdgeForcing { edge: e.edge, points: e.count, series, peak: edge_peak, snapped: e.snapped }
+        // the regional velocity as well, when it was recorded: the edge then tells the regional wave arriving from the one already reflected from the regional coast (see `nest`)
+        let mut flows = Vec::new();
+        if rec.transport.len() == rec.values.len() * 2 && plan.flux_gains.len() == points {
+            for s in &keep { for k in 0..e.count {
+                let i = (s * points + e.first + k) * 2;
+                let (u, v) = (rec.transport[i], rec.transport[i + 1]);
+                let inward = match e.edge { Edge::West => u, Edge::East => -u, Edge::North => v, Edge::South => -v };
+                flows.push(inward * plan.flux_gains[e.first + k]);
+            } }
+        }
+        EdgeForcing { edge: e.edge, points: e.count, series, flows, peak: edge_peak, snapped: e.snapped }
     }).collect();
     Ok(Forcing { times: keep.iter().map(|s| times[*s] - start).collect(), offset: start, arrival: times[arrival], peak, edges })
 }
@@ -73,7 +97,7 @@ pub fn forcing_from_series(open: &[Edge], times: &[f64], values: &[f64], max_loc
     let peak = keep.iter().fold(0.0_f64, |m, s| m.max(values[*s].abs()));
     if peak <= 1e-4 { return Err("the series contains no wave larger than 0.1 mm".into()); }
     let arrival = keep.iter().find(|s| values[**s].abs() > threshold * peak).map_or(f64::NAN, |s| times[*s]);
-    let edges = open.iter().map(|e| EdgeForcing { edge: *e, points: 1, series: keep.iter().map(|s| values[*s]).collect(), peak, snapped: 0 }).collect();
+    let edges = open.iter().map(|e| EdgeForcing { edge: *e, points: 1, series: keep.iter().map(|s| values[*s]).collect(), flows: Vec::new(), peak, snapped: 0 }).collect();
     Ok(Forcing { times: keep.iter().map(|s| times[*s]).collect(), offset: 0.0, arrival, peak, edges })
 }
 
@@ -119,7 +143,7 @@ mod tests {
     fn recording(count: usize, height: f64) -> Recording {
         let times: Vec<f64> = (0..180).map(|s| s as f64 * 60.0).collect();
         let values = times.iter().flat_map(|t| (0..count).map(move |_| height * (-((t - 600.0) / 120.0).powi(2)).exp())).collect();
-        Recording { times, values, points: count }
+        Recording { times, values, transport: Vec::new(), points: count }
     }
 
     #[test]
@@ -140,7 +164,7 @@ mod tests {
     fn a_wave_that_never_arrives_a_mismatched_recording_and_a_run_that_ends_first_are_refused() {
         let p = plan(2);
         assert!(forcing_from_recording(&p, &recording(2, 0.0), 120.0, 0.02, 3600.0).unwrap_err().contains("never reaches"));
-        assert!(forcing_from_recording(&p, &Recording { times: vec![0.0, 1.0], values: vec![0.0; 2], points: 1 }, 120.0, 0.02, 3600.0).unwrap_err().contains("does not match"));
+        assert!(forcing_from_recording(&p, &Recording { times: vec![0.0, 1.0], values: vec![0.0; 2], transport: Vec::new(), points: 1 }, 120.0, 0.02, 3600.0).unwrap_err().contains("does not match"));
         let mut early = recording(2, 0.4);
         early.times.truncate(10); early.values.truncate(20);   // the pulse peaks at 600 s but the run stops at 540 s: only the rising edge is there
         let f = forcing_from_recording(&p, &early, 120.0, 0.02, 3600.0);
