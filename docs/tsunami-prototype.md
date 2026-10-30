@@ -928,12 +928,18 @@ them exchange both ways. All of it is in `rust/flood-core/src/nest.rs`, run thro
 the other (`viewer/tsunami-runner.js`), and the MGA transform it needs is `rust/flood-core/src/geo.rs`.
 
 - **Down.** Each regional step, the regional surface at the handover points along the local open edges (the same points and Green's-law scale as one-way) is added to
-  the local forcing as a new sample (`inundation::Solver::push_forcing`), so the regional model is always a step ahead of the local one.
+  the local forcing as a new sample (`inundation::Solver::push_forcing_with_flow`), so the regional model is always a step ahead of the local one. The regional
+  transport through the edge goes with it (scaled by the same Green's-law factor and the square root of the depth ratio), and the edge sets its outflow to the regional
+  model's own plus the radiation of the difference in surface, u = u_regional + sqrt(g/H) (eta - eta_regional). With the surface alone the edge assumes the whole regional
+  wave is arriving, so the wave the regional model has already reflected from its own coast re-enters the local model as if it were new; in the shelf check below the
+  local model then disagreed with a reference grid by more than the signal (0.22 m against 0.13 m at 39 km), and with the transport it agrees (0.02 m).
+  **This changes the live nested runs, not the recorded one-way mode**: in the Gold Coast Seaway scene the local peak is about 18% lower than before and about 25% lower than
+  the recorded one-way run, which still hands over the surface only (a recording has no velocity).
 - **Up.** Whenever the local model reaches the regional model's time, every regional cell the local grid mostly covers (at least 60% of its area, with sea in it) moves a
   share `strength` (0.25 here) of the way to the mean surface displacement and transport of the local sea cells inside it, scaled back by the inverse of the same law.
   The weight is zero for the first 65% of the way in from the open edge and rises to one over the next 17%, so the regional wave entering the local model is left alone
   and the feedback acts near the coast. Only the regional surface and the transports between handed-over cells change, so it is a relaxation, not an exact flux
-  match; the water it moves is reported (`feedbackVolume`). With `strength` 0 it is exactly one-way (a test checks the regional model is bit-for-bit what it is alone).
+  match; the water it moves is reported (`feedbackVolume`). With `strength` 0 the regional model is bit-for-bit what it is alone (a test checks it); the local model is still driven live, so it differs from the recorded one-way run as above.
 - **Clock.** The regional model runs alone until the wave first passes 1 mm at a handover point; the local clock starts there (one-way starts 120 s before the
   wave passes 2% of its peak, which needs the whole regional run in advance).
 
@@ -944,12 +950,30 @@ one-way nesting (identical, as the regional model is untouched), and 0.027 m (26
 feedback made it worse (0.20 m at strength 1); with them the error was between 0.027 and 0.05 m for every strength and margin tried (0.005 to 1; 1 to 20 regional
 cells), best near 0.02 for a short margin and 0.25 for the default one. Some error remains because the reference grid is itself first-order and dissipative.
 
-**The lab's scenes are too small for it to matter.** The local scenes are 4 to 8 km across and the regional cells 1.5 km, so the local grid covers 0 to 2 regional
-cells: Gold Coast Seaway hands over 2, Currumbin, Pine River and the Brisbane River mouth none (and then the run is exactly one-way, and the page says so). The
-validation above has a ratio of 8 and a nest 24 cells wide. A useful two-way nest here needs an intermediate level (say 250 m) between the 1.5 km regional grid and the
-25 to 50 m local one; the Rust model is written for any pair of grids, so that is a matter of terrain data and a second `Nest` rather than new solver code. Until
-then treat two-way as a check that the one-way answer is not changed much by the local coast, not as an improvement. In the Seaway scene it moved the regional
-surface by up to 1.5 m of a 2.4 m wave in the two cells the local grid covers, which is not validated against anything.
+**The lab's scenes are small for it.** The local scenes are 4 to 8 km across and the regional cells 1.5 km, so the local grid covers 0 to 2 regional cells: Gold Coast Seaway
+hands over 2, Currumbin, Pine River and the Brisbane River mouth none (and then the run is exactly one-way, and the page says so). The validation above has a ratio of 8 and a
+nest 24 cells wide. The next section is the fix for that.
+
+### Through a 250 m intermediate grid (experimental)
+
+The **Nesting** choice "Two-way through a 250 m grid" runs three models: the 1.5 km regional one, a nonlinear grid of about 250 m, and the local model inside it.
+`rust/flood-core/src/nest_grid.rs` builds the middle one: it covers the local scene plus 6 km on every side (at most 512 cells a side), its terrain inside the local scene is the
+local terrain averaged to 250 m cells (a cell is sea where the mean ground is below zero, so narrow channels smear out), and around it the depths are the regional ones read
+smoothly (bilinear over wet cells; the regional model's land has no heights, so land there is a 5 m wall). **It is not new bathymetry**: outside the local scene it is the
+regional depths, so what it adds is a representation of the coast and the wave's path in steps of about six instead of thirty, and the seam where the local terrain begins can
+show a step where the two sources disagree about the sea floor.
+
+It is two nests, one inside the other (`Nest<Nest<tsunami::Solver>>`; a nest is itself a coarse model for a finer one). The regional model hands its wave and transport to the
+intermediate grid at all its edges that have sea, the intermediate grid does the same for the local model at the scene's open sea edges, and the answers come back the same
+way, each level to the one above, every step of the coarser one. The local clock starts when the wave first passes 1 mm at the local handover points, and the intermediate
+grid's clock when it does at its own, so the arrival times are measured as before.
+
+What it was checked against: the same shelf, but with a local grid only the last four regional cells wide (2,560 m of coast, like the lab scenes) and a 160 m grid between. Against
+the single 80 m reference, the regional probe's error was 0.055 m alone, 0.046 m with the small local grid straight into the regional one (it hands little back), and 0.019 m
+with the intermediate grid; the intermediate grid alone (no local model) gives about the same, 0.019 to 0.025 m, and the three levels agree with each other to 0.02 m at 39 km.
+In the Gold Coast Seaway scene, 12 regional cells follow the intermediate grid where 2 follow the local scene directly; the local peak stays within 3% of the direct two-way
+run and the local model conserves water. None of that is a validation against a recorded tsunami. It costs little: a 900 s Seaway run took 3.6 s against 3.3 s for two levels (the middle grid is
+80 x 68 cells, and the local model's smaller steps dominate).
 
 ## Where the numbers are worked out
 

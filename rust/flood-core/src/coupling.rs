@@ -113,7 +113,7 @@ mod tests {
     use crate::nest::EdgeGroup;
 
     fn plan(count: usize) -> Plan {
-        Plan { points: (0..count).map(|k| (10.5 + k as f64, 20.5)).collect(), gains: vec![1.0; count], edges: vec![EdgeGroup { edge: Edge::East, first: 0, count, snapped: 0 }], handovers: Vec::new(), snapped: 0 }
+        Plan { points: (0..count).map(|k| (10.5 + k as f64, 20.5)).collect(), gains: vec![1.0; count], flux_gains: Vec::new(), edges: vec![EdgeGroup { edge: Edge::East, first: 0, count, snapped: 0 }], handovers: Vec::new(), snapped: 0 }
     }
     // a Gaussian pulse at every point, arriving at 600 s, sampled every 60 s over 3 hours
     fn recording(count: usize, height: f64) -> Recording {
@@ -185,9 +185,9 @@ mod tests {
     fn the_regional_run_is_at_least_three_hours_and_at_most_six() {
         let p = plan(2);
         assert_eq!(parent_seconds(&p, 1500.0, (10.0, 20.0), 3600.0, 120.0, 120.0), 10800.0);
-        let far = Plan { points: vec![(5000.0, 4000.0)], gains: vec![1.0], edges: Vec::new(), handovers: Vec::new(), snapped: 0 };
+        let far = Plan { points: vec![(5000.0, 4000.0)], gains: vec![1.0], flux_gains: Vec::new(), edges: Vec::new(), handovers: Vec::new(), snapped: 0 };
         assert_eq!(parent_seconds(&far, 1500.0, (10.0, 20.0), 3600.0, 120.0, 120.0), 21600.0);
-        let mid = Plan { points: vec![(400.0, 20.5)], gains: vec![1.0], edges: Vec::new(), handovers: Vec::new(), snapped: 0 };
+        let mid = Plan { points: vec![(400.0, 20.5)], gains: vec![1.0], flux_gains: Vec::new(), edges: Vec::new(), handovers: Vec::new(), snapped: 0 };
         let s = parent_seconds(&mid, 1500.0, (10.0, 20.0), 3600.0, 120.0, 120.0);
         assert!(s > 10800.0 && s < 21600.0 && s % 60.0 == 0.0, "{s}");
     }

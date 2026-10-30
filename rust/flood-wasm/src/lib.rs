@@ -204,7 +204,9 @@ impl Out {
 thread_local! {
     static INERTIAL: RefCell<Option<inertial::Solver>> = const { RefCell::new(None) };
     static INUNDATION: RefCell<Option<inundation::Solver>> = const { RefCell::new(None) };
-    static NEST: RefCell<Option<nest::Nest>> = const { RefCell::new(None) };
+    static NEST: RefCell<Option<nest::Nest<tsunami::Solver>>> = const { RefCell::new(None) };
+    // regional -> intermediate grid -> local
+    static NEST3: RefCell<Option<nest::Nest<nest::Nest<tsunami::Solver>>>> = const { RefCell::new(None) };
     static DAM: RefCell<Option<dam::Run>> = const { RefCell::new(None) };
     // regional recordings kept for one-way coupled runs that differ only in their local settings, by the key the caller gives
     static RECORDINGS: RefCell<HashMap<Vec<u8>, (coupling::Recording, f64)>> = RefCell::new(HashMap::new());
@@ -580,6 +582,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             TSUNAMI.with(|s| *s.borrow_mut() = None);
             INUNDATION.with(|s| *s.borrow_mut() = None);
             NEST.with(|s| *s.borrow_mut() = None);
+            NEST3.with(|s| *s.borrow_mut() = None);
             TSUNAMI_LAND.with(|l| *l.borrow_mut() = (b.u8s("land").unwrap_or_default(), if b.num("arrivalOrigin").is_finite() { b.num("arrivalOrigin") } else { 0.0 }));
             if b.num("method") == 2.0 {
                 let mut solver = inundation::Solver::new(
@@ -610,7 +613,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     }
                 }
                 if let (Some(times), Some(level)) = (b.f64s("levelTimes"), b.f64s("level")) { solver.set_level(times, level)?; }
-                if b.num("nest") == 1.0 {
+                if b.num("nest") == 1.0 || b.num("nest") == 2.0 {
                     // Two-way nesting: a regional model stepped alongside this one, handing its wave over at the open edges and taking the local surface back.
                     let parent = tsunami::Solver::new(
                         b.num("nestW") as usize, b.num("nestH") as usize, b.num("nestCell"),
@@ -623,14 +626,39 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     let optional = |k: &str| { let v = b.num(k); if v.is_finite() { Some(v) } else { None } };
                     let geography = nest::Geography { bounds: [bounds[0], bounds[1], bounds[2], bounds[3]], extent: [extent[0], extent[1], extent[2], extent[3]], zone: if b.num("nestZone").is_finite() { b.num("nestZone") as i32 } else { 56 } };
                     let tuning = nest::Tuning { per_edge: if b.num("nestPerEdge").is_finite() { b.num("nestPerEdge") as usize } else { 16 }, margin: optional("nestMargin"), ramp: optional("nestRamp") };
-                    let plan = nest::plan_geographic(&parent, &solver, &geography, &open, &tuning)?;
                     let threshold = if b.num("nestThreshold").is_finite() { b.num("nestThreshold") } else { 0.001 };
                     let max_seconds = if b.num("nestMaxSeconds").is_finite() { b.num("nestMaxSeconds") } else { 21600.0 };
                     let strength = if b.num("nestStrength").is_finite() { b.num("nestStrength") } else { 0.25 };
-                    let (handovers, snapped, points) = (plan.handovers.len(), plan.snapped, plan.points.len());
-                    let nested = nest::Nest::new(parent, solver, plan, strength, threshold, max_seconds)?;
-                    o.num("dt", nested.child.dt).num("nestOffset", nested.offset).num("nestHandovers", handovers as f64).num("nestSnapped", snapped as f64).num("nestPoints", points as f64);
-                    NEST.with(|s| *s.borrow_mut() = Some(nested));
+                    if b.num("nest") == 2.0 {
+                        // Through an intermediate grid (see nest_grid.rs): regional -> intermediate (nonlinear, about 250 m, the local terrain averaged and the regional sea around it) -> local.
+                        let bed = b.f64s("bed").ok_or("missing bed elevations")?;
+                        let valid = b.u8s("valid");
+                        let terrain = nest_grid::LocalTerrain { w: solver.w, h: solver.h, cell: solver.cell, extent: [extent[0], extent[1], extent[2], extent[3]], bed: &bed, valid: valid.as_deref() };
+                        let regional = nest_grid::RegionalDepths { w: parent.w, h: parent.h, bounds: geography.bounds, depth: &parent.depth };
+                        let mid_cell = if b.num("midCell").is_finite() { b.num("midCell") } else { 250.0 };
+                        let mid_margin = if b.num("midMargin").is_finite() { b.num("midMargin") } else { 6000.0 };
+                        let grid = nest_grid::intermediate(&terrain, &regional, geography.zone, mid_cell, mid_margin)?;
+                        let mid = inundation::Solver::new(grid.w, grid.h, grid.cell, grid.bed.clone(), grid.reference.clone(), vec![0.0; grid.w * grid.h], false, b.num("roughness"))?;
+                        let all = [inundation::Edge::North, inundation::Edge::East, inundation::Edge::South, inundation::Edge::West];
+                        let up_geography = nest::Geography { extent: grid.extent, ..geography };
+                        let up_plan = nest::plan_geographic(&parent, &mid, &up_geography, &all, &tuning)?;
+                        let (up_handovers, up_snapped) = (up_plan.handovers.len(), up_plan.snapped);
+                        let inner = nest::Nest::new(parent, mid, up_plan, strength, threshold, max_seconds)?;
+                        let (mx0, my1) = (grid.extent[0], grid.extent[3]);
+                        let to_mid = |x: f64, y: f64| ((extent[0] + x * solver.cell - mx0) / grid.cell, (my1 - (extent[3] - y * solver.cell)) / grid.cell);
+                        let plan = nest::plan_with(&inner, &solver, &open, tuning.per_edge, tuning.margin, tuning.ramp, &to_mid)?;
+                        let (handovers, snapped, points) = (plan.handovers.len(), plan.snapped, plan.points.len());
+                        let nested = nest::Nest::new(inner, solver, plan, strength, threshold, max_seconds)?;
+                        o.num("dt", nested.child.dt).num("nestOffset", nested.offset + nested.parent.offset).num("nestHandovers", handovers as f64).num("nestSnapped", (snapped + up_snapped) as f64).num("nestPoints", points as f64)
+                            .num("midW", grid.w as f64).num("midH", grid.h as f64).num("midCell", grid.cell).num("midHandovers", up_handovers as f64);
+                        NEST3.with(|s| *s.borrow_mut() = Some(nested));
+                    } else {
+                        let plan = nest::plan_geographic(&parent, &solver, &geography, &open, &tuning)?;
+                        let (handovers, snapped, points) = (plan.handovers.len(), plan.snapped, plan.points.len());
+                        let nested = nest::Nest::new(parent, solver, plan, strength, threshold, max_seconds)?;
+                        o.num("dt", nested.child.dt).num("nestOffset", nested.offset).num("nestHandovers", handovers as f64).num("nestSnapped", snapped as f64).num("nestPoints", points as f64);
+                        NEST.with(|s| *s.borrow_mut() = Some(nested));
+                    }
                 } else if b.num("couple") == 1.0 || b.num("couple") == 2.0 {
                     // One-way coupling in Rust: the incoming wave at the open edges comes from a regional run recorded here (1) or from a series (2), and a rising tide can sit on it.
                     let local_seconds = if b.num("coupleLocalSeconds").is_finite() { b.num("coupleLocalSeconds") } else { 3600.0 };
@@ -742,7 +770,18 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 o.f32s("parentEta", &n.parent.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
                 Ok(true)
             })?;
-            let nonlinear = nested || INUNDATION.with(|slot| -> Result<bool, String> {
+            let nested3 = !nested && NEST3.with(|slot| -> Result<bool, String> {
+                let mut slot = slot.borrow_mut();
+                let Some(n) = slot.as_mut() else { return Ok(false); };
+                n.advance(steps as usize)?;
+                let s = &n.child;
+                o.num("time", s.time).num("dt", s.dt).num("volume", s.volume())
+                    .num("volumeError", s.volume_error()).num("boundaryVolume", s.boundary_volume).num("feedbackVolume", n.feedback_volume + n.parent.feedback_volume);
+                inundation_frame(&mut o, s, b.num("extremes") == 1.0);
+                o.f32s("parentEta", &n.parent.parent.eta.iter().map(|v| *v as f32).collect::<Vec<_>>());
+                Ok(true)
+            })?;
+            let nonlinear = nested || nested3 || INUNDATION.with(|slot| -> Result<bool, String> {
                 let mut slot = slot.borrow_mut();
                 let Some(s) = slot.as_mut() else { return Ok(false); };
                 s.advance(steps as usize)?;

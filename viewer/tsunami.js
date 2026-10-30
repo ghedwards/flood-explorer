@@ -99,7 +99,7 @@ function labels() {
       : c.source === 'series' ? `${(c.arrival / 60).toFixed(1)} min into the local run`
       : c.source === 'regional-two-way' ? `local clock starts ${(c.offset / 60).toFixed(0)} min after the offshore source, when the wave first passes 1 mm at a handover point`
       : `${(c.arrival / 60).toFixed(0)} min after the offshore source · local clock starts ${(c.offset / 60).toFixed(0)} min after it`;
-    $('couplingPeak').textContent = c && c.source === 'regional-two-way' ? `two-way: ${c.handovers} regional cells follow the local model (strength ${c.strength})${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : c ? `${c.peak.toFixed(2)} m (${Object.entries(c.edges).map(([name, e]) => `${name} ${e.peak.toFixed(2)}`).join(', ')}) ${c.source === 'series' ? '' : ` · regional peak anywhere ${c.regionalPeak.toFixed(2)} m`}${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : '—';
+    $('couplingPeak').textContent = c && c.source === 'regional-two-way' ? `two-way${c.intermediate ? ` through a ${c.intermediate.cell} m grid (${c.intermediate.w} × ${c.intermediate.h} cells)` : ''}: ${c.handovers}${c.intermediate ? ' intermediate' : ' regional'} cells follow the local model${c.intermediate ? ` and ${c.intermediate.handovers} regional cells follow the intermediate grid` : ''} (strength ${c.strength})${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : c ? `${c.peak.toFixed(2)} m (${Object.entries(c.edges).map(([name, e]) => `${name} ${e.peak.toFixed(2)}`).join(', ')}) ${c.source === 'series' ? '' : ` · regional peak anywhere ${c.regionalPeak.toFixed(2)} m`}${c.tide ? ` · plus a ${c.tide.toFixed(2)} m rising tide` : ''}` : '—';
   }
   $('tideValue').textContent = `${(+$('tide').value).toFixed(2)} m`;
   $('roughnessValue').textContent = (+$('roughness').value).toFixed(3);
@@ -394,7 +394,7 @@ function buildCoupling(parent, amplitude = +$('amplitude').value) {
   const parentData = parents.get(parent.id);
   const cell = toParentCell(parentData, ...parent.source).map(Math.floor);
   const parentGrid = tsunamiGrid({ preset: parent.id, bathymetry: parentData, source: cell, amplitude, width: +$('offshoreWidth').value, absorbing: true });
-  const twoWay = $('nesting').value === 'two-way' ? { strength: 0.25 } : null;
+  const twoWay = $('nesting').value === 'two-way' ? { strength: 0.25 } : $('nesting').value === 'two-way-mid' ? { strength: 0.25, intermediate: { cell: 250, margin: 6000 } } : null;
   // where to read the wave, how long to run the regional model and the recording are all worked out in Rust when the run starts; runs that differ only in local settings share the key
   return { parentGrid, bounds: parentData.bounds, extent: bathymetry.extent, zone: 56, source: cell, seaEdges: bathymetry.seaEdges, localSeconds: totalSeconds(), tide: +$('tideRange').value, twoWay, cacheKey: `${parent.id}|${bathymetry.id}|${amplitude}|${$('offshoreWidth').value}` };
 }

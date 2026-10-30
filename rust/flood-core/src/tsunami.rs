@@ -45,6 +45,32 @@ pub struct Solver {
 /// Four cell indices and their weights: how a point reads the surface.
 pub type Tap = [(usize, f64); 4];
 
+/// Taps for points in any `w` x `h` grid whose still-water depths are `depth` (0 on land): see `Solver::make_taps`.
+pub fn taps_over(w: usize, h: usize, depth: &[f64], points: &[(f64, f64)]) -> Result<Vec<Tap>, String> {
+    let mut taps = Vec::with_capacity(points.len());
+    for &(px, py) in points {
+        if !px.is_finite() || !py.is_finite() || px < 0.5 || py < 0.5 || px > w as f64 - 0.5 || py > h as f64 - 0.5 {
+            return Err("recording point outside the propagation grid".into());
+        }
+        let (fx, fy) = (px - 0.5, py - 0.5);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (tx, ty) = (fx - x0 as f64, fy - y0 as f64);
+        let mut tap = [(0, 0.0); 4];
+        let mut total = 0.0;
+        for (k, (dx, dy, weight)) in [(0, 0, (1.0 - tx) * (1.0 - ty)), (1, 0, tx * (1.0 - ty)), (0, 1, (1.0 - tx) * ty), (1, 1, tx * ty)].into_iter().enumerate() {
+            let (x, y) = ((x0 + dx).min(w - 1), (y0 + dy).min(h - 1));
+            let i = y * w + x;
+            let weight = if depth[i] > 0.0 { weight } else { 0.0 };
+            total += weight;
+            tap[k] = (i, weight);
+        }
+        if total < 1e-9 { return Err("recording point is on land in the propagation grid".into()); }
+        for t in &mut tap { t.1 /= total; }
+        taps.push(tap);
+    }
+    Ok(taps)
+}
+
 pub struct Recorder {
     taps: Vec<Tap>,
     pub times: Vec<f64>,
@@ -91,29 +117,12 @@ impl Solver {
 
     /// Interpolation taps for points (fractional cell coordinates, cell centres at i + 0.5): the bilinear mean over each point's wet neighbours, so coastal points
     /// do not read the zero of reflecting land. Used by the recorder and by the nested model's live sampling.
-    pub fn make_taps(&self, points: &[(f64, f64)]) -> Result<Vec<Tap>, String> {
-        let mut taps = Vec::with_capacity(points.len());
-        for &(px, py) in points {
-            if !px.is_finite() || !py.is_finite() || px < 0.5 || py < 0.5 || px > self.w as f64 - 0.5 || py > self.h as f64 - 0.5 {
-                return Err("recording point outside the propagation grid".into());
-            }
-            let (fx, fy) = (px - 0.5, py - 0.5);
-            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-            let (tx, ty) = (fx - x0 as f64, fy - y0 as f64);
-            let mut tap = [(0, 0.0); 4];
-            let mut total = 0.0;
-            for (k, (dx, dy, weight)) in [(0, 0, (1.0 - tx) * (1.0 - ty)), (1, 0, tx * (1.0 - ty)), (0, 1, (1.0 - tx) * ty), (1, 1, tx * ty)].into_iter().enumerate() {
-                let (x, y) = ((x0 + dx).min(self.w - 1), (y0 + dy).min(self.h - 1));
-                let i = y * self.w + x;
-                let weight = if self.depth[i] > 0.0 { weight } else { 0.0 };
-                total += weight;
-                tap[k] = (i, weight);
-            }
-            if total < 1e-9 { return Err("recording point is on land in the propagation grid".into()); }
-            for t in &mut tap { t.1 /= total; }
-            taps.push(tap);
-        }
-        Ok(taps)
+    pub fn make_taps(&self, points: &[(f64, f64)]) -> Result<Vec<Tap>, String> { taps_over(self.w, self.h, &self.depth, points) }
+
+    /// The depth-integrated transport at the centre of cell `i` (m2/s), the mean of the transports through its faces.
+    pub fn centre_transport(&self, i: usize) -> (f64, f64) {
+        let (x, y) = (i % self.w, i / self.w);
+        (0.5 * (self.qx[y * (self.w + 1) + x] + self.qx[y * (self.w + 1) + x + 1]), 0.5 * (self.qy[y * self.w + x] + self.qy[(y + 1) * self.w + x]))
     }
 
     /// Move the transport through an interior x face (between cells x - 1 and x of row y) a share `alpha` of the way to `target` (m2/s). Only the staggered scheme has face

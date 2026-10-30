@@ -516,7 +516,7 @@
         // `nest` for two-way nesting; `coupled` for a one-way run driven by a regional recording or a series (what it was driven with)
         return {
           dt: num(o.dt), forcingEnd: o.forcingEnd ? num(o.forcingEnd) : null,
-          ...(o.nestOffset && { nest: { offset: num(o.nestOffset), handovers: num(o.nestHandovers), snapped: num(o.nestSnapped), points: num(o.nestPoints) } }),
+          ...(o.nestOffset && { nest: { offset: num(o.nestOffset), handovers: num(o.nestHandovers), snapped: num(o.nestSnapped), points: num(o.nestPoints), ...(o.midW && { intermediate: { w: num(o.midW), h: num(o.midH), cell: num(o.midCell), handovers: num(o.midHandovers) } }) } }),
           ...(o.coupled && { coupled: { kind: num(o.coupled), arrival: num(o.arrival), offset: num(o.offset), peak: num(o.peak), rows: num(o.rows), edgeCodes: Array.from(o.edgeCodes), edgePeak: Array.from(o.edgePeak), edgePoints: Array.from(o.edgePoints), edgeSnapped: Array.from(o.edgeSnapped), ...(o.regionalSeconds && { regionalSeconds: num(o.regionalSeconds), regionalPeak: num(o.regionalPeak), regionalCached: num(o.regionalCached) === 1 }) } }),
         };
       },
