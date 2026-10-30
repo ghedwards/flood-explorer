@@ -11,7 +11,7 @@ const EDGE_CODES = { north: 0, east: 1, south: 2, west: 3 }, EDGE_NAMES = ['nort
 
 /* Start a run. The grid is the local model's; `data.coupling`, when there is one, says how its open edges are driven, and everything that follows is Rust (see
  * rust/flood-core/src/coupling.rs and nest.rs): a regional offshore run recorded at handover points (`parentGrid`, `bounds`, `extent`, `zone`, `source`, optionally `seconds`
- * and a `cacheKey` so runs that differ only in local settings share one regional run), a supplied `series`, or two-way nesting (`twoWay: { strength }`), with an optional
+ * and a `cacheKey` so runs that differ only in local settings share one regional run), a supplied `series`, or two-way nesting (`twoWay: { strength, intermediate: { cell, margin } }`, the second to go through an intermediate grid of `cell` metres reaching `margin` metres beyond the local scene), with an optional
  * rising `tide` over `localSeconds`. `seaEdges` are the local scene's open-sea edge names. `data.land` (1 where the ground is dry at mean sea level) lets the solver report what a
  * run has flooded and its extremes (see tsunamiStep). Returns what the page shows about the coupling, or null, and how many steps to take at once. */
 export function startRun(F, data, report = () => {}) {
@@ -21,14 +21,14 @@ export function startRun(F, data, report = () => {}) {
   const parent = c.parentGrid && { nestW: c.parentGrid.W, nestH: c.parentGrid.H, nestCell: c.parentGrid.cell, nestDepth: c.parentGrid.depth, nestEta: c.parentGrid.eta, nestAbsorbing: c.parentGrid.absorbing ? 1 : 0, nestMethod: c.parentGrid.method, nestBounds: Float64Array.from(c.bounds), nestExtent: Float64Array.from(c.extent), nestZone: c.zone ?? 56 };
   let mode;
   if (c.series) mode = { couple: 2, seriesTimes: c.series.times, seriesValues: c.series.values };
-  else if (c.twoWay) mode = { nest: 1, ...parent, nestStrength: c.twoWay.strength ?? 0.25 };
+  else if (c.twoWay) mode = { nest: c.twoWay.intermediate ? 2 : 1, ...parent, nestStrength: c.twoWay.strength ?? 0.25, ...(c.twoWay.intermediate && { midCell: c.twoWay.intermediate.cell, midMargin: c.twoWay.intermediate.margin }) };
   else mode = { couple: 1, ...parent, coupleSource: Float64Array.from(c.source), ...(c.seconds && { coupleSeconds: c.seconds }), ...(c.cacheKey && { cacheKey: new TextEncoder().encode(c.cacheKey) }) };
   if (!c.series) report({ stage: 'regional' });
   const started = F.tsunamiStart(withLand({ ...data.grid, ...mode, nestEdges: sea, coupleLocalSeconds: c.localSeconds, tideRange: c.tide || 0 }));
   const tide = c.tide || 0;
   if (c.twoWay && !c.series) {
     const n = started.nest;
-    return { coupling: { source: 'regional-two-way', arrival: n.offset, offset: n.offset, peak: null, edges: {}, regionalPeak: null, handovers: n.handovers, snapped: n.snapped, strength: c.twoWay.strength ?? 0.25, tide }, batch: 200 };
+    return { coupling: { source: 'regional-two-way', arrival: n.offset, offset: n.offset, peak: null, edges: {}, regionalPeak: null, handovers: n.handovers, snapped: n.snapped, strength: c.twoWay.strength ?? 0.25, tide, ...(n.intermediate && { intermediate: n.intermediate }) }, batch: 200 };
   }
   const k = started.coupled, edges = Object.fromEntries(k.edgeCodes.map((code, i) => [EDGE_NAMES[code], { points: k.edgePoints[i], peak: k.edgePeak[i], snapped: k.edgeSnapped[i] }]));
   const coupling = c.series

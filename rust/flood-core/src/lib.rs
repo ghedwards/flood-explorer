@@ -34,6 +34,7 @@ pub mod codec;
 pub mod ensemble;
 pub mod lab;
 pub mod nest;
+pub mod nest_grid;
 pub mod series;
 pub mod tsunami_grid;
 pub mod inertial_grid;

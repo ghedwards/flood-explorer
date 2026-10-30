@@ -339,6 +339,32 @@ test('an ensemble plan brackets each input on its own and in combination, withou
   assert.deepEqual([ranges.landDepth.min, ranges.landDepth.max, ranges.floodedHectares.min, ranges.maxSpeed.max], [0, 2, 1, 4]);
 });
 
+test('two-way nesting through a 250 m intermediate grid runs, conserves water and hands the coast back to many more regional cells than the local scene alone', async () => {
+  const R = await import('../viewer/tsunami-runner.js');
+  const { fineGrid, coupling } = await regionalCoupling('gold-coast-seaway', 'gold-coast', [154.3, -28.0], { localSeconds: 900 });
+  const run = (twoWay) => {
+    const started = R.startRun(F, { grid: fineGrid, coupling: { ...coupling, twoWay } });
+    let frame;
+    while (!frame || frame.time < 900) frame = F.tsunamiStep(200);
+    return { coupling: started.coupling, frame, parentCells: coupling.parentGrid.W * coupling.parentGrid.H };
+  };
+  const direct = run({ strength: 0.25 }), mid = run({ strength: 0.25, intermediate: { cell: 250, margin: 6000 } }), passive = run({ strength: 0, intermediate: { cell: 250, margin: 6000 } });
+  assert.equal(mid.coupling.source, 'regional-two-way');
+  assert.ok(mid.coupling.intermediate && mid.coupling.intermediate.cell === 250 && mid.coupling.intermediate.w > 40, JSON.stringify(mid.coupling.intermediate));
+  assert.ok(mid.coupling.handovers >= 1 && mid.coupling.offset > 600, `the local clock starts when the wave arrives: ${mid.coupling.offset}`);
+  for (const r of [mid, passive]) {
+    assert.ok(r.frame.water.every(h => Number.isFinite(h) && h >= 0));
+    assert.ok(Math.max(...r.frame.peak) > .005, 'the regional wave entered the local model');
+    assert.ok(Math.abs(r.frame.volumeError) < 1e-4, `water conserved: ${r.frame.volumeError}`);
+    assert.equal(r.frame.parentEta.length, r.parentCells);
+  }
+  assert.equal(passive.frame.feedbackVolume, 0, 'with no strength nothing is fed back');
+  assert.ok(mid.frame.feedbackVolume !== 0, 'with strength the coarser models take water from the finer ones');
+  assert.ok(mid.coupling.intermediate.handovers > 3 * direct.coupling.handovers, `regional cells that follow the intermediate grid (${mid.coupling.intermediate.handovers}) against those that follow the local scene directly (${direct.coupling.handovers})`);
+  assert.ok(Math.max(...mid.frame.peak) < 5 * Math.max(...passive.frame.peak) && Math.max(...mid.frame.peak) > 0.2 * Math.max(...passive.frame.peak), 'the local wave stays the same size');
+  assert.throws(() => R.startRun(F, { grid: fineGrid, coupling: { ...coupling, twoWay: { strength: 0.25, intermediate: { cell: 5, margin: 6000 } } } }), /invalid intermediate/);
+});
+
 test('ensemble runs measure arrival, gauge peaks and flooding, and stronger sources give larger responses', async () => {
   const { tsunamiGrid } = await gridModule;
   const { runMember, ensemblePlan } = await import('../viewer/tsunami-runner.js');

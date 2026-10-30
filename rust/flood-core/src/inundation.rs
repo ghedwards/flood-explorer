@@ -24,18 +24,22 @@ struct Forcing {
     edge: Edge,
     times: Vec<f64>,
     values: Vec<f64>,
+    /// The parent's transport into the model through this edge (m2/s), laid out like `values`; empty when the parent gave only its surface.
+    flows: Vec<f64>,
     points: usize,
 }
 
 impl Forcing {
-    fn at(&self, along: f64, time: f64) -> f64 {
+    fn at(&self, along: f64, time: f64) -> f64 { self.interpolate(&self.values, along, time) }
+    fn flow_at(&self, along: f64, time: f64) -> Option<f64> { if self.flows.is_empty() { None } else { Some(self.interpolate(&self.flows, along, time)) } }
+    fn interpolate(&self, data: &[f64], along: f64, time: f64) -> f64 {
         let n = self.times.len();
         let k = self.times.partition_point(|t| *t <= time).clamp(1, n - 1);
         let f = ((time - self.times[k - 1]) / (self.times[k] - self.times[k - 1])).clamp(0.0, 1.0);
         let p = (along * self.points as f64 - 0.5).clamp(0.0, (self.points - 1) as f64);
         let (p0, pf) = (p.floor() as usize, p - p.floor());
         let p1 = (p0 + 1).min(self.points - 1);
-        let v = |s: usize, q: usize| self.values[s * self.points + q];
+        let v = |s: usize, q: usize| data[s * self.points + q];
         let at = |s: usize| v(s, p0) * (1.0 - pf) + v(s, p1) * pf;
         at(k - 1) * (1.0 - f) + at(k) * f
     }
@@ -166,10 +170,18 @@ impl Solver {
     /// walls. The relaxation sponge is switched off, since it would damp the
     /// forced signal. The series is held at its last value after it ends.
     pub fn set_forcing(&mut self, edge: Edge, times: Vec<f64>, values: Vec<f64>, points: usize) -> Result<(), String> {
+        self.set_forcing_with_flow(edge, times, values, Vec::new(), points)
+    }
+
+    /// The same, with the parent's transport through the edge as well (`flows`, m2/s into the model, laid out like `values`; empty for none). A parent whose wave is not
+    /// all incident (it has reflected from its own coast, say) gives the edge its velocity too: the outflow is then the parent's own plus the radiation of the difference
+    /// in surface, u = u_parent + sqrt(g/H) (eta - eta_parent), rather than assuming the whole parent wave is arriving.
+    pub fn set_forcing_with_flow(&mut self, edge: Edge, times: Vec<f64>, values: Vec<f64>, flows: Vec<f64>, points: usize) -> Result<(), String> {
         if times.len() < 2 || times.len() > 1_000_000 || points == 0 || points > 1024
             || values.len() != times.len().checked_mul(points).ok_or("forcing overflow")?
             || times.iter().any(|t| !t.is_finite()) || times.windows(2).any(|p| p[1] <= p[0])
-            || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
+            || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0)
+            || (!flows.is_empty() && (flows.len() != values.len() || flows.iter().any(|v| !v.is_finite() || v.abs() > 1.0e5))) {
             return Err("invalid boundary forcing series".into());
         }
         if self.forcing.iter().any(|f| f.edge == edge) { return Err("this edge already has forcing".into()); }
@@ -177,7 +189,7 @@ impl Solver {
             return Err("the forced edge has no initially wet cells".into());
         }
         self.sponge.iter_mut().for_each(|v| *v = 0.0);
-        self.forcing.push(Forcing { edge, times, values, points });
+        self.forcing.push(Forcing { edge, times, values, flows, points });
         Ok(())
     }
 
@@ -238,13 +250,18 @@ impl Solver {
 
     /// Add one more sample to an edge's forcing, at `time` (after its last) with one value per point: for a parent model that runs alongside this one and hands
     /// its wave over step by step instead of in advance.
-    pub fn push_forcing(&mut self, edge: Edge, time: f64, values: &[f64]) -> Result<(), String> {
+    pub fn push_forcing(&mut self, edge: Edge, time: f64, values: &[f64]) -> Result<(), String> { self.push_forcing_with_flow(edge, time, values, &[]) }
+
+    /// The same for an edge forced with transports: `flows` has one per point (empty when the edge was forced without them).
+    pub fn push_forcing_with_flow(&mut self, edge: Edge, time: f64, values: &[f64], flows: &[f64]) -> Result<(), String> {
         let Some(f) = self.forcing.iter_mut().find(|f| f.edge == edge) else { return Err("this edge has no forcing to extend".into()) };
+        if flows.len() != if f.flows.is_empty() { 0 } else { f.points } || flows.iter().any(|v| !v.is_finite() || v.abs() > 1.0e5) { return Err("invalid forcing sample".into()); }
         if values.len() != f.points || !time.is_finite() || time <= *f.times.last().unwrap() || values.iter().any(|v| !v.is_finite() || v.abs() > 20.0) {
             return Err("invalid forcing sample".into());
         }
         f.times.push(time);
         f.values.extend_from_slice(values);
+        f.flows.extend_from_slice(flows);
         Ok(())
     }
 
@@ -268,6 +285,32 @@ impl Solver {
         let k = times.partition_point(|t| *t <= time).clamp(1, times.len() - 1);
         let f = ((time - times[k - 1]) / (times[k] - times[k - 1])).clamp(0.0, 1.0);
         values[k - 1] * (1.0 - f) + values[k] * f
+    }
+
+    /// Move cell `i`'s surface displacement a share `alpha` of the way to `target` (a finer model's answer handed back to this one, as in `nest`); the cell's transport is
+    /// scaled with its depth so the speed is kept. Returns the volume added (negative for removed), m3. Dry and excluded cells, and water that would go below the bed, are left alone.
+    pub fn relax_surface(&mut self, i: usize, target: f64, alpha: f64) -> f64 {
+        if !self.valid[i] || self.water[i] <= DRY { return 0.0; }
+        let wanted = (self.eta[i] + alpha * (target - self.eta[i])).max(-0.9 * self.reference[i]);
+        let h = self.reference[i] + wanted;
+        if h <= DRY { return 0.0; }
+        let change = h - self.water[i];
+        let scale = h / self.water[i];
+        self.mx[i] *= scale; self.my[i] *= scale;
+        self.water[i] = h;
+        self.eta[i] = wanted;
+        self.peak[i] = self.peak[i].max(wanted.abs());
+        if self.water[i] > self.peak_depth[i] { self.peak_depth[i] = self.water[i]; self.peak_time[i] = self.time; }
+        // an exchange with another model, like the edge forcing: counted with the boundary so volume_error stays the numerical error
+        self.boundary_volume += change * self.cell * self.cell;
+        change * self.cell * self.cell
+    }
+
+    /// Move cell `i`'s transport a share `alpha` of the way to (`tx`, `ty`) m2/s.
+    pub fn relax_momentum(&mut self, i: usize, tx: f64, ty: f64, alpha: f64) {
+        if !self.valid[i] || self.water[i] <= DRY { return; }
+        self.mx[i] += alpha * (tx - self.mx[i]);
+        self.my[i] += alpha * (ty - self.my[i]);
     }
 
     /// Last time covered by any forcing series.
@@ -304,7 +347,11 @@ impl Solver {
         let still = self.reference[i].max(h);
         let eta_in = f.at((k as f64 + 0.5) / self.edge_len(edge) as f64, time);
         let c = (G * still).sqrt();
-        let outward = ((G / still).sqrt() * (h - self.reference[i] - self.level_at(time) - 2.0 * eta_in)).clamp(-2.0 * c, 2.0 * c);
+        let surface = h - self.reference[i] - self.level_at(time);
+        let outward = match f.flow_at((k as f64 + 0.5) / self.edge_len(edge) as f64, time) {
+            Some(inward) => -inward / still + (G / still).sqrt() * (surface - eta_in),
+            None => (G / still).sqrt() * (surface - 2.0 * eta_in),
+        }.clamp(-2.0 * c, 2.0 * c);
         let u = sign * outward;
         let tangent = 3 - axis;
         let mut flux = [h * u, 0.0, 0.0];
@@ -1076,5 +1123,28 @@ mod tests {
     fn invalid_water_and_inputs_are_rejected() {
         assert!(Solver::new(4, 4, 25.0, vec![-1.0; 16], vec![1.0; 16], vec![-2.0; 16], false, 0.025).is_err());
         assert!(Solver::new(4, 4, 25.0, vec![f64::NAN; 16], vec![1.0; 16], vec![0.0; 16], false, 0.025).is_err());
+    }
+
+    #[test]
+    fn handing_over_the_transport_as_well_matches_a_purely_incident_wave_and_refuses_a_mismatch() {
+        // a wave that is all incident has the transport eta * sqrt(g H) into the model; giving it explicitly changes nothing
+        let make = |with_flow: bool| {
+            let n = 40 * 6;
+            let bed = vec![-10.0; n];
+            let mut s = Solver::new(40, 6, 50.0, bed, vec![10.0; n], vec![0.0; n], false, 0.0).unwrap();
+            let times = vec![0.0, 600.0];
+            let values = vec![0.2; 2];
+            if with_flow { s.set_forcing_with_flow(Edge::West, times, values, vec![0.2 * (G * 10.0).sqrt(); 2], 1).unwrap(); } else { s.set_forcing(Edge::West, times, values, 1).unwrap(); }
+            s.advance(120).unwrap();
+            s
+        };
+        let (a, b) = (make(false), make(true));
+        assert!(a.eta.iter().zip(&b.eta).all(|(x, y)| (x - y).abs() < 2e-3), "incident-only and explicit transport agree (the depth the wave speed uses follows the surface a little)");
+        assert!(a.eta.iter().any(|v| *v > 0.1), "and the wave really entered");
+        let mut s = Solver::new(40, 6, 50.0, vec![-10.0; 240], vec![10.0; 240], vec![0.0; 240], false, 0.0).unwrap();
+        assert!(s.set_forcing_with_flow(Edge::West, vec![0.0, 600.0], vec![0.2; 2], vec![1.0; 3], 1).is_err());
+        s.set_forcing_with_flow(Edge::West, vec![0.0, 600.0], vec![0.2; 2], vec![1.0; 2], 1).unwrap();
+        assert!(s.push_forcing_with_flow(Edge::West, 700.0, &[0.2], &[]).is_err(), "an edge forced with transports needs them in every sample");
+        assert!(s.push_forcing_with_flow(Edge::West, 700.0, &[0.2], &[1.0]).is_ok());
     }
 }
