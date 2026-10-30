@@ -499,4 +499,42 @@ mod tests {
         assert!(n3.child.volume_error().abs() < 1e-3 * n3.child.initial_volume, "local {}", n3.child.volume_error());
         assert!(n3.parent.child.volume_error().abs() < 1e-3 * n3.parent.child.initial_volume, "intermediate {}", n3.parent.child.volume_error());
     }
+
+    #[test]
+    fn a_recorded_regional_wave_with_its_velocity_drives_the_local_model_as_the_live_nest_does() {
+        // the shelf strip again: the regional model run alone and recorded at the local model's west edge, then the local model driven by the recording, with and without the
+        // recorded velocity, against the same pair stepped together with no feedback
+        let (pc, fc, coast) = (640.0, 80.0, 40720.0);
+        let (first_regional, local_cells) = (40usize, (64 - 40) * 8);
+        let local_seconds = 2400.0;
+        let live_peak = {
+            let parent = regional(64, pc, coast);
+            let child = local(first_regional * 8, local_cells, fc, coast);
+            let plan = plan_aligned(&parent, &child, (first_regional as f64, 1.0), &[Edge::West], 8, None, None).unwrap();
+            let mut nest = Nest::new(parent, child, plan, 0.0, 0.0, 0.0).unwrap();
+            while nest.time() < local_seconds { nest.advance(1).unwrap(); }
+            nest.child.peak.iter().fold(0.0_f64, |m, v| m.max(*v))
+        };
+        let recorded_peak = |with_flow: bool| {
+            let mut parent = regional(64, pc, coast);
+            let child = local(first_regional * 8, local_cells, fc, coast);
+            let plan = plan_aligned(&parent, &child, (first_regional as f64, 1.0), &[Edge::West], 8, None, None).unwrap();
+            parent.record(&plan.points).unwrap();
+            while parent.time < local_seconds + 900.0 { parent.advance(1).unwrap(); }
+            let r = parent.recorded().unwrap();
+            let rec = crate::coupling::Recording { times: r.times.clone(), values: r.values.clone(), transport: r.transport.clone(), points: r.points };
+            assert_eq!(rec.transport.len(), 2 * rec.values.len(), "the staggered scheme records its transport");
+            let forcing = crate::coupling::forcing_from_recording(&plan, &rec, 120.0, 0.02, local_seconds).unwrap();
+            let mut child = child;
+            for e in &forcing.edges {
+                assert_eq!(e.flows.len(), e.series.len());
+                child.set_forcing_with_flow(e.edge, forcing.times.clone(), e.series.clone(), if with_flow { e.flows.clone() } else { Vec::new() }, e.points).unwrap();
+            }
+            while child.time < local_seconds { child.advance(1).unwrap(); }
+            child.peak.iter().fold(0.0_f64, |m, v| m.max(*v))
+        };
+        let (with, without) = (recorded_peak(true), recorded_peak(false));
+        assert!((with - live_peak).abs() < 0.15 * live_peak, "recorded with its velocity {with} against live {live_peak}");
+        assert!((without - live_peak).abs() > (with - live_peak).abs(), "the surface alone is further from the live answer: {without}");
+    }
 }

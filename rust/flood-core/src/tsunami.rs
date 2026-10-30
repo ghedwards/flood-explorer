@@ -76,6 +76,8 @@ pub struct Recorder {
     pub times: Vec<f64>,
     /// Row-major [sample][point].
     pub values: Vec<f64>,
+    /// The depth-integrated transport at each point (m2/s, x then y), row-major [sample][point][2]; empty unless the model is the staggered scheme, which has face transports.
+    pub transport: Vec<f64>,
     pub points: usize,
 }
 
@@ -155,8 +157,9 @@ impl Solver {
     pub fn record(&mut self, points: &[(f64, f64)]) -> Result<(), String> {
         if points.is_empty() || points.len() > 1024 { return Err("record between 1 and 1024 points".into()); }
         let taps = self.make_taps(points)?;
-        let mut recorder = Recorder { points: taps.len(), taps, times: Vec::new(), values: Vec::new() };
-        recorder.sample(self.time, &self.eta);
+        let mut recorder = Recorder { points: taps.len(), taps, times: Vec::new(), values: Vec::new(), transport: Vec::new() };
+        let of = |i: usize| self.centre_transport(i);
+        recorder.sample(self.time, &self.eta, if self.method == Method::Staggered { Some(&of) } else { None });
         self.recorder = Some(recorder);
         Ok(())
     }
@@ -250,11 +253,14 @@ impl Solver {
     }
 
     fn sample_recorder(&mut self) -> Result<(), String> {
-        if let Some(r) = self.recorder.as_mut() {
-            if r.values.len() + r.points > MAX_RECORDED_VALUES { return Err("boundary recording is too long; shorten the run".into()); }
-            r.sample(self.time, &self.eta);
-        }
-        Ok(())
+        let Some(mut r) = self.recorder.take() else { return Ok(()) };
+        let result = if r.values.len() + 3 * r.points > MAX_RECORDED_VALUES { Err("boundary recording is too long; shorten the run".to_string()) } else {
+            let of = |i: usize| self.centre_transport(i);
+            r.sample(self.time, &self.eta, if self.method == Method::Staggered { Some(&of) } else { None });
+            Ok(())
+        };
+        self.recorder = Some(r);
+        result
     }
 
     /// Total momentum-solver iterations so far (variable-depth dispersion only).
@@ -315,9 +321,15 @@ impl Solver {
 }
 
 impl Recorder {
-    fn sample(&mut self, time: f64, eta: &[f64]) {
+    fn sample(&mut self, time: f64, eta: &[f64], transport: Option<&dyn Fn(usize) -> (f64, f64)>) {
         self.times.push(time);
         for tap in &self.taps { self.values.push(tap.iter().map(|(i, w)| eta[*i] * w).sum()); }
+        if let Some(of) = transport {
+            for tap in &self.taps {
+                let (u, v) = tap.iter().fold((0.0, 0.0), |a, (i, w)| { let (u, v) = of(*i); (a.0 + u * w, a.1 + v * w) });
+                self.transport.push(u); self.transport.push(v);
+            }
+        }
     }
 }
 
