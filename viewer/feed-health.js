@@ -3,7 +3,7 @@ const object = value => !!value && typeof value === 'object' && !Array.isArray(v
 export const FEED_NAMES = {
   wdo: 'Water Data Online', qld: 'Queensland river levels', rain: 'Rain forecasts',
   sea: 'Storm tides', warnings: 'Flood warnings', warningAreas: 'Warning areas',
-  floodclass: 'Flood classes', roads: 'Road events', emergency: 'Emergency warnings',
+  floodclass: 'Flood classes', roads: 'Road events', emergency: 'Emergency warnings', tsunami: 'Tsunami bulletins',
 };
 
 export function feedError(error) {
@@ -35,6 +35,8 @@ export function readingsDocument(raw, previous = {}) {
   keep('warnings', value => object(value) && Array.isArray(value.warnings) && value.warnings.every(object), { ok: false, warnings: [] });
   for (const key of ['roads', 'emergency'])
     keep(key, value => object(value) && Array.isArray(value.items) && value.items.every(object), { items: [] });
+  // no copy at all (null) is the empty answer: an empty list would read as "no bulletins" when the feed is simply not there
+  keep('tsunami', value => object(value) && Array.isArray(value.items) && value.items.every(object), null);
   keep('sources', value => object(value) && Object.values(value).every(object), {});
   keep('errors', value => Array.isArray(value) && value.every(x => typeof x === 'string'), []);
   for (const [key, source] of Object.entries(data.sources)) {

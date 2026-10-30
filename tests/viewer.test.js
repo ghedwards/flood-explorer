@@ -345,7 +345,7 @@ test('failed national datasets replace the warnings loading placeholder', async 
     nat: {}, status: {}, DATA_SOURCE: 'build',
     fetch: async () => new Response('missing', { status: 404 }),
     decodeCompact: value => value,
-    renderWatch() {}, renderFeedHealth() {}, runLiveUpdate: (_, draw) => draw(),
+    renderWatch() {}, renderTsunamiBulletin() {}, renderFeedHealth() {}, runLiveUpdate: (_, draw) => draw(),
     logProblem: (...args) => problems.push(args),
     $: () => box,
   });
@@ -371,7 +371,7 @@ test('optional HTML fallbacks do not discard national gauges or live warnings', 
     decodeCompact: value => value,
     requestLiveReadings: async () => live, Response,
     savedReadings: async () => null,
-    saveReadings() {}, setTimeout() {}, renderWarnings() {}, renderWatch() {}, renderFeedHealth() {}, runLiveUpdate: (_, draw) => draw(),
+    saveReadings() {}, setTimeout() {}, renderWarnings() {}, renderWatch() {}, renderTsunamiBulletin() {}, renderFeedHealth() {}, runLiveUpdate: (_, draw) => draw(),
     logProblem() { assert.fail('optional files must not fail startup'); },
   });
   await ctx.loadNationalData();
@@ -389,11 +389,11 @@ test('a broken live layer cannot stop other layers updating', async () => {
     requestLiveReadings: async () => fresh, saveReadings() {},
     renderWarnings() { throw new Error('bad warning geometry'); },
     renderWatch() { updated.push('watch'); }, renderInfo() {},
-    drawRoadClosures() { updated.push('roads'); }, drawEmergencyWarnings() {}, drawRainObs() {},
+    drawRoadClosures() { updated.push('roads'); }, drawEmergencyWarnings() {}, drawRainObs() {}, renderTsunamiBulletin() { updated.push('tsunami'); },
     renderFeedHealth() {}, logProblem: (...args) => problems.push(args), errText: String,
   });
   assert.equal(await ctx.refreshLiveReadings(true), 'new');
-  assert.deepEqual(updated, ['watch', 'roads']);
+  assert.deepEqual(updated, ['watch', 'roads', 'tsunami']);
   assert.equal(problems.length, 1);
   assert.match(ctx.nat.layerIssues['Flood warnings'], /bad warning geometry/);
   assert.equal(ctx.nat.readings, fresh);

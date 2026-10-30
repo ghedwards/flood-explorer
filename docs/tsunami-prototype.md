@@ -985,6 +985,21 @@ In the Gold Coast Seaway scene, 12 regional cells follow the intermediate grid w
 run and the local model conserves water. None of that is a validation against a recorded tsunami. It costs little: a 900 s Seaway run took 3.6 s against 3.3 s for two levels (the middle grid is
 80 x 68 cells, and the local model's smaller steps dominate).
 
+## Latest international tsunami bulletin
+
+The Tsunami panel starts with the newest bulletin of NOAA's Pacific Tsunami Warning Center (PTWC): its category (information statement, advisory, watch or warning), the
+preliminary magnitude, the region and when it was issued, with a link to the bulletin. The live-data broker fetches PTWC's public Atom feed
+(`https://www.tsunami.gov/events/xml/PHEBAtom.xml`, no key) every 15 minutes (`rust/flood-feeds/src/tsunami.rs`, `readings.rs`) and keeps the last copy for two hours if the
+feed fails; the page draws it from the broker's readings (`viewer/tsunami-bulletin.js`). A watch, warning or advisory issued in the last 24 hours is highlighted and opens the box.
+
+**What it is not.** It is an international bulletin, not an Australian warning. Australia's official tsunami warnings come from the Joint Australian Tsunami Warning Centre
+(Bureau of Meteorology), whose machine-readable feed (CAP and XML, by FTP) is for registered users only; `bom.gov.au` was not reachable from the session that built this, so no
+Bureau feed was tried. The panel therefore always links to the Bureau, says the bulletin is not an Australian warning, and never reads an absent, empty or old feed as "no
+threat": a missing feed says so, an old copy is marked as possibly out of date, and an empty one says it holds no bulletin. Getting the Bureau's own warnings in would need a
+registered account and a sample of the CAP product, and the broker host would need to reach the Bureau's FTP server (it already does for the flood-warning files).
+
+The "western Pacific / Indian Ocean" tag is a box (longitude 90 to 180 E, latitude 60 S to 10 N) used to flag bulletins near Australia, not a judgement of threat to any coast.
+
 ## Where the numbers are worked out
 
 The map's live tsunami run keeps all its numerical work in Rust/WebAssembly. The solver itself tracks, every step (not just in the 120 stored frames), the deepest water, the
