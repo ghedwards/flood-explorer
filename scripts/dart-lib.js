@@ -55,6 +55,28 @@ function resample(t, values, grid, maxGap = 600) {
   return out;
 }
 
+// Replace isolated outliers (a sample or two far from its neighbours, as a bottom-pressure recorder's occasional bad reading is) with the running median. A Hampel
+// filter: a sample is a spike when it is more than `threshold` robust standard deviations (1.4826 x the median absolute deviation, never less than `floor` metres, the
+// record's quantisation and noise) from the median of the `2 * half + 1` samples around it. A tsunami is smooth over many samples (periods of minutes against 15 s to
+// 1 min sampling), so its crest is carried by the median and kept; a spike wider than `half` samples is not removable this way and stays. NaN stays NaN. Returns the
+// cleaned values and how many were replaced.
+function despike(values, { half = 3, threshold = 6, floor = .005 } = {}) {
+  const out = Float64Array.from(values);
+  let replaced = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) continue;
+    const window = [];
+    for (let k = Math.max(0, i - half); k <= Math.min(values.length - 1, i + half); k++) if (Number.isFinite(values[k])) window.push(values[k]);
+    if (window.length < 5) continue;
+    window.sort((a, b) => a - b);
+    const median = window[window.length >> 1];
+    const deviations = window.map(v => Math.abs(v - median)).sort((a, b) => a - b);
+    const sigma = Math.max(floor, 1.4826 * deviations[deviations.length >> 1]);
+    if (Math.abs(values[i] - median) > threshold * sigma) { out[i] = median; replaced++; }
+  }
+  return { values: out, replaced };
+}
+
 // Remove slow drift: subtract a running median over `windowSeconds` (robust to
 // the tsunami's own peaks). Tsunami periods of minutes to an hour or two pass;
 // the semi-diurnal tide residual and instrument drift do not.
@@ -126,4 +148,4 @@ function bestLagCorrelation(model, observed, from, to, maxLag) {
   return best;
 }
 
-module.exports = { distanceKm, maskBeforeTsunami, firstExceed, bestLagCorrelation, stationFiles, parseNgdcDart, resample, highpass, onset };
+module.exports = { distanceKm, maskBeforeTsunami, firstExceed, bestLagCorrelation, stationFiles, parseNgdcDart, resample, despike, highpass, onset };
