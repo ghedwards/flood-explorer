@@ -595,3 +595,7 @@ ol.problems pre { white-space: pre-wrap; font: 11px/1.35 var(--font-data); margi
   .ts-bar { top: auto; bottom: 76px; }
   .ts-bar[data-mode="ready"] > .hint { display: none; }
 }
+.ts-bulletins { list-style: none; margin: 6px 0; padding: 0; }
+.ts-bulletin { padding: 6px 8px; margin: 4px 0; border-left: 3px solid var(--line); font-size: 13px; }
+.ts-bulletin-active { border-left-color: #c62828; background: rgba(198, 40, 40, .08); }
+.ts-bulletin-stale { color: #b26a00; }

@@ -692,6 +692,38 @@ impl Readings {
                 }
             }
         }
+        // The Pacific Tsunami Warning Center's latest bulletin (public Atom feed): international context beside the Bureau's own warnings, which have no public machine-readable feed.
+        // One fetch per 15 minutes; an old copy is carried for two hours on error. Its items say when they were issued, so a stale one is never shown as current.
+        if let Some(text) = &self.text {
+            match Self::carry(&prev, "tsunami", "tsunamiFetched", (self.now)(), 15 * 60_000) {
+                Some((td, at)) => {
+                    r["tsunami"] = td;
+                    r["tsunamiFetched"] = at;
+                    mark_source("tsunami", false, true, &[], r["tsunamiFetched"].as_str().unwrap_or(""));
+                }
+                None => {
+                    let iso_now = crate::wmip::iso_utc((self.now)());
+                    let err_before_t = errors.len();
+                    let td_ok = match text(feeds::tsunami::PTWC_ATOM_URL) {
+                        Ok(xml) => {
+                            r["tsunami"] = json!({ "fetched": iso_now.clone(), "attribution": feeds::tsunami::PTWC_ATTRIBUTION, "items": feeds::tsunami::parse_ptwc_atom(&xml) });
+                            r["tsunamiFetched"] = json!(iso_now.clone());
+                            true
+                        }
+                        Err(e) => {
+                            errors.push(format!("tsunami: {e}"));
+                            if let Some((old, at)) = Self::carry(&prev, "tsunami", "tsunamiFetched", (self.now)(), 2 * 3_600_000) {
+                                r["tsunami"] = old;
+                                r["tsunamiFetched"] = at;
+                            }
+                            false
+                        }
+                    };
+                    let td_errs: Vec<String> = errors[err_before_t..].to_vec();
+                    mark_source("tsunami", true, td_ok, &td_errs, r["tsunamiFetched"].as_str().unwrap_or(&iso_now));
+                }
+            }
+        }
         let t_warn = (self.now)();
         r["watch"] = feeds::watch_list(&r);
         let nl = r["level"].as_object().map_or(0, |o| o.len());
@@ -1250,6 +1282,47 @@ mod tests {
         t.fetch_add(3 * 3_600_000, Ordering::SeqCst);
         r.refresh().unwrap();
         assert!(calls.load(Ordering::SeqCst) > n, "fetched again after 3 hours");
+    }
+
+    #[test]
+    fn the_tsunami_bulletin_is_fetched_every_fifteen_minutes_and_an_old_copy_is_carried_when_the_feed_fails() {
+        const FEED: &str = r#"<feed xmlns:geo="x"><entry><title>SOLOMON ISLANDS</title><geo:lat>-8.5</geo:lat><geo:long>157.1</geo:long><summary><strong>Category:</strong> Warning<br/><strong>Bulletin Issue Time: </strong> 2026.10.20 07:30:00 UTC<br/><strong>Preliminary Magnitude: </strong>7.4(Mww)<br/><strong>Affected Region: </strong>SOLOMON ISLANDS<br/></summary><id>urn:uuid:a</id></entry></feed>"#;
+        let gets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let up = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (g2, u2) = (gets.clone(), up.clone());
+        let t = Arc::new(AtomicI64::new(crate::wmip::epoch_ms("2026-10-20T08:00:00Z").unwrap()));
+        let t2 = t.clone();
+        let r = Readings::new(Box::new(fake), Store::Memory, STATIONS_URL.into(), Box::new(move || t2.load(Ordering::SeqCst)))
+            .with_text(Box::new(move |url| {
+                if url != feeds::tsunami::PTWC_ATOM_URL { return Err("not a text feed here".into()); }
+                g2.fetch_add(1, Ordering::SeqCst);
+                if u2.load(Ordering::SeqCst) { Ok(FEED.into()) } else { Err("HTTP 503".into()) }
+            }))
+            .with_pause(Box::new(|| {}));
+        let s1 = r.refresh().unwrap();
+        assert_eq!(s1["sources"]["tsunami"]["lastGood"], "2026-10-20T08:00:00Z");
+        let v: Value = serde_json::from_slice(&r.latest().unwrap().unwrap().body).unwrap();
+        assert_eq!((v["tsunami"]["items"][0]["level"].as_str(), v["tsunami"]["items"][0]["region"].as_str(), v["tsunami"]["items"][0]["magnitude"].as_f64()), (Some("warning"), Some("SOLOMON ISLANDS"), Some(7.4)));
+        assert_eq!(v["tsunami"]["fetched"], "2026-10-20T08:00:00Z");
+        assert!(v["tsunami"]["attribution"].as_str().unwrap().contains("Pacific Tsunami Warning Center"));
+        // inside 15 minutes the copy is reused
+        t.fetch_add(10 * 60_000, Ordering::SeqCst);
+        r.refresh().unwrap();
+        assert_eq!(gets.load(Ordering::SeqCst), 1);
+        // later it is fetched again; when that fails the old copy is carried, with its own fetch time, and the failure is counted
+        up.store(false, Ordering::SeqCst);
+        t.fetch_add(20 * 60_000, Ordering::SeqCst);
+        let s3 = r.refresh().unwrap();
+        assert_eq!(gets.load(Ordering::SeqCst), 2);
+        assert_eq!(s3["sources"]["tsunami"]["errorCount"], 1);
+        assert!(s3["sources"]["tsunami"]["lastError"].as_str().unwrap().contains("503"));
+        let v: Value = serde_json::from_slice(&r.latest().unwrap().unwrap().body).unwrap();
+        assert_eq!(v["tsunami"]["fetched"], "2026-10-20T08:00:00Z", "the carried copy keeps the time it was fetched");
+        // after two hours without success it is dropped rather than shown as current
+        t.fetch_add(3 * 3_600_000, Ordering::SeqCst);
+        r.refresh().unwrap();
+        let v: Value = serde_json::from_slice(&r.latest().unwrap().unwrap().body).unwrap();
+        assert!(v.get("tsunami").is_none_or(|x| x.is_null()), "an old copy is not carried past two hours");
     }
 
     #[test]

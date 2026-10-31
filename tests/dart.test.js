@@ -52,6 +52,23 @@ test('the high-pass filter removes slow drift but keeps a tsunami-like pulse', (
   assert.ok(Number.isNaN(dart.highpass(Float64Array.of(NaN, 1, 2, 3, 4, 5), step)[0]));
 });
 
+test('despiking replaces isolated bad readings and leaves a tsunami pulse and quiet noise alone', () => {
+  const n = 600, noise = i => .002 * Math.sin(i * 12.9898) ;
+  const pulse = i => { const z = (i - 300) / 20; return .3 * Math.exp(-z * z); };
+  const clean = Float64Array.from({ length: n }, (_, i) => noise(i) + pulse(i));
+  const dirty = Float64Array.from(clean);
+  dirty[100] += 0.9; dirty[101] -= 0.7; dirty[450] = 12; dirty[200] = NaN;
+  const { values, replaced } = dart.despike(dirty);
+  assert.equal(replaced, 3);
+  for (const i of [100, 101, 450]) assert.ok(Math.abs(values[i] - clean[i]) < .01, `sample ${i}: ${values[i]} against ${clean[i]}`);
+  assert.ok(Number.isNaN(values[200]), 'a missing sample stays missing');
+  assert.deepEqual([...values.slice(280, 320)], [...dirty.slice(280, 320)], 'the pulse crest is untouched');
+  assert.equal(dart.despike(clean).replaced, 0, 'a clean record loses nothing');
+  const step = Float64Array.from({ length: 60 }, (_, i) => (i < 30 ? 0 : .2) + noise(i));
+  assert.equal(dart.despike(step).replaced, 0, 'a sharp step, as a tsunami front can be, is not a spike');
+  assert.equal(dart.despike(Float64Array.of(1, 2, 3)).replaced, 0, 'too few samples to judge');
+});
+
 test('distances and the earliest possible tsunami arrival mask the earthquake\'s own shaking', () => {
   assert.ok(Math.abs(dart.distanceKm(0, 0, 0, 1) - 111.19) < .05);
   assert.ok(Math.abs(dart.distanceKm(142.369, 38.322, 148.698, 38.718) - 552) < 15);
@@ -137,6 +154,8 @@ test('the summary, report and figure are built from the station results', () => 
   assert.match(report, /delayed linear friction applied to the scenarios/);
   assert.match(report, /\*\*\d+ of 2\*\* buoys/);
   assert.match(report, /one caveat/);
+  assert.doesNotMatch(report, /Despiking/, 'off by default, so the published method is unchanged');
+  assert.match(validate.renderReport({ rows, summary, meta: { ...JSON.parse(JSON.stringify({ event: 'E', date: 'd', originText: 'o', highpassHours: 4, scenarios: 1, slipType: 's', zone: 'z', mw: [9, 9.2], radiusDegrees: 2, caveats: [], figure: 'f.svg', page: 'p', figureNote: 'n' })), despiked: 7 } }), /Despiking:\*\* before filtering, 7 isolated readings/);
   assert.match(report, /CC BY 4.0/);
   const svg = validate.renderFigure(rows, ['21418', '55012', 'missing']);
   assert.match(svg, /^<svg /);

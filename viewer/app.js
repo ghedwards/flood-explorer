@@ -1,5 +1,6 @@
 import { desktopUpdates } from './desktop-updates.js';
 import { createFeedClient } from './feed-health.js';
+import { bulletinView, bulletinHtml } from './tsunami-bulletin.js';
 import { fineWindow, cropGrid } from './fine-raster.js';
 import { createFinePool } from './fine-pool.js';
 import { HYPSO } from './relief.js';
@@ -4192,6 +4193,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     // Replace the loading placeholder even when a required dataset failed.
     runLiveUpdate('Flood warnings', renderWarnings);
     runLiveUpdate('Watch list', renderWatch);
+    runLiveUpdate('Tsunami bulletin', renderTsunamiBulletin);
     renderFeedHealth();
     status.national = {
       loaded: true, gauges: nat.data.gauges.length, storages: nat.data.storages.length,
@@ -5512,6 +5514,15 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       <span class="hint">Source: ${escapeHtml(x.source || 'state emergency service')}${x.updated ? ` · issued ${escapeHtml(x.updated)}` : ''}</span>
       ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
   }
+  // The Tsunami panel's latest international bulletin (the broker's `tsunami` feed); opened when one is active, so it is not missed
+  function renderTsunamiBulletin() {
+    const box = $('tsBulletin'), details = $('tsBulletinBox');
+    if (!box) return;
+    const view = bulletinView(nat.readings && nat.readings.tsunami);
+    box.innerHTML = bulletinHtml(view, escapeHtml);
+    if (details && view.state === 'ok' && view.items.some((x) => x.active)) details.open = true;
+    status.tsunamiBulletin = { state: view.state, items: view.items.map((x) => ({ level: x.level, region: x.region, active: x.active })) };
+  }
   function drawEmergencyWarnings() {
     const L = window.L, lyr = nat.emergencyLayer;
     if (!L || !lyr) return;
@@ -5953,7 +5964,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       if (fresh.warnings && fresh.warnings.ok) nat.warnings = fresh.warnings;
       if (fresh.floodclass) nat.floodclass = Object.assign({}, nat.floodclass || {}, fresh.floodclass);
       const redraws = [['Flood warnings', renderWarnings], ['Watch list', renderWatch], ['Place information', renderInfo],
-        ['Road events', drawRoadClosures], ['Emergency warnings', drawEmergencyWarnings], ['Observed rainfall', drawRainObs]];
+        ['Road events', drawRoadClosures], ['Emergency warnings', drawEmergencyWarnings], ['Observed rainfall', drawRainObs], ['Tsunami bulletin', renderTsunamiBulletin]];
       if (state.lmap && nat.renderer) redraws.unshift(['River and tide markers', () => {
         updateLiveGaugeLayers(window.L, nat.renderer);
         scaleDots(); orderDots(); scheduleClusters();
@@ -8520,6 +8531,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (id === 'panel-forecast' && typeof renderWatch === 'function' && nat.readings) renderWatch();   // your places may have changed
     const target = $(id);
     if (!target) return;
+    if (id === 'panel-tsunami') renderTsunamiBulletin();   // its age changes while the page is open
     if (id === 'panel-tsunami' && tsunamiPanel) tsunamiPanel.ensureLoaded();
     if (id === 'panel-scenario') target.classList.remove('collapsed');
     document.querySelectorAll('[data-panel]').forEach((p) => {

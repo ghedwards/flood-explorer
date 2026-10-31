@@ -116,6 +116,7 @@ function renderReport({ rows, summary, meta }) {
   lines.push(`Generated ${meta.date} by \`scripts/validate-ptha-dart.js\`. This asks how well Geoscience Australia's PTHA18 scenario waves, the series the tsunami lab's importer reads, reproduce what deep-ocean buoys recorded. It does **not** test the lab's own propagation or inundation solvers.`, '');
   lines.push('## Method', '');
   lines.push(`- **Observations:** NOAA NCEI DART residuals (de-tided, metres of water column) at ${rows.length} buoys, converted to seconds after the earthquake (${meta.originText}) and high-pass filtered with a ${meta.highpassHours} h running median to remove drift. Before the earliest time a tsunami could arrive (0.9 × distance ÷ 243 m/s, the speed in 6000 m of water) the record is blanked, because bottom-pressure sensors also record the earthquake's own shaking and acoustic waves.`);
+  if (meta.despiked != null) lines.push(`- **Despiking:** before filtering, ${meta.despiked} isolated readings in the observed records (more than 6 robust standard deviations from the median of the seven samples around them, at least 5 mm) were replaced by that median.`);
   lines.push(`- **Model:** the ${meta.scenarios} PTHA18 ${meta.slipType}-slip scenarios of the ${meta.zone} source zone with Mw ${meta.mw[0]}–${meta.mw[1]} whose peak slip is within ${meta.radiusDegrees}° of the epicentre. Each scenario's wave at a buoy is the slip-weighted sum of PTHA18's unit-source waves at the hazard point that sits at the buoy (gauge ID = buoy ID + .4; 3–34 km from the buoy, depth differences up to a few hundred metres).`);
   lines.push('- **Blind:** no scenario is fitted to the data. Each buoy\'s record is placed against the spread (10th, 50th and 90th percentiles) of all those scenarios. The comparison window starts one hour before the models\' median arrival and lasts 8 hours, so it does not depend on the observation.');
   lines.push(`- **Timing:** the time each series first exceeds one common level (the larger of 1 cm and 15% of the observed peak), as model minus observation, over the scenarios.`);
@@ -264,6 +265,7 @@ async function main() {
   const scenarios = await candidateScenarios(get);
   process.stderr.write(`${scenarios.length} PTHA18 scenarios, Mw ${EVENT.mw.join('-')}, within ${EVENT.radiusDegrees} degrees of the epicentre\n`);
   const rows = [];
+  let despiked = 0;
   for (const [id, group] of EVENT.stations) {
     if (!files[id]) throw new Error(`No NCEI data file for DART ${id}.`);
     const point = ptha.pointByGaugeID(points, +`${id}.4`);
@@ -271,13 +273,16 @@ async function main() {
     const step = (units.time.at(-1) - units.time[0]) / (units.time.length - 1);
     const record = dart.parseNgdcDart(await get(files[id]), EVENT.origin);
     // Blank the earthquake's own shaking and acoustic signal, which precedes any tsunami.
-    const obs = dart.maskBeforeTsunami(dart.highpass(dart.resample(record.t, record.residual, units.time, 1200), step), units.time, dart.distanceKm(EVENT.source[0], EVENT.source[1], point.lon, point.lat));
+    // `--despike` first replaces isolated bad readings with the running median (off by default, so the published report stays reproducible)
+    let residual = record.residual;
+    if (options.despike) { const cleaned = dart.despike(residual); residual = cleaned.values; despiked += cleaned.replaced; }
+    const obs = dart.maskBeforeTsunami(dart.highpass(dart.resample(record.t, residual, units.time, 1200), step), units.time, dart.distanceKm(EVENT.source[0], EVENT.source[1], point.lon, point.lat));
     rows.push({ id, group, depth: point.depth, ...analyseStation({ time: units.time, series: units.series, scenarios, obs, windowHours: EVENT.windowHours, leadSeconds: EVENT.leadSeconds, maxLagSeconds: EVENT.maxLagSeconds, wantEnvelope: EVENT.figure.includes(id) }) });
     process.stderr.write(`DART ${id}: observed ${rows.at(-1).observedPeak.toFixed(3)} m, scenarios p50 ${rows.at(-1).modelPeak.p50.toFixed(3)} m\n`);
   }
   const summary = summarise(rows);
   const figure = 'tohoku-2011-dart.svg';
-  const meta = { event: `${EVENT.name} (Mw ${EVENT.magnitude})`, date: new Date().toISOString().slice(0, 10), originText: '2011-03-11 05:46:23 UTC', highpassHours: 4, scenarios: scenarios.length, slipType: EVENT.slipType, zone: EVENT.zone, mw: EVENT.mw, radiusDegrees: EVENT.radiusDegrees, caveats: CAVEATS(summary), figure, page: EVENT.page,
+  const meta = { event: `${EVENT.name} (Mw ${EVENT.magnitude})`, date: new Date().toISOString().slice(0, 10), originText: '2011-03-11 05:46:23 UTC', highpassHours: 4, ...(options.despike && { despiked }), scenarios: scenarios.length, slipType: EVENT.slipType, zone: EVENT.zone, mw: EVENT.mw, radiusDegrees: EVENT.radiusDegrees, caveats: CAVEATS(summary), figure, page: EVENT.page,
     figureNote: 'Time runs along each panel from one hour before the models\' median arrival; vertical scales differ between panels.' };
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'tohoku-2011-dart.md'), renderReport({ rows, summary, meta }));

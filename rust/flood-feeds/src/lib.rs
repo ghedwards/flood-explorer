@@ -3,6 +3,7 @@
 //! Meteorology's Water Data Online (KiWIS), and Queensland's own gauges from
 //! its Water Monitoring Information Portal.
 
+pub mod tsunami;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 
