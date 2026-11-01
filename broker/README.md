@@ -76,6 +76,12 @@ started as `ALLOWED_ORIGINS=http://127.0.0.1:8000 cargo run --release -p flood-b
 
 ## Settings (environment)
 
+Copy [settings.example.ini](../settings.example.ini) to `settings.ini`, or
+explicitly load the [environment template](../.env.example). Environment values
+override file values. Add `QLD_TRAFFIC_API_KEY` for a dedicated QLD key and
+`NSW_TRAFFIC_API_KEY` to enable NSW roads. The desktop Settings panel edits these
+same keys. See [service signup and configuration](../docs/services-and-credentials.md).
+
 | Name | Default | |
 |---|---|---|
 | `PORT` | 8787 | |

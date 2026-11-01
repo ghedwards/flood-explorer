@@ -586,14 +586,26 @@
 
 <script type="module" src="./main.js"></script>
 
-<div class="modal float" id="settingsModal" hidden>
+<div class="modal float" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" hidden>
   <div class="modal-card">
-    <h2>Settings</h2>
-    <p class="hint">API keys for the live traffic feeds. Saved locally in the desktop app; on the web build they are set by the host.</p>
-    <div class="row"><label for="setQldKey">QLD traffic API key</label><input type="password" id="setQldKey" autocomplete="off" placeholder="Leave blank to use the public key"></div>
-    <div class="row"><label for="setNswKey">NSW traffic API key</label><input type="password" id="setNswKey" autocomplete="off" placeholder="from opendata.transport.nsw.gov.au"></div>
+    <h2 id="settingsTitle">Settings</h2>
+    <p class="hint">Optional services. Traffic keys are saved on this computer. Your local flood models work without signing up.</p>
+    <section aria-labelledby="trafficSettingsTitle">
+      <h3 id="trafficSettingsTitle">Live traffic feeds</h3>
+      <div class="row"><label for="setQldKey">QLDTraffic API key</label><input type="password" id="setQldKey" autocomplete="off" spellcheck="false" aria-describedby="qldKeyHelp" placeholder="Optional — blank uses the shared public key"></div>
+      <p class="hint" id="qldKeyHelp">A dedicated key gives your application its own quota. <a href="https://qldtraffic.qld.gov.au/more/Developers-and-Data/" data-service="qld" target="_blank" rel="noopener noreferrer">Request a QLDTraffic key</a> using the registration instructions in the API specification.</p>
+      <div class="row"><label for="setNswKey">Live Traffic NSW API token</label><input type="password" id="setNswKey" autocomplete="off" spellcheck="false" aria-describedby="nswKeyHelp" placeholder="Paste your token — blank disables NSW traffic"></div>
+      <p class="hint" id="nswKeyHelp"><a href="https://opendata.prod.transport.nsw.gov.au/developers/userguide" data-service="nsw" target="_blank" rel="noopener noreferrer">Register with Transport for NSW</a>, then create a token under your profile’s API Tokens. Paste the token alone.</p>
+      <p class="hint">Keys are stored in your local settings file. Environment overrides take precedence. Changes apply when the feed next refreshes.</p>
+    </section>
     <div class="link-row"><button type="button" class="btn small primary" id="settingsSave">Save</button> <button type="button" class="btn small" id="settingsClose">Close</button></div>
-    <p class="hint" id="settingsStatus"></p>
+    <p class="hint" id="settingsStatus" role="status" aria-live="polite"></p>
+    <section aria-labelledby="forecastSettingsTitle">
+      <h3 id="forecastSettingsTitle">Google flood forecasts</h3>
+      <p class="hint">A Google account, Cloud project and API approval are required. <a href="https://developers.google.com/flood-forecasting" data-service="google" target="_blank" rel="noopener noreferrer">Join the API waitlist</a>.</p>
+      <p class="hint">Forecasts are supplied by the published data build. The maintainer configures <code>FLOOD_FORECASTING_API_KEY</code> there; this desktop version does not fetch Google forecasts with a local key.</p>
+    </section>
+    <p class="hint"><a href="https://github.com/ghedwards/flood-explorer/blob/main/docs/services-and-credentials.md" data-service="guide" target="_blank" rel="noopener noreferrer">Service signup and credential guide</a>. Keep account passwords and recovery codes in your password manager.</p>
     <section id="desktopUpdates" hidden aria-label="Application updates">
       <h3>Application updates</h3>
       <p id="updateStatus" role="status" aria-live="polite"></p>

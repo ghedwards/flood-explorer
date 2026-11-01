@@ -106,6 +106,13 @@ redeploys the function. The URL stays the same.
 
 ## Checking on it
 
+For optional traffic feeds, add repository secrets `QLD_TRAFFIC_API_KEY` and/or
+`NSW_TRAFFIC_API_KEY`, then redeploy. The workflow passes configured values to
+Lambda; blank QLD uses the shared key and blank NSW skips that feed. Do not rely
+on manual Lambda environment edits surviving a deployment. See the
+[complete services/configuration inventory](../../docs/services-and-credentials.md)
+and [Actions template](../../config/github-actions.example.json).
+
 - **Status:** `https://<url>/health` shows uptime, cache size and calls to
   Queensland's portal, plus its last error.
 - **Logs:** CloudWatch, *Log groups → /aws/lambda/flood-broker*.

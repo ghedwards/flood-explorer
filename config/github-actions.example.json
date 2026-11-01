@@ -1,0 +1,25 @@
+{
+  "variables": {
+    "DATA_SOURCE": "build",
+    "FLOOD_BROKER_URL": "",
+    "AWS_DEPLOY_ROLE_ARN": "",
+    "AWS_REGION": "ap-southeast-2",
+    "BROKER_ALLOWED_ORIGINS": "https://ghedwards.github.io",
+    "BROKER_MAX_CONCURRENCY": "5",
+    "BROKER_REFRESH_MINUTES": "15",
+    "FLOOD_UPDATER_PUBLIC_KEY": ""
+  },
+  "secrets": {
+    "FLOOD_FORECASTING_API_KEY": "",
+    "QLD_TRAFFIC_API_KEY": "",
+    "NSW_TRAFFIC_API_KEY": "",
+    "TAURI_SIGNING_PRIVATE_KEY": "",
+    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD": "",
+    "APPLE_CERTIFICATE": "",
+    "APPLE_CERTIFICATE_PASSWORD": "",
+    "APPLE_SIGNING_IDENTITY": "",
+    "APPLE_ID": "",
+    "APPLE_PASSWORD": "",
+    "APPLE_TEAM_ID": ""
+  }
+}

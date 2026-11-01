@@ -5,6 +5,7 @@ use flood_broker::Config;
 use std::sync::Arc;
 
 mod updater;
+mod services;
 
 struct SettingsPath(std::path::PathBuf);
 
@@ -45,7 +46,7 @@ pub fn run() {
     }
     builder
         .manage(updater::Updates::default())
-        .invoke_handler(tauri::generate_handler![load_settings, save_settings, updater::check_for_update, updater::install_update])
+        .invoke_handler(tauri::generate_handler![load_settings, save_settings, services::open_service, updater::check_for_update, updater::install_update])
         .setup(|app| {
             use tauri::Manager;
             // Bind before opening the window: a port conflict must fail startup,

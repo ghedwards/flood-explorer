@@ -60,6 +60,11 @@ signing, users may see operating-system installation warnings.
 
 ## Local data and settings
 
+The [services and credentials guide](../docs/services-and-credentials.md) lists
+signup links and configuration locations. A private account/login register can
+be made from [the template](../config/service-accounts.example.md). Desktop runs
+its broker locally; AWS signup is only needed for a shared hosted broker.
+
 The broker listens on `127.0.0.1:8787`. Startup fails if that port is occupied;
 stop the other broker before opening the app. The address matches the one
 compiled into the viewer.
@@ -68,8 +73,11 @@ Readings are stored in `~/.flood-explorer/` (`readings.json` and `.gz`).
 `FLOOD_DATA_DIR` overrides this directory. Refresh runs every 15 minutes;
 `READINGS_REFRESH_MINUTES=0` disables it.
 
-The gear button edits QLD and NSW traffic API keys in `settings.ini` inside
-the data directory. `FLOOD_SETTINGS` overrides the file path. Keys are read
+The gear button opens runtime service settings, with QLDTraffic and NSW signup
+links and masked traffic-key fields saved in `settings.ini` inside the data
+directory. Signup pages open in the system browser. Google forecast access is
+explained there too: its key belongs to the data-build pipeline, not the local
+broker. `FLOOD_SETTINGS` overrides the file path. Keys are read
 again when road feeds are next refreshed; existing road-feed cache intervals
 still apply. Non-empty environment variables take precedence over file values.
 An empty QLD key uses the public key; an empty NSW key disables that feed

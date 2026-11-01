@@ -1,6 +1,7 @@
 import { PRESETS, presetGauge } from './presets.js';
 import { guardRasterLayer } from './safe-raster.js';
 import { desktopUpdates } from './desktop-updates.js';
+import { desktopSettings } from './desktop-settings.js';
 import { createFeedClient } from './feed-health.js';
 import { bulletinView, bulletinHtml } from './tsunami-bulletin.js';
 import { fineWindow, cropGrid } from './fine-raster.js';
@@ -362,45 +363,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (!inv) throw new Error('Tauri invoke not available');
     return inv(cmd, args || {});
   };
-  const settingsModal = document.getElementById('settingsModal');
-  const openSettings = async () => {
-    if (!settingsModal) return;
-    settingsModal.hidden = false;
-    const status = document.getElementById('settingsStatus');
-    if (status) status.textContent = '';
-    try {
-      let qld = '', nsw = '';
-      if (isTauri()) {
-        const s = await tauriInvoke('load_settings', {});
-        qld = (s && s.QLD_TRAFFIC_API_KEY) || '';
-        nsw = (s && s.NSW_TRAFFIC_API_KEY) || '';
-      }
-      const qi = document.getElementById('setQldKey'); if (qi) qi.value = qld;
-      const ni = document.getElementById('setNswKey'); if (ni) ni.value = nsw;
-    } catch (e) { if (status) status.textContent = `Could not load settings: ${e && e.message || e}`; }
-  };
-  const closeSettings = () => { if (settingsModal) settingsModal.hidden = true; };
-  const settingsBtn = document.getElementById('settingsBtn');
-  if (settingsBtn) {
-    settingsBtn.hidden = !isTauri();
-    settingsBtn.addEventListener('click', openSettings);
-  }
-  desktopUpdates({ invoke: tauriInvoke, desktop: isTauri(), document, onAvailable: openSettings });
-  const settingsClose = document.getElementById('settingsClose');
-  if (settingsClose) settingsClose.addEventListener('click', closeSettings);
-  const settingsSave = document.getElementById('settingsSave');
-  if (settingsSave) settingsSave.addEventListener('click', async () => {
-    const status = document.getElementById('settingsStatus');
-    const qld = (document.getElementById('setQldKey') || {}).value || '';
-    const nsw = (document.getElementById('setNswKey') || {}).value || '';
-    try {
-      if (isTauri()) {
-        await tauriInvoke('save_settings', { qldKey: qld.trim() || null, nswKey: nsw.trim() || null });
-      }
-      if (status) status.textContent = 'Saved. The broker re-reads keys on its next refresh.';
-      setTimeout(closeSettings, 1200);
-    } catch (e) { if (status) status.textContent = `Save failed: ${e && e.message || e}`; }
-  });
+  const settings = desktopSettings({ invoke: tauriInvoke, desktop: isTauri(), document });
+  desktopUpdates({ invoke: tauriInvoke, desktop: isTauri(), document, onAvailable: settings && settings.open });
 
   /* A button whose work takes a moment (fetching or calculating): while it
    * runs the button shows a spinner and what it's doing, can't be pressed

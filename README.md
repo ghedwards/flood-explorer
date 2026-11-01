@@ -124,7 +124,7 @@ The build fetches the forecasts every three hours ([`flood floodhub`](rust/flood
 **To switch it on:**
 
 1. Join the API waitlist from the [Flood Forecasting API page](https://developers.google.com/flood-forecasting), signed in with the Google account you'll use.
-2. When Google approves you, reply to their email with your Google Cloud project number.
+2. When Google approves you, follow their email's instructions for supplying your Google Cloud project ID (keep the project number available too).
 3. In that Google Cloud project, enable the **Flood Forecasting API** and create an **API key**. Restrict the key to the Flood Forecasting API.
 4. In this GitHub repository, open Settings > Secrets and variables > Actions and add a repository secret named `FLOOD_FORECASTING_API_KEY` with the key.
 5. Run the workflow from the Actions tab, or wait for the next three-hourly run.
@@ -142,6 +142,9 @@ Until then the panel says the feed isn't connected. Google's forecasts are exper
 For full hydrodynamic modelling, the outputs here are a starting point for [ANUGA](https://github.com/GeoscienceAustralia/anuga_core) or [LISFLOOD-FP](https://www.seamlesswave.com/LISFLOOD8.0).
 
 ## Setup
+
+See [services and credentials](docs/services-and-credentials.md) for the signup
+checklist, account/login register and local/GitHub configuration templates.
 
 1. **Turn on GitHub Pages.** In the repository, open Settings > Pages and set Source to **GitHub Actions**.
 2. **Run the workflow.** Push to `main` or use Actions > *Build terrain and publish viewer* > Run workflow. The build summary says whether the DEM download and the hydrology step succeeded. If either fails, the site still publishes; the Australia-wide map and on-demand models don't depend on it.
