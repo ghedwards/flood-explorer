@@ -23,3 +23,6 @@ cargo-outdated.txt
 
 # WebAssembly input compiled for Vite
 viewer/flood.wasm
+
+# Visual regression actual/expected/diff artifacts (baselines remain tracked)
+test-results/

@@ -13,11 +13,6 @@ design and handoff notes can contain superseded status statements.
   hourly rainfall entry and solver time-series support already exist
   (`buildRainSeries`, WASM `rainSeries`, Rust `rain_series`).
   [Design](recorded-storm-design.md). Effort: L for the remaining integration.
-- [ ] **Visual regression baselines:** commit reviewed, reproducible baselines
-  for the three existing smoke capture points and upload actual/diff images in
-  CI. `snapVisual` and pixelmatch are implemented, but `tests/visual/` is absent;
-  a missing baseline currently seeds and passes, so CI does not enforce a
-  comparison on a fresh checkout. [Design](visual-regression-design.md).
 - [ ] **Offline preparation:** add an explicit area prefetch flow, cache/storage
   feedback and offline recovery checks. Overpass response caching is already
   implemented; this is the remaining field-mode UI and verification work.
@@ -97,7 +92,7 @@ longer a pending task. Historical archive access remains a separate concern.
 | Manual hourly rain in 2D | `buildRainSeries`, `inertialRainSeries` input and Rust `rain_series` | [Design](recorded-storm-design.md) |
 | Overpass offline response caching | `viewer/sw.js`: Overpass hosts routed to the API cache | [Design](offline-field-design.md) |
 | Keyboard/accessibility foundations | Map keyboard actions, status live regions, panel Escape and timeline Space | [Design](keyboard-a11y-design.md) |
-| Visual comparison harness | `tests/smoke_live.js`: `snapVisual` at national, impact and timeline views; baselines outstanding | [Design](visual-regression-design.md) |
+| Visual regression baselines and CI enforcement | Five deterministic map scenes, strict expected PNGs, failure artifacts and an intentional missing-overlay detection check | [Baseline guide](../tests/visual/README.md) |
 | Timeline depth frames | Rust frame output, `viewer/flood-worker.js` compression, viewer decode/fallback | [Design](precomputed-frames-design.md) |
 | Legend/comparison change guard | `viewer/app.js`: `scheduleMapChrome`; further profiling outstanding | [Design](map-render-path-design.md) |
 | Rust water colour composition | `rust/flood-core/src/render.rs`, WASM dispatcher and viewer call with JS fallback | [Main roadmap](../ROADMAP.md#rendering-and-playback-implemented-foundations-optimisation-remains) |

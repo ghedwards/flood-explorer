@@ -4,42 +4,8 @@ const { chromium } = require("playwright");
 const { appendFileSync } = require("node:fs");
 const { isDeepStrictEqual } = require("node:util");
 
-// Visual regression helper: capture the map region and compare against the
-// baseline in tests/visual/<name>.png. A missing baseline seeds one (pass);
-// UPDATE_VISUALS=1 rewrites baselines; a mismatch over threshold fails.
-const { PNG } = require("pngjs");
-const pixelmatch = require("pixelmatch").default ?? require("pixelmatch");
-const fs = require("node:fs");
-const path = require("node:path");
-const VIS_DIR = path.join(__dirname, "visual");
-function snapVisual(name, page, failures) {
-  return (async () => {
-    fs.mkdirSync(VIS_DIR, { recursive: true });
-    const buf = await page.screenshot({ fullPage: false });
-    const cur = PNG.sync.read(buf);
-    const base = path.join(VIS_DIR, name + ".png");
-    if (!fs.existsSync(base) || process.env.UPDATE_VISUALS === "1") {
-      fs.writeFileSync(base, buf);
-      note("notice", `visual: seeded baseline ${name}`);
-      return;
-    }
-    const baseImg = PNG.sync.read(fs.readFileSync(base));
-    if (baseImg.width !== cur.width || baseImg.height !== cur.height) {
-      fs.writeFileSync(path.join(VIS_DIR, name + ".actual.png"), buf);
-      failures.push(`visual ${name}: size mismatch ${baseImg.width}x${baseImg.height} vs ${cur.width}x${cur.height}`);
-      return;
-    }
-    const diff = new PNG({ width: cur.width, height: cur.height });
-    const mismatched = pixelmatch(baseImg.data, cur.data, diff.data, cur.width, cur.height, { threshold: 0.1, ignoreAntialiasing: true });
-    const frac = mismatched / (cur.width * cur.height);
-    if (frac > 0.005) {
-      fs.writeFileSync(path.join(VIS_DIR, name + ".actual.png"), buf);
-      fs.writeFileSync(path.join(VIS_DIR, name + ".diff.png"), PNG.sync.write(diff));
-      failures.push(`visual ${name}: ${Math.round(frac * 10000) / 100}% pixels differ (threshold 0.5%)`);
-    }
-  })();
-}
-
+// Repeatable pixel comparisons live in visual-browser.js; live screenshots below
+// remain diagnostics because their upstream imagery and readings change.
 
 // Empty collections in status responses count as missing data.
 function truth(value) {
@@ -297,7 +263,6 @@ async function main() {
       note("notice", `Report: ${formatValue(rep.slice(0, 260))}`);
     }
     await page.screenshot({ path: "smoke-national.png" });
-    await snapVisual("national", page, failures);
     if (
       truth(
         await page.evaluate(
@@ -1412,7 +1377,6 @@ async function main() {
       failures.push(`impact count failed: ${formatValue(imp)}`);
     }
     await page.screenshot({ path: "smoke-impact.png" });
-    await snapVisual("impact", page, failures);
     // ---- the flood over time: road closures and places cut off
     try {
       var tlr = await page.evaluate("window.__floodRunTimeline()");
@@ -1437,7 +1401,6 @@ async function main() {
       }
     }
     await page.screenshot({ path: "smoke-timeline.png" });
-    await snapVisual("timeline", page, failures);
     // ---- hazard classes, comparing scenarios, the property check, a dam release
     var extra = {};
     try {

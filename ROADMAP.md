@@ -204,12 +204,11 @@ and when roads close and how long places stay cut off (flood over time).
 
 ## Build and testing
 
-- **Visual regression (partial).** Smoke checks compare national, impact and
-  timeline screenshots with pixelmatch, but no `tests/visual/` baselines are
-  committed. Missing baselines pass and seed locally. Commit reviewed,
-  reproducible baselines and retain comparison diffs in CI before treating
-  this as enforced visual regression coverage.
-
+- **Visual regression (implemented).** Five deterministic map scenes cover
+  national gauges, river depth/hazard, impact roads and a timeline step. CI
+  compares reviewed PNGs, rejects missing baselines, retains comparison images
+  and verifies that hiding the flood overlay fails. Live smoke screenshots
+  remain diagnostics. See the [baseline guide](tests/visual/README.md).
 - **Preset audit (31 Oct 2026).** All 46 river presets have been checked
   against the published complete gauge catalogue: 44 have a matching river
   gauge within 8 km. Carnarvon and Launceston retain their preset points;

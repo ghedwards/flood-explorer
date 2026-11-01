@@ -185,6 +185,10 @@ Where crates.io can't be reached, the [`rust-vendor`](../../tree/rust-vendor) br
 
 ## Tests
 
+Deterministic visual checks: build the viewer, then run `npm run test:visual`
+and `npm run test:visual:verify`. The [baseline guide](tests/visual/README.md)
+explains the reviewed images, Linux regeneration and CI comparison artifacts.
+
 Rust builds use the toolchain pinned in `rust-toolchain.toml` (Rust 1.99.1, Cargo, Clippy, rustfmt and the WebAssembly target). Rustup installs it automatically for local and CI builds.
 
 Frontend builds and browser checks use Node.js 22.13+ (CI uses Node 24 LTS) and Playwright (the browser version is pinned in `package-lock.json`):

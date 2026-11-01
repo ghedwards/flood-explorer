@@ -42,11 +42,19 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Check delayed map image cleanup
         run: node tests/raster-browser.js
+      - name: Build the viewer for deterministic visual checks
+        timeout-minutes: 15
+        run: npm run build
+      - name: Compare fixed visual scenes with reviewed baselines
+        timeout-minutes: 5
+        run: npm run test:visual
+      - name: Verify a missing flood overlay fails visual comparison
+        timeout-minutes: 5
+        run: npm run test:visual:verify
       - name: Serve the pull request viewer with published data
         if: github.event_name == 'pull_request'
         timeout-minutes: 15
         run: |
-          npm run build
           npm run test:build
           npm run preview -- --port 8000 --strictPort > preview.log 2>&1 &
           for attempt in {1..20}; do
@@ -82,3 +90,8 @@ jobs:
         with:
           name: smoke-screenshots
           path: smoke*.png
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: visual-comparisons
+          path: test-results/visual*/

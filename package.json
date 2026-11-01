@@ -4,6 +4,9 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:smoke": "node tests/smoke_live.js",
+    "test:visual": "node tests/visual-browser.js",
+    "test:visual:update": "node tests/visual-browser.js --update",
+    "test:visual:verify": "node tests/visual-detection.js",
     "test:sources": "node tests/probe_sources.js",
     "serve": "vite",
     "lint": "eslint viewer tests scripts *.mjs",

@@ -1,53 +1,30 @@
 # Visual regression in CI
 
-## Problem
+Implemented 1 November 2026. The [baseline guide](../tests/visual/README.md)
+describes scenes, thresholds, reproduction, updates and failure artifacts.
 
-DOM-level smoke tests can't see rendering. The bugs that escape are
-visual: the "satellite island" (tiles silently missing), flood-layer
-opacity/compositing regressions from the playback split, mark layers
-that fail to draw.
+## Current behaviour
 
-## Research
+`tests/visual-browser.js` serves the built viewer locally and exercises the
+real Rust/WASM model with deterministic terrain, gauge, tile and impact
+responses. Five reviewed PNGs cover national gauges, river depth, hazard,
+impact roads and a timeline step. Unhandled external requests are blocked;
+Linux baseline generation and verification also run with Docker networking off.
 
-- The CI smoke already runs **Playwright** (`tests/smoke_live.js`)
-  against the deployed site in the `smoke-test / browser` job — the
-  harness for screenshots is in place; nothing new to install.
-- Screenshots in headless Chromium vary slightly across runs (font
-  hinting, GPU flags) — comparisons need a tolerance, not equality.
-- Keeping baselines in-repo works if they're few and small; they're
-  updated deliberately with the change that alters them.
+Missing expected images, viewport changes and pixel differences over the
+scene threshold fail. Baselines are updated only with an explicit local
+command; CI updates are refused. `tests/visual-detection.js` intentionally
+hides the flood layer and requires the normal runner to report a river-depth
+image mismatch, proving that a blank overlay cannot pass unnoticed.
 
-## Design
+The Browser checks workflow builds and compares these scenes and uploads
+actual, expected and diff PNGs on failure. Live smoke screenshots remain
+separate diagnostics: changing imagery/readings are not baseline inputs.
 
-1. **Capture**: smoke_live gains a `snap(name)` helper —
-   `page.screenshot({ clip })` of the map region (not the whole page,
-   to keep panel text noise out), ~6 shots: initial view, river model
-   drawn, depth colour mode, hazard colour mode, timeline mid-play,
-   impact marks on.
-2. **Compare**: `pixelmatch` (pure JS, no native deps) at a
-   threshold (e.g. 0.1, ignore antialiasing); the helper reports the
-   mismatch fraction against the baseline in
-   `tests/visual/<name>.png`.
-3. **CI behaviour**: missing baseline → capture and PASS (first run
-   seeds); mismatch above tolerance → FAIL with the diff image uploaded
-   as an artifact; an env flag `UPDATE_VISUALS=1` rewrites baselines
-   and is the documented way to update them.
-4. **Hydration control**: screenshots wait for the same readiness
-   signals the smoke already uses (networkidle, model drawn flags) plus
-   a fixed settle, and the worker hides the animated cursor/progress.
+## Scope and remaining work
 
-## Failure behaviour
-
-- Playwright/PNG/CI flakiness shows up as occasional CI retries — keep
-  tolerance conservative (catch layout-scale breaks and missing layers,
-  not 1-px antialiasing drift).
-
-## Test plan
-
-- The visual job itself is the test; validate the harness by
-  intentionally breaking a layer locally (hide the flood overlay) and
-  confirming the run fails with a diff artifact.
-
-## Effort
-
-S — one helper, six capture points, one CI compare step.
+Captures cover map compositing; floating UI, tooltips and controls are hidden
+only for screenshots. Panel layout, real-phone interaction and live service
+availability retain their own tests/manual checks. Add further scenes when
+new rendering behaviour warrants coverage, using deterministic fixtures and
+reviewed expected images rather than automatically accepting the first capture.
