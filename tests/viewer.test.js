@@ -446,11 +446,13 @@ test('warning gauge rings open the underlying gauge popup and stop map clicks', 
   assert.equal(opened[1], event.latlng);
 });
 
-test('state dynamic-layer definitions stay JSON when used in image export URLs', () => {
+test('state dynamic-layer definitions stay JSON when used in image export URLs', async () => {
+  const { guardRasterLayer } = await import('../viewer/safe-raster.js');
   let options;
   const ctx = viewer(['makeStateOverlay'], {
     window: { L: { esri: { dynamicMapLayer(value) { options = value; return { on() {} }; } } } },
     status: { overlays: {} },
+    guardRasterLayer,
   });
   const definition = [{ id: 1, source: { type: 'mapLayer', mapLayerId: 1 }, minScale: 0, maxScale: 0 }];
   ctx.makeStateOverlay({ name: 'State layer', url: 'https://example.test/MapServer', layers: [1], dynamicLayers: definition });

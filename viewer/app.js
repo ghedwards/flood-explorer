@@ -1,3 +1,5 @@
+import { PRESETS, presetGauge } from './presets.js';
+import { guardRasterLayer } from './safe-raster.js';
 import { desktopUpdates } from './desktop-updates.js';
 import { createFeedClient } from './feed-health.js';
 import { bulletinView, bulletinHtml } from './tsunami-bulletin.js';
@@ -424,66 +426,6 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // One-tap places to model: a point on the river near the town's flood
   // gauge, or on the shore for coasts. The model snaps to the main channel.
   // Well-known flood sites and populated flood-prone places, by state.
-  const PRESETS = [
-    { id: 'ipswich', name: 'Ipswich, Bremer River (Qld)', state: 'Qld', lat: -27.6135, lon: 152.7625, kind: 'river' },
-    { id: 'logan', name: 'Logan River, Waterford (Qld)', state: 'Qld', lat: -27.6960, lon: 153.1440, kind: 'river' },
-    { id: 'grantham', name: 'Grantham, Lockyer Creek (Qld)', state: 'Qld', lat: -27.5790, lon: 152.2010, kind: 'river' },
-    { id: 'gympie', name: 'Gympie, Mary River (Qld)', state: 'Qld', lat: -26.1835, lon: 152.6620, kind: 'river' },
-    { id: 'maryborough', name: 'Maryborough, Mary River (Qld)', state: 'Qld', lat: -25.5340, lon: 152.7050, kind: 'river' },
-    { id: 'bundaberg', name: 'Bundaberg, Burnett River (Qld)', state: 'Qld', lat: -24.8650, lon: 152.3480, kind: 'river' },
-    { id: 'rockhampton', name: 'Rockhampton, Fitzroy River (Qld)', state: 'Qld', lat: -23.3765, lon: 150.5125, kind: 'river' },
-    { id: 'emerald', name: 'Emerald, Nogoa River (Qld)', state: 'Qld', lat: -23.5240, lon: 148.1550, kind: 'river' },
-    { id: 'mackay', name: 'Mackay, Pioneer River (Qld)', state: 'Qld', lat: -21.1410, lon: 149.1820, kind: 'river' },
-    { id: 'townsville', name: 'Townsville, Ross River (Qld)', state: 'Qld', lat: -19.2880, lon: 146.7900, kind: 'river' },
-    { id: 'ingham', name: 'Ingham, Herbert River (Qld)', state: 'Qld', lat: -18.6400, lon: 146.1600, kind: 'river' },
-    { id: 'charleville', name: 'Charleville, Warrego River (Qld)', state: 'Qld', lat: -26.4020, lon: 146.2350, kind: 'river' },
-    { id: 'stgeorge', name: 'St George, Balonne River (Qld)', state: 'Qld', lat: -28.0370, lon: 148.5820, kind: 'river' },
-    { id: 'goondiwindi', name: 'Goondiwindi, Macintyre River (Qld)', state: 'Qld', lat: -28.5400, lon: 150.3100, kind: 'river' },
-    { id: 'lismore', name: 'Lismore, Wilsons River (NSW)', state: 'NSW', lat: -28.8090, lon: 153.2765, kind: 'river' },
-    { id: 'murwillumbah', name: 'Murwillumbah, Tweed River (NSW)', state: 'NSW', lat: -28.3270, lon: 153.3960, kind: 'river' },
-    { id: 'grafton', name: 'Grafton, Clarence River (NSW)', state: 'NSW', lat: -29.6915, lon: 152.9355, kind: 'river' },
-    { id: 'kempsey', name: 'Kempsey, Macleay River (NSW)', state: 'NSW', lat: -31.0800, lon: 152.8380, kind: 'river' },
-    { id: 'portmacquarie', name: 'Port Macquarie, Hastings River (NSW)', state: 'NSW', lat: -31.4300, lon: 152.9050, kind: 'river' },
-    { id: 'taree', name: 'Taree, Manning River (NSW)', state: 'NSW', lat: -31.9030, lon: 152.4620, kind: 'river' },
-    { id: 'maitland', name: 'Maitland, Hunter River (NSW)', state: 'NSW', lat: -32.7280, lon: 151.5560, kind: 'river' },
-    { id: 'windsor', name: 'Windsor, Hawkesbury River (NSW)', state: 'NSW', lat: -33.6045, lon: 150.8225, kind: 'river' },
-    { id: 'liverpool', name: 'Liverpool, Georges River (NSW)', state: 'NSW', lat: -33.9250, lon: 150.9320, kind: 'river' },
-    { id: 'moree', name: 'Moree, Mehi River (NSW)', state: 'NSW', lat: -29.4710, lon: 149.8450, kind: 'river' },
-    { id: 'dubbo', name: 'Dubbo, Macquarie River (NSW)', state: 'NSW', lat: -32.2470, lon: 148.6000, kind: 'river' },
-    { id: 'forbes', name: 'Forbes, Lachlan River (NSW)', state: 'NSW', lat: -33.3850, lon: 148.0100, kind: 'river' },
-    { id: 'wagga', name: 'Wagga Wagga, Murrumbidgee River (NSW)', state: 'NSW', lat: -35.1030, lon: 147.3680, kind: 'river' },
-    { id: 'gundagai', name: 'Gundagai, Murrumbidgee River (NSW)', state: 'NSW', lat: -35.0650, lon: 148.1050, kind: 'river' },
-    { id: 'maribyrnong', name: 'Maribyrnong River, Melbourne (Vic)', state: 'Vic', lat: -37.7760, lon: 144.8890, kind: 'river' },
-    { id: 'echuca', name: 'Echuca, Murray River (Vic)', state: 'Vic', lat: -36.1240, lon: 144.7520, kind: 'river' },
-    { id: 'rochester', name: 'Rochester, Campaspe River (Vic)', state: 'Vic', lat: -36.3630, lon: 144.7050, kind: 'river' },
-    { id: 'shepparton', name: 'Shepparton, Goulburn River (Vic)', state: 'Vic', lat: -36.3720, lon: 145.4070, kind: 'river' },
-    { id: 'seymour', name: 'Seymour, Goulburn River (Vic)', state: 'Vic', lat: -37.0270, lon: 145.1460, kind: 'river' },
-    { id: 'benalla', name: 'Benalla, Broken River (Vic)', state: 'Vic', lat: -36.5510, lon: 145.9830, kind: 'river' },
-    { id: 'kerang', name: 'Kerang, Loddon River (Vic)', state: 'Vic', lat: -35.7320, lon: 143.9200, kind: 'river' },
-    { id: 'traralgon', name: 'Traralgon, Traralgon Creek (Vic)', state: 'Vic', lat: -38.1950, lon: 146.5360, kind: 'river' },
-    { id: 'bairnsdale', name: 'Bairnsdale, Mitchell River (Vic)', state: 'Vic', lat: -37.8320, lon: 147.6200, kind: 'river' },
-    { id: 'murraybridge', name: 'Murray Bridge, Murray River (SA)', state: 'SA', lat: -35.1180, lon: 139.2750, kind: 'river' },
-    { id: 'gawler', name: 'Gawler, Gawler River (SA)', state: 'SA', lat: -34.6010, lon: 138.7360, kind: 'river' },
-    { id: 'guildford', name: 'Guildford, Swan River, Perth (WA)', state: 'WA', lat: -31.9000, lon: 115.9700, kind: 'river' },
-    { id: 'carnarvon', name: 'Carnarvon, Gascoyne River (WA)', state: 'WA', lat: -24.8800, lon: 113.6650, kind: 'river' },
-    { id: 'fitzroycrossing', name: 'Fitzroy Crossing, Fitzroy River (WA)', state: 'WA', lat: -18.1960, lon: 125.5780, kind: 'river' },
-    { id: 'launceston', name: 'Launceston, Tamar River (Tas)', state: 'Tas', lat: -41.4330, lon: 147.1430, kind: 'river' },
-    { id: 'latrobe', name: 'Latrobe, Mersey River (Tas)', state: 'Tas', lat: -41.2370, lon: 146.4140, kind: 'river' },
-    { id: 'huonville', name: 'Huonville, Huon River (Tas)', state: 'Tas', lat: -43.0300, lon: 147.0480, kind: 'river' },
-    { id: 'katherine', name: 'Katherine, Katherine River (NT)', state: 'NT', lat: -14.4660, lon: 132.2635, kind: 'river' },
-    { id: 'cairns', name: 'Cairns waterfront (Qld)', state: 'Qld', lat: -16.9200, lon: 145.7800, kind: 'coast' },
-    { id: 'herveybay', name: 'Hervey Bay (Qld)', state: 'Qld', lat: -25.2880, lon: 152.8400, kind: 'coast' },
-    { id: 'maroochydore', name: 'Maroochydore, Sunshine Coast (Qld)', state: 'Qld', lat: -26.6530, lon: 153.0920, kind: 'coast' },
-    { id: 'goldcoast', name: 'Gold Coast Broadwater (Qld)', state: 'Qld', lat: -27.9650, lon: 153.4100, kind: 'coast' },
-    { id: 'ballina', name: 'Ballina, Richmond River mouth (NSW)', state: 'NSW', lat: -28.8700, lon: 153.5650, kind: 'coast' },
-    { id: 'newcastle', name: 'Newcastle harbour (NSW)', state: 'NSW', lat: -32.9250, lon: 151.7800, kind: 'coast' },
-    { id: 'elwood', name: 'Elwood, Port Phillip (Vic)', state: 'Vic', lat: -37.8830, lon: 144.9810, kind: 'coast' },
-    { id: 'lakesentrance', name: 'Lakes Entrance (Vic)', state: 'Vic', lat: -37.8810, lon: 147.9810, kind: 'coast' },
-    { id: 'portadelaide', name: 'Port Adelaide (SA)', state: 'SA', lat: -34.8460, lon: 138.5050, kind: 'coast' },
-    { id: 'mandurah', name: 'Mandurah (WA)', state: 'WA', lat: -32.5300, lon: 115.7230, kind: 'coast' },
-    { id: 'hobart', name: 'Hobart, Derwent estuary (Tas)', state: 'Tas', lat: -42.8820, lon: 147.3330, kind: 'coast' },
-    { id: 'darwin', name: 'Darwin harbour (NT)', state: 'NT', lat: -12.4630, lon: 130.8420, kind: 'coast' },
-  ];
   window.__floodPresets = PRESETS;
 
   function addGroup(sel, label, id) {
@@ -539,29 +481,6 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     return op;
   }
 
-  // The Bureau gauge a river preset should be modelled from: one within
-  // 8 km whose name or basin mentions the preset's river, else the nearest
-  // forecast or information gauge within 3 km.
-  function presetGauge(p) {
-    if (!nat.data) return null;
-    const river = (p.name.split(',')[1] || '').replace(/\(.*\)/, '').trim().toLowerCase();
-    const token = river.replace(/\b(river|creek|r)\b/g, '').trim().split(/\s+/)[0] || '';
-    const rank = { forecast: 0, information: 1, river: 2 };
-    let best = null;
-    for (const f of nat.data.gauges) {
-      const q = f.properties;
-      if (q.kind === 'tide') continue;
-      const km = kmBetween([f.geometry.coordinates[1], f.geometry.coordinates[0]], [p.lat, p.lon]);
-      if (km > 8) continue;
-      const text = `${q.name || ''} ${q.basin || ''}`.toLowerCase();
-      const named = token.length > 2 && text.includes(token);
-      if (!named && (km > 3 || q.kind === 'river')) continue;
-      const score = (named ? 0 : 100) + (rank[q.kind] ?? 3) * 3 + km;
-      if (!best || score < best.score) best = { f, km, score, named };
-    }
-    return best;
-  }
-
   async function loadArea(id, opts) {
     if (areaReg.has(id)) { activateArea(id, { fit: true }); return; }
     if (id.startsWith('preset:')) {
@@ -575,8 +494,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       // anchor river presets to the real Bureau gauge on that river, so the
       // model starts on the channel and gets the gauge's report and levels
       await ensureRiverGauges();
-      const g = p.kind === 'river' ? presetGauge(p) : null;
-      status.presetAnchor = { id: p.id, gauge: g ? g.f.properties.name : null, km: g ? Math.round(g.km * 10) / 10 : null };
+      const g = p.kind === 'river' ? presetGauge(p, nat.data && nat.data.gauges) : null;
+      status.presetAnchor = { id: p.id, gauge: g ? g.f.properties.name : null, km: g ? Math.round(g.km * 10) / 10 : null, note: p.anchorNote || null };
       let rep = null;
       if (g) rep = openReport(g.f, { select: false });
       await modelHere(g ? g.f.geometry.coordinates[1] : p.lat, g ? g.f.geometry.coordinates[0] : p.lon, {
@@ -2134,6 +2053,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         }).catch(() => { st.errors++; });
       }
     }
+    if (o.type === 'map') guardRasterLayer(window.L, layer);
     layer.on('requesterror', () => { st.errors++; });
     layer.zoomNote = { min: o.minZoom, text: 'council view' };
     o.layer = layer;
@@ -2149,6 +2069,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       url: o.url, layers: o.layers, opacity: o.opacity, attribution: o.attribution, f: 'image', format: 'png32',
       transparent: true, minZoom: o.minZoom || 0, zIndex: 4,
     }, o.dynamicLayers ? { dynamicLayers: JSON.stringify(o.dynamicLayers) } : {}));
+    guardRasterLayer(window.L, layer);
     if (o.minZoom) layer.zoomNote = { min: o.minZoom, text: 'state-wide view' };
     layer.on('load', () => { st.features++; });
     layer.on('requesterror', () => { st.errors++; });

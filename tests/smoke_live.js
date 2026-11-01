@@ -123,7 +123,7 @@ async function main() {
       viewport: { width: 1280, height: 900 },
     });
     var errors = [];
-    page.on("pageerror", (e) => errors.push(String(e)));
+    page.on("pageerror", (e) => errors.push(e.stack || String(e)));
     page.on("console", (m) =>
       m.type() === "error" ? errors.push(m.text()) : null,
     );

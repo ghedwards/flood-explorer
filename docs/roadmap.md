@@ -1,42 +1,107 @@
-# Roadmap
+# Working roadmap
 
-Working backlog with links to design notes. Items are implemented one
-design note at a time; a note is written before its code, and an approach
-that breaks tests is reverted and redesigned.
+Working checklist, reconciled against the repository on 1 November 2026.
+[The main roadmap](../ROADMAP.md) holds the longer-term plans and limitations;
+this file tracks implementation status. Completed means present in code, not
+verified in a published release or validated against real floods. Historical
+design and handoff notes can contain superseded status statements.
 
-## Shipped this cycle (continued)
+## Outstanding work
 
-- Evacuation route to centres — already built (`routeOut` Dijkstra with
-  parent pointers, `drawRoute` polyline, persisted in property snapshots
-  and shown in the report); no new code needed.
-- Dam releases on the 2D solver — time-varying inflow series in Rust +
-  wasm bridge + app wiring (`buildInflowSeries`); release box drives it.
-- Visual regression in CI — `snap()` helper + pixelmatch against
-  `tests/visual/` baselines (seed on first run, UPDATE_VISUALS rewrites).
-- Basemap failover, arrival times, map render path, keyboard/a11y,
-  offline Overpass fix.
+- [ ] **Recorded-storm replay:** fetch historical station rainfall, package event
+  snapshots, add a station/storm picker and align runs to event time. Manual
+  hourly rainfall entry and solver time-series support already exist
+  (`buildRainSeries`, WASM `rainSeries`, Rust `rain_series`).
+  [Design](recorded-storm-design.md). Effort: L for the remaining integration.
+- [ ] **Visual regression baselines:** commit reviewed, reproducible baselines
+  for the three existing smoke capture points and upload actual/diff images in
+  CI. `snapVisual` and pixelmatch are implemented, but `tests/visual/` is absent;
+  a missing baseline currently seeds and passes, so CI does not enforce a
+  comparison on a fresh checkout. [Design](visual-regression-design.md).
+- [ ] **Offline preparation:** add an explicit area prefetch flow, cache/storage
+  feedback and offline recovery checks. Overpass response caching is already
+  implemented; this is the remaining field-mode UI and verification work.
+  [Design](offline-field-design.md).
+- [ ] **Accessibility follow-up:** provide a screen-reader map summary and
+  audit with a real screen reader; check panel focus return, dialog semantics,
+  timeline shortcuts and automated axe coverage against the original design.
+  Keyboard map actions, live regions, Escape-to-close and Space-to-play exist.
+  [Design](keyboard-a11y-design.md).
+- [ ] **Real-phone checks:** verify iOS Safari panels, scrolling, study selection
+  and touch gestures. See [reliability work](../ROADMAP.md#reliability-and-usability).
+- [ ] **Playback memory and profiling:** measure large-grid memory/runtime;
+  consider bounded or lazy frame decoding. Worker depth-frame generation,
+  transfer compression and main-thread decode are already implemented.
+  [Design](precomputed-frames-design.md).
+- [ ] **Map rendering follow-up:** profile the legend/comparison change key
+  (which includes the timeline step), direct layer-list updates and repeated
+  marks. Coalesce or change renderers only where measurement supports it.
+  [Design](map-render-path-design.md).
+- [ ] **GLO-30 browser integration:** connect the tile prototype and standalone
+  hydrology helpers to a parity-checked worker pipeline, tile mosaicking,
+  reprojection, caching and a terrain selector. The viewer's WASM dispatcher
+  does not yet expose this full pipeline.
+  [Plan](../ROADMAP.md#on-demand-copernicus-glo-30--hydrology-partially-prototyped),
+  [original port design](hydrology-port-design.md).
+- [ ] **Model validation and refinements:** validate the terrain-based routing
+  storage approximation and levee volume budget; replace the fixed 24-hour
+  overtopping assumption with supported event duration/segment handling.
+  [Storage design](floodplain-storage-design.md),
+  [levee design](levee-overtopping-design.md).
+- [ ] **Tsunami validation and extensions:** validate terrain/datums and local
+  observations, broaden source/tide sampling, and check nesting conservation
+  and variable-depth dispersion. One-way forcing, experimental two-way and
+  intermediate-grid nesting, coastal benchmark cases and main-map impact
+  integration are already implemented. [Current methods](tsunami-prototype.md).
+  [Priorities and acceptance criteria](../ROADMAP.md#tsunami-data-coastal-coupling-and-dispersive-waves-25-oct-2026).
+- [ ] **Desktop release verification:** test installers, signing, updates and
+  offline recovery on supported platforms; follow the
+  [release guide](../desktop/README.md). The app and release tooling exist;
+  release publication and configured secrets were not checked here.
 
-## Backlog (researched, notes in this folder)
+Further data coverage, rainfall design, tide predictions, damage curves and
+performance ideas remain in [the main roadmap](../ROADMAP.md).
 
-| # | Item | Note | Effort | Value |
-|---|------|------|--------|-------|
-| 1 | Arrival times in the Places list | `arrival-times-design.md` | S | M (property flow already has it) |
-| 2 | Dry-route to evacuation centres | `evacuation-route-design.md` | M | H |
-| 3 | Basemap failover prompt | `basemap-failover-design.md` | S | M |
-| 4 | Storms replayed from recorded rain | `recorded-storm-design.md` | L | H |
-| 5 | Dam-release scenarios | `dam-release-design.md` | M | H (2011/2022 stories) |
-| 6 | Offline field mode: close the Overpass gap | `offline-field-design.md` | S→M | H for field use |
-| 7 | Keyboard + accessibility pass | `keyboard-a11y-design.md` | M | M |
-| 8 | Visual regression in CI | `visual-regression-design.md` | S | M (catches render bugs DOM tests miss) |
+## Requires access or an owner decision
 
-## Also known
+- [ ] Confirm forecast/traffic feed keys and live health where required;
+  implementation alone does not establish configured credentials.
+- [ ] Obtain a permitted source for measured floor surveys and Bureau IFD
+  rainfall; reassess the access limitations recorded in the design notes before
+  implementation. [Floor-height design](measured-floor-heights-design.md).
+- [ ] Confirm desktop update signing and platform signing/notarisation setup
+  before a release. [Setup](../desktop/README.md#one-time-signing-setup).
 
-- Precomputed per-step timeline frames — `precomputed-frames-design.md`
-  (biggest remaining playback win; worker precomputes quantised depth
-  frames, main thread decodes).
-- Map render path — `map-render-path-design.md` (last of the perf
-  audit's Top 5; measure-first, four small items).
-- HAND flat-cell fallback and D8 tie documentation —
-  `hand-d8-polish-design.md` (D8 docs-only; HAND fallback deferred
-  until a HAND band ships — `hand_simple` is defined but unused).
-- Blocked: measured floor heights and IFD design rainfall (no open data).
+Bureau warnings/classes no longer belong on the implementation-blocked list:
+FTP fetching is in `rust/flood-feeds`, with ArcGIS warning geometry. The Git
+remote already uses `ghedwards/flood-explorer`, so repository renaming is no
+longer a pending task. Historical archive access remains a separate concern.
+
+## Deferred
+
+- **HAND fallback:** revisit when a consumer is added; `hand_simple` exists
+  without an app/WASM consumer. D8 scan-order tie handling is documented in
+  `rust/flood-core/src/hydro.rs`; broader parity documentation can accompany
+  future hydrology work. [Design](hand-d8-polish-design.md).
+- **Native desktop textures / WebGL upload:** optional future rendering paths,
+  subject to profiling; the existing desktop viewer uses WASM and canvas.
+
+## Implemented
+
+| Capability | Evidence | Original note |
+|---|---|---|
+| Arrival times in saved Places | `viewer/app.js`: arrival text in property snapshots and Places tags | [Design](arrival-times-design.md) |
+| Dry routes to mapped evacuation centres | `routeOut`, `drawRoute`, report and snapshot persistence; centre coverage still needs work | [Design](evacuation-route-design.md) |
+| Basemap failure prompt | `viewer/app.js`: tile error tracking and `basemapNotice` | [Design](basemap-failover-design.md) |
+| Dam release input, including 2D hourly inflow | `buildInflowSeries` and solver wiring; automatic schedules remain open | [Design](dam-release-design.md) |
+| Manual hourly rain in 2D | `buildRainSeries`, `inertialRainSeries` input and Rust `rain_series` | [Design](recorded-storm-design.md) |
+| Overpass offline response caching | `viewer/sw.js`: Overpass hosts routed to the API cache | [Design](offline-field-design.md) |
+| Keyboard/accessibility foundations | Map keyboard actions, status live regions, panel Escape and timeline Space | [Design](keyboard-a11y-design.md) |
+| Visual comparison harness | `tests/smoke_live.js`: `snapVisual` at national, impact and timeline views; baselines outstanding | [Design](visual-regression-design.md) |
+| Timeline depth frames | Rust frame output, `viewer/flood-worker.js` compression, viewer decode/fallback | [Design](precomputed-frames-design.md) |
+| Legend/comparison change guard | `viewer/app.js`: `scheduleMapChrome`; further profiling outstanding | [Design](map-render-path-design.md) |
+| Rust water colour composition | `rust/flood-core/src/render.rs`, WASM dispatcher and viewer call with JS fallback | [Main roadmap](../ROADMAP.md#rendering-and-playback-implemented-foundations-optimisation-remains) |
+| Initial floodplain storage / levee volume limits | `wave.rs` terrain storage coefficient and `surface.rs` fixed-duration weir budget | [Storage](floodplain-storage-design.md), [levees](levee-overtopping-design.md) |
+| Hazard from 2D solver velocities | Solver velocity outputs and hazard consumption; depth/slope fallback remains | [Implementation note](hazard-velocity-wasm.md) |
+| Desktop shell, broker, bundles and signed updater support | `desktop/`, installer workflow and updater tests | [Guide](../desktop/README.md) |
+| River preset audit and delayed raster cleanup | Explicit river metadata, audit tool, guarded raster layers and regression tests | [Audit](preset-audit.md) |

@@ -40,6 +40,8 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      - name: Check delayed map image cleanup
+        run: node tests/raster-browser.js
       - name: Serve the pull request viewer with published data
         if: github.event_name == 'pull_request'
         timeout-minutes: 15

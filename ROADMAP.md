@@ -1,123 +1,84 @@
 # Flood Explorer roadmap
 
-Ideas for future refinement, roughly in order of value. Each says what it
-would add, how it could be built from open data, and what to watch for.
+Longer-term plans and modelling limitations. The [working checklist](docs/roadmap.md)
+tracks outstanding work and links to design notes. Status reconciled against the
+repository on 1 November 2026; implementation does not imply deployment or
+validation against real events. Older design notes describe proposals and may
+contain superseded status statements.
 
 ## Needs an owner decision or access
 
-- **Bureau of Meteorology flood warnings and flood class levels.** The app
-  already shows them (Warnings panel, report flood classes, "Minor /
-  Moderate / Major" buttons in Scenario), but the Bureau's website refuses
-  requests from GitHub's servers (HTTP 403) and the warning files are not on
-  its anonymous FTP server. Options:
-  - a small scheduled job on a home or office computer (not a cloud
-    server) that runs `flood floodinfo` and commits
-    `floodclass.json` and `warnings.json` to the repo, or
-  - a Bureau registered-user data feed, if one can be obtained.
-- **Google Flood Hub forecasts.** Built in; add the API key as the repo
-  secret `FLOOD_FORECASTING_API_KEY`.
-- **Repository name.** Renaming to `flood-explorer` (Settings → General)
-  moves the site to `ghedwards.github.io/flood-explorer/`. Repo links
-  redirect; the old Pages address does not. Saved places carry over (same
-  origin).
+- **Feed configuration.** Google Flood Hub support is built in; confirm
+  `FLOOD_FORECASTING_API_KEY` is configured before relying on forecasts.
+  NSW road feeds similarly require `NSW_TRAFFIC_API_KEY`. Secret presence
+  and live feed health were not checked in this reconciliation.
+- **Desktop release setup.** The desktop app and updater are implemented;
+  release signing, installer testing and publication follow
+  [the desktop guide](desktop/README.md). Confirm signing configuration
+  before preparing a release.
+- **Data access.** Measured floor surveys, Bureau IFD rainfall and some
+  levee/event archives still need a permitted data route or an open dataset.
+  The old warnings/classes access blocker is resolved in code: the shared
+  feed library reads Bureau FTP warnings and river-height pages, with
+  warning geometry from ArcGIS. This does not provide every historical archive.
 
 ## Modelling
 
 ### Tsunami: data, coastal coupling and dispersive waves (25 Oct 2026)
 
-The Rust/WASM prototype has two linear propagation methods and a separate
-nonlinear local wetting/drying solver,
-plus a uniform-depth dispersive comparison. Bundled terrain, reference labels
-and display overlays are described in [the prototype notes](docs/tsunami-prototype.md).
-The local scenes can be driven one-way by a wave from the regional model
-(Flather-type open boundary, Green's-law depth scaling; see the prototype notes), but
-the source is still a hypothetical dipole, and the regional grid is too coarse for
-sheltered bays such as Moreton Bay. The priorities below distinguish the working uniform-depth dispersive
-comparison from proposed coastal extensions:
+The prototype now includes linear regional propagation, uniform- and
+variable-depth linear dispersion, and a nonlinear local wetting/drying solver
+with an optional second-order scheme. One-way forcing, uploaded wave series,
+PTHA18 series import, experimental two-way nesting and a 250 m intermediate
+grid are implemented. Regional recordings carry surface displacement and
+transport into local boundaries. Local scenarios, sampled hazard extents,
+arrival/maximum views and impact/share integration are available on the main
+map. The [prototype notes](docs/tsunami-prototype.md) document the current
+methods, numerical checks and limitations.
 
-1. **Verify terrain and water references.** Prefetch finer coastal LiDAR and
-   nearshore/channel bed surveys, retain source coverage and uncertainty, and
-   reconcile vertical datums before applying tide levels. Evaluate GA regional
-   bathymetry and the [CSIRO Queensland estuary composite](https://doi.org/10.25919/1xzm-pw88), including their
-   modelled rather than surveyed channel depths. The Gold Coast Broadwater scene
-   now bundles a consistent AVWS CSIRO grid with source flags and optional
-   provenance overlay; tide calibration and bed validation remain outstanding. Replace the single Manning
-   resistance with supported land-cover classes only where resolution permits.
-2. **Defined offshore forcing, tides and river flow.** (A CSV incoming-wave series, a hypothetical
-   M2 tide level and a PTHA18 scenario importer (`scripts/prepare-ptha-series.js`) now drive the local model;
-   a verified datum conversion, tide predictions, river discharge, running many PTHA18 scenarios with their
-   rates (the importer can now place a scenario's peak on PTHA18's published exceedance curve at the hazard point and find scenarios of a given size; a rate-proportional sample of one zone can be run through the local model; all zones and larger samples are still to do; the tide state at arrival changes the Gold Coast Seaway result by nearly a factor of 8 from lowest to highest tide, but its frequency distribution, the MSL-to-terrain datum offset and a check of the tidal planes remain), and re-simulating scenarios from their initial seabed deformation remain. PTHA18's deep-water
-   waves have been checked blind against DART records for Tohoku 2011, `docs/validation/tohoku-2011-dart.md`;
-   validating the lab's own solvers against observed tide-gauge records, and other events, remain.) Use identified
-   [GA PTHA18 scenarios](https://www.ga.gov.au/scientific-topics/community-safety/data-and-products/ptha)
-   or validated historical waveforms; drive local coastal boundaries with
-   consistent time series instead of an arbitrary local dipole. Add tide levels
-   with a verified datum conversion, upstream discharge and observed gauge
-   series for validation. Preserve scenario IDs and distinguish illustrative
-   runs from hazard estimates.
-3. **Finer grids where needed.** One-way fixed nesting is done. Evaluate two-way and
-   adaptive refinement with
-   conservative exchange between offshore and estuary domains, plus a higher
-   order, well-balanced, positivity-preserving nonlinear scheme to reduce
-   numerical damping (a second-order option now exists for the local solver and removes most of the
-   run-up deficit in the Synolakis benchmark; a higher-order shoreline treatment remains). [GeoClaw](https://www.clawpack.org/geoclaw.html) provides
-   a useful reference for dry/wet shorelines and adaptive grids. Keep the
-   browser worker responsive with bounded step batches and memory use.
-4. **Dispersive-wave method — uniform-depth and variable-depth linear versions implemented; nonlinear coastal coupling proposed.** Dispersion
-   means different wavelengths travel at different speeds, so a pulse can
-   spread and change shape. The shallow-water methods omit this
-   wavelength-dependent physics; numerical diffusion in a solver is a
-   different effect. A linearised Boussinesq/Peregrine comparison now runs in Rust/WASM on a
-   uniform-depth ocean, with analytical frequency/long-wave-limit and volume
-   checks. It is available through **Try dispersive ocean**. A variable-depth linear
-   Peregrine form now runs on the regional grids (equivalence, rest, volume and
-   long-wave/short-wave checks only; not benchmarked). Uniform depth is now checked against exact linear dispersion
-   (relative error 0.2 at kH = 1, 0.03 at 0.4) and its energy conservation over a depth ramp (within 1.5%; see the prototype notes). Next compare variable depth against published
-   benchmarks and evaluate nonlinear and coastal formulations, using [JAGURS](https://github.com/jagurs-admin/jagurs)
-   and published formulations as references. It may improve shorter-wave
-   propagation and waveform detail within its valid depth/wavelength range;
-   it does not automatically improve inundation, terrain accuracy or source
-   reconstruction. Keep its restriction to the linear regional grids explicit. Measure computational cost
-   and validate each extension before enabling it on coastal terrain.
-5. **Sensitivity runs** (a first version is built for the local scenes: one-at-a-time and combined
-   bracketing runs over source strength, sea level, friction and a uniform terrain shift,
-   reporting ranges of arrival, depth, area and speed; source location and shape, bathymetry
-   error beyond a shift, and a proper ensemble design remain). Compare bounded ensembles of source strength, water
-   level, friction and terrain uncertainty. Report ranges of arrival time,
-   water depth and speed, with their assumptions. Parameter sweeps alone do
-   not supply hazard probabilities.
+Remaining priorities:
 
-**Acceptance for extending the dispersive option:** preserve the checked long-wave limit; check
-phase speed and pulse spreading against an appropriate analytical dispersion
-relation within the formulation's stated validity range; compare arrival time,
-waveform and energy behaviour with published benchmarks; retain water balance
-and non-negative depth at the coastal coupling; define how dispersion is
-handled near breaking and wet/dry cells; measure browser runtime and memory.
-Validate the baseline coastal solver first using
-[NOAA benchmark cases](https://nctr.pmel.noaa.gov/benchmark/Analytical/index.html)
-(solitary-wave run-up on a plane beach is done: the solver reaches 83% of the
-analytical run-up at 60 cells per wavelength, and 98% with the new second-order option; Thacker's oscillating
-bowl, an exact moving-shoreline case, is also checked (second order keeps the shape within 1.7% over five periods at 1 m cells,
-first order within 15%); more cases, such as the conical island, remain).
-A future solver option must state which physical effects it adds and remain
-labelled experimental until its own checks pass.
+1. **Terrain, datums and observations.** Validate channel/bathymetric data,
+   reconcile terrain and tide datums, and compare the local solvers with
+   observed tide-gauge events. PTHA18 deep-water series have a blind Tohoku
+   DART comparison; that does not validate local inundation. Add supported
+   river discharge and land-cover resistance where data/resolution permit.
+2. **Source and tide sampling.** Extend the sampled source-zone/magnitude
+   coverage and quantify sampling error. Tide-weighted runs and modelled
+   extents exist, but omitted scenarios, bathymetry uncertainty and datum
+   offsets still limit interpretation. Retain source IDs, rates and limits;
+   sampled rates do not establish a validated hazard assessment.
+3. **Nesting and shoreline validation.** Experimental two-way feedback is a
+   relaxation rather than exact conservative flux exchange. Validate volume,
+   boundary transport and refinement across more cases before adaptive grids
+   or wider use. Synolakis run-up and Thacker moving-shoreline checks exist;
+   further coastal benchmarks, including the conical island, remain.
+4. **Dispersion.** Uniform-depth analytical dispersion and depth-ramp energy
+   checks exist, alongside variable-depth regional implementation. Compare
+   variable-depth waveforms, phase speed and energy with published benchmarks
+   before nonlinear coastal dispersion. Specify validity ranges, breaking and
+   wet/dry treatment, and retain long-wave, water-balance and non-negative-depth
+   checks for any extension.
+5. **Sensitivity and runtime.** Bracketing ensembles and worker execution are
+   implemented. Extend uncertainty beyond uniform terrain shifts and source
+   strength to source geometry and bathymetric error; profile browser memory
+   and runtime for larger nested ensembles.
 
 
-### On-demand Copernicus GLO-30 + hydrology (proposed)
-- **Goal:** Let the on-demand model (20 km squares) optionally use Copernicus GLO-30 with the full hydrology pipeline (breach, fill, D8, flow accumulation, streams, HAND) instead of only DEM-H.
-- **Why:** GLO-30 covers areas DEM-H doesn't, and matches the detailed Brisbane pipeline; consistent tooling across detailed and on-demand models.
-- **Challenges:**
-  - Hydrology tools (Whitebox) must run in the browser; ship `whitebox-wasm` to the client and run breach/fill/D8/flow-acc in a worker.
-  - Download and mosaic GLO-30 tiles client-side (CORS, tile size, memory for 20 km squares at 30 m).
-  - GLO-30 is a surface model (buildings/trees), so results differ from bare-earth DEM-H; document this.
-  - Performance: hydrology on a ~667x667 grid in WASM must stay interactive.
-- **Steps:**
-  1. Prototype downloading one GLO-30 tile and running D8 in the browser.
-  2. Port `flood hydrology` stages to a browser worker using `whitebox-wasm`.
-  3. Add a toggle in the on-demand flow: DEM-H (default) vs GLO-30 + hydrology.
-  4. Cache intermediate rasters in IndexedDB; fall back to DEM-H on failure.
-  5. Update tests (parity between pipeline and browser hydrology) and docs.
-- **Status:** Not started. Large effort; consider as a major release item.
+### On-demand Copernicus GLO-30 + hydrology (partially prototyped)
+
+The [tile-download prototype](viewer/glo30-proto.html) exists, and
+`rust/flood-core/src/hydro.rs` contains standalone hydrology helpers. The
+on-demand viewer still uses GA DEM-H/LiDAR; a complete GLO-30 browser pipeline
+is not exposed through the WASM dispatcher or integrated into the model flow.
+
+Remaining work: check helper parity and flat handling, expose the required
+hydrology operations to the worker, mosaic/reproject tiles, cache intermediate
+rasters, and add the terrain selector with a DEM-H fallback. GLO-30 is a surface
+model, so its buildings/trees and datum differences need explicit treatment.
+The [original progress note](docs/client-glo30-progress.md) and
+[port design](docs/hydrology-port-design.md) are historical context; their
+"not started" descriptions predate the helpers now in the repository.
 
 
 - **Flood routing, further.** Below the gauge the flood is routed
@@ -125,8 +86,10 @@ labelled experimental until its own checks pass.
   gauge has flow records, and tides; recorded floods follow other gauges
   upstream. Still simple: tributary floods copy the gauge's shape, places
   above the gauge without a recorded gauge are only shifted in time, and
-  floodplain storage and dam releases aren't modelled. Ratings come from
-  daily means, so they are extrapolated above the highest daily level.
+  floodplain storage uses a local terrain-based approximation. Manual dam
+  releases are supported, including hourly inflow in the 2D solver; automatic
+  operating schedules remain outstanding. Ratings come from daily means,
+  so they are extrapolated above the highest daily level.
 - **Tides from predictions.** Recorded floods use recorded sea levels from
   Maritime Safety Queensland's or UHSLC's tide gauges within 150 km;
   scenarios use a 12.4-hour sine at spring-tide height. NSW's ocean tide
@@ -136,6 +99,10 @@ labelled experimental until its own checks pass.
   Some recent Maritime Safety Queensland yearly files (Cairns 2023,
   Mooloolaba 2022) download empty from the state portal; Cairns 2023 gets
   its sea level once they are fixed.
+- **Recorded storms.** Manual hourly rainfall is wired into the 2D solver.
+  Downloading historical station rainfall, a recorded-storm picker and
+  event-time alignment remain outstanding; see the
+  [design](docs/recorded-storm-design.md).
 - **Design rainfall from the Bureau.** Storm mode currently offers example
   storms and links to the Bureau's design rainfall (IFD) tool. Fetching the
   IFD table for the model's location would give real "1% annual chance"
@@ -151,8 +118,9 @@ labelled experimental until its own checks pass.
   server has no levee layer. Options: run the script from a home or office
   computer and commit `levees.geojson`, or ask DCCEEW NSW for an open
   service. Levee crest heights from surveys would beat crests read from
-  the terrain. Overtopping fills the protected area to the river level
-  without a volume limit, so short overtopping is overstated.
+  the terrain. The fast model now limits carried water with a weir-discharge
+  budget using a fixed 24-hour duration. Event-dependent duration, segment
+  budgets and validation of short overtopping remain outstanding.
 - **Recorded floods hour by hour.** `config/events.json` lists 17 floods;
   the build fetches hourly gauge readings from Water Data Online for those
   with a nearby station holding a level series for the dates. Lismore
@@ -167,9 +135,9 @@ labelled experimental until its own checks pass.
 - **Victoria's statewide flood extent** (1% chance), if it becomes
   available as an open map service.
 
-- **Hazard, further.** Flow speeds are estimated from depth and slope with
-  fixed roughness; a two-dimensional model (or council hazard mapping
-  where published, now shown for Rockhampton) would be better.
+- **Hazard, further.** Hazard uses solver velocities for 2D runs and a
+  depth/slope estimate otherwise. Validate velocities and roughness against
+  observations or council hazard mapping where available.
 - **Dam operations.** Releases are entered by hand; reading published
   release schedules (Seqwater, WaterNSW) during an event would automate it.
 - **Climate, further.** Storm rainfall uplift follows the draft ARR rates;
@@ -185,7 +153,8 @@ and when roads close and how long places stay cut off (flood over time).
 - **Daytime counts, further.** Workers come from the ABS place-of-work
   counts by SA2; destination zones (much smaller) would be sharper, but
   their counts are only in TableBuilder, not an open download.
-- **Evacuation centres.** OpenStreetMap has few mapped; councils publish
+- **Evacuation centre coverage.** Dry-route search and report/snapshot
+  persistence are implemented. OpenStreetMap has few centres mapped; councils publish
   lists on their disaster dashboards (often as PDFs or web pages). Open
   map services of designated centres would make routes far more useful.
 - **Measured floor heights.** NSW councils publish floor level surveys for
@@ -218,7 +187,7 @@ and when roads close and how long places stay cut off (flood over time).
 ## Reliability and usability
 
 - **Offline, further.** The site installs and works offline from what has
-  been used. It could also save a chosen area in advance (pre-fetch its
+  been used, including cached Overpass impact responses. It could also save a chosen area in advance (pre-fetch its
   tiles and terrain) before heading somewhere without signal, and show
   how much is stored.
 - **Real-phone testing**, especially iOS Safari, for panels, scrolling,
@@ -228,15 +197,26 @@ and when roads close and how long places stay cut off (flood over time).
   colours that differ by lightness. Still to do: a screen-reader summary of
   the flood map itself (beyond the counts), and an audit with a real
   screen reader.
-- **Faster first load, further.** Scripts are minified, the flood-network
+- **Faster first load, further.** Profile the current startup before choosing
+  another optimisation. Scripts are minified, the flood-network
   gauges load first (the other 2,400 river gauges follow once the map is
   drawn), and flood history loads with the first model.
 
 ## Build and testing
 
-- **Preset audit.** The live check lists which Bureau gauge each river
-  preset is anchored to; review any presets that aren't anchored or sit
-  far from their gauge.
+- **Visual regression (partial).** Smoke checks compare national, impact and
+  timeline screenshots with pixelmatch, but no `tests/visual/` baselines are
+  committed. Missing baselines pass and seed locally. Commit reviewed,
+  reproducible baselines and retain comparison diffs in CI before treating
+  this as enforced visual regression coverage.
+
+- **Preset audit (31 Oct 2026).** All 46 river presets have been checked
+  against the published complete gauge catalogue: 44 have a matching river
+  gauge within 8 km. Carnarvon and Launceston retain their preset points;
+  Grantham uses Gatton, 7.8 km away. The selector now uses explicit river
+  metadata and full watercourse names, avoiding tributary or reservoir
+  matches based only on a basin. See [the audit](docs/preset-audit.md) and
+  rerun `node scripts/audit-presets.js gauges.geojson` after catalogue changes.
 - **Hydrology inside `flood` (implemented).** Production uses `flood hydrology`
   with six RustGIS tools pinned to whitebox-wasm commit f0076c2 and an
   archive dependency patch in `rust/vendor/wbraster`. The original integration
@@ -254,136 +234,35 @@ and when roads close and how long places stay cut off (flood over time).
   memory) would make interactive updates quicker; analysis, storms and
   flood timelines are already 1.2–2.6× faster.
 
-## Desktop (offline-first) version (proposed)
+## Desktop (implemented; release verification remains)
 
-**Goal:** Ship Flood Explorer as a desktop app (Windows/macOS/Linux) that
-bundles the cache, storage, data fetching and processing, so it runs with no
-cloud backend and no per-request cost. Motivation: the web app depends on the
-Lambda broker (compute + S3 storage) and is subject to CORS, cold starts and
-rate limits; a desktop build removes all of that.
+The Tauri app runs the local broker in-process, stores readings locally,
+refreshes them on a timer, proxies elevation and bundles national data.
+Settings support local traffic keys. Installer workflows cover macOS Apple
+Silicon/Intel, Windows and Linux; signed self-update support is implemented.
+See [desktop setup and releases](desktop/README.md).
 
-**Why Tauri (not Electron):** the backend is already Rust (`flood-broker`,
-`flood-feeds`) and the frontend is already a web app (`viewer/`); Tauri
-wraps the webview around a Rust core, ships a small binary, and reuses the
-existing crates. Electron would duplicate the backend in Node.
+Remaining work is operational: verify installers on real platforms, configure
+and verify release signing/notarisation as appropriate, test update and offline
+recovery, and publish reviewed releases. The repository alone does not establish
+which releases or secrets are live. Keep the hosted web broker while both web
+and desktop clients use it; retiring it is a separate product decision.
 
-**Shape of the work:**
-1. **Local mode in `flood-broker`.** Add a storage backend switch: when
-   `FLOOD_STORAGE=local` (or a `--data-dir` flag), read/write the readings
-   document to `~/.flood-explorer/readings.json` (and a gz copy) instead of
-   S3, and run the refresh loop on a tokio timer instead of via EventBridge.
-   The fetch/parse logic is unchanged. This keeps web and desktop on one
-   binary.
-2. **Tauri shell.** New `desktop/` crate: Tauri app whose webview loads
-   `viewer/index.html` (built by Vite), with the broker as a sidecar
-   process started on launch and stopped on quit. Configure the webview's
-   `FLOOD_BROKER_URL` to `http://127.0.0.1:<port>`. Reuse the existing
-   CORS handling (the local broker sets the right headers).
-3. **Elevation proxy.** Route Geoscience Australia elevation requests
-   through the local broker (a `/v1/elev` or passthrough) so the webview
-   never hits CORS and offline-cached tiles work. The broker already caches
-   tiles in `ELEV`/`TERRAIN`.
-4. **National data.** Either bundle `viewer/data/national/*` in the
-   installer (~tens of MB) or download on first run into the data dir with a
-   progress screen. Subsequent runs use the cached copy; the build pipeline
-   (`flood-pipeline`) is unchanged.
-5. **Offline-first.** The service worker already caches tiles/terrain/live
-   readings; on desktop the broker's local store replaces S3, so the app
-   works fully offline after the first data fetch. Add an "offline" badge
-   using the existing `nat.readingsSource` plumbing.
-6. **Distribution.** Tauri produces `.msi`/`.dmg`/`.AppImage`. Code signing
-   and notarisation (macOS) are the main cost; the Tauri updater
-   (signed update manifests) gives in-app auto-update from a GitHub
-   Releases host. No server-side hosting needed.
+## Rendering and playback (implemented foundations; optimisation remains)
 
-**What it replaces / saves:**
-- Lambda broker + S3 + API Gateway (the only cloud cost) → $0.
-- No cold starts; refreshes run on the user's machine.
-- No CORS workarounds; the elevation proxy removes the last one.
-
-**What it costs:**
-- Two release artefacts to maintain (web + desktop), though they share
-  `viewer/` and `rust/flood-feeds`.
-- Installers, code signing, notarisation and the updater signing key.
-- Users must download ~50-100 MB and update periodically for new data
-  (the Bureau's annual gauge list changes).
-
-**Suggested phasing:**
-1. Local mode in `flood-broker` + a tiny `desktop/` Tauri shell that
-   launches it (proof of life, ~3-5 days).
-2. Elevation proxy + bundled national data + offline badge (~1 week).
-3. Auto-updater + signed installers for the three platforms (~1 week).
-4. Drop the cloud broker from the web build once the desktop is proven
-   (or keep both: web stays, desktop is the "full" version).
-
-**Open questions:**
-- Should the desktop build be the *primary* product (web becomes a
-  preview) or a companion? Keeping both doubles the release surface.
-- Data refresh cadence on desktop: the scheduler's 15 min is fine, but a
-  laptop that sleeps won't refresh; resume on wake.
-- Whether to gate heavy features (2D inertial model, LiDAR) behind a
-  "desktop only" flag, since they're the parts that benefit most from
-  native memory.
-
-**Status:** Not started. Large effort; treat as a major release item. Start
-with phase 1 (local mode + Tauri shell) once the web app's current roadmap
-items settle.
-
-## Rendering pipeline in Rust (WASM for web, native for desktop) (proposed)
-
-**Goal:** Move the flood raster rendering (depth → colour, hazard bands, terrain
-shading, stream lines) out of JavaScript and into Rust, so the web app calls
-it through WebAssembly and the desktop app calls it natively. One source of
-truth for colours and depth bands; faster (Rust loops over ~445k cells beat
-JS); and the desktop build gets the same rendering for free.
-
-**What's already Rust:** the flood model itself (`flood-core`, `flood-wasm`).
-**What's still JS:** `composeWater()` (depth/hazard → RGBA), the terrain
-relief base, stream-channel tinting, the `floodPixels` count, and the
-canvas `putImageData` upload. That is the thing to move.
-
-**Shape of the work:**
-1. **Extract `composeWater` into `flood-wasm`.** A new export, e.g.
-   `compose_water(depth: &[f32], wet: &[u8], hazard: &[u8], base: &[u8],
-   terrain: &[u8], params) -> Vec<u8>` returning an RGBA buffer, with the
-   depth bands, hazard colours, stream threshold and relief alpha encoded as
-   parameters (or a small config struct). The JS side keeps only the
-   `putImageData` upload and the overlay positioning. Add a parity test:
-   the WASM output must byte-match the current JS output for a fixed grid.
-2. **Wire the web app to it.** Replace the `composeWater()` body with a call
-   into the WASM module; keep `cellLatLng`, `area.polygon` masking and the
-   `floodPixels` count in JS (or move the mask into WASM too). Measure the
-   speedup (target: under 16 ms for a 667x667 grid so it stays interactive
-   during timeline playback).
-3. **Desktop reuse.** The desktop build (ROADMAP "Desktop version") calls
-   the same Rust function natively — no WASM overhead, and it can render
-   directly to a texture/surface if a GPU path is added later.
-4. **(Optional) WebGL upload.** Once the RGBA buffer is produced in WASM,
-   upload it as a `WebGLTexture` instead of `putImageData` + PNG blob. This
-   is the bigger win for pan/zoom smoothness but is a separate change; the
-   canvas path stays as the fallback.
-
-**What it does not change:** the model (already Rust), the elevation fetch,
-the map (Leaflet), or the UI. Only the colour-mapping step moves.
-
-**Risks / things to watch:**
-- The colour tables (`DEPTH_STOPS`, `HAZARD_COLORS`, `DEPTH_ALPHA`) and the
-  relief/stream logic must be reproduced exactly; the parity test is the
-  guard. Any drift shows up as a visible colour change.
-- WASM ↔ JS data transfer for a 667x667x4 buffer (~1.8 MB) per render is
-  fine but must reuse a single buffer (no per-frame allocation) to avoid GC
-  pressure during timeline playback.
-- `area.polygon` masking (just shipped) must be applied either in WASM or
-  as a post-pass; doing it in WASM keeps one code path.
-
-**Status:** Not started. Medium effort (~1 week for step 1-2). Pairs
-naturally with the desktop version: do the WASM extraction first, then the
-desktop build consumes it natively.
-
-**Open questions:**
-- Should the colour tables live in `flood-core` (shared by pipeline and
-  browser) or in `flood-wasm` only? Putting them in `flood-core` lets the
-  pipeline render comparison images too.
-- WebGL upload (step 4) vs staying on canvas: canvas is simpler and already
-  works; WebGL is faster but adds a shader + texture lifecycle. Decide
-  after measuring step 2.
+- **Rust water composition:** `flood-core::render::compose_water` is exposed
+  through WASM and used by `composeWater()` with a JS fallback. Canvas upload
+  and frontend orchestration remain in JS; the desktop viewer uses this same
+  WASM path. A separate native texture renderer is still a proposal.
+- **Timeline frames:** the worker transfers quantised depth frames, compressing
+  them when supported; the viewer decompresses them before playback and
+  decodes each step with a computation fallback. Bounded-memory/lazy decoding
+  and profiling on large grids remain work, rather than implementing frames
+  from scratch. See the [original design](docs/precomputed-frames-design.md).
+- **Map render work:** legend/comparison writes have a change key. Layer-list
+  updates still run directly on map events, and the key includes the timeline
+  step. Profile before refining these guards or adopting a canvas mark renderer;
+  see the [design](docs/map-render-path-design.md).
+- **Further rendering:** measure allocation and WASM transfer costs before
+  buffer reuse or a WebGL upload path. Native desktop rendering and WebGL
+  require their own parity and lifecycle checks.
