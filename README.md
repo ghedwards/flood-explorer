@@ -115,6 +115,15 @@ Peaks at the Brisbane City gauge from the Bureau of Meteorology's [lower Brisban
 
 Sea-level rise options run from 0.3 m to 1.1 m, including Queensland's 0.8 m planning allowance to 2100. The "extra river peak" slider is a manual allowance for heavier rainfall; the model does not turn rainfall into river levels.
 
+## Replay recorded rainfall
+
+The experimental 2D controls can replay an hourly rainfall snapshot from a
+nearby station, with a selected start window and an explicit runoff percentage.
+Build snapshots with `flood storms config/events.json cache/rain-storms.json`.
+The pipeline publishes them when available; missing hours cannot be replayed.
+Live source verification is pending a Water Data Online backend outage. See
+[recorded-storm status and assumptions](docs/recorded-storm-design.md).
+
 ## Live forecasts from Google Flood Hub
 
 The site can show Google's [Flood Forecasting API](https://developers.google.com/flood-forecasting) data for South East Queensland: forecast flood severity at river gauges (with trend, forecast peak and warning thresholds), Google's forecast flood areas, and flash flood forecasts. The same forecasts appear on [Flood Hub](https://sites.research.google/floods/). The data is free and CC BY 4.0.

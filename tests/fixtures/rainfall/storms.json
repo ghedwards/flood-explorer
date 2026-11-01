@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "fetched": "2026-11-01T00:00:00Z",
+  "source": "Synthetic rainfall fixture for tests; not observations",
+  "events": [{
+    "id": "test-storm", "name": "Synthetic test storm",
+    "lat": -27.47, "lon": 153.02,
+    "start": "2022-02-23T14:00:00Z", "end": "2022-02-23T22:00:00Z",
+    "stations": [{
+      "id": "test-rain", "name": "Synthetic rain station", "lat": -27.47, "lon": 153.02,
+      "tsId": "synthetic", "tsName": "Test.HourlySum", "unit": "mm",
+      "intervalSeconds": 3600, "timestampConvention": "interval-end",
+      "rainMm": [10, 30, 0, null, 50, 10, 0, 0]
+    }]
+  }]
+}

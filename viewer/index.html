@@ -116,10 +116,21 @@
         <option value="inertial">Local-inertial 2D (experimental)</option>
       </select>
       <div id="inertialControls" hidden>
-        <p class="hint">Simulates water moving over terrain. Constant inputs for this run; no automatic conversion from gauge height to flow. Switch back to the fast model to use gauge-level, storm and defence controls.</p>
+        <p class="hint">Simulates water moving over terrain. Manual or recorded rainfall for this run; no automatic conversion from gauge height to flow. Switch back to the fast model to use gauge-level, storm and defence controls.</p>
         <label>Duration (minutes) <input id="inertialMinutes" type="number" min="1" max="1440" value="30" step="1"></label>
         <label>Effective rainfall (mm/hour) <input id="inertialRain" type="number" min="0" max="1000" value="20" step="1"></label>
         <label>Or rain per hour, comma-separated (mm) <input id="inertialRainSeries" type="text" placeholder="e.g. 5,12,30,25,10" style="width:180px" aria-label="Hourly rainfall series in mm per hour"></label>
+        <p class="hint" id="recordedRainUnavailable" hidden></p>
+        <fieldset id="recordedRainControls" hidden>
+          <legend class="label">Replay a recorded storm</legend>
+          <label>Storm <select id="recordedRainEvent" aria-label="Recorded storm"><option value="">Manual rainfall</option></select></label>
+          <label>Rain station <select id="recordedRainStation" aria-label="Recorded rain station" disabled></select></label>
+          <label>Window starts <select id="recordedRainStart" aria-label="Recorded rain start time" disabled></select></label>
+          <label>Rain becoming runoff (%) <input id="recordedRainRunoff" type="number" min="0" max="100" step="1" placeholder="Choose 0–100" disabled></label>
+          <div id="recordedRainPreview" class="recorded-rain-preview"></div>
+          <p class="hint" id="recordedRainNote" role="status"></p>
+          <p class="hint">Replays one nearby station uniformly across the model, for the duration above (up to 24 hours). Choose rainfall losses; no calibration is supplied. This is an experimental local runoff scenario, not a reconstruction of the river flood. Times are AEST. Source: Bureau Water Data Online and station custodians.</p>
+        </fieldset>
         <label>Inflow at selected gauge (m³/s) <input id="inertialInflow" type="number" min="0" max="100000" value="0" step="1"></label>
         <label>Initial land depth (m) <input id="inertialInitial" type="number" min="0" max="100" value="0" step="0.01"></label>
         <label>Roughness (Manning n) <input id="inertialRoughness" type="number" min="0.01" max="1" value="0.04" step="0.01"></label>

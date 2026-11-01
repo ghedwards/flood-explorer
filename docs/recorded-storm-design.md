@@ -1,75 +1,95 @@
-# Storms replayed from recorded rainfall
+# Recorded-storm replay
 
-## Problem
+Implemented pipeline and viewer support on 1 November 2026. Successful live
+rainfall retrieval still needs verification: the public Water Data Online
+parameter query returned `DatasourceError: Error connecting to WDP` during
+implementation. No synthetic rainfall is published as observations.
 
-The timeline and the 2D solver are driven by constant, user-set inputs
-(a gauge level, a constant mm/h rain). Real floods come from real
-storms. IFD *design* rainfall is blocked to automation, but **recorded**
-rain from actual events is open data on the same Water Data Online (WDO)
-service the app already uses for river and tide readings.
+## Data pipeline
 
-## Research
+```sh
+flood storms config/events.json cache/rain-storms.json
+```
 
-- The page has **no live WDO client**: all BoM data is fetched at build
-  time by the pipeline binary and shipped as static JSON —
-  `flood national` writes `site/data/national/{gauges-*, storages.geojson,
-  readings.json}` and `flood events` writes hour-by-hour recorded
-  flood/sea readings (`.github/workflows/build.yml` ~115–150). Rainfall
-  should ride the same path.
-- WDO publishes **pluviograph (recording rain gauge) data**: the
-  "Rainfall" sensor as hourly period sums for thousands of stations,
-  via the same station/telemetry JSON endpoints the pipeline already
-  uses for levels (same organisation/datasource structure). *Verify the
-  exact sensor/duration codes against a live WDO query as the first
-  implementation step.*
-- Consumers of rain today:
-  - the **2D solver** takes scalar `rain_mm_h` for the whole run
-    (`rust/flood-core/src/inertial.rs` `opts.rain_mm_h`, validated
-    0..=1000);
-  - the **fast model** has flash/storm machinery (`stormUplift`,
-    flash flooding) driven by constant rain + duration;
-  - climate warming scaling exists (`stormUplift`, AR&R draft rates).
+For each configured event, the command searches stations within 50 km (optional
+per-event `rainRadiusKm`, capped at 100 km), examines up to 12 nearby candidates
+and retains up to three usable stations. It accepts rainfall series explicitly
+labelled `HourlySum`, with units `mm`, preferring merged series. Raw/cumulative,
+daily and unknown-unit series are rejected; they cannot safely be treated as
+hourly rainfall. The successful provider response shape and actual availability
+of qualifying series remain to be checked once the provider recovers.
 
-## Design
+Hourly sums are interpreted as intervals ending at their timestamps: a value at
+01:00 applies to 00:00–01:00. Existing event date windows use fixed AEST, matching
+`flood events`; explicit offsets are honoured and published times are UTC.
+Off-hour timestamps, negative/missing values and conflicting duplicates do not
+produce usable bins. Missing hours remain JSON `null`; they are never zero-filled
+or replaced with daily means. Provider quality flags are not independently
+interpreted, so observations may be provisional.
 
-1. **Solver: rain time series.** Extend the 2D options with an optional
-   per-hour rain series (`rain_mm_h: Vec<f64>` or keep scalar + add
-   `rain_series: Option<Vec<f64>>`); the loop indexes
-   `series[elapsed_hours.min(len-1)]`. Validation: each entry 0..=1000,
-   length ≥ 1. Rust reference + wasm bridge + parity battery updated.
-2. **Build-time storm snapshot.** Extend the pipeline (`flood storms`,
-   sibling of `flood events`): for each configured storm event, download
-   the hourly series of the pluviographs inside/near the catchment and
-   ship `site/data/national/rain-storms.json` (event → station →
-   mm/h). Static, cacheable, offline-friendly — consistent with how
-   every other BoM input reaches the page. Storms to configure: the
-   events already listed in `config/events.json` (2022 Feb, 2011 Jan…).
-3. **Storm picker.** In the 2D controls: "Use a recorded storm" — list
-   the snapshot's storms and their stations near the model area,
-   preview the hyetograph (tiny inline bar chart), then run.
-4. **Event alignment.** The timeline's `t0/step` convention already
-   anchors hours to a recorded gauge peak; rain-driven runs anchor
-   hours to the storm window start so timeline labels read naturally.
-5. **Fast model** stays gauge-driven (it has no rain hydrology); the
-   recorded-storm path is 2D-only. Flash scenarios keep their existing
-   constant-rain entry point.
+Output schema:
 
-## Failure behaviour
+- `schemaVersion: 1`, `fetched`, `source`, `errors` and `events`.
+- Events carry ID/name, location, UTC `start`/`end` and `stations`.
+- Stations carry ID/name/location, `tsId`, `tsName`, `unit: "mm"`,
+  `intervalSeconds: 3600`, `timestampConvention: "interval-end"` and `rainMm`.
+- `rainMm[0]` is the hour beginning at the event's `start`. `0` is an actual
+  dry observation; `null` means unavailable.
 
-- Station without rainfall data: filtered out at pipeline fetch time
-  (logged in the build step like `flood national`'s warnings); the page
-  only ever sees a clean snapshot.
-- Snapshot missing/stale: the picker hides and the controls keep the
-  constant-rain path — a data outage never blocks manual use.
+An all-failed/unsupported fetch exits unsuccessfully without replacing the last
+good snapshot. The build restores a cached snapshot, tries again on a monthly
+cache miss and publishes `data/national/rain-storms.json` when available. Source
+failures do not block the site build or manual rainfall. Historical snapshots
+remain useful when older; acquisition time is not an observation time.
 
-## Test plan
+## Viewer behaviour
 
-- Rust: unit test the series indexing (short series clamps, zero pad);
-  parity: a rain-series case in the checksum battery (wasm vs Rust).
-- Node: picker list filtering; hyetograph preview math.
+Choose **Local-inertial 2D → Replay a recorded storm**. The picker loads lazily,
+filters stations to within 50 km of the current model and offers:
 
-## Effort
+1. Event and rain station.
+2. An hourly start time within that event.
+3. An explicit percentage of measured rain becoming runoff (0–100%). No loss
+   calibration is supplied and no percentage is silently selected.
+4. The existing run duration, limited to 24 hours by the solver.
 
-L — spans Rust, wasm bridge, a picker UI and a data fetch; the payoff
-is replaying actual events (2022 February, 2011 January) on the 2D
-solver end-to-end.
+The chart shows measured rainfall, selected hours in blue and missing hours in
+red. The summary keeps observed rain and effective runoff separate. Missing-hour
+windows and runs extending beyond the record fail before a worker starts.
+Partial final hours use the corresponding hourly rate for the elapsed fraction.
+The series has a zero tail so no final observed rate can extend indefinitely.
+
+Effective rainfall is applied uniformly over the local model. This replays one
+station's observations under user-selected losses; it does not reconstruct the
+catchment's river flood, spatial rainfall, drainage or antecedent conditions.
+Gauge inflow/initial water/roughness/boundary choices remain explicit controls.
+
+Results show the selected event, station, runoff assumption and absolute start
+and finish in AEST, alongside source volume and water balance. The current 2D
+viewer shows final depth; this change does not add time-scrubbed 2D playback or
+persist dynamic runs in share links. The fast-model recorded-gauge timeline is
+unchanged. Missing/malformed snapshots or absent nearby stations leave manual
+rainfall usable. Existing desktop packages do not yet bundle historical rainfall
+unless the snapshot is included in their data build.
+
+## Verification
+
+- Rust tests cover end-of-interval alignment, time zones, dry vs missing hours,
+  conflicting duplicates, series selection and last-good preservation on outage.
+- JavaScript tests cover distance/units/schema filtering, window bounds,
+  observed/effective totals, partial hours and missing-hour rejection.
+- `npm run test:storms` exercises the built viewer and actual 2D worker with an
+  explicitly synthetic fixture: selected rainfall, runoff volume and time labels,
+  gap rejection, clearing back to manual, and absent-snapshot fallback.
+- Browser checks run this regression after building the viewer. The fixture is
+  only under `tests/fixtures/rainfall/`, not bundled as historical observations.
+
+## Follow-up after the provider recovers
+
+Query the [Water Data Online API](https://www.bom.gov.au/waterdata/services?request=getrequestinfo&service=kisters&type=queryServices)
+with a normal identified client. Save a successful station/series/value fixture,
+verify units, interval definition and timestamp convention against provider
+metadata, and check which configured events have complete useful windows. If
+hourly sums are not available, add a separately validated conversion for the
+actual rainfall series rather than relabelling raw readings. See the Bureau's
+[coverage, provisional-data and service-limit guidance](https://www.bom.gov.au/waterdata/wiski-web-public/faq.htm).

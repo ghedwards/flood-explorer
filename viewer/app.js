@@ -1,3 +1,4 @@
+import { createRecordedStormPicker, stormTime } from './recorded-storms.js';
 import { PRESETS, presetGauge } from './presets.js';
 import { guardRasterLayer } from './safe-raster.js';
 import { desktopUpdates } from './desktop-updates.js';
@@ -762,11 +763,13 @@ import { initTsunamiPanel } from './tsunami-panel.js';
 
   // Each 2D run owns its worker/WASM memory. Termination also cancels startup.
   let inertialWorker = null, inertialSequence = 0;
+  let recordedRain = null;
   let damWorker = null;   // the dam-failure worker (below), declared here so solverControls can look at it
   const fastSets = ['floodTypeSet', 'riverSet', 'stormSet', 'eventsSet', 'defenceSet', 'timeSet', 'levelPointsSet'];
   function solverControls() {
     const selected = $('solver').value === 'inertial';
     $('inertialControls').hidden = !selected;
+    if (selected && recordedRain) recordedRain.refresh();
     for (const id of fastSets) $(id).disabled = selected;
     $('colorMode').querySelector('option[value="hazard"]').disabled = false;
     $('dlReport').disabled = !!state.inertial;
@@ -913,16 +916,21 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   $('damCancel').addEventListener('click', () => { stopDam(); status.dam = { cancelled: true }; damStatus('Cancelled.'); });
   window.__floodDamBreak = (options) => { if (options && options.mode) $('damMode').value = options.mode; if (options && options.speed) $('damSpeed').value = String(options.speed); if (options && options.volumeMl) { $('damVolume').value = String(options.volumeMl / 1000); $('damVolume').dataset.edited = '1'; } startDamBreak(); };
 
+  recordedRain = createRecordedStormPicker({ document,
+    getLocation: () => state.a && state.geo ? { lat: (state.geo.north + state.geo.south) / 2, lon: (state.geo.west + state.geo.east) / 2 } : null,
+    onChange: () => $('inertialControls').dispatchEvent(new Event('input', { bubbles: true })),
+  });
   function startInertial() {
     if (!state.a) { $('inertialStatus').textContent = 'Load a terrain model first.'; return; }
     if (!F.inertialStart) { $('inertialStatus').textContent = 'The 2D model needs WebAssembly. It is unavailable in JavaScript-only mode.'; return; }
-    const inputs = [...$('inertialControls').querySelectorAll('input')];
+    const inputs = [...$('inertialControls').querySelectorAll('input')].filter(input => !input.disabled);
     if (inputs.some((input) => !input.reportValidity() || (input.type === 'number' && input.value.trim() === ''))) return;
     runScenario(); // discard a previous dynamic result and restore the fast preview
     $('solver').value = 'inertial'; solverControls();
     const seq = inertialSequence, a = state.a, key = state.areaKey;
     const number = (id) => Number($(id).value);
     try {
+      const recorded = recordedRain.getRun(number('inertialMinutes') * 60);
       const g = F.inertialPrepare(a, number('inertialResolution'));
       const stages = new Float64Array(g.W * g.H).fill(NaN);
       if ($('inertialBoundary').value === 'sea') {
@@ -933,7 +941,9 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         inflow: number('inertialInflow'), inflowCell: F.inertialCell(g, a, state.gauge),
         initialDepth: number('inertialInitial'), roughness: number('inertialRoughness'), stages,
         inflowSeries: buildInflowSeries(number('inertialMinutes') * 60),
-        rainSeries: buildRainSeries(number('inertialMinutes') * 60) };
+        rainSeries: recorded ? recorded.series : buildRainSeries(number('inertialMinutes') * 60),
+        seriesStepS: recorded ? recorded.stepSeconds : undefined };
+      if (recorded) opts.rainMmH = 0;
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
       $('inertialRun').disabled = true; $('inertialCancel').disabled = false;
@@ -955,17 +965,18 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         stopInertial();
         const { depth: _depth, ...metrics } = r;
         const { stages: _stages, ...settings } = opts;
-        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings, boundary: $('inertialBoundary').value };
+        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings, boundary: $('inertialBoundary').value, recordedStorm: recorded ? { ...recorded, series: undefined } : null };
         status.inertial = { ...state.inertial, running: false };
         state.run = F.inertialExpand(a, g, r);
         state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('inertialProgress').value = 1;
-        const rainOnly = !settings.inflow && !settings.inflowSeries && settings.rainMmH > 0 && $('inertialBoundary').value !== 'sea';
+        const rainOnly = !settings.inflow && !settings.inflowSeries && (settings.rainMmH > 0 || settings.rainSeries?.some(value => value > 0)) && $('inertialBoundary').value !== 'sea';
         $('inertialStatus').textContent = `Local-inertial 2D: final depth at ${fmt(r.time / 60, 1)} min, ${Math.round(g.cell)} m cells. Stored ${fmt(r.volume, 1)} m³; added ${fmt(r.sourceVolume, 1)} m³; boundary exchange ${fmt(r.boundaryVolume, 1)} m³; balance error ${r.balanceError.toExponential(2)} m³. Partial edge blocks and blocks with missing terrain are excluded.` + (rainOnly
           ? ' Rain-only run with sealed edges: the rain (a few mm to cm) stays on every cell, so most of the map shows as under 0.5 m — set a gauge inflow or open the sea boundary for channel flooding.'
           : '');
+        if (recorded) $('inertialStatus').textContent += ` Recorded storm: ${recorded.eventName}, ${recorded.stationName}; ${stormTime(recorded.start)} to ${stormTime(recorded.end)}. Observed ${fmt(recorded.rainfallMm, 1)} mm; ${recorded.runoffPercent}% runoff (${fmt(recorded.effectiveMm, 1)} mm).`;
         showInertialRun(a);
       };
       w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });

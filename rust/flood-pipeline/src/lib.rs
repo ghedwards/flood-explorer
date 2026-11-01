@@ -5,6 +5,7 @@ pub mod council;
 pub mod dea;
 pub mod dem;
 pub mod events;
+pub mod storms;
 pub mod export;
 pub mod floodhub;
 pub mod floodinfo;

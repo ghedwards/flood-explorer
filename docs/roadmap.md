@@ -8,11 +8,17 @@ design and handoff notes can contain superseded status statements.
 
 ## Outstanding work
 
-- [ ] **Recorded-storm replay:** fetch historical station rainfall, package event
-  snapshots, add a station/storm picker and align runs to event time. Manual
-  hourly rainfall entry and solver time-series support already exist
-  (`buildRainSeries`, WASM `rainSeries`, Rust `rain_series`).
-  [Design](recorded-storm-design.md). Effort: L for the remaining integration.
+- [ ] **JavaScript dependency audit:** CI reports
+  [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)
+  in ESLint's transitive `minimatch` 10.2.6; the advisory identifies 11.0.1 as
+  patched. Evaluate a compatible lint-toolchain update rather than forcing an
+  unreviewed major transitive override. Lint/unit checks themselves pass.
+
+- [ ] **Recorded rainfall live verification:** downloader, station/window picker,
+  runoff assumptions and 2D event-time labels are implemented and fixture-tested.
+  Verify successful provider metadata/data and event coverage after Water Data
+  Online's `DatasourceError` recovers; no observed snapshot was generated here.
+  [Status and verification steps](recorded-storm-design.md).
 - [ ] **Offline preparation:** add an explicit area prefetch flow, cache/storage
   feedback and offline recovery checks. Overpass response caching is already
   implemented; this is the remaining field-mode UI and verification work.
@@ -89,6 +95,7 @@ longer a pending task. Historical archive access remains a separate concern.
 | Dry routes to mapped evacuation centres | `routeOut`, `drawRoute`, report and snapshot persistence; centre coverage still needs work | [Design](evacuation-route-design.md) |
 | Basemap failure prompt | `viewer/app.js`: tile error tracking and `basemapNotice` | [Design](basemap-failover-design.md) |
 | Dam release input, including 2D hourly inflow | `buildInflowSeries` and solver wiring; automatic schedules remain open | [Design](dam-release-design.md) |
+| Recorded-storm replay plumbing | `flood storms`, station/window picker, explicit losses and real-worker browser coverage; live source verification remains open | [Status](recorded-storm-design.md) |
 | Manual hourly rain in 2D | `buildRainSeries`, `inertialRainSeries` input and Rust `rain_series` | [Design](recorded-storm-design.md) |
 | Overpass offline response caching | `viewer/sw.js`: Overpass hosts routed to the API cache | [Design](offline-field-design.md) |
 | Keyboard/accessibility foundations | Map keyboard actions, status live regions, panel Escape and timeline Space | [Design](keyboard-a11y-design.md) |

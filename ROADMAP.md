@@ -99,10 +99,12 @@ The [original progress note](docs/client-glo30-progress.md) and
   Some recent Maritime Safety Queensland yearly files (Cairns 2023,
   Mooloolaba 2022) download empty from the state portal; Cairns 2023 gets
   its sea level once they are fixed.
-- **Recorded storms.** Manual hourly rainfall is wired into the 2D solver.
-  Downloading historical station rainfall, a recorded-storm picker and
-  event-time alignment remain outstanding; see the
-  [design](docs/recorded-storm-design.md).
+- **Recorded storms (implemented; live verification pending).** The pipeline
+  can produce hourly rainfall snapshots; the 2D viewer selects nearby stations,
+  complete windows and explicit runoff percentages, with event-time labels.
+  Fixture/browser checks pass. Water Data Online returned `DatasourceError`
+  during implementation, so successful metadata retrieval and real event coverage
+  remain to be verified. See the [status](docs/recorded-storm-design.md).
 - **Design rainfall from the Bureau.** Storm mode currently offers example
   storms and links to the Bureau's design rainfall (IFD) tool. Fetching the
   IFD table for the model's location would give real "1% annual chance"

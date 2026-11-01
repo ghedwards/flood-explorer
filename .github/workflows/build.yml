@@ -168,6 +168,22 @@ jobs:
           mkdir -p cache
           flood events config/events.json site/data/national/gauges.geojson cache/events.json | tee events.log
 
+      - name: Restore recorded rainfall snapshots
+        id: rainstorms
+        uses: actions/cache@v6
+        with:
+          path: cache/rain-storms.json
+          key: rain-storms-${{ steps.month.outputs.month }}-${{ hashFiles('config/events.json', 'rust/flood-pipeline/src/storms.rs') }}
+          restore-keys: rain-storms-
+
+      - name: Fetch recorded hourly rainfall (Water Data Online)
+        if: steps.rainstorms.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          mkdir -p cache
+          flood storms config/events.json cache/rain-storms.json | tee rain-storms.log
+
       # Recorded sea levels for those floods (tide gauges): slow downloads,
       # so their own step, cache and time limit
       - name: Restore recorded sea levels
@@ -266,9 +282,10 @@ jobs:
         run: |
           flood osm viewer/app.js cache/osm --max 12 --days 30 | tee osm.log
 
-      - name: Publish recorded floods and levees
+      - name: Publish recorded floods, rainfall and levees
         run: |
           [ -f cache/events.json ] && flood sealevels merge cache/events.json cache/sea.json site/data/events.json || true
+          [ -f cache/rain-storms.json ] && cp cache/rain-storms.json site/data/national/rain-storms.json || true
           [ -f cache/levees.geojson ] && cp cache/levees.geojson site/data/levees.geojson || true
           [ -f cache/tides.json ] && cp cache/tides.json site/data/tides.json || true
           [ -f cache/ratings.json ] && cp cache/ratings.json site/data/ratings.json || true

@@ -45,6 +45,9 @@ jobs:
       - name: Build the viewer for deterministic visual checks
         timeout-minutes: 15
         run: npm run build
+      - name: Check recorded-storm replay and missing-data fallback
+        timeout-minutes: 5
+        run: node tests/recorded-storm-browser.js
       - name: Compare fixed visual scenes with reviewed baselines
         timeout-minutes: 5
         run: npm run test:visual

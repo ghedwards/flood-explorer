@@ -6,6 +6,7 @@
 //!   flood national <out_dir>
 //!   flood floodinfo <out_dir>
 //!   flood events <config/events.json> <gauges.geojson> <out.json>
+//!   flood storms <config/events.json> <out.json>
 //!   flood sealevels <events.json> <sea.json>
 //!   flood sealevels merge <events.json> <sea.json> <out.json>
 //!   flood ratings <viewer/app.js> <gauges.geojson> <out.json> [--km 12] [--max 250]
@@ -46,6 +47,7 @@ fn run(args: &[String]) -> R<String> {
     match args.first().map(|s| s.as_str()) {
         Some("national") => national::run(a(1)?, &national::http_json),
         Some("floodinfo") => floodinfo::run(a(1)?, Some(&flood_feeds::flood_warnings), Some(&flood_feeds::flood_classes)),
+        Some("storms") => flood_pipeline::storms::run(a(1)?, a(2)?, &national::kiwis),
         Some("events") => events::run(a(1)?, a(2)?, a(3)?, &national::kiwis),
         Some("sealevels") if args.get(1).map(|s| s.as_str()) == Some("merge") => sealevels::merge(a(2)?, a(3)?, a(4)?),
         Some("sealevels") => sealevels::run(a(1)?, a(2)?),

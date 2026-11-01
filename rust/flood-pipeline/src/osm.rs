@@ -39,10 +39,18 @@ pub struct Preset {
     pub lon: f64,
 }
 
-/// The presets listed in the app.
+/// The presets listed inline or imported by the app. Also accepts presets.js.
 pub fn presets(app_js: &str) -> R<Vec<Preset>> {
-    let src = std::fs::read_to_string(app_js).map_err(|e| format!("{}: {}", app_js, e))?;
-    let i = src.find("const PRESETS = [").ok_or("no PRESETS in the app")?;
+    let mut src = std::fs::read_to_string(app_js).map_err(|e| format!("{}: {}", app_js, e))?;
+    if !src.contains("const PRESETS = [") {
+        // Read the local module instead of evaluating JavaScript. Keep the CLI's
+        // existing app.js argument working for ratings and OSM snapshots.
+        let import = Regex::new(r#"(?m)^import\s*\{[^}]*\bPRESETS\b[^}]*\}\s*from\s*['"](\./[^'"]+)['"]"#).unwrap();
+        let module = import.captures(&src).ok_or("no PRESETS definition or local import in the app")?;
+        let module_path = Path::new(app_js).parent().unwrap_or(Path::new(".")).join(&module[1]);
+        src = std::fs::read_to_string(&module_path).map_err(|e| format!("{}: {}", module_path.display(), e))?;
+    }
+    let i = src.find("const PRESETS = [").ok_or("no PRESETS in the module")?;
     let block = &src[i..];
     let block = &block[..block.find("];").ok_or("PRESETS not closed")?];
     let pat = Regex::new(r"(?s)id: '([^']+)'.*?lat: (-?[\d.]+), lon: (-?[\d.]+)").unwrap();
