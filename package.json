@@ -34,7 +34,7 @@
     "esri-leaflet": "3.0.19",
     "geotiff": "3.0.5",
     "leaflet": "1.9.4",
-    "three": "0.186.1"
+    "three": "0.187.0"
   },
   "engines": {
     "node": ">=22.13.0"
