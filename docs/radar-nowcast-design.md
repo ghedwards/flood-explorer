@@ -359,6 +359,15 @@ gaps rather than coping with them; one motion vector for the whole area; the
 forecast stops at its horizon (dry after, as stated); a 60 km margin of a 1 km
 radar is about 50,000 cells per frame to match.
 
+## Validation harness status (8 November 2026)
+
+`flood nowcast-skill <radar_dir>` (`rust/flood-pipeline/src/nowcast_skill.rs`, scoring in
+`flood_core::nowcast::score`) scores the forecast against persistence on an archive in the broker's
+folder format, per lead: RMSE, skill, bias and threshold CSI, with skipped origins counted. Tested on
+synthetic archives (a translating storm scores high, a storm that jumps around claims no skill, gaps
+and dry origins are counted, time gaps split runs). **No real archive has been scored.** See
+[validation/nowcast-skill.md](validation/nowcast-skill.md).
+
 ## Risks and open questions
 
 - **Licence and access** to Bureau radar, or the cost and terms of a commercial

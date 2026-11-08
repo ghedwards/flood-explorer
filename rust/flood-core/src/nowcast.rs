@@ -160,6 +160,106 @@ pub fn scaled(frames: &[Vec<f32>], factor: f64) -> Result<Vec<Vec<f32>>, String>
     Ok(frames.iter().map(|f| f.iter().map(|v| if v.is_nan() { f32::NAN } else { (*v as f64 * factor).min(crate::flash::MAX_RATE) as f32 }).collect()).collect())
 }
 
+/// How the forecast at one lead compares with simply keeping the latest frame ("persistence").
+#[derive(Clone, Debug)]
+pub struct LeadSkill {
+    pub lead_s: f64,
+    /// Origins that contributed.
+    pub cases: usize,
+    /// Root-mean-square error (mm/h) over the cells where the forecast is known, pooled over all origins.
+    pub rmse_nowcast: f64,
+    pub rmse_persistence: f64,
+    /// `1 - rmse_nowcast / rmse_persistence`: above 0 beats persistence, 1 is perfect, NaN if persistence is perfect.
+    pub skill: f64,
+    /// Forecast rain over observed rain (1 = unbiased), pooled; NaN if none was observed.
+    pub bias_ratio: f64,
+    pub thresholds: Vec<ThresholdSkill>,
+}
+
+/// Yes/no skill for "rain at least this heavy", pooled over cells and origins.
+#[derive(Clone, Debug)]
+pub struct ThresholdSkill {
+    pub mm_h: f32,
+    /// Critical success index (hits / (hits + misses + false alarms)): 1 is perfect, NaN if nothing was observed or forecast.
+    pub csi_nowcast: f64,
+    pub csi_persistence: f64,
+    /// Probability of detection and false-alarm ratio for the nowcast.
+    pub pod: f64,
+    pub far: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SkillReport {
+    pub step_s: f64,
+    pub origins_used: usize,
+    /// Origins skipped because the latest frame or the one after had too little rain to match or score.
+    pub origins_dry: usize,
+    /// Origins skipped because a frame they needed had a missing or negative cell.
+    pub origins_gappy: usize,
+    /// Share of the origins used whose motion could be estimated.
+    pub motion_reliable_share: f64,
+    pub leads: Vec<LeadSkill>,
+}
+
+#[derive(Default, Clone)]
+struct Tally { se_now: f64, se_per: f64, n: f64, sum_fc: f64, sum_obs: f64, cases: usize, hits: Vec<[f64; 6]> }
+
+/// Score the forecast against persistence on archived frames.
+///
+/// `runs` are stretches of consecutive frames at spacing `step_s`, oldest first (split an archive wherever
+/// frames are missing). At each origin the forecast uses the `history` frames up to it and is carried to
+/// leads of 1 to `max_lead` steps (instants, not step middles), then compared with the frame that really
+/// came at that lead. Persistence is the origin frame itself. An origin is skipped if its frames have a
+/// missing cell or if neither the origin nor the frame it is scored against has enough rain; origins
+/// where the forecast has unknown cells are scored on the known cells only.
+pub fn score(runs: &[&[Vec<f32>]], grid: &RadarGrid, step_s: f64, history: usize, max_lead: usize, thresholds: &[f32], max_speed_m_s: f64) -> Result<SkillReport, String> {
+    if history < 2 { return Err("scoring needs at least two history frames".into()); }
+    if max_lead == 0 || max_lead > 36 { return Err("leads go from 1 to 36 steps".into()); }
+    if thresholds.iter().any(|t| !t.is_finite() || *t <= 0.0) { return Err("thresholds must be positive".into()); }
+    if !(step_s.is_finite() && step_s > 0.0) { return Err("frame spacing must be positive".into()); }
+    let mut tallies: Vec<Tally> = (0..max_lead).map(|_| Tally { hits: vec![[0.0; 6]; thresholds.len()], ..Tally::default() }).collect();
+    let (mut used, mut dry, mut gappy, mut reliable) = (0usize, 0usize, 0usize, 0usize);
+    let good = |f: &Vec<f32>| f.len() == grid.w * grid.h && f.iter().all(|v| v.is_finite() && *v >= 0.0);
+    let rainy = |f: &Vec<f32>| f.iter().filter(|v| **v >= RAIN_MM_H).count() >= MIN_RAINY_CELLS;
+    for run in runs {
+        for o in (history - 1)..run.len() {
+            let window = &run[o + 1 - history..=(o + max_lead).min(run.len() - 1)];
+            if window.iter().any(|f| !good(f)) { gappy += 1; continue; }
+            if o + 1 >= run.len() { continue; }   // no future frame to score against
+            let hist = &run[o + 1 - history..=o];
+            if !rainy(&run[o]) { dry += 1; continue; }
+            let motion = estimate_motion(hist, grid, step_s, max_speed_m_s)?;
+            used += 1; if motion.reliable { reliable += 1; }
+            for j in 1..=max_lead.min(run.len() - 1 - o) {
+                let truth = &run[o + j];
+                let fc = advect(&run[o], grid, &motion, j as f64 * step_s)?;
+                let t = &mut tallies[j - 1];
+                t.cases += 1;
+                for (i, f) in fc.iter().enumerate() {
+                    if !f.is_finite() { continue; }
+                    let (tv, pv) = (truth[i], run[o][i]);
+                    t.se_now += ((*f - tv) as f64).powi(2); t.se_per += ((pv - tv) as f64).powi(2); t.n += 1.0;
+                    t.sum_fc += *f as f64; t.sum_obs += tv as f64;
+                    for (k, th) in thresholds.iter().enumerate() {
+                        let (obs, now, per) = (tv >= *th, *f >= *th, pv >= *th);
+                        let h = &mut t.hits[k];
+                        if obs && now { h[0] += 1.0 } else if obs { h[1] += 1.0 } else if now { h[2] += 1.0 }
+                        if obs && per { h[3] += 1.0 } else if obs { h[4] += 1.0 } else if per { h[5] += 1.0 }
+                    }
+                }
+            }
+        }
+    }
+    let ratio = |a: f64, b: f64| if b > 0.0 { a / b } else { f64::NAN };
+    let leads = tallies.iter().enumerate().filter(|(_, t)| t.cases > 0).map(|(j, t)| {
+        let (rn, rp) = ((t.se_now / t.n).sqrt(), (t.se_per / t.n).sqrt());
+        LeadSkill { lead_s: (j + 1) as f64 * step_s, cases: t.cases, rmse_nowcast: rn, rmse_persistence: rp, skill: if rp > 0.0 { 1.0 - rn / rp } else { f64::NAN }, bias_ratio: ratio(t.sum_fc, t.sum_obs),
+            thresholds: thresholds.iter().zip(&t.hits).map(|(th, h)| ThresholdSkill { mm_h: *th, csi_nowcast: ratio(h[0], h[0] + h[1] + h[2]), csi_persistence: ratio(h[3], h[3] + h[4] + h[5]),
+                pod: ratio(h[0], h[0] + h[1]), far: ratio(h[2], h[0] + h[2]) }).collect() }
+    }).collect();
+    Ok(SkillReport { step_s, origins_used: used, origins_dry: dry, origins_gappy: gappy, motion_reliable_share: if used > 0 { reliable as f64 / used as f64 } else { f64::NAN }, leads })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +357,49 @@ mod tests {
         assert!(scaled(&plain.frames, -1.0).is_err());
         let nan = vec![vec![f32::NAN, 1.0]];
         assert!(scaled(&nan, 2.0).unwrap()[0][0].is_nan());
+    }
+
+    #[test]
+    fn scoring_shows_skill_on_a_translating_storm_and_none_on_a_storm_that_changes_shape() {
+        let g = grid();
+        // a long steady storm: the forecast should beat persistence at every lead
+        let frames = moving(14, 6.0, 30.0, 1.5, 0.0);
+        let r = score(&[&frames], &g, 600.0, 4, 4, &[1.0, 10.0], 30.0).unwrap();
+        assert!(r.origins_used >= 5 && r.motion_reliable_share > 0.99 && r.origins_gappy == 0);
+        assert_eq!(r.leads.len(), 4);
+        for l in &r.leads {
+            assert!(l.skill > 0.7, "lead {}: skill {} (nowcast {} vs persistence {})", l.lead_s, l.skill, l.rmse_nowcast, l.rmse_persistence);
+            assert!((l.bias_ratio - 1.0).abs() < 0.15, "bias {}", l.bias_ratio);
+            let t = &l.thresholds[1];
+            assert!(t.csi_nowcast > t.csi_persistence, "CSI at 10 mm/h: {} vs {}", t.csi_nowcast, t.csi_persistence);
+            assert!(t.pod > 0.7 && t.far < 0.3, "pod {} far {}", t.pod, t.far);
+        }
+        // a storm whose rain keeps jumping somewhere new cannot be forecast: the forecast is not better than persistence
+        let jumpy: Vec<Vec<f32>> = (0..14).map(|k| storm(10.0 + ((k * 23) % 44) as f64, 12.0 + ((k * 37) % 40) as f64)).collect();
+        let j = score(&[&jumpy], &g, 600.0, 3, 3, &[10.0], 30.0).unwrap();
+        assert!(j.leads.iter().all(|l| !(l.skill > 0.2)), "no skill claimed on rain that jumps: {:?}", j.leads.iter().map(|l| l.skill).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn scoring_counts_what_it_skips_and_pools_runs() {
+        let g = grid();
+        let good = moving(8, 8.0, 30.0, 1.5, 0.0);
+        let mut gappy = good.clone(); gappy[4][100] = f32::NAN;
+        let a = score(&[&good], &g, 600.0, 3, 2, &[1.0], 30.0).unwrap();
+        let b = score(&[&gappy], &g, 600.0, 3, 2, &[1.0], 30.0).unwrap();
+        assert!(b.origins_gappy > 0 && b.origins_used < a.origins_used, "{} vs {}", b.origins_used, a.origins_used);
+        let dry = vec![vec![0.0f32; N * N]; 8];
+        let d = score(&[&dry], &g, 600.0, 3, 2, &[1.0], 30.0).unwrap();
+        assert_eq!(d.origins_used, 0); assert!(d.origins_dry > 0 && d.leads.is_empty() && d.motion_reliable_share.is_nan());
+        // two runs pool: more cases than one
+        let two = score(&[&good, &good], &g, 600.0, 3, 2, &[1.0], 30.0).unwrap();
+        assert_eq!(two.origins_used, 2 * a.origins_used);
+        assert!((two.leads[0].rmse_nowcast - a.leads[0].rmse_nowcast).abs() < 1e-9, "the same case twice scores the same");
+        // refusals
+        assert!(score(&[&good], &g, 600.0, 1, 2, &[1.0], 30.0).is_err());
+        assert!(score(&[&good], &g, 600.0, 3, 0, &[1.0], 30.0).is_err());
+        assert!(score(&[&good], &g, 600.0, 3, 2, &[-1.0], 30.0).is_err());
+        assert!(score(&[&good], &g, 0.0, 3, 2, &[1.0], 30.0).is_err());
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod hydrology;
 pub mod compare;
 pub mod levees;
 pub mod national;
+pub mod nowcast_skill;
 pub mod net;
 pub mod osm;
 pub mod ratings;
