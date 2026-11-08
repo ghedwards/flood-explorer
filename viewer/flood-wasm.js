@@ -610,7 +610,10 @@
       // and the answer says how much rain the area got on average and how much of it ran off.
       inertialStart: (grid, opts) => {
         const o = call('inertialStart', { ...grid, ...opts });
-        return { driftMeanRainMm: num(o.driftMeanRainMm), driftMeanRunoffMm: num(o.driftMeanRunoffMm) };
+        const out = { driftMeanRainMm: num(o.driftMeanRainMm), driftMeanRunoffMm: num(o.driftMeanRunoffMm) };
+        // a live radar storm (opts.radarFrames ...; rust/flood-core/src/live.rs) also reports how it was built
+        for (const k of ['radarSeconds', 'radarObservedSteps', 'radarForecastSteps', 'radarMotionU', 'radarMotionV', 'radarMotionCorrelation', 'radarMotionReliable', 'radarMinKnownShare', 'radarObservedRainMm', 'radarForecastRainMm', 'radarRunoffMm']) out[k] = num(o[k]);
+        return out;
       },
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },

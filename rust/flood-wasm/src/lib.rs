@@ -1068,6 +1068,31 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 o.num("driftMeanRainMm", d.mean_rain_mm).num("driftMeanRunoffMm", d.mean_runoff_mm);
                 solver.set_rain_field(d.field)?;
             }
+            // Or a live storm: the broker's radar frames (`radarFrames`, tenths of mm/h joined end to end, -1 where unmeasured) on a grid in an MGA zone, observed then
+            // forecast (see live.rs). The run is as long as that storm, whatever `seconds` said.
+            if b.num("radarW").is_finite() {
+                let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
+                let loss = |k: &str| { let v = b.num(k); if v.is_finite() { v } else { 0.0 } };
+                let radar = live::LiveRadar {
+                    w: b.num("radarW") as usize, h: b.num("radarH") as usize, x0: b.num("radarX0"), y0_northing: b.num("radarY0"), dx: b.num("radarDx"), dy: b.num("radarDy"),
+                    step_s: b.num("radarStepS"), frames_tenths: b.f64s("radarFrames").ok_or("missing radar frames")?,
+                };
+                let area = live::LiveArea { w: solver.grid.w, h: solver.grid.h, west: b.num("geoWest"), east: b.num("geoEast"), north: b.num("geoNorth"), south: b.num("geoSouth"), zone: b.num("radarZone") as i32 };
+                let params = live::LiveParams {
+                    horizon_s: b.num("radarHorizonS"), decay_tau_s: optional("radarDecayTauS", f64::INFINITY), scale: optional("radarScale", 1.0),
+                    initial_loss_mm: loss("initialLoss"), continuing_mm_h: loss("contLoss"), after_hours: optional("afterHours", 1.0),
+                    max_speed_m_s: optional("radarMaxSpeed", 25.0), min_coverage: optional("radarMinCoverage", 0.9),
+                };
+                let s = live::live_storm(&radar, &area, &params)?;
+                let seconds = s.field.seconds();
+                if seconds > 86400.0 { return Err("the live storm is longer than 24 hours; use fewer frames or a shorter forecast".into()); }
+                solver.opts.seconds = seconds;
+                o.num("radarSeconds", seconds).num("radarObservedSteps", s.observed_steps as f64).num("radarForecastSteps", s.forecast_steps as f64)
+                    .num("radarMotionU", s.motion.u_m_s).num("radarMotionV", s.motion.v_m_s).num("radarMotionCorrelation", s.motion.correlation)
+                    .num("radarMotionReliable", if s.motion.reliable { 1.0 } else { 0.0 }).num("radarMinKnownShare", s.min_known_share)
+                    .num("radarObservedRainMm", s.observed_rain_mm).num("radarForecastRainMm", s.forecast_rain_mm).num("radarRunoffMm", s.runoff_mm);
+                solver.set_rain_field(s.field)?;
+            }
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
         }
         "inertialStep" => {

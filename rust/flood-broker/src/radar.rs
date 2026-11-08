@@ -14,13 +14,15 @@
 //!   "frames": [ { "time": "2026-11-08T05:10:00Z", "file": "20261108T0510Z.f32" }, ... ] }
 //! ```
 //!
-//! Frames are listed oldest first. The grid is north-up with its top-left corner at (`x0`, `y0`),
-//! x growing east and y growing south, in metres (the same convention as flood-core's `RadarGrid`).
+//! Frames are listed oldest first. The grid is north-up: (`x0`, `y0`) is the easting and northing of its
+//! top-left corner in the `crs` (metres), columns step east by `dx` and rows step south by `dy`, so a
+//! row's northing falls as the row number rises. The page understands the MGA zones (EPSG:283xx, 78xx).
 //! A frame file is `w * h` little-endian `f32` rain rates in mm/h, row by row from the top, with NaN
 //! for a cell that was not measured.
 //!
 //! Query: `bbox=x0,y0,x1,y1` crops to a window in the grid's own coordinates (default the whole
-//! grid) and `frames=N` takes the latest N (default 12, at most 36). The answer carries the rates as
+//! grid) and `frames=N` takes the latest N (default 12, at most 36); `meta=1` gives just the grid, the crs and
+//! how fresh the newest frame is, without frames. The answer carries the rates as
 //! integer tenths of mm/h, with -1 meaning *missing, not dry*, and says how old the newest frame is.
 //! An unconfigured, empty or unreadable store is an error, never an empty "no rain" answer.
 use crate::wmip;
@@ -84,8 +86,10 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 }
 
 /// The cells of a window `[lo, hi)` along one axis for a span `[a, b]` in metres, or None if it misses the grid.
+/// `step` is the signed change in coordinate per cell: positive for columns (eastings rise), negative for rows (northings fall).
 fn window(a: f64, b: f64, origin: f64, step: f64, n: usize) -> Option<(usize, usize)> {
-    let (lo, hi) = (((a - origin) / step).floor().max(0.0), ((b - origin) / step).ceil().min(n as f64));
+    let (p, q) = ((a - origin) / step, (b - origin) / step);
+    let (lo, hi) = (p.min(q).floor().max(0.0), p.max(q).ceil().min(n as f64));
     if lo < hi { Some((lo as usize, hi as usize)) } else { None }
 }
 
@@ -97,6 +101,15 @@ pub fn serve(dir: &Path, query: &str, now_ms: i64) -> Answer {
     };
     let man = match parse_manifest(&raw) { Ok(m) => m, Err(e) => return fail(502, "misconfigured", &e) };
     if man.frames.is_empty() { return fail(503, "empty", "the radar store has no frames"); }
+    if query_value(query, "meta").as_deref() == Some("1") {
+        // what the page needs to ask for the right window: no frames, just where the radar is and how fresh
+        let last = man.frames[man.frames.len() - 1].0;
+        let age = ((now_ms - last) / 1000).max(0);
+        let g = &man.grid;
+        let body = json!({"status": if age > STALE_S { "stale" } else { "ok" }, "source": man.source, "attribution": man.attribution, "licence": man.licence, "crs": man.crs,
+            "grid": {"w": g.w, "h": g.h, "x0": g.x0, "y0": g.y0, "dx": g.dx, "dy": g.dy}, "frameCount": man.frames.len(), "latest": wmip::iso_utc(last), "ageSeconds": age});
+        return Answer { status: 200, body, cacheable: false };
+    }
     let n_frames = match query_value(query, "frames") {
         None => DEFAULT_FRAMES,
         Some(v) => match v.parse::<usize>() { Ok(n) if (1..=MAX_FRAMES).contains(&n) => n, _ => return fail(400, "bad-request", &format!("frames= must be 1 to {MAX_FRAMES}")) },
@@ -107,7 +120,7 @@ pub fn serve(dir: &Path, query: &str, now_ms: i64) -> Answer {
         Some(b) => {
             let v: Vec<f64> = b.split(',').filter_map(|s| s.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).collect();
             if v.len() != 4 || b.split(',').count() != 4 || v[0] >= v[2] || v[1] >= v[3] { return fail(400, "bad-request", "bbox= must be x0,y0,x1,y1 with x0 < x1 and y0 < y1, in the grid's own coordinates"); }
-            match (window(v[0], v[2], g.x0, g.dx, g.w), window(v[1], v[3], g.y0, g.dy, g.h)) {
+            match (window(v[0], v[2], g.x0, g.dx, g.w), window(v[1], v[3], g.y0, -g.dy, g.h)) {
                 (Some(c), Some(r)) => (c, r),
                 _ => return fail(404, "outside", "the window is outside the radar's coverage"),
             }
@@ -140,7 +153,7 @@ pub fn serve(dir: &Path, query: &str, now_ms: i64) -> Answer {
     let body = json!({
         "status": if stale { "stale" } else { "ok" },
         "source": man.source, "attribution": man.attribution, "licence": man.licence, "crs": man.crs,
-        "grid": {"w": cw, "h": ch, "x0": g.x0 + cols.0 as f64 * g.dx, "y0": g.y0 + rows.0 as f64 * g.dy, "dx": g.dx, "dy": g.dy},
+        "grid": {"w": cw, "h": ch, "x0": g.x0 + cols.0 as f64 * g.dx, "y0": g.y0 - rows.0 as f64 * g.dy, "dx": g.dx, "dy": g.dy},
         "unit": "tenths of mm/h; -1 means missing, not dry",
         "times": times.iter().map(|t| wmip::iso_utc(*t)).collect::<Vec<_>>(),
         "ageSeconds": age, "stepSeconds": if regular { gaps.first().map_or(Value::Null, |g| json!(g)) } else { Value::Null }, "regular": regular,
@@ -204,10 +217,10 @@ mod tests {
     #[test]
     fn a_window_crops_the_grid_and_moves_its_origin() {
         let d = bundle(&[0, 10]);
-        // columns 1..3 (x 1500 to 2500) and rows 1..3 (y 5500 to 6500)
-        let a = serve(&d, "frames=1&bbox=1600,5600,2400,6400", now());
+        // columns 1..3 (easting 1500 to 2500) and rows 1..3 (northing 4500 down to 3500; the top edge is 5000)
+        let a = serve(&d, "frames=1&bbox=1600,3600,2400,4400", now());
         assert_eq!(a.status, 200);
-        assert_eq!(a.body["grid"], json!({"w": 2, "h": 2, "x0": 1500.0, "y0": 5500.0, "dx": 500.0, "dy": 500.0}));
+        assert_eq!(a.body["grid"], json!({"w": 2, "h": 2, "x0": 1500.0, "y0": 4500.0, "dx": 500.0, "dy": 500.0}));
         assert_eq!(a.body["frames"][0], json!([110, 120, 110, 120]));
         // a window beyond the grid is outside, not empty
         assert_eq!(serve(&d, "bbox=90000,90000,91000,91000", now()).status, 404);
@@ -231,6 +244,19 @@ mod tests {
         let a = serve(&d, "", wmip::epoch_ms("2026-11-08T06:00:00Z").unwrap());
         assert_eq!(a.status, 200); assert_eq!(a.body["status"], "stale"); assert!(!a.cacheable);
         assert_eq!(a.body["ageSeconds"], 3000);
+    }
+
+    #[test]
+    fn meta_says_where_the_radar_is_and_how_fresh_without_sending_frames() {
+        let d = bundle(&[0, 10, 20]);
+        let a = serve(&d, "meta=1", now());
+        assert_eq!(a.status, 200); assert!(!a.cacheable);
+        assert_eq!(a.body["crs"], "EPSG:28356"); assert_eq!(a.body["frameCount"], 3); assert_eq!(a.body["latest"], "2026-11-08T05:20:00Z"); assert_eq!(a.body["ageSeconds"], 600);
+        assert!(a.body.get("frames").is_none());
+        assert_eq!(a.body["grid"]["w"], 4);
+        let stale = serve(&d, "meta=1", wmip::epoch_ms("2026-11-08T07:00:00Z").unwrap());
+        assert_eq!(stale.body["status"], "stale");
+        assert_eq!(serve(&temp(), "meta=1", now()).status, 503, "an empty store is still an error");
     }
 
     #[test]
@@ -273,9 +299,9 @@ mod tests {
         // too many values: a 3000 x 1100 grid for 1 frame is 3.3 million values
         let big = temp();
         frame_file(&big, "b.f32", 3000, 1100, |_, _| 0.0);
-        let m = json!({"source": "s", "attribution": "a", "licence": "l", "crs": "c", "grid": {"w": 3000, "h": 1100, "x0": 0, "y0": 0, "dx": 1, "dy": 1}, "frames": [{"time": "2026-11-08T05:25:00Z", "file": "b.f32"}]});
+        let m = json!({"source": "s", "attribution": "a", "licence": "l", "crs": "c", "grid": {"w": 3000, "h": 1100, "x0": 0, "y0": 1100, "dx": 1, "dy": 1}, "frames": [{"time": "2026-11-08T05:25:00Z", "file": "b.f32"}]});
         std::fs::write(big.join("radar.json"), m.to_string()).unwrap();
         let a = serve(&big, "", now()); assert_eq!(a.status, 400); assert_eq!(a.body["status"], "too-large");
-        assert_eq!(serve(&big, "bbox=0,0,100,100", now()).status, 200, "cropping makes it fit");
+        assert_eq!(serve(&big, "bbox=0,1000,100,1100", now()).status, 200, "cropping makes it fit");
     }
 }

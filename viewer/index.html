@@ -216,6 +216,7 @@
         <div class="storm-row">
           <label>Rain pattern <select id="flash2dPattern" aria-label="How the storm's rain is spread over the area">
             <option value="even" selected>Even over the area</option><option value="drift">One drifting storm cell</option>
+            <option value="radar" hidden disabled>Live radar: last hour and a forecast</option>
           </select></label>
         </div>
         <div id="flash2dDriftControls" hidden>
@@ -228,6 +229,17 @@
             <label>Speed (km/h) <input id="flash2dDriftSpeed" type="number" min="0" max="120" value="30" step="5" aria-label="Speed of the storm cell in kilometres per hour"></label>
           </div>
           <p class="hint">The storm's rain is what falls in the core; it eases to 60% one radius out and 14% two radii out. The cell is over the middle of the area halfway through the rain. So the area as a whole gets less than the even storm, and the line under the map says how much. A made-up storm to try ideas, not a forecast.</p>
+        </div>
+        <div id="flash2dRadarControls" hidden>
+          <div class="storm-row">
+            <label>Forecast ahead <select id="flash2dRadarHorizon" aria-label="How far ahead to forecast the rain from the radar">
+              <option value="1800">30 minutes</option><option value="3600" selected>1 hour</option><option value="7200">2 hours</option>
+            </select></label>
+            <label>What if the forecast rain is <select id="flash2dRadarScale" aria-label="Scale the forecast rain for a lighter or heavier what-if">
+              <option value="0.7">30% lighter</option><option value="1" selected>as forecast</option><option value="1.4">40% heavier</option>
+            </select></label>
+          </div>
+          <p class="hint">Uses the broker's radar: the last hour as it fell, then the latest picture carried along the way the rain is moving. The ground type above sets what soaks in; the storm's own rain amount is not used. The forecast cannot make new rain, and it fades in reliability within an hour. If the radar is missing, old or has gaps, it says so and does not run. Indicative only, not an official warning: check Bureau and council warnings, and never enter floodwater.</p>
         </div>
         <div class="storm-row"><button type="button" class="btn small primary" id="flash2dRun">Run 2D for this storm</button><button type="button" class="btn small" id="flash2dCancel" disabled>Cancel</button></div>
         <progress id="flash2dProgress" max="1" value="0" aria-labelledby="flash2dStatus"></progress>

@@ -317,6 +317,48 @@ scaling a forecast turned unknown cells into the 1000 mm/h cap, because
 `f64::min` ignores NaN. Next: the hindcast harness in the validation plan, which
 needs real archived radar.
 
+## Page-side client status (8 November 2026)
+
+Built: `viewer/radar-client.js`, `rust/flood-core/src/live.rs`, a radar option in
+the flash-flood 2D panel, and a `meta=1` query on the broker.
+
+- **Option and gating.** *Rain pattern* gains "Live radar: last hour and a
+  forecast", shown only when the broker's `/health` says a radar folder is
+  configured. Controls: forecast ahead (30 min, 1 h, 2 h) and a what-if scale
+  for the forecast only (30% lighter, as forecast, 40% heavier). The ground type
+  sets the losses; the storm's own rain amount is not used.
+- **Client.** Asks the broker for its coordinate system (`meta=1`), accepts only
+  the MGA zones (EPSG:283xx and 78xx), asks for the area plus 60 km each way,
+  and refuses, with a message and a code, anything that is not current,
+  complete, evenly spaced and placeable: unconfigured, unavailable or empty
+  (stated as not treated as dry), stale (over 30 minutes), gaps (any cell with
+  no measurement), irregular spacing, an unsupported coordinate system, an area
+  outside the radar, network failure.
+- **Model.** `inertialStart` takes the frames and builds, in the worker, the last
+  hour as observed then the forecast then dry frames, per-cell losses, on the
+  solver's cells projected into the radar grid (north up, east right,
+  checked). The run is as long as that storm.
+- **What the page says.** Radar source and attribution, the newest picture's
+  time and age, minutes observed and forecast, the rain's direction and speed (or
+  that it could not be told), average observed and forecast rain over the area
+  and what runs off, and the share of the area whose upwind rain was unknown
+  (filled from the nearest known rain). The saved settings do not carry the frames.
+- **Tests.** `tests/radar-client.test.js`: zone parsing, window maths, every
+  error path, a live storm through the model with water conservation, and a
+  contract test against the real broker binary (cropping, coordinate
+  convention, empty store, outside, stale). `tests/impact-browser.js`: the option
+  is hidden then shown, an empty store gives a message and no run, and a live
+  storm runs in a real browser against a stand-in broker.
+- **Convention fix.** The broker's grid now gives `y0` as the northing of the top
+  edge with rows stepping south (it first said y grew southward, which is
+  wrong for real coordinates).
+
+Limits: the stand-in radar is synthetic, so nothing here shows skill on real
+rain or that any real radar feed fits the format; the page refuses frames with
+gaps rather than coping with them; one motion vector for the whole area; the
+forecast stops at its horizon (dry after, as stated); a 60 km margin of a 1 km
+radar is about 50,000 cells per frame to match.
+
 ## Risks and open questions
 
 - **Licence and access** to Bureau radar, or the cost and terms of a commercial

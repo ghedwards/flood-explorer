@@ -47,8 +47,10 @@ The folder holds `radar.json` and one binary file per frame:
   "frames": [ { "time": "2026-11-08T05:10:00Z", "file": "20261108T0510Z.f32" }, ... ] }
 ```
 
-Frames are oldest first. The grid is north-up with its top-left corner at
-(`x0`, `y0`), x growing east and y growing south, in metres. A frame file is
+Frames are oldest first. The grid is north-up: (`x0`, `y0`) is the easting and
+northing of its top-left corner in the `crs` (metres), columns step east by `dx`
+and rows step south by `dy`. The page understands the MGA zones (EPSG:283xx and
+EPSG:78xx). A frame file is
 `w * h` little-endian `f32` rain rates in mm/h, row by row from the top, NaN
 where nothing was measured. Replace files and rewrite `radar.json` last, so a
 listed frame always exists.

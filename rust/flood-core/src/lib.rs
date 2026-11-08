@@ -29,6 +29,7 @@ pub mod inertial;
 pub mod rainfield;
 pub mod radar;
 pub mod nowcast;
+pub mod live;
 pub mod tsunami;
 
 pub mod inundation;

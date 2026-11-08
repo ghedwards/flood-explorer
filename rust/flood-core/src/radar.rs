@@ -40,20 +40,27 @@ impl RadarGrid {
 /// Resample one radar frame (mm/h) to the solver's cells, bilinear at each cell's centre. Returns the
 /// rates and the share of cells the radar covered with real values. Cells it did not cover are NaN.
 pub fn resample(radar: &RadarGrid, data: &[f32], target: &TargetGrid) -> Result<(Vec<f32>, f64), String> {
-    radar.check(data)?;
     if target.w == 0 || target.h == 0 || !(target.cell.is_finite() && target.cell > 0.0 && target.x0.is_finite() && target.y0.is_finite()) {
         return Err("target grid needs cells and a positive cell size".into());
     }
-    let mut out = Vec::with_capacity(target.w * target.h);
-    let mut covered = 0usize;
-    for j in 0..target.h {
-        for i in 0..target.w {
-            let v = radar.sample(data, target.x0 + (i as f64 + 0.5) * target.cell, target.y0 + (j as f64 + 0.5) * target.cell);
-            if v.is_finite() { covered += 1; }
-            out.push(v);
-        }
+    resample_points(radar, data, &target.points())
+}
+
+impl TargetGrid {
+    /// The centre of every cell, row by row, in the radar's coordinates.
+    pub fn points(&self) -> Vec<(f64, f64)> {
+        (0..self.h).flat_map(|j| (0..self.w).map(move |i| (self.x0 + (i as f64 + 0.5) * self.cell, self.y0 + (j as f64 + 0.5) * self.cell))).collect()
     }
-    Ok((out, covered as f64 / (target.w * target.h) as f64))
+}
+
+/// Resample one radar frame (mm/h) at arbitrary points (a solver grid that is not axis-aligned with the
+/// radar, say), bilinear. Returns one value per point (NaN outside the radar) and the covered share.
+pub fn resample_points(radar: &RadarGrid, data: &[f32], points: &[(f64, f64)]) -> Result<(Vec<f32>, f64), String> {
+    radar.check(data)?;
+    if points.is_empty() { return Err("no points to sample".into()); }
+    let out: Vec<f32> = points.iter().map(|(x, y)| radar.sample(data, *x, *y)).collect();
+    let covered = out.iter().filter(|v| v.is_finite()).count();
+    Ok((out, covered as f64 / points.len() as f64))
 }
 
 /// Turn equally spaced observed radar frames into the rain field the solver takes (before losses).
@@ -63,23 +70,33 @@ pub fn resample(radar: &RadarGrid, data: &[f32], target: &TargetGrid) -> Result<
 /// negative value from interpolation counts as 0). Each frame holds for `step_s`, so frame k is the
 /// rain from k x `step_s` after the first frame's start; pass frames oldest first.
 pub fn observed_field(radar: &RadarGrid, frames: &[Vec<f32>], step_s: f64, target: &TargetGrid, min_coverage: f64) -> Result<RainField, String> {
+    if target.w == 0 || target.h == 0 || !(target.cell.is_finite() && target.cell > 0.0 && target.x0.is_finite() && target.y0.is_finite()) {
+        return Err("target grid needs cells and a positive cell size".into());
+    }
+    observed_field_at(radar, frames, step_s, &target.points(), target.w, target.h, min_coverage)
+}
+
+/// [`observed_field`] for cells at arbitrary points: `points` holds the `w` x `h` cell centres row by row
+/// (used to fill an uncovered edge from its neighbours).
+pub fn observed_field_at(radar: &RadarGrid, frames: &[Vec<f32>], step_s: f64, points: &[(f64, f64)], w: usize, h: usize, min_coverage: f64) -> Result<RainField, String> {
     if frames.is_empty() { return Err("no radar frames".into()); }
     if !(min_coverage > 0.0 && min_coverage <= 1.0) { return Err("minimum coverage must be above 0 and at most 1".into()); }
+    if points.len() != w * h { return Err("points do not match the grid".into()); }
     let mut out = Vec::with_capacity(frames.len());
     for (k, f) in frames.iter().enumerate() {
-        let (mut rates, coverage) = resample(radar, f, target)?;
+        let (mut rates, coverage) = resample_points(radar, f, points)?;
         if coverage < min_coverage {
             return Err(format!("radar frame {k} covers only {:.0}% of the area (needs {:.0}%)", coverage * 100.0, min_coverage * 100.0));
         }
         if rates.iter().any(|v| v.is_nan()) {
             // partly covered but above the minimum: the uncovered edge cells take the nearest frame value, never a silent zero
-            fill_from_neighbours(&mut rates, target.w, target.h);
+            fill_from_neighbours(&mut rates, w, h);
         }
         for v in rates.iter_mut() { *v = v.clamp(0.0, MAX_RATE as f32); }
         out.push(rates);
     }
     let field = RainField { step_s, frames: out };
-    field.validate(target.w * target.h)?;
+    field.validate(w * h)?;
     Ok(field)
 }
 

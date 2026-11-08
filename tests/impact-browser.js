@@ -83,7 +83,24 @@ function overpassFor(query) {
 
 async function main() {
   const { F } = { F: require('./model.js') };
+  // A stand-in for a broker with a radar store (the page is pointed at it by window.__floodRadarBroker): a rain cell moving east that sits over `radarCentre` (MGA zone 56) in the newest frame.
+  let radarCentre = null, radarMode = 'ok', radarAsked = [];
+  const mockRadar = (req, res) => {
+    const url = new URL(req.url, 'http://localhost'), json = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
+    radarAsked.push(url.pathname + url.search);
+    if (radarMode === 'empty') return json(503, { status: 'empty', error: 'the radar store has no frames' });
+    if (url.searchParams.get('meta') === '1') return json(200, { status: 'ok', crs: 'EPSG:28356' });
+    const [e0, n0, e1, n1] = url.searchParams.get('bbox').split(',').map(Number);
+    const w = Math.min(200, Math.ceil((e1 - e0) / 1000)), h = Math.min(200, Math.ceil((n1 - n0) / 1000)), at = (k) => radarCentre[0] - 1500 * (6 - k);
+    const frames = Array.from({ length: 7 }, (_, k) => Array.from({ length: w * h }, (_, i) => {
+      const ce = e0 + ((i % w) + 0.5) * 1000, cn = n1 - (Math.floor(i / w) + 0.5) * 1000;
+      return Math.round(500 * Math.exp(-((ce - at(k)) ** 2 + (cn - radarCentre[1]) ** 2) / (2 * 2500 * 2500)));
+    }));
+    json(200, { status: 'ok', source: 'Stand-in radar', attribution: 'Test only', licence: 'Test only', crs: 'EPSG:28356', grid: { w, h, x0: e0, y0: n1, dx: 1000, dy: 1000 }, unit: 'tenths of mm/h',
+      times: frames.map((_, k) => `2026-11-08T05:${String(k * 10).padStart(2, '0')}:00Z`), ageSeconds: 120, stepSeconds: 600, regular: true, frames });
+  };
   const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/mockbroker/')) return mockRadar(req, res);
     const file = path.resolve(root, '.' + new URL(req.url, 'http://localhost').pathname.replace(/\/$/, '/index.html'));
     if (!file.startsWith(root + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404).end(); return; }
     const types = { '.js': 'text/javascript', '.json': 'application/json', '.html': 'text/html', '.css': 'text/css', '.wasm': 'application/wasm', '.woff2': 'font/woff2' };
@@ -351,6 +368,35 @@ async function main() {
     // changing the pattern back drops the run
     await page.evaluate(() => { const pattern = document.getElementById('flash2dPattern'); pattern.value = 'even'; pattern.dispatchEvent(new Event('change')); });
     assert.ok(await page.evaluate(() => document.getElementById('flash2dDriftControls').hidden && !window.__floodStatus.inertial), 'the even pattern hides the cell controls and drops the run');
+    await page.evaluate(() => window.__floodFlash2d({}));
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.storm && window.__floodStatus.inertial.running === false", null, { timeout: 180000 });
+
+    // live radar: the option appears only when a broker with a radar store is known, and runs the last hour of rain and a forecast over the area
+    assert.ok(await page.evaluate(() => document.querySelector('#flash2dPattern option[value="radar"]').hidden), 'no radar option without a radar-enabled broker');
+    await page.evaluate((b) => { window.__floodRadarBroker = b; window.__floodSyncRadar(); }, `${base}mockbroker`);
+    assert.ok(await page.evaluate(() => !document.querySelector('#flash2dPattern option[value="radar"]').hidden), 'the radar option appears when a radar broker is known');
+    radarCentre = F.toMga(gauge[0], gauge[1], 56);
+    await page.evaluate(() => { const p = document.getElementById('flash2dPattern'); p.value = 'radar'; p.dispatchEvent(new Event('change')); document.getElementById('flash2dResolution').value = '96'; });
+    assert.ok(await page.evaluate(() => !document.getElementById('flash2dRadarControls').hidden && document.getElementById('flash2dDriftControls').hidden), 'the radar controls show, the drifting-cell ones do not');
+    // an empty radar store is a plain message and no run
+    radarMode = 'empty';
+    await page.evaluate(() => window.__floodFlash2d({}));
+    await page.waitForFunction("/No live storm/.test(document.getElementById('flash2dStatus').textContent)", null, { timeout: 30000 });
+    const refused = await page.evaluate(() => ({ status: document.getElementById('flash2dStatus').textContent, ran: !!window.__floodStatus.inertial, run: document.getElementById('flash2dRun').disabled }));
+    assert.match(refused.status, /not treated as dry/); assert.ok(!refused.ran && !refused.run, 'nothing ran and the button is usable again');
+    radarMode = 'ok'; radarAsked = [];
+    await page.evaluate(() => window.__floodFlash2d({}));
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.storm && window.__floodStatus.inertial.running === false", null, { timeout: 180000 });
+    const liveRun = await page.evaluate(() => ({ inertial: { ...window.__floodStatus.inertial, vx: undefined, vy: undefined }, status: document.getElementById('flash2dStatus').textContent }));
+    assert.ok(!liveRun.inertial.error && liveRun.inertial.storm.live === true, `the live storm ran: ${JSON.stringify(liveRun.inertial).slice(0, 500)}`);
+    assert.ok(radarAsked.length === 2 && /meta=1/.test(radarAsked[0]) && /frames=7&bbox=/.test(radarAsked[1]), `the page asked for the radar's coordinate system and then a window: ${radarAsked}`);
+    assert.ok(liveRun.inertial.storm.motion.reliable && Math.abs(liveRun.inertial.storm.motion.u - 2.5) < 0.3, `the page found the rain moving east: ${JSON.stringify(liveRun.inertial.storm.motion)}`);
+    assert.ok(liveRun.inertial.storm.observedRainMm > 0 && liveRun.inertial.storm.forecastRainMm > 0 && liveRun.inertial.time >= 18 * 600 - 1, 'observed and forecast rain, and the run is as long as the storm');
+    assert.ok(liveRun.inertial.sourceVolume > 0 && Math.abs(liveRun.inertial.balanceError) < 1e-6 * liveRun.inertial.sourceVolume + 1, 'the run conserves water');
+    assert.match(liveRun.status, /Live radar \(Stand-in radar; Test only\)/); assert.match(liveRun.status, /moving east at/); assert.match(liveRun.status, /cannot make new storms/);
+    assert.equal(liveRun.inertial.settings.radarFrames, undefined, 'the saved settings do not carry the radar frames');
+    // go back to the even storm for the steps below
+    await page.evaluate(() => { const p = document.getElementById('flash2dPattern'); p.value = 'even'; p.dispatchEvent(new Event('change')); });
     await page.evaluate(() => window.__floodFlash2d({}));
     await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.storm && window.__floodStatus.inertial.running === false", null, { timeout: 180000 });
 
