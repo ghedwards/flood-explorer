@@ -66,6 +66,7 @@ var KEY_WORDS = [
   "Downloads",
   "Rain radar",
   "Address search",
+  "Address suggestions",
   "Flood warnings",
   "Echuca",
   "Extended model",
@@ -1251,6 +1252,21 @@ async function main() {
     } else {
       failures.push("the rain radar overlay is missing");
     }
+    // ---- address pick list while typing (Queensland address service)
+    await page.fill("#searchInput", "");
+    await page.type("#searchInput", "10 concorde drive logan", { delay: 40 });
+    try {
+      await page.waitForSelector("#searchResults [data-s]", { timeout: 10000 });
+    } catch (error) {
+      // reported below
+    }
+    var sug = await page.evaluate(
+      "({ shown: !document.getElementById('searchResults').hidden, n: document.querySelectorAll('#searchResults [data-s]').length, status: window.__floodStatus.suggest || null })",
+    );
+    note(
+      sug.n > 0 ? "notice" : "warning",
+      `Address suggestions: ${formatValue(JSON.stringify(sug))}`,
+    );
     // ---- address search
     await page.fill("#searchInput", "Lismore NSW");
     await page.press("#searchInput", "Enter");
