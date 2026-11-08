@@ -88,3 +88,24 @@ Ordered by how much each closes the gap.
   permitted access path exists (the roadmap already notes BoM access limits).
 - Alerts need a delivery channel and hosting beyond static GitHub Pages, which
   would likely involve the `broker`.
+
+## Other kinds of commercial flood product
+
+This compares categories, not named products. Everything here is general; none of it
+describes a particular company, and prices and licence terms were not found.
+
+| | Flood Explorer | Pre-computed hazard maps | Address-level risk and loss models | Live property-level forecasts |
+|---|---|---|---|---|
+| What it is | Open-source 2D screening model with live gauges | Country or world maps of depth at set return periods | Per-address depths and losses, mostly sold to insurers | Radar nowcast driving a fine 2D model, with drains and sensors |
+| Resolution | 30 m everywhere, 5 m picture where LiDAR exists | Typically 5 to 90 m, finer in some countries | Address level | Tens of metres |
+| Return-period catalogue | No: scenarios you run | Yes, with defended and undefended cases | Yes | Not applicable (live) |
+| Live nowcast | Yes, from supplied radar (untested on real radar) | No | No | Yes |
+| Independent validation or certification | No | Published validation, accepted by insurers | Used by insurers | Commercial clients |
+| Terms | Free, but the data feeds forbid commercial use | Commercial licence | Commercial licence | Commercial licence |
+
+Where the commercial categories are ahead: whole-country coverage at fixed return periods,
+validation and acceptance by insurers, address-level loss figures, and running live for
+paying clients. Where Flood Explorer differs: the method is open and inspectable, every
+limit is stated, it is free to run, it works offline, and it also models tsunami and dam
+failure. Its limits: it is a screening tool, not a certified flood study, and its data
+licences rule out commercial use.
