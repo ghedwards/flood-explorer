@@ -253,6 +253,26 @@ broker's own host may differ):
   images. It is not suitable as a public model input from a hosted broker.
 - **Commercial nowcast API:** not checked; needs a key, price and terms.
 
+**Bureau terms read on 8 November 2026** (from the Bureau's copyright page and
+its data-feeds page; quotes are short, check the pages for the full text):
+- Website content: the Bureau does "not allow you to use automated or manual
+  techniques to hack, scrape or otherwise extract material from our site", and
+  "restricted content ... such as radar images, high-resolution maps ... may be
+  subject to a data licence agreement". Reproducing or redistributing pages for
+  commercial purposes needs written permission.
+- Anonymous FTP products (the route this document assumed): "free to access
+  and are not for commercial use"; customers needing "support, service
+  continuity and access to more secure Cloud (S)FTP services" are pointed to
+  the Bureau's **Registered User Services**.
+- The Bureau's weather API is marked "You must not use, copy or share it".
+
+So a hosted broker that fetches Bureau radar and serves it, or a forecast made
+from it, to the public is a redistribution the anonymous route does not clearly
+permit, and scraping the radar web pages is excluded outright. No radar frame
+was downloaded or kept for this check beyond fetching the pages above. The
+anonymous-FTP file layout is still unverified (FTP is blocked from the build
+sandbox).
+
 **Decision needed before the broker endpoint is built:** which source to use.
 The options, in the order I would look at them: the Bureau's radar (free, needs
 the access and licence confirmed), a commercial provider (works, costs money),
