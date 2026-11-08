@@ -1098,6 +1098,8 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     .num("radarObservedRainMm", s.observed_rain_mm).num("radarForecastRainMm", s.forecast_rain_mm).num("radarRunoffMm", s.runoff_mm);
                 solver.set_rain_field(s.field)?;
             }
+            // Depth snapshots to scrub through afterwards, every `snapshotEveryS` seconds (see Solver::snapshot_every); the run's final length is known by now.
+            if b.num("snapshotEveryS").is_finite() { solver.snapshot_every(b.num("snapshotEveryS"))?; }
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
         }
         "radarBias" => {
@@ -1127,6 +1129,11 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     o.f64s("peakSpeed", &s.peak_speed);
                     o.f64s("peakClass", &s.peak_class.iter().map(|c| *c as f64).collect::<Vec<_>>());
                     o.f64s("arrival", &s.arrival);
+                    if !s.snapshots.is_empty() {
+                        let times: Vec<f64> = s.snapshots.iter().map(|x| x.0).collect();
+                        let flat: Vec<f32> = s.snapshots.iter().flat_map(|x| x.1.iter().copied()).collect();
+                        o.f64s("snapTimes", &times).f32s("snapDepth", &flat).num("snapTruncated", if s.snapshots_truncated { 1.0 } else { 0.0 });
+                    }
                     *slot = None;
                 }
                 Ok(())

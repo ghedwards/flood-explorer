@@ -387,6 +387,25 @@ radar by the wrong amount and look authoritative. Wiring this needs a gauge feed
 (10 to 30 minute totals), or a deployer who supplies gauge totals with the radar. Until then the page
 runs the radar as measured and says so.
 
+## Timeline status (8 November 2026)
+
+Built: the 2D solver can keep depth snapshots (`Solver::snapshot_every`, at the start and every
+interval, capped at 16 million values; `snapshotEveryS` on `inertialStart`; `snapDepth` and `snapTimes` on
+the finished run), and the flash-flood 2D panel shows a **time slider** after a storm run. The page asks for
+about 10-minute snapshots, never more than about 48.
+
+- Positions 0 to N-1 show the water depth at that moment; the last position (the default) is the
+  deepest water over the whole run, as before. A "Show deepest water" button returns to it.
+- For a live radar run the label says how far before or after *now* the moment is: rain as the radar saw
+  it, now, forecast rain, or "the forecast has ended, so no more rain is assumed". Other storms say
+  minutes into the run.
+- Only the map changes while scrubbing. The counts, buildings, roads and routes still describe the
+  deepest water, and the label says so. The whole-run arrival times and hazard colours are kept for
+  those colour modes. Scrubbing switches the map to depth.
+- The saved run summary does not carry the snapshots. No play button yet.
+- Tested: solver snapshot timing, size cap and refusals (Rust); the snapshots through WebAssembly; and in
+  a real browser, the slider's positions and labels for observed, now, forecast and ended, and the way back.
+
 ## Risks and open questions
 
 - **Licence and access** to Bureau radar, or the cost and terms of a commercial

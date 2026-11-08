@@ -168,3 +168,26 @@ test('gauge totals rescale the radar through the model, and untrustworthy gauges
   assert.ok(Math.abs(wetter.radarObservedRainMm / plain.radarObservedRainMm - 1.5) < 0.01 && Math.abs(wetter.radarForecastRainMm / plain.radarForecastRainMm - 1.5) < 0.01);
   assert.throws(() => run(0), /bias factor/);
 });
+
+test('a run can keep depth snapshots to scrub through, taken at the start, every interval and at the end', async () => {
+  const { readRadar } = await api;
+  const { radar } = readRadar(body(), ZONE);
+  const geo = geoAround(500000, 6960000), n = 40 * 40;
+  const common = { seconds: 600, rainMmH: 0, roughness: 0.035, initialDepth: 0, inflow: 0, inflowCell: -1, stages: new Float64Array(n).fill(NaN), ...radar, radarZone: ZONE,
+    geoWest: geo.west, geoEast: geo.east, geoNorth: geo.north, geoSouth: geo.south, radarHorizonS: 3600, afterHours: 1 };
+  const grid = { W: 40, H: 40, cell: 250, dem: new Float32Array(n), valid: new Uint8Array(n).fill(1) };
+  const finish = () => { let r; do { r = F.inertialStep(); } while (!r.done); return r; };
+  F.inertialStart(grid, { ...common, snapshotEveryS: 600 });
+  const r = finish();
+  assert.equal(r.snapTimes.length, 19, 'time 0, then every 10 minutes to the end of 18 steps'); assert.equal(r.snapTimes[0], 0); assert.equal(r.snapTimes.at(-1), 18 * 600);
+  assert.equal(r.snapDepth.length, 19 * n); assert.ok(r.snapDepth instanceof Float32Array); assert.notEqual(r.snapTruncated, true);
+  const wet = (k) => r.snapDepth.slice(k * n, (k + 1) * n).reduce((a, b) => a + b, 0);
+  assert.equal(wet(0), 0, 'dry at the start'); assert.ok(wet(10) > 0, 'water by the middle');
+  // the last snapshot is the run's final depth
+  const final = Array.from(r.depth).reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(wet(18) - final) < 1e-3 * final + 1e-6);
+  // without the option nothing is kept
+  F.inertialStart(grid, common);
+  assert.equal(finish().snapDepth, undefined);
+  assert.throws(() => F.inertialStart(grid, { ...common, snapshotEveryS: 3 }), /snapshots/);
+});

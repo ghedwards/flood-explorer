@@ -14,6 +14,8 @@ const HAZARD_MIN_DEPTH: f64 = 0.01;
 pub const HOURLY: f64 = 3600.0;
 /// The default depth at which a cell counts as flooded for its arrival time (10 cm, where flow is overland flow).
 pub const ARRIVAL_DEPTH: f64 = 0.1;
+/// The most values (snapshots x cells) a run keeps for scrubbing: 16 million, 64 MB as `f32`.
+pub const MAX_SNAPSHOT_VALUES: usize = 16_000_000;
 
 #[derive(Clone)]
 pub struct Options {
@@ -48,6 +50,12 @@ pub struct Solver {
     pub opts: Options,
     /// Optional rain that differs from cell to cell. When set it replaces `rain_series` and `rain_mm_h`; see `set_rain_field`.
     pub rain_field: Option<RainField>,
+    /// Depth snapshots for scrubbing through a run: taken at time 0 and then every `snapshot_every_s` seconds (set it with
+    /// `snapshot_every`; none by default). Each is the whole grid's water depth (m) as `f32`.
+    pub snapshots: Vec<(f64, Vec<f32>)>,
+    /// True if the snapshots stopped because they would have passed `MAX_SNAPSHOT_VALUES`.
+    pub snapshots_truncated: bool,
+    snapshot_every_s: f64,
     pub depth: Vec<f64>,
     pub time: f64,
     pub steps: usize,
@@ -100,7 +108,7 @@ impl Solver {
         let depth = (0..n).map(|i| if !active(i) {0.0} else if opts.stages[i].is_finite() {
             (opts.stages[i] - grid.dem[i] as f64).max(0.0)
         } else {opts.initial_depth}).collect();
-        let mut s = Self { grid, opts, rain_field: None, depth, time: 0.0, steps: 0, initial_volume: 0.0,
+        let mut s = Self { grid, opts, rain_field: None, snapshots: Vec::new(), snapshots_truncated: false, snapshot_every_s: 0.0, depth, time: 0.0, steps: 0, initial_volume: 0.0,
             source_volume: 0.0, boundary_volume: 0.0, qx: vec![0.0;n], qy: vec![0.0;n],
             outgoing: vec![0.0;n], scale: vec![1.0;n], vx: vec![0.0;n], vy: vec![0.0;n], peak: vec![0.0;n],
             peak_speed: vec![0.0;n], peak_class: vec![0;n], arrival: vec![-1.0;n] };
@@ -118,6 +126,18 @@ impl Solver {
         field.validate(self.depth.len())?;
         self.rain_field = Some(field);
         Ok(())
+    }
+    /// Keep the water depth at the start and every `every_s` seconds after (10 s to 24 h). Call before advancing.
+    pub fn snapshot_every(&mut self, every_s: f64) -> Result<(), String> {
+        if !(every_s.is_finite() && (10.0..=86400.0).contains(&every_s)) { return Err("snapshots must be 10 seconds to 24 hours apart".into()); }
+        if self.steps > 0 { return Err("snapshots must be set before the run starts".into()); }
+        self.snapshot_every_s = every_s;
+        self.take_snapshot();
+        Ok(())
+    }
+    fn take_snapshot(&mut self) {
+        if self.snapshots.len().saturating_add(1) * self.depth.len() > MAX_SNAPSHOT_VALUES { self.snapshots_truncated = true; return; }
+        self.snapshots.push((self.time, self.depth.iter().map(|d| *d as f32).collect()));
     }
     fn active(&self, i: usize) -> bool {
         self.grid.valid.as_ref().is_none_or(|v| v[i] != 0) && self.grid.dem[i].is_finite()
@@ -227,6 +247,13 @@ impl Solver {
                 }
             }
             self.time += dt; self.steps += 1;
+            if self.snapshot_every_s > 0.0 {
+                // one snapshot per interval crossed (steps stop at series boundaries, so a snapshot may be a step late, never early)
+                let due = (self.time / self.snapshot_every_s + 1e-9).floor();
+                if due > ((self.snapshots.last().map_or(0.0, |s| s.0)) / self.snapshot_every_s + 1e-9).floor() || (self.time >= self.opts.seconds && self.snapshots.last().is_some_and(|s| s.0 < self.time - 1e-9)) {
+                    self.take_snapshot();
+                }
+            }
         }
         Ok(())
     }
@@ -387,6 +414,27 @@ mod tests {
         s.set_rain_field(RainField{step_s:600.0,frames:vec![vec![36.0;16],vec![0.0;16]]}).unwrap();
         finish(&mut s);
         assert!((s.source_volume-16.0*100.0*0.006).abs()<1e-6,"{}",s.source_volume);
+    }
+    #[test] fn snapshots_are_taken_at_the_start_every_interval_and_at_the_end_and_are_capped() {
+        let mut s=solver(10,10);s.opts.rain_mm_h=36.0;s.opts.seconds=1000.0;
+        s.snapshot_every(300.0).unwrap();
+        finish(&mut s);
+        let times:Vec<f64>=s.snapshots.iter().map(|x| x.0).collect();
+        assert_eq!(times[0],0.0);assert!(times.windows(2).all(|p| p[1]>p[0]),"{times:?}");
+        assert!((times.last().unwrap()-1000.0).abs()<1e-6,"the run's end is kept: {times:?}");
+        assert!(times.len()>=4 && times.len()<=6,"about every 300 s: {times:?}");
+        // the water rises through the run and the first snapshot is the start
+        let mean=|k:usize| s.snapshots[k].1.iter().map(|d| *d as f64).sum::<f64>()/100.0;
+        assert_eq!(mean(0),0.0);assert!(mean(1)<mean(times.len()-1)&&(mean(times.len()-1)-s.depth.iter().sum::<f64>()/100.0).abs()<1e-7);
+        // refusals and the size cap
+        let mut t=solver(4,4);
+        for bad in [0.0,5.0,f64::NAN,1e9] {assert!(t.snapshot_every(bad).is_err(),"{bad}");}
+        t.opts.seconds=2000.0;t.opts.rain_mm_h=10.0;t.snapshot_every(10.0).unwrap();
+        t.snapshots.splice(0..0,std::iter::repeat_n((0.0,vec![0.0f32;16]),MAX_SNAPSHOT_VALUES/16-1));
+        finish(&mut t);
+        assert!(t.snapshots_truncated&&t.snapshots.len()*16<=MAX_SNAPSHOT_VALUES);
+        let mut late=solver(4,4);late.advance(1).unwrap();assert!(late.snapshot_every(60.0).is_err(),"too late to start");
+        let plain=solver(4,4);assert!(plain.snapshots.is_empty());
     }
     #[test] fn rejects_bad_inputs() {
         let s=solver(2,2);let mut o=s.opts.clone();o.roughness=f64::NAN;

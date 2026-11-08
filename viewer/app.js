@@ -783,8 +783,10 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     $('inertialRun').disabled = false; $('inertialCancel').disabled = true;
     $('flash2dRun').disabled = false; $('flash2dCancel').disabled = true;
   }
+  let flashTimeline = null;   // a finished storm run's depth snapshots, for the time slider
+  function hideTimeline() { flashTimeline = null; $('flash2dTimeline').hidden = true; }
   function resetInertial() {
-    stopInertial();
+    stopInertial(); hideTimeline();
     state.inertial = null; status.inertial = null;
     $('solver').value = 'fast'; solverControls();
     $('inertialStatus').textContent = 'Fast terrain model.';
@@ -1044,6 +1046,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
           radarHorizonS: Number($('flash2dRadarHorizon').value), radarScale: Number($('flash2dRadarScale').value), afterHours: Number($('flash2dAfter').value),
           initialLoss: s.initialLoss, contLoss: s.contLoss });
       }
+      // depth snapshots for the time slider: about every 10 minutes, and never more than about 48
+      opts.snapshotEveryS = Math.max(600, Math.ceil(rain.seconds / 48 / 60) * 60);
       let driftInfo = null;
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
@@ -1064,7 +1068,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         const r = data.result;
         if (!r) return;
         stopInertial();
-        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, ...metrics } = r;   // the arrays are in state.run; the summary stays small enough to save in a GeoJSON
+        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, snapDepth: _snapDepth, snapTimes: _snapTimes, ...metrics } = r;   // the arrays are in state.run (and the timeline); the summary stays small enough to save in a GeoJSON
         const { stages: _stages, radarFrames: _frames, ...settings } = opts;   // the frames are large; the summary keeps where and when they came from
         state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: drift || live ? undefined : Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
           storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours, ...(driftInfo && !live && { drifting: true, meanRainMm: driftInfo.driftMeanRainMm, meanRunoffMm: driftInfo.driftMeanRunoffMm }),
@@ -1076,6 +1080,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('flash2dProgress').value = 1;
+        setupTimeline(a, g, r, state.run, live && driftInfo ? { nowS: driftInfo.radarObservedSteps * radarGot.info.stepSeconds, endS: (driftInfo.radarObservedSteps + driftInfo.radarForecastSteps) * radarGot.info.stepSeconds } : null);
         flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 1)} hours on ${Math.round(g.cell)} m cells. ${live && driftInfo ? liveSummary(radarGot, driftInfo) : driftInfo ? `A storm cell drifting ${$('flash2dDriftHeading').selectedOptions[0].textContent} at ${fmt(Number($('flash2dDriftSpeed').value), 0)} km/h: ${Math.round(rain.rainMm)} mm in its core, ${fmt(driftInfo.driftMeanRainMm, 1)} mm on average over the area, ${fmt(driftInfo.driftMeanRunoffMm, 1)} mm of that running off (an even storm would run off ${Math.round(rain.effectiveMm)} mm).` : `${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}.`} ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
         showInertialRun(a);
       };
@@ -1103,6 +1108,40 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const edge = i.radarMinKnownShare < 1 ? ` Where the forecast would bring rain from beyond the radar's edge (${fmt((1 - i.radarMinKnownShare) * 100, 0)}% of the area by the end), the nearest known rain is used.` : '';
     return `Live radar (${got.info.source}; ${got.info.attribution}), newest picture ${when(newest)}, ${Math.round(got.info.ageSeconds / 60)} min old: the last ${fmt(i.radarObservedSteps * step / 60, 0)} minutes as observed, then a ${fmt(i.radarForecastSteps * step / 60, 0)}-minute forecast; ${motion}. On average ${fmt(i.radarObservedRainMm, 1)} mm fell on the area and ${fmt(i.radarForecastRainMm, 1)} mm is forecast, ${fmt(i.radarRunoffMm, 1)} mm of it running off after what soaks in. A forecast cannot make new storms or end existing ones.${edge}`;
   }
+  // The time slider: positions 0 to N-1 are the depth snapshots; position N is the deepest water over the whole run (the default view).
+  function setupTimeline(a, g, r, peakRun, live) {
+    if (!r.snapDepth || !r.snapTimes || r.snapTimes.length < 2) { hideTimeline(); return; }
+    flashTimeline = { a, g, n: g.W * g.H, depth: r.snapDepth, times: r.snapTimes, peakRun, live, truncated: !!r.snapTruncated };
+    const slider = $('flash2dTime');
+    slider.max = String(r.snapTimes.length); slider.value = String(r.snapTimes.length);
+    $('flash2dTimeline').hidden = false;
+    $('flash2dTimeLabel').textContent = 'Showing the deepest water each cell held over the whole run. Drag the slider to see the water at a moment.';
+  }
+  function timeLabel(t) {
+    const tl = flashTimeline, minutes = Math.round(t / 60);
+    if (!tl.live) return `${minutes} minutes into the run`;
+    const rel = Math.round((t - tl.live.nowS) / 60);
+    if (rel < 0) return `${-rel} min before now: rain as the radar saw it`;
+    if (rel === 0) return 'Now: the newest radar picture';
+    return t > tl.live.endS + 1 ? `${rel} min after now: the forecast has ended, so no more rain is assumed` : `${rel} min after now: forecast rain`;
+  }
+  function showTimelineAt(i) {
+    const tl = flashTimeline;
+    if (!tl || tl.a !== state.a) { hideTimeline(); return; }
+    if (i >= tl.times.length) {
+      state.run = tl.peakRun; showInertialRun(tl.a);
+      $('flash2dTimeLabel').textContent = 'Showing the deepest water each cell held over the whole run.';
+      return;
+    }
+    const d = Float64Array.from(tl.depth.subarray(i * tl.n, (i + 1) * tl.n));
+    const fr = F.inertialExpand(tl.a, tl.g, { depth: d }, { peak: false });
+    state.run = { ...fr, arrival: tl.peakRun.arrival, peakHazard: tl.peakRun.peakHazard };
+    $('colorMode').value = 'depth';
+    drawMap();
+    $('flash2dTimeLabel').textContent = `${timeLabel(tl.times[i])}. The map shows the water at this moment; the counts, buildings and roads still describe the deepest water.${tl.truncated ? ' Later moments were not kept (too much data).' : ''}`;
+  }
+  $('flash2dTime').addEventListener('input', () => showTimelineAt(Number($('flash2dTime').value)));
+  $('flash2dPeak').addEventListener('click', () => { if (!flashTimeline) return; $('flash2dTime').value = String(flashTimeline.times.length); showTimelineAt(flashTimeline.times.length); });
   $('flashMethod').addEventListener('change', () => { syncFlashMethod(); runScenario(); });
   $('flash2dPattern').addEventListener('change', () => { syncPattern(); runScenario(); });
   $('flash2dRun').addEventListener('click', startFlash2d);

@@ -395,6 +395,21 @@ async function main() {
     assert.ok(liveRun.inertial.sourceVolume > 0 && Math.abs(liveRun.inertial.balanceError) < 1e-6 * liveRun.inertial.sourceVolume + 1, 'the run conserves water');
     assert.match(liveRun.status, /Live radar \(Stand-in radar; Test only\)/); assert.match(liveRun.status, /moving east at/); assert.match(liveRun.status, /cannot make new storms/);
     assert.equal(liveRun.inertial.settings.radarFrames, undefined, 'the saved settings do not carry the radar frames');
+    // the time slider: snapshots of the live run, with now marked, and a way back to the deepest water
+    const tl = await page.evaluate(() => { const t = document.getElementById('flash2dTime'); return { shown: !document.getElementById('flash2dTimeline').hidden, max: Number(t.max), value: Number(t.value), label: document.getElementById('flash2dTimeLabel').textContent }; });
+    // 6 observed + 6 forecast + 12 dry steps of 10 minutes (the page's two hours after the rain) is 24 steps: 25 snapshots, and one more position for the deepest water
+    assert.ok(tl.shown && tl.max === 25 && tl.value === 25, `the slider shows, with a position for each of 25 snapshots and one for the deepest water: ${JSON.stringify(tl)}`);
+    assert.match(tl.label, /deepest water each cell held over the whole run/);
+    const at = async (i) => page.evaluate((k) => { const t = document.getElementById('flash2dTime'); t.value = String(k); t.dispatchEvent(new Event('input', { bubbles: true })); return document.getElementById('flash2dTimeLabel').textContent; }, i);
+    assert.match(await at(2), /40 min before now: rain as the radar saw it/);
+    assert.match(await at(6), /Now: the newest radar picture/);
+    assert.match(await at(9), /30 min after now: forecast rain/);
+    assert.match(await at(15), /the forecast has ended, so no more rain is assumed/);
+    assert.match(await at(25), /deepest water/);
+    await at(3);
+    await page.evaluate(() => document.getElementById('flash2dPeak').click());
+    assert.equal(await page.evaluate(() => document.getElementById('flash2dTime').value), '25', 'the button goes back to the deepest water');
+    assert.ok(!(await page.evaluate(() => window.__floodStatus.inertial.snapDepth)), 'the saved run summary does not carry the snapshots');
     // go back to the even storm for the steps below
     await page.evaluate(() => { const p = document.getElementById('flash2dPattern'); p.value = 'even'; p.dispatchEvent(new Event('change')); });
     await page.evaluate(() => window.__floodFlash2d({}));

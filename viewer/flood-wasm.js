@@ -615,7 +615,7 @@
         for (const k of ['radarSeconds', 'radarObservedSteps', 'radarForecastSteps', 'radarMotionU', 'radarMotionV', 'radarMotionCorrelation', 'radarMotionReliable', 'radarMinKnownShare', 'radarObservedRainMm', 'radarForecastRainMm', 'radarRunoffMm']) out[k] = num(o[k]);
         return out;
       },
-      inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
+      inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, snapTimes: o.snapTimes, snapDepth: o.snapDepth, snapTruncated: o.snapTruncated ? num(o.snapTruncated) === 1 : undefined, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival', 'snapTimes', 'snapDepth', 'snapTruncated'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
       // How far the radar is off at rain gauges, in Rust (rust/flood-core/src/live.rs): `radar` is the answer of radar-client's readRadar, `gauges` are { lat, lon, mm, hours }
       // totals ending at the newest frame. { factor, applied, reason, gaugesUsed, gaugeMm, radarMm }; a factor of 1 and applied false when the gauges cannot be trusted.
       radarBias: (radar, zone, gauges) => {

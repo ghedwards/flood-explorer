@@ -244,6 +244,12 @@
         <div class="storm-row"><button type="button" class="btn small primary" id="flash2dRun">Run 2D for this storm</button><button type="button" class="btn small" id="flash2dCancel" disabled>Cancel</button></div>
         <progress id="flash2dProgress" max="1" value="0" aria-labelledby="flash2dStatus"></progress>
         <p class="hint" id="flash2dStatus" role="status" aria-live="polite"></p>
+        <div id="flash2dTimeline" hidden>
+          <label for="flash2dTime">Time through the run</label>
+          <input id="flash2dTime" type="range" min="0" max="0" value="0" step="1" aria-describedby="flash2dTimeLabel">
+          <button type="button" class="btn small" id="flash2dPeak">Show deepest water</button>
+          <p class="hint" id="flash2dTimeLabel" role="status" aria-live="polite"></p>
+        </div>
       </div>
       <p class="hint" id="stormSummary" aria-live="polite"></p>
       <p class="hint" id="ifdNote"></p>
