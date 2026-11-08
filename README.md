@@ -8,6 +8,8 @@ The heavy terrain work is done by the hydrology tools that power [RustGIS](https
 
 **Live site:** https://ghedwards.github.io/flood-explorer/ (after GitHub Pages is switched on, see [Setup](#setup)).
 
+> **Open source (MIT), no warranty, not for commercial use.** The code is MIT-licensed and provided as is; the data feeds it uses (for example the Bureau's anonymous data and RainViewer's free radar) do not allow commercial use, so the site and a build that uses them are for non-commercial use only. Read [NOTICE.md](NOTICE.md).
+>
 > **Not for emergency or property decisions.** This is a screening model built on a 30 m surface model. Use [Brisbane City Council Flood Awareness Maps](https://fam.brisbane.qld.gov.au/) and [Bureau of Meteorology warnings](https://www.bom.gov.au/qld/warnings/) for real flood risk.
 
 ## Australia-wide view
@@ -287,4 +289,6 @@ tests/                       model, app and live-site tests
   - Topographic: © [OpenTopoMap](https://opentopomap.org) (CC BY-SA), map data © OpenStreetMap contributors, SRTM
   - Latest satellite (true colour and false-colour infrared) and the "water seen by satellite since 1987" layer: [Digital Earth Australia](https://www.dea.ga.gov.au/) (Geoscience Australia; Landsat and Copernicus Sentinel-2 data), CC BY 4.0, via DEA's public map service. The infrared view shows shortwave infrared as red, near infrared as green and green as blue, so water appears dark blue or black and vegetation green.
 
-Released under the MIT licence (see [LICENSE](LICENSE)).
+## Licence, warranty and data terms
+
+The code is released under the MIT licence (see [LICENSE](LICENSE)): open source, **provided as is, with no warranty**. The data feeds it uses carry their own terms, several of which **do not allow commercial use**, so the hosted site and any copy that uses those feeds are for non-commercial use only. See [NOTICE.md](NOTICE.md) for the feed-by-feed summary, what hosting your own copy involves, and why none of this is for emergency or property decisions.

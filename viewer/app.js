@@ -6624,6 +6624,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${sat ? `<h2>Satellite check</h2>${sat}` : ''}
       <h2>About this model</h2><p>${escapeHtml((state.areaMeta && state.areaMeta.source) || '')}</p>
       <p class="hint">Screening only: it shows land below the chosen water surface that connects to the river or sea. It misses levees, drains and the timing of a flood. Do not use for evacuation or property decisions; follow official warnings from the Bureau of Meteorology and your state emergency service.</p>
+      <p class="hint">Open source (MIT), provided as is with no warranty. Uses data feeds that do not allow commercial use, so for non-commercial use only. See NOTICE.md in the project's repository.</p>
       <p class="hint">Open this model: <a href="${escapeHtml(shareUrl())}">link</a></p></body></html>`);
     w.document.close();
     return true;

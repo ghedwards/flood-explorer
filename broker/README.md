@@ -26,6 +26,9 @@ It's a small Rust program, `flood-broker` (source in `rust/flood-broker`),
 built with the rest of the Rust workspace: a single binary of about 2.5 MB
 using a few MB of memory. The smallest VPS will do.
 
+> The broker is MIT-licensed and provided as is, with no warranty. The feeds it relays carry their own
+> terms, several of which do not allow commercial use: see [../NOTICE.md](../NOTICE.md).
+
 ## Radar frames (optional, you supply the data)
 
 `GET /v1/radar?bbox=x0,y0,x1,y1&frames=N` serves recent radar rain rates from a
