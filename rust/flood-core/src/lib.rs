@@ -28,6 +28,7 @@ pub use wave::*;
 pub mod inertial;
 pub mod rainfield;
 pub mod radar;
+pub mod nowcast;
 pub mod tsunami;
 
 pub mod inundation;

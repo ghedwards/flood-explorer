@@ -26,7 +26,7 @@ impl RadarGrid {
         Ok(())
     }
     /// Bilinear value at a point, NaN outside the span of the cell centres or where a neighbour is NaN.
-    fn sample(&self, data: &[f32], x: f64, y: f64) -> f32 {
+    pub(crate) fn sample(&self, data: &[f32], x: f64, y: f64) -> f32 {
         let (fx, fy) = ((x - self.x0) / self.dx - 0.5, (y - self.y0) / self.dy - 0.5);
         if !(fx >= 0.0 && fy >= 0.0 && fx <= (self.w - 1) as f64 && fy <= (self.h - 1) as f64) { return f32::NAN; }
         let (i, j) = ((fx.floor() as usize).min(self.w - 2), (fy.floor() as usize).min(self.h - 2));

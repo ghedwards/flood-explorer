@@ -258,6 +258,37 @@ The options, in the order I would look at them: the Bureau's radar (free, needs
 the access and licence confirmed), a commercial provider (works, costs money),
 or running the nowcast ourselves on the Bureau frames (phase 3).
 
+## Phase 3 status: the forecast step (8 November 2026)
+
+Built and tested **on synthetic storms only**: `rust/flood-core/src/nowcast.rs`.
+
+- `estimate_motion`: one motion vector for the whole frame from consecutive
+  frames, by normalised cross-correlation over whole-cell shifts with a
+  sub-cell parabola refinement. Pairs with too little rain or a poor match are
+  skipped; with no usable pair the motion is zero and flagged `reliable: false`.
+- `advect`: carries a frame forward along the motion (bilinear). Cells whose
+  upwind place is outside the radar are NaN, never dry.
+- `nowcast`: the latest frame carried to the middle of each step out to the
+  horizon (up to 6 hours), with an optional exponential decay you choose
+  (`f64::INFINITY` for none; not fitted to anything), and the share of cells
+  known at each lead.
+- `scaled`: lighter and heavier what-if copies of a forecast.
+- The output goes straight through `radar::observed_field` to a solver rain
+  field (tested end to end on synthetic frames).
+
+What the tests show on synthetic Gaussian storms: speeds recovered to within
+0.15 cell per frame including fractional ones; the forecast error at every lead
+to one hour is under a quarter of persistence's; the peak stays within 15% of
+the truth; noise of about 30% still gives the right motion; still rain reads as
+still; dry frames give an unreliable zero, not an invented motion.
+
+What they do not show: any skill on real rain. Real storms grow, split and
+decay; one vector cannot describe rain moving in different directions; and
+radar is noisy in ways a synthetic blob is not. A bug the tests did catch:
+scaling a forecast turned unknown cells into the 1000 mm/h cap, because
+`f64::min` ignores NaN. Next: the hindcast harness in the validation plan, which
+needs real archived radar.
+
 ## Risks and open questions
 
 - **Licence and access** to Bureau radar, or the cost and terms of a commercial
