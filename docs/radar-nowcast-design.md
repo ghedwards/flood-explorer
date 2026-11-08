@@ -273,7 +273,15 @@ was downloaded or kept for this check beyond fetching the pages above. The
 anonymous-FTP file layout is still unverified (FTP is blocked from the build
 sandbox).
 
-**Decision needed before the broker endpoint is built:** which source to use.
+**Decision (8 November 2026): a source-neutral endpoint.** The broker serves
+frames from a folder the deployer supplies (`RADAR_DIR`, `rust/flood-broker/src/radar.rs`,
+`broker/README.md`); it fetches nothing and bundles no source, and the manifest must
+name the source, attribution and licence, which every answer repeats. Missing,
+empty or stale stores are errors or flagged, never "no rain", and -1 in the
+rates means missing. Whoever deploys it holds the data rights. Open question that
+remains: what fills the folder, which needs the licence conversation above.
+
+**Earlier decision text, kept for the record:** which source to use.
 The options, in the order I would look at them: the Bureau's radar (free, needs
 the access and licence confirmed), a commercial provider (works, costs money),
 or running the nowcast ourselves on the Bureau frames (phase 3).

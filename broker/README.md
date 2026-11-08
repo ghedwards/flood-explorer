@@ -26,6 +26,40 @@ It's a small Rust program, `flood-broker` (source in `rust/flood-broker`),
 built with the rest of the Rust workspace: a single binary of about 2.5 MB
 using a few MB of memory. The smallest VPS will do.
 
+## Radar frames (optional, you supply the data)
+
+`GET /v1/radar?bbox=x0,y0,x1,y1&frames=N` serves recent radar rain rates from a
+folder you fill, set with `RADAR_DIR`. Without it the endpoint answers 404.
+
+**The broker never fetches radar from anywhere**, and it does not bundle any
+source. You are responsible for having the right to serve whatever you put in
+the folder, and the manifest must name the source, attribution and licence,
+which are echoed in every answer. In particular, the Bureau of Meteorology's
+anonymous data is "not for commercial use", its website may not be scraped,
+and its radar images may need a data licence; get its permission or use its
+Registered User Services before serving its radar through a public broker.
+
+The folder holds `radar.json` and one binary file per frame:
+
+```
+{ "source": "...", "attribution": "...", "licence": "...", "crs": "EPSG:28356",
+  "grid": { "w": 256, "h": 256, "x0": 0, "y0": 0, "dx": 1000, "dy": 1000 },
+  "frames": [ { "time": "2026-11-08T05:10:00Z", "file": "20261108T0510Z.f32" }, ... ] }
+```
+
+Frames are oldest first. The grid is north-up with its top-left corner at
+(`x0`, `y0`), x growing east and y growing south, in metres. A frame file is
+`w * h` little-endian `f32` rain rates in mm/h, row by row from the top, NaN
+where nothing was measured. Replace files and rewrite `radar.json` last, so a
+listed frame always exists.
+
+The answer gives the rates as integer tenths of mm/h with **-1 meaning missing,
+not dry**, the frame times, `ageSeconds` of the newest frame, and
+`status: "stale"` (not cached) when that is over 30 minutes. A missing, empty
+or unreadable store is a 503 or 502 with an error, never an empty answer. `bbox`
+is in the grid's own coordinates; an answer is capped at 3 million values, so
+crop large grids. `/health` says whether a radar folder is configured.
+
 ## Run it on AWS Lambda (no server)
 
 See [aws/README.md](aws/README.md): GitHub Actions builds it and deploys it
