@@ -606,7 +606,12 @@
       damStart: (area, params) => { const o = call('damStart', { ...area, ...params }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
       damStep: (steps) => { const o = call('damStep', { steps }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
       damFinish: () => { const o = call('damFinish', {}); return { depth: o.depth, wet: o.wet, level: o.level, arrival: o.arrival, cls: o.cls, vel: o.vel, km2: Array.from(o.km2), covered: num(o.covered), edge: num(o.edge) === 1 }; },
-      inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
+      // Starts the 2D solver. With `driftSigmaM` (and the storm's `stormRainMm`, `stormHours`, losses) the rain falls as a drifting cell (rust/flood-core/src/rainfield.rs)
+      // and the answer says how much rain the area got on average and how much of it ran off.
+      inertialStart: (grid, opts) => {
+        const o = call('inertialStart', { ...grid, ...opts });
+        return { driftMeanRainMm: num(o.driftMeanRainMm), driftMeanRunoffMm: num(o.driftMeanRunoffMm) };
+      },
       inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
       analyse, streamSurface, inundate, inundateAt, waterMesh, flashFlood, stats, hazard, compareRuns,

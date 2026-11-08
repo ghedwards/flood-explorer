@@ -200,14 +200,27 @@ Built: `rust/flood-core/src/rainfield.rs` and a hook in `inertial.rs`.
   field it reproduces that series (tested).
 - `rainfield::moving_storm` builds a drifting Gaussian storm for tests and
   what-if runs.
-- `flood-wasm` `inertialStart` accepts `rainFieldFrames` (frames x cells,
-  flattened) and `rainFieldStepS`. No page code uses it yet, and the wasm path
-  was compile-checked only, not run in a browser.
+- `rainfield::drifting_design_storm` turns the page's design storm into one
+  drifting cell: the core gets the storm's rain, the centre crosses the middle
+  of the area halfway through the rain, and the frame count and timing match
+  `effective_rain_series`. A cell far wider than the area is the even storm
+  (tested).
+- `flood-wasm` `inertialStart` accepts either `rainFieldFrames` (frames x cells,
+  flattened) with `rainFieldStepS`, or the drifting-storm parameters
+  (`driftSigmaM`, `driftHeadingDeg`, `driftSpeedKmh`, with the storm's rain,
+  hours and losses); the worker builds the field, so no large arrays cross the
+  page. It reports the area's mean rain and runoff.
+- **On the page** (flash flooding, method "2D water movement"): *Rain pattern*,
+  *Even over the area* or *One drifting storm cell*, with the core radius,
+  heading and speed. The status line says how much rain the area got on
+  average against the core's, and how much ran off against the even storm.
+  Covered by `tests/flash-2d.test.js` (through the wasm bridge) and
+  `tests/impact-browser.js` (in a real browser).
 - Tests: a uniform field equals the series path; rain lands only where the field
   says and water balances; a moving storm puts down exactly the field's volume;
   bad fields are refused.
 
-Not done: any page control, interpolation between frames in time, radar,
+Not done: interpolation between frames in time, radar,
 nowcast and everything from phase 2 on.
 
 ## Risks and open questions

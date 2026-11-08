@@ -333,6 +333,27 @@ async function main() {
         await page.screenshot({ path: path.join(process.env.SHOT_DIR, `flash-${mode}.png`) });
       }
     }
+    // the same storm as one drifting cell: the area gets less rain than the even storm, the run still balances, and the page says how much
+    const evenRunoff = await page.evaluate(() => window.__floodStatus.inertial.storm.effectiveMm);
+    await page.evaluate(() => {
+      const pattern = document.getElementById('flash2dPattern'); pattern.value = 'drift'; pattern.dispatchEvent(new Event('change'));
+      document.getElementById('flash2dResolution').value = '96'; document.getElementById('flash2dDriftRadius').value = '1.5'; window.__floodFlash2d({});
+    });
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.storm && window.__floodStatus.inertial.running === false", null, { timeout: 180000 });
+    const drifting = await page.evaluate(() => ({ inertial: { ...window.__floodStatus.inertial, vx: undefined, vy: undefined }, status: document.getElementById('flash2dStatus').textContent,
+      driftShown: !document.getElementById('flash2dDriftControls').hidden }));
+    assert.ok(!drifting.inertial.error && drifting.inertial.storm.drifting === true && drifting.driftShown, `the drifting storm ran: ${JSON.stringify(drifting.inertial).slice(0, 400)}`);
+    assert.ok(drifting.inertial.storm.meanRainMm > 0 && drifting.inertial.storm.meanRainMm < drifting.inertial.storm.rainMm, `the area gets less than the core: ${drifting.inertial.storm.meanRainMm}`);
+    assert.ok(drifting.inertial.storm.meanRunoffMm < evenRunoff, 'and less runs off than from the even storm');
+    assert.ok(Math.abs(drifting.inertial.balanceError) < 1e-6 * drifting.inertial.sourceVolume + 1, `the run conserves water: ${drifting.inertial.balanceError}`);
+    assert.match(drifting.status, /storm cell drifting east at 30 km\/h/);
+    assert.ok(drifting.inertial.settings.rainSeries === undefined && drifting.inertial.settings.driftSigmaM === 1500, 'the saved settings describe the cell, not an even series');
+    // changing the pattern back drops the run
+    await page.evaluate(() => { const pattern = document.getElementById('flash2dPattern'); pattern.value = 'even'; pattern.dispatchEvent(new Event('change')); });
+    assert.ok(await page.evaluate(() => document.getElementById('flash2dDriftControls').hidden && !window.__floodStatus.inertial), 'the even pattern hides the cell controls and drops the run');
+    await page.evaluate(() => window.__floodFlash2d({}));
+    await page.waitForFunction("window.__floodStatus.inertial && window.__floodStatus.inertial.storm && window.__floodStatus.inertial.running === false", null, { timeout: 180000 });
+
     // changing the storm drops the 2D result and says so; choosing the screening model again restores it
     await page.evaluate(() => window.__floodSetStorm('flash', 60, 1, 'typical'));
     const after = await page.evaluate(() => ({ inertial: window.__floodStatus.inertial, status: document.getElementById('flash2dStatus').textContent }));

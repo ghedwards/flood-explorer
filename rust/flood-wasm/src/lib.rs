@@ -1055,6 +1055,19 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 let frames = flat.chunks(cells).map(|c| c.iter().map(|v| *v as f32).collect()).collect();
                 solver.set_rain_field(rainfield::RainField { step_s: b.num("rainFieldStepS"), frames })?;
             }
+            // Or a design storm that falls as one drifting cell (see rainfield.rs): the rain, its hours, the losses and the run on after it are the
+            // even storm's, so the frame count and timing match `effectiveRainSeries`; `driftSigmaM` (the cell's width), `driftHeadingDeg` and `driftSpeedKmh` shape it.
+            if b.num("driftSigmaM").is_finite() {
+                let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
+                let loss = |k: &str| { let v = b.num(k); if v.is_finite() { v } else { 0.0 } };
+                let d = rainfield::drifting_design_storm(&rainfield::DriftingDesignStorm {
+                    w: solver.grid.w, h: solver.grid.h, cell: solver.grid.cell, rain_mm: b.num("stormRainMm"), hours: b.num("stormHours"),
+                    after_hours: optional("afterHours", 2.0), step_s: optional("stepSeconds", flash::STEP_SECONDS), sigma_m: b.num("driftSigmaM"),
+                    heading_deg: optional("driftHeadingDeg", 90.0), speed_km_h: optional("driftSpeedKmh", 0.0),
+                }, loss("initialLoss"), loss("contLoss"))?;
+                o.num("driftMeanRainMm", d.mean_rain_mm).num("driftMeanRunoffMm", d.mean_runoff_mm);
+                solver.set_rain_field(d.field)?;
+            }
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
         }
         "inertialStep" => {

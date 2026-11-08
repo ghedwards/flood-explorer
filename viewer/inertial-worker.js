@@ -6,7 +6,8 @@ self.onmessage = async ({ data }) => {
     await self.FloodCoreReady;
     const core = self.FloodCore;
     if (!core.inertialStart) throw new Error('The 2D model requires WebAssembly.');
-    core.inertialStart(data.grid, data.opts);
+    const started = core.inertialStart(data.grid, data.opts);
+    if (Number.isFinite(started.driftMeanRainMm)) self.postMessage({ started });
     let result;
     do {
       result = core.inertialStep();

@@ -136,6 +136,75 @@ pub fn moving_storm(s: &MovingStorm) -> Result<RainField, String> {
     Ok(field)
 }
 
+/// A design storm whose rain falls as one drifting cell instead of evenly over the area.
+pub struct DriftingDesignStorm {
+    pub w: usize,
+    pub h: usize,
+    /// Cell size (m).
+    pub cell: f64,
+    /// The storm's rain at its core, over `hours` (mm): the same number the even storm uses.
+    pub rain_mm: f64,
+    pub hours: f64,
+    /// Hours of dry frames after the rain, for the water to drain.
+    pub after_hours: f64,
+    pub step_s: f64,
+    /// Where the rate has fallen to e^-0.5 of the core's (m).
+    pub sigma_m: f64,
+    /// The direction the storm moves toward, degrees clockwise from north.
+    pub heading_deg: f64,
+    pub speed_km_h: f64,
+}
+
+/// What a drifting storm put on the area, for the page to report.
+pub struct DriftingResult {
+    /// The rain that does not soak in, per cell per step.
+    pub field: RainField,
+    /// Rain falling on the area, averaged over its cells (mm), before losses.
+    pub mean_rain_mm: f64,
+    /// Rain left after losses, averaged over its cells (mm).
+    pub mean_runoff_mm: f64,
+}
+
+/// Build a drifting design storm as the rain left after losses.
+///
+/// The core's rate is `rain_mm / hours`. The centre of the storm is over the middle of the area at
+/// the middle of the rain, travelling at `speed_km_h` toward `heading_deg`, so it crosses the area
+/// when the speed is high enough and sits over the middle when it is zero. The rain lasts `hours`
+/// in steps of `step_s` (the last one scaled if the storm ends part way through it), followed by
+/// `round(after_hours * 3600 / step_s)` dry frames, at least one: the same frame count and timing as
+/// `flash::effective_rain_series`. Losses are applied cell by cell with [`apply_losses`].
+pub fn drifting_design_storm(s: &DriftingDesignStorm, initial_loss_mm: f64, continuing_mm_h: f64) -> Result<DriftingResult, String> {
+    if !(s.rain_mm.is_finite() && s.rain_mm >= 0.0) { return Err("The storm's rain must be a number of millimetres from 0.".into()); }
+    if !(s.hours.is_finite() && s.hours > 0.0 && s.hours <= 24.0) { return Err("A storm lasts up to 24 hours.".into()); }
+    if !(s.after_hours.is_finite() && (0.0..=6.0).contains(&s.after_hours)) { return Err("The run can continue for up to 6 hours after the rain.".into()); }
+    if !(s.step_s.is_finite() && (60.0..=3600.0).contains(&s.step_s)) { return Err("A series step is 1 to 60 minutes.".into()); }
+    if !(s.heading_deg.is_finite() && s.speed_km_h.is_finite() && (0.0..=300.0).contains(&s.speed_km_h)) { return Err("A storm moves from 0 to 300 km/h.".into()); }
+    let step_h = s.step_s / 3600.0;
+    let storm_steps = (s.hours / step_h - 1e-9).ceil() as usize;
+    let after = ((s.after_hours / step_h).round() as usize).max(1);
+    let (w, h) = (s.w, s.h);
+    let (extent_x, extent_y) = (w as f64 * s.cell, h as f64 * s.cell);
+    let heading = s.heading_deg.to_radians();
+    let speed = s.speed_km_h / 3.6;
+    let velocity = (speed * heading.sin(), -speed * heading.cos());   // x east, y south
+    let mid = s.hours * 3600.0 / 2.0;
+    let start = (extent_x / 2.0 - velocity.0 * mid, extent_y / 2.0 - velocity.1 * mid);
+    let mut raw = moving_storm(&MovingStorm { w, h, cell: s.cell, step_s: s.step_s, steps: storm_steps, peak_mm_h: s.rain_mm / s.hours,
+        sigma_m: s.sigma_m, start_m: start, velocity_m_s: velocity, background_mm_h: 0.0 })?;
+    // the last step of the storm may end part way through: it holds only the rain that fell in it
+    let overlap = s.hours - (storm_steps - 1) as f64 * step_h;
+    if overlap < step_h - 1e-12 {
+        let k = overlap / step_h;
+        if let Some(last) = raw.frames.last_mut() { for v in last.iter_mut() { *v *= k as f32; } }
+    }
+    raw.frames.extend(std::iter::repeat_n(vec![0.0_f32; w * h], after));
+    raw.validate(w * h)?;
+    let net = apply_losses(&raw, initial_loss_mm, continuing_mm_h)?;
+    let cells = (w * h) as f64;
+    let mean = |f: &RainField| (0..w * h).map(|c| f.total_mm(c)).sum::<f64>() / cells;
+    Ok(DriftingResult { mean_rain_mm: mean(&raw), mean_runoff_mm: mean(&net), field: net })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +268,59 @@ mod tests {
         // NaN and negative losses count as none
         let none = apply_losses(&f, f64::NAN, -3.0).unwrap();
         assert_eq!(none, f);
+    }
+
+    fn drift(sigma: f64, speed: f64) -> DriftingDesignStorm {
+        DriftingDesignStorm { w: 20, h: 12, cell: 50.0, rain_mm: 60.0, hours: 1.0, after_hours: 2.0, step_s: 600.0, sigma_m: sigma, heading_deg: 90.0, speed_km_h: speed }
+    }
+
+    #[test]
+    fn a_very_wide_drifting_storm_is_the_even_storm() {
+        // a storm cell far wider than the area is even rain, so it must match the catchment-wide series
+        let d = drifting_design_storm(&drift(1e7, 20.0), 15.0, 2.5).unwrap();
+        let even = effective_rain_series(60.0, 1.0, 15.0, 2.5, 2.0, 600.0).unwrap();
+        assert_eq!(d.field.frames.len(), even.series.len());
+        for (k, expected) in even.series.iter().enumerate() {
+            for c in [0, 100, 239] { assert!((d.field.frames[k][c] as f64 - expected).abs() < 1e-3, "step {k}: {} vs {expected}", d.field.frames[k][c]); }
+        }
+        assert!((d.mean_rain_mm - 60.0).abs() < 1e-3 && (d.mean_runoff_mm - even.effective_mm).abs() < 1e-3);
+        assert!((d.field.seconds() - even.seconds).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_drifting_cell_sits_over_the_middle_when_still_and_crosses_the_area_when_moving() {
+        let still = drifting_design_storm(&drift(150.0, 0.0), 0.0, 0.0).unwrap();
+        let mid = 6 * 20 + 10;   // row 6, column 10: the cell centre at (525, 325) m is nearest to the middle (500, 300)
+        let mean = |f: &RainField, c: usize| f.total_mm(c);
+        assert!(mean(&still.field, mid) > 40.0, "the core gets most of the storm's 60 mm: {}", mean(&still.field, mid));
+        assert!(mean(&still.field, 0) < 1.0, "a corner, 1 km from the core, gets almost none: {}", mean(&still.field, 0));
+        assert!(still.mean_rain_mm < 60.0, "the area as a whole gets less than the core");
+        // moving east at 20 km/h (5.6 m/s) the cell crosses the 1 km wide area in about three minutes of the hour, so it
+        // reaches the west edge before the east edge, and the area as a whole gets far less than a cell that stays
+        let moving = drifting_design_storm(&drift(150.0, 20.0), 0.0, 0.0).unwrap();
+        let (west, east) = (20 * 6, 20 * 6 + 19);
+        let peak_frame = |c: usize| (0..6).max_by(|a, b| moving.field.frames[*a][c].total_cmp(&moving.field.frames[*b][c])).unwrap();
+        assert!(peak_frame(west) <= peak_frame(east), "{} then {}", peak_frame(west), peak_frame(east));
+        assert!(moving.mean_rain_mm < still.mean_rain_mm, "a fast cell spends most of its hour elsewhere: {} vs {}", moving.mean_rain_mm, still.mean_rain_mm);
+    }
+
+    #[test]
+    fn a_drifting_storm_follows_its_heading_and_refuses_bad_inputs() {
+        // heading north (0): the centre moves up the grid, to smaller row numbers
+        let mut north = drift(300.0, 5.0); north.heading_deg = 0.0;
+        let f = drifting_design_storm(&north, 0.0, 0.0).unwrap().field;
+        let row_of_max = |k: usize| f.frames[k].iter().position(|v| *v == f.frames[k].iter().copied().fold(0.0, f32::max)).unwrap() / 20;
+        assert!(row_of_max(0) > row_of_max(5), "{} then {}", row_of_max(0), row_of_max(5));
+        let breakers: [fn(&mut DriftingDesignStorm); 8] = [|s| s.hours = 0.0, |s| s.hours = 30.0, |s| s.rain_mm = -1.0, |s| s.after_hours = 9.0,
+            |s| s.step_s = 10.0, |s| s.sigma_m = 0.0, |s| s.speed_km_h = -1.0, |s| s.heading_deg = f64::NAN];
+        for bad in breakers {
+            let mut s = drift(150.0, 10.0); bad(&mut s); assert!(drifting_design_storm(&s, 0.0, 0.0).is_err());
+        }
+        // a storm that ends part way through a step holds only the rain that fell in it: 20 minutes in 10-minute steps and a 35-minute storm
+        let mut part = drift(1e7, 0.0); part.hours = 35.0 / 60.0; part.rain_mm = 35.0;
+        let d = drifting_design_storm(&part, 0.0, 0.0).unwrap();
+        assert_eq!(d.field.frames.len(), 4 + 12);
+        assert!((d.mean_rain_mm - 35.0).abs() < 1e-3, "{}", d.mean_rain_mm);
     }
 
     #[test]

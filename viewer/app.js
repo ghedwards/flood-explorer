@@ -1016,7 +1016,13 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       const g = F.inertialPrepare(a, Number($('flash2dResolution').value));
       const stages = new Float64Array(g.W * g.H).fill(NaN), sea = g.ocean.some(Boolean);
       if (sea) for (let i = 0; i < stages.length; i++) if (g.ocean[i]) stages[i] = 0;   // the sea is held at its level, so water can drain into it
-      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: rain.series, seriesStepS: rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages };
+      const drift = $('flash2dPattern').value === 'drift';
+      if (drift && !(Number($('flash2dDriftRadius').value) >= 0.5 && Number($('flash2dDriftSpeed').value) >= 0)) { flashStatus('Give the storm cell a radius of at least 0.5 km and a speed of 0 or more.'); return; }
+      // a drifting cell is built in the worker (rust/flood-core/src/rainfield.rs) with the same hours, steps and losses as the even storm
+      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: drift ? undefined : rain.series, seriesStepS: drift ? undefined : rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages,
+        ...(drift && { stormRainMm: s.rainMm, stormHours: s.hours, afterHours: Number($('flash2dAfter').value), stepSeconds: rain.stepSeconds, initialLoss: s.initialLoss, contLoss: s.contLoss,
+          driftSigmaM: Number($('flash2dDriftRadius').value) * 1000, driftHeadingDeg: Number($('flash2dDriftHeading').value), driftSpeedKmh: Number($('flash2dDriftSpeed').value) }) };
+      let driftInfo = null;
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
       $('flash2dRun').disabled = true; $('flash2dCancel').disabled = false; $('flash2dProgress').value = 0;
@@ -1031,27 +1037,29 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       w.onmessage = ({ data }) => {
         if (seq !== inertialSequence || a !== state.a || key !== state.areaKey) return;
         if (data.error) { fail(data.error); return; }
+        if (data.started) { driftInfo = data.started; return; }
         if (data.progress != null) { $('flash2dProgress').value = data.progress; return; }
         const r = data.result;
         if (!r) return;
         stopInertial();
         const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, ...metrics } = r;   // the arrays are in state.run; the summary stays small enough to save in a GeoJSON
         const { stages: _stages, ...settings } = opts;
-        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
-          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours } };
+        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: drift ? undefined : Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
+          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours, ...(driftInfo && { drifting: true, meanRainMm: driftInfo.driftMeanRainMm, meanRunoffMm: driftInfo.driftMeanRunoffMm }) } };
         status.inertial = { ...state.inertial, running: false };
         state.run = F.inertialExpand(a, g, r, { peak: true });
         state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('flash2dProgress').value = 1;
-        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 0)} hours on ${Math.round(g.cell)} m cells. ${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}. ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
+        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 0)} hours on ${Math.round(g.cell)} m cells. ${driftInfo ? `A storm cell drifting ${$('flash2dDriftHeading').selectedOptions[0].textContent} at ${fmt(Number($('flash2dDriftSpeed').value), 0)} km/h: ${Math.round(rain.rainMm)} mm in its core, ${fmt(driftInfo.driftMeanRainMm, 1)} mm on average over the area, ${fmt(driftInfo.driftMeanRunoffMm, 1)} mm of that running off (an even storm would run off ${Math.round(rain.effectiveMm)} mm).` : `${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}.`} ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
         showInertialRun(a);
       };
       w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });
     } catch (e) { stopInertial(); flashStatus(`2D stopped: ${e.message}. The map shows the screening model.`); }
   }
   $('flashMethod').addEventListener('change', () => { syncFlashMethod(); runScenario(); });
+  $('flash2dPattern').addEventListener('change', () => { $('flash2dDriftControls').hidden = $('flash2dPattern').value !== 'drift'; runScenario(); });
   $('flash2dRun').addEventListener('click', startFlash2d);
   $('flash2dCancel').addEventListener('click', () => { runScenario(); flashStatus('2D cancelled. The screening model is shown.'); });
   window.__floodFlash2d = (options) => { if (options && options.method) { $('flashMethod').value = options.method; syncFlashMethod(); } startFlash2d(); };
