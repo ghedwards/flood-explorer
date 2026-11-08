@@ -1047,6 +1047,14 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 series_step_s: b.num("seriesStepS"), arrival_depth: b.num("arrivalDepth"),
                 stages,
             })?;
+            let mut solver = solver;
+            // Optional rain that differs by cell: `rainFieldFrames` holds the frames one after another (frames x cells), each `rainFieldStepS` long.
+            if let Some(flat) = b.f64s("rainFieldFrames") {
+                let cells = solver.depth.len();
+                if flat.is_empty() || flat.len() % cells != 0 { return Err("rain field frames must be a whole number of grid-sized frames".into()); }
+                let frames = flat.chunks(cells).map(|c| c.iter().map(|v| *v as f32).collect()).collect();
+                solver.set_rain_field(rainfield::RainField { step_s: b.num("rainFieldStepS"), frames })?;
+            }
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
         }
         "inertialStep" => {

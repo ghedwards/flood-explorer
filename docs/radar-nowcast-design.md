@@ -1,6 +1,7 @@
 # Radar-to-2D nowcast: design sketch
 
-Proposed 8 November 2026. Nothing here is built. It is the first priority in
+Proposed 8 November 2026. **Phase 1 is implemented (see "Phase 1 status"
+below); everything else is still a proposal.** It is the first priority in
 [commercial-comparison.md](commercial-comparison.md): feed real radar rainfall into the
 2D solver to answer "what will the rain on the radar do over the next 2 hours?".
 
@@ -182,6 +183,32 @@ pub struct RainField {
 4. **Hindcast validation** and tuning; publish results.
 5. **Speed**: train a surrogate on the solver's own output, and address alerts,
    as separate designs.
+
+## Phase 1 status (8 November 2026)
+
+Built: `rust/flood-core/src/rainfield.rs` and a hook in `inertial.rs`.
+
+- `RainField { step_s, frames }`: mm/h per solver cell per step, validated (step
+  1 s to 24 h, rates 0 to 1000, every frame the grid's size, at most 16 million
+  values). Frames hold for their step; the last one stays in force after the
+  field ends, so end a storm with zero frames.
+- `Solver::set_rain_field` replaces `rain_mm_h` and `rain_series`; steps end
+  exactly at frame boundaries so a short burst puts down exactly its volume.
+  Without a field the solver behaves as before.
+- `rainfield::apply_losses` applies initial and continuing loss cell by cell
+  with the same banking rule as `flash::effective_rain_series`; on a uniform
+  field it reproduces that series (tested).
+- `rainfield::moving_storm` builds a drifting Gaussian storm for tests and
+  what-if runs.
+- `flood-wasm` `inertialStart` accepts `rainFieldFrames` (frames x cells,
+  flattened) and `rainFieldStepS`. No page code uses it yet, and the wasm path
+  was compile-checked only, not run in a browser.
+- Tests: a uniform field equals the series path; rain lands only where the field
+  says and water balances; a moving storm puts down exactly the field's volume;
+  bad fields are refused.
+
+Not done: any page control, interpolation between frames in time, radar,
+nowcast and everything from phase 2 on.
 
 ## Risks and open questions
 

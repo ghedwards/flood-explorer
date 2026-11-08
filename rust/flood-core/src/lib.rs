@@ -26,6 +26,7 @@ pub use render::*;
 pub use wave::*;
 
 pub mod inertial;
+pub mod rainfield;
 pub mod tsunami;
 
 pub mod inundation;
