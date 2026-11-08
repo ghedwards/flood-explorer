@@ -136,7 +136,7 @@ mod tests {
         // rate = x in km (cell centres at 0.5, 1.5, ...): bilinear reproduces a linear field exactly
         let ramp: Vec<f32> = (0..100).map(|k| (k % 10) as f32 + 0.5).collect();
         let (r, _) = resample(&RADAR, &ramp, &t).unwrap();
-        for i in 0..40 { let x_km = (3000.0 + (i as f64 + 0.5) * 100.0) / 1000.0; assert!((r[i] as f64 - x_km).abs() < 1e-4, "{i}: {} vs {x_km}", r[i]); }
+        for (i, v) in r.iter().take(40).enumerate() { let x_km = (3000.0 + (i as f64 + 0.5) * 100.0) / 1000.0; assert!((*v as f64 - x_km).abs() < 1e-4, "{i}: {v} vs {x_km}"); }
     }
 
     #[test]
