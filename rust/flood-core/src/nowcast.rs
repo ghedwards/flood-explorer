@@ -377,7 +377,7 @@ mod tests {
         // a storm whose rain keeps jumping somewhere new cannot be forecast: the forecast is not better than persistence
         let jumpy: Vec<Vec<f32>> = (0..14).map(|k| storm(10.0 + ((k * 23) % 44) as f64, 12.0 + ((k * 37) % 40) as f64)).collect();
         let j = score(&[&jumpy], &g, 600.0, 3, 3, &[10.0], 30.0).unwrap();
-        assert!(j.leads.iter().all(|l| !(l.skill > 0.2)), "no skill claimed on rain that jumps: {:?}", j.leads.iter().map(|l| l.skill).collect::<Vec<_>>());
+        assert!(j.leads.iter().all(|l| l.skill.is_nan() || l.skill <= 0.2), "no skill claimed on rain that jumps: {:?}", j.leads.iter().map(|l| l.skill).collect::<Vec<_>>());
     }
 
     #[test]

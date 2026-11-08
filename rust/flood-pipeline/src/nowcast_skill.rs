@@ -36,7 +36,9 @@ pub fn read_archive(dir: &Path) -> R<Archive> {
         let name = f["file"].as_str().filter(|n| !n.is_empty() && !n.starts_with('.') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))).ok_or("every frame needs a plain file name")?;
         let bytes = std::fs::read(dir.join(name)).map_err(|e| format!("frame {name}: {e}"))?;
         if bytes.len() != w * h * 4 { return Err(format!("frame {name} is not {w} x {h} f32 values")); }
-        frames.push((time, bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()));
+        #[allow(clippy::chunks_exact_to_as_chunks)]
+        let values: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        frames.push((time, values));
     }
     if frames.windows(2).any(|p| p[1].0 <= p[0].0) { return Err("frames must be listed oldest first with no repeated times".into()); }
     Ok(Archive { grid, source: m["source"].as_str().unwrap_or("").to_string(), crs: m["crs"].as_str().unwrap_or("").to_string(), frames })
@@ -78,7 +80,7 @@ pub fn report_json(a: &Archive, step_s: f64, run_lengths: &[usize], r: &SkillRep
 pub fn run(dir: &str, o: &Options, out: Option<&str>) -> R<String> {
     let a = read_archive(Path::new(dir))?;
     let (step, groups) = runs(&a.frames)?;
-    let usable: Vec<Vec<Vec<f32>>> = groups.iter().filter(|g| g.len() >= o.history + 1).map(|g| g.iter().map(|i| a.frames[*i].1.clone()).collect()).collect();
+    let usable: Vec<Vec<Vec<f32>>> = groups.iter().filter(|g| g.len() > o.history).map(|g| g.iter().map(|i| a.frames[*i].1.clone()).collect()).collect();
     if usable.is_empty() { return Err(format!("no run of {} or more consecutive frames {} s apart in {} frames", o.history + 1, step, a.frames.len())); }
     let refs: Vec<&[Vec<f32>]> = usable.iter().map(|v| v.as_slice()).collect();
     let r = score(&refs, &a.grid, step, o.history, o.max_lead, &o.thresholds, o.max_speed_m_s)?;
