@@ -7,6 +7,7 @@
 //!   flood floodinfo <out_dir>
 //!   flood events <config/events.json> <gauges.geojson> <out.json>
 //!   flood storms <config/events.json> <out.json>
+//!   flood nowcast-skill <radar_dir> [--history 4] [--max-lead 12] [--thresholds 1,5,10] [--max-speed 25] [--out report.json]
 //!   flood sealevels <events.json> <sea.json>
 //!   flood sealevels merge <events.json> <sea.json> <out.json>
 //!   flood ratings <viewer/app.js> <gauges.geojson> <out.json> [--km 12] [--max 250]
@@ -47,6 +48,16 @@ fn run(args: &[String]) -> R<String> {
     match args.first().map(|s| s.as_str()) {
         Some("national") => national::run(a(1)?, &national::http_json),
         Some("floodinfo") => floodinfo::run(a(1)?, Some(&flood_feeds::flood_warnings), Some(&flood_feeds::flood_classes)),
+        Some("nowcast-skill") => {
+            let d = nowcast_skill::Options::default();
+            let o = nowcast_skill::Options {
+                history: opt(args, "--history").and_then(|v| v.parse().ok()).unwrap_or(d.history),
+                max_lead: opt(args, "--max-lead").and_then(|v| v.parse().ok()).unwrap_or(d.max_lead),
+                max_speed_m_s: opt(args, "--max-speed").and_then(|v| v.parse().ok()).unwrap_or(d.max_speed_m_s),
+                thresholds: match opt(args, "--thresholds") { Some(v) => v.split(',').map(|t| t.trim().parse::<f32>().map_err(|_| format!("bad threshold {t}"))).collect::<Result<_, _>>()?, None => d.thresholds },
+            };
+            nowcast_skill::run(a(1)?, &o, opt(args, "--out").as_deref())
+        }
         Some("storms") => flood_pipeline::storms::run(a(1)?, a(2)?, &national::kiwis),
         Some("events") => events::run(a(1)?, a(2)?, a(3)?, &national::kiwis),
         Some("sealevels") if args.get(1).map(|s| s.as_str()) == Some("merge") => sealevels::merge(a(2)?, a(3)?, a(4)?),

@@ -1,4 +1,5 @@
 import { createRecordedStormPicker, stormTime } from './recorded-storms.js';
+import { fetchRadar, RadarError } from './radar-client.js';
 import { PRESETS, presetGauge } from './presets.js';
 import { guardRasterLayer } from './safe-raster.js';
 import { desktopUpdates } from './desktop-updates.js';
@@ -782,8 +783,10 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     $('inertialRun').disabled = false; $('inertialCancel').disabled = true;
     $('flash2dRun').disabled = false; $('flash2dCancel').disabled = true;
   }
+  let flashTimeline = null;   // a finished storm run's depth snapshots, for the time slider
+  function hideTimeline() { flashTimeline = null; $('flash2dTimeline').hidden = true; }
   function resetInertial() {
-    stopInertial();
+    stopInertial(); hideTimeline();
     state.inertial = null; status.inertial = null;
     $('solver').value = 'fast'; solverControls();
     $('inertialStatus').textContent = 'Fast terrain model.';
@@ -1004,23 +1007,52 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (ctl.floodType.value !== 'flash') $('flashMethod').value = 'screen';
     $('flash2dControls').hidden = !flashMethod2d();
   }
-  function startFlash2d() {
+  async function startFlash2d() {
     if (!state.a) { flashStatus('Load a terrain model first.'); return; }
     if (!F.inertialStart) { flashStatus('The 2D model needs WebAssembly.'); return; }
     if (ctl.floodType.value !== 'flash') { flashStatus('Choose "Storm: flash flooding" as the flood type.'); return; }
     runScenario();   // restore the screening preview and drop any older 2D result
     const seq = inertialSequence, a = state.a, key = state.areaKey;
     try {
-      const s = storm(), rain = F.effectiveRainSeries(s, Number($('flash2dAfter').value));
-      if (!(rain.effectiveMm > 0)) { flashStatus('None of this storm\'s rain runs off: the ground soaks it all in. Try more rain, a shorter storm or sealed ground.'); return; }
+      const live = $('flash2dPattern').value === 'radar';
+      const s = storm();
+      let radarGot = null, rain;
+      if (live) {
+        // the radar, then a made-up "rain" record with the run's length, so the rest of the run reads as it does for a design storm
+        flashStatus('Fetching the radar…');
+        $('flash2dRun').disabled = true;
+        try { radarGot = await fetchRadar({ broker: radarBroker(), geo: state.geo, toMga: (lat, lon, zone) => F.toMga(lat, lon, zone) }); }
+        catch (e) { if (seq === inertialSequence) { $('flash2dRun').disabled = false; flashStatus(e instanceof RadarError ? `No live storm: ${e.message}` : `No live storm: ${e.message}`); } return; }
+        if (seq !== inertialSequence || a !== state.a || key !== state.areaKey) { $('flash2dRun').disabled = false; return; }
+        const horizon = Number($('flash2dRadarHorizon').value), step = radarGot.radar.radarStepS, after = Number($('flash2dAfter').value);
+        const frames = radarGot.info.frames - 1 + Math.ceil(horizon / step - 1e-9) + Math.max(1, Math.round(after * 3600 / step));
+        rain = { seconds: frames * step, stepSeconds: step, series: null, rainMm: null, effectiveMm: null, capped: false };
+      } else {
+        rain = F.effectiveRainSeries(s, Number($('flash2dAfter').value));
+        if (!(rain.effectiveMm > 0)) { flashStatus('None of this storm\'s rain runs off: the ground soaks it all in. Try more rain, a shorter storm or sealed ground.'); return; }
+      }
       const g = F.inertialPrepare(a, Number($('flash2dResolution').value));
       const stages = new Float64Array(g.W * g.H).fill(NaN), sea = g.ocean.some(Boolean);
       if (sea) for (let i = 0; i < stages.length; i++) if (g.ocean[i]) stages[i] = 0;   // the sea is held at its level, so water can drain into it
-      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: rain.series, seriesStepS: rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages };
+      const drift = $('flash2dPattern').value === 'drift';
+      if (drift && !(Number($('flash2dDriftRadius').value) >= 0.5 && Number($('flash2dDriftSpeed').value) >= 0)) { flashStatus('Give the storm cell a radius of at least 0.5 km and a speed of 0 or more.'); return; }
+      // a drifting cell is built in the worker (rust/flood-core/src/rainfield.rs) with the same hours, steps and losses as the even storm
+      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: drift || live ? undefined : rain.series, seriesStepS: drift || live ? undefined : rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages,
+        ...(drift && { stormRainMm: s.rainMm, stormHours: s.hours, afterHours: Number($('flash2dAfter').value), stepSeconds: rain.stepSeconds, initialLoss: s.initialLoss, contLoss: s.contLoss,
+          driftSigmaM: Number($('flash2dDriftRadius').value) * 1000, driftHeadingDeg: Number($('flash2dDriftHeading').value), driftSpeedKmh: Number($('flash2dDriftSpeed').value) }) };
+      if (live) {
+        // the radar frames travel to the worker, which builds the observed-then-forecast rain there (rust/flood-core/src/live.rs)
+        Object.assign(opts, radarGot.radar, { radarZone: radarGot.zone, geoWest: state.geo.west, geoEast: state.geo.east, geoNorth: state.geo.north, geoSouth: state.geo.south,
+          radarHorizonS: Number($('flash2dRadarHorizon').value), radarScale: Number($('flash2dRadarScale').value), afterHours: Number($('flash2dAfter').value),
+          initialLoss: s.initialLoss, contLoss: s.contLoss });
+      }
+      // depth snapshots for the time slider: about every 10 minutes, and never more than about 48
+      opts.snapshotEveryS = Math.max(600, Math.ceil(rain.seconds / 48 / 60) * 60);
+      let driftInfo = null;
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
       $('flash2dRun').disabled = true; $('flash2dCancel').disabled = false; $('flash2dProgress').value = 0;
-      flashStatus(`Running the storm in 2D on ${g.W} × ${g.H} cells (${Math.round(g.cell)} m) for ${fmt(rain.seconds / 3600, 0)} hours. The map shows the screening model until it finishes.`);
+      flashStatus(`Running ${live ? 'the live storm' : 'the storm'} in 2D on ${g.W} × ${g.H} cells (${Math.round(g.cell)} m) for ${fmt(rain.seconds / 3600, 1)} hours. The map shows the screening model until it finishes.`);
       status.inertial = { running: true, cell: g.cell, storm: true };
       const fail = (message) => {
         if (seq !== inertialSequence) return;
@@ -1031,27 +1063,87 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       w.onmessage = ({ data }) => {
         if (seq !== inertialSequence || a !== state.a || key !== state.areaKey) return;
         if (data.error) { fail(data.error); return; }
+        if (data.started) { driftInfo = data.started; return; }
         if (data.progress != null) { $('flash2dProgress').value = data.progress; return; }
         const r = data.result;
         if (!r) return;
         stopInertial();
-        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, ...metrics } = r;   // the arrays are in state.run; the summary stays small enough to save in a GeoJSON
-        const { stages: _stages, ...settings } = opts;
-        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
-          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours } };
+        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, snapDepth: _snapDepth, snapTimes: _snapTimes, ...metrics } = r;   // the arrays are in state.run (and the timeline); the summary stays small enough to save in a GeoJSON
+        const { stages: _stages, radarFrames: _frames, ...settings } = opts;   // the frames are large; the summary keeps where and when they came from
+        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: drift || live ? undefined : Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
+          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours, ...(driftInfo && !live && { drifting: true, meanRainMm: driftInfo.driftMeanRainMm, meanRunoffMm: driftInfo.driftMeanRunoffMm }),
+            ...(live && driftInfo && { live: true, radar: { ...radarGot.info, times: undefined, newest: radarGot.info.times[radarGot.info.times.length - 1] }, motion: { u: driftInfo.radarMotionU, v: driftInfo.radarMotionV, reliable: driftInfo.radarMotionReliable === 1 },
+              minKnownShare: driftInfo.radarMinKnownShare, observedRainMm: driftInfo.radarObservedRainMm, forecastRainMm: driftInfo.radarForecastRainMm, runoffMm: driftInfo.radarRunoffMm }) } };
         status.inertial = { ...state.inertial, running: false };
         state.run = F.inertialExpand(a, g, r, { peak: true });
         state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('flash2dProgress').value = 1;
-        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 0)} hours on ${Math.round(g.cell)} m cells. ${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}. ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
+        setupTimeline(a, g, r, state.run, live && driftInfo ? { nowS: driftInfo.radarObservedSteps * radarGot.info.stepSeconds, endS: (driftInfo.radarObservedSteps + driftInfo.radarForecastSteps) * radarGot.info.stepSeconds } : null);
+        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 1)} hours on ${Math.round(g.cell)} m cells. ${live && driftInfo ? liveSummary(radarGot, driftInfo) : driftInfo ? `A storm cell drifting ${$('flash2dDriftHeading').selectedOptions[0].textContent} at ${fmt(Number($('flash2dDriftSpeed').value), 0)} km/h: ${Math.round(rain.rainMm)} mm in its core, ${fmt(driftInfo.driftMeanRainMm, 1)} mm on average over the area, ${fmt(driftInfo.driftMeanRunoffMm, 1)} mm of that running off (an even storm would run off ${Math.round(rain.effectiveMm)} mm).` : `${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}.`} ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
         showInertialRun(a);
       };
       w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });
     } catch (e) { stopInertial(); flashStatus(`2D stopped: ${e.message}. The map shows the screening model.`); }
   }
+  // Live radar needs a broker that has a radar store (its /health says so); the test hook points the page at another broker.
+  const radarBroker = () => window.__floodRadarBroker || BROKER;
+  function syncRadarOption() {
+    const option = $('flash2dPattern').querySelector('option[value="radar"]');
+    const on = !!(window.__floodRadarBroker || (brokerInfo && brokerInfo.radar && brokerInfo.radar.configured));
+    option.hidden = option.disabled = !on;
+    if (!on && $('flash2dPattern').value === 'radar') { $('flash2dPattern').value = 'even'; syncPattern(); }
+  }
+  function syncPattern() {
+    $('flash2dDriftControls').hidden = $('flash2dPattern').value !== 'drift';
+    $('flash2dRadarControls').hidden = $('flash2dPattern').value !== 'radar';
+  }
+  window.__floodSyncRadar = syncRadarOption;
+  const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+  function liveSummary(got, i) {
+    const step = got.info.stepSeconds, newest = got.info.times[got.info.times.length - 1];
+    const speed = Math.hypot(i.radarMotionU, i.radarMotionV) * 3.6, heading = (Math.atan2(i.radarMotionU, -i.radarMotionV) * 180 / Math.PI + 360) % 360;
+    const motion = i.radarMotionReliable === 1 ? `the rain is moving ${COMPASS[Math.round(heading / 45) % 8]} at ${fmt(speed, 0)} km/h` : 'the rain\'s movement could not be told, so the forecast holds the latest picture still';
+    const edge = i.radarMinKnownShare < 1 ? ` Where the forecast would bring rain from beyond the radar's edge (${fmt((1 - i.radarMinKnownShare) * 100, 0)}% of the area by the end), the nearest known rain is used.` : '';
+    return `Live radar (${got.info.source}; ${got.info.attribution}), newest picture ${when(newest)}, ${Math.round(got.info.ageSeconds / 60)} min old: the last ${fmt(i.radarObservedSteps * step / 60, 0)} minutes as observed, then a ${fmt(i.radarForecastSteps * step / 60, 0)}-minute forecast; ${motion}. On average ${fmt(i.radarObservedRainMm, 1)} mm fell on the area and ${fmt(i.radarForecastRainMm, 1)} mm is forecast, ${fmt(i.radarRunoffMm, 1)} mm of it running off after what soaks in. A forecast cannot make new storms or end existing ones.${edge}`;
+  }
+  // The time slider: positions 0 to N-1 are the depth snapshots; position N is the deepest water over the whole run (the default view).
+  function setupTimeline(a, g, r, peakRun, live) {
+    if (!r.snapDepth || !r.snapTimes || r.snapTimes.length < 2) { hideTimeline(); return; }
+    flashTimeline = { a, g, n: g.W * g.H, depth: r.snapDepth, times: r.snapTimes, peakRun, live, truncated: !!r.snapTruncated };
+    const slider = $('flash2dTime');
+    slider.max = String(r.snapTimes.length); slider.value = String(r.snapTimes.length);
+    $('flash2dTimeline').hidden = false;
+    $('flash2dTimeLabel').textContent = 'Showing the deepest water each cell held over the whole run. Drag the slider to see the water at a moment.';
+  }
+  function timeLabel(t) {
+    const tl = flashTimeline, minutes = Math.round(t / 60);
+    if (!tl.live) return `${minutes} minutes into the run`;
+    const rel = Math.round((t - tl.live.nowS) / 60);
+    if (rel < 0) return `${-rel} min before now: rain as the radar saw it`;
+    if (rel === 0) return 'Now: the newest radar picture';
+    return t > tl.live.endS + 1 ? `${rel} min after now: the forecast has ended, so no more rain is assumed` : `${rel} min after now: forecast rain`;
+  }
+  function showTimelineAt(i) {
+    const tl = flashTimeline;
+    if (!tl || tl.a !== state.a) { hideTimeline(); return; }
+    if (i >= tl.times.length) {
+      state.run = tl.peakRun; showInertialRun(tl.a);
+      $('flash2dTimeLabel').textContent = 'Showing the deepest water each cell held over the whole run.';
+      return;
+    }
+    const d = Float64Array.from(tl.depth.subarray(i * tl.n, (i + 1) * tl.n));
+    const fr = F.inertialExpand(tl.a, tl.g, { depth: d }, { peak: false });
+    state.run = { ...fr, arrival: tl.peakRun.arrival, peakHazard: tl.peakRun.peakHazard };
+    $('colorMode').value = 'depth';
+    drawMap();
+    $('flash2dTimeLabel').textContent = `${timeLabel(tl.times[i])}. The map shows the water at this moment; the counts, buildings and roads still describe the deepest water.${tl.truncated ? ' Later moments were not kept (too much data).' : ''}`;
+  }
+  $('flash2dTime').addEventListener('input', () => showTimelineAt(Number($('flash2dTime').value)));
+  $('flash2dPeak').addEventListener('click', () => { if (!flashTimeline) return; $('flash2dTime').value = String(flashTimeline.times.length); showTimelineAt(flashTimeline.times.length); });
   $('flashMethod').addEventListener('change', () => { syncFlashMethod(); runScenario(); });
+  $('flash2dPattern').addEventListener('change', () => { syncPattern(); runScenario(); });
   $('flash2dRun').addEventListener('click', startFlash2d);
   $('flash2dCancel').addEventListener('click', () => { runScenario(); flashStatus('2D cancelled. The screening model is shown.'); });
   window.__floodFlash2d = (options) => { if (options && options.method) { $('flashMethod').value = options.method; syncFlashMethod(); } startFlash2d(); };
@@ -6532,6 +6624,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${sat ? `<h2>Satellite check</h2>${sat}` : ''}
       <h2>About this model</h2><p>${escapeHtml((state.areaMeta && state.areaMeta.source) || '')}</p>
       <p class="hint">Screening only: it shows land below the chosen water surface that connects to the river or sea. It misses levees, drains and the timing of a flood. Do not use for evacuation or property decisions; follow official warnings from the Bureau of Meteorology and your state emergency service.</p>
+      <p class="hint">Open source (MIT), provided as is with no warranty. Uses data feeds that do not allow commercial use, so for non-commercial use only. See NOTICE.md in the project's repository.</p>
       <p class="hint">Open this model: <a href="${escapeHtml(shareUrl())}">link</a></p></body></html>`);
     w.document.close();
     return true;
@@ -8339,6 +8432,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       brokerInfo = r.ok ? await r.json() : { error: `HTTP ${r.status}` };
     } catch (err) { brokerInfo = { error: err && err.name === 'TimeoutError' ? 'timed out' : String(err && err.message || err) }; }
     brokerInfo.checkedAt = new Date().toISOString();
+    if (typeof syncRadarOption === 'function') syncRadarOption();
     renderVersions();
     return brokerInfo;
   }

@@ -213,9 +213,43 @@
             <option value="1">1 hour</option><option value="2" selected>2 hours</option><option value="4">4 hours</option>
           </select></label>
         </div>
+        <div class="storm-row">
+          <label>Rain pattern <select id="flash2dPattern" aria-label="How the storm's rain is spread over the area">
+            <option value="even" selected>Even over the area</option><option value="drift">One drifting storm cell</option>
+            <option value="radar" hidden disabled>Live radar: last hour and a forecast</option>
+          </select></label>
+        </div>
+        <div id="flash2dDriftControls" hidden>
+          <div class="storm-row">
+            <label>Core radius (km) <input id="flash2dDriftRadius" type="number" min="0.5" max="50" value="3" step="0.5" aria-label="Radius of the storm cell's core in kilometres"></label>
+            <label>Moves toward <select id="flash2dDriftHeading" aria-label="Direction the storm cell moves toward">
+              <option value="0">north</option><option value="45">north-east</option><option value="90" selected>east</option><option value="135">south-east</option>
+              <option value="180">south</option><option value="225">south-west</option><option value="270">west</option><option value="315">north-west</option>
+            </select></label>
+            <label>Speed (km/h) <input id="flash2dDriftSpeed" type="number" min="0" max="120" value="30" step="5" aria-label="Speed of the storm cell in kilometres per hour"></label>
+          </div>
+          <p class="hint">The storm's rain is what falls in the core; it eases to 60% one radius out and 14% two radii out. The cell is over the middle of the area halfway through the rain. So the area as a whole gets less than the even storm, and the line under the map says how much. A made-up storm to try ideas, not a forecast.</p>
+        </div>
+        <div id="flash2dRadarControls" hidden>
+          <div class="storm-row">
+            <label>Forecast ahead <select id="flash2dRadarHorizon" aria-label="How far ahead to forecast the rain from the radar">
+              <option value="1800">30 minutes</option><option value="3600" selected>1 hour</option><option value="7200">2 hours</option>
+            </select></label>
+            <label>What if the forecast rain is <select id="flash2dRadarScale" aria-label="Scale the forecast rain for a lighter or heavier what-if">
+              <option value="0.7">30% lighter</option><option value="1" selected>as forecast</option><option value="1.4">40% heavier</option>
+            </select></label>
+          </div>
+          <p class="hint">Uses the broker's radar: the last hour as it fell, then the latest picture carried along the way the rain is moving. The ground type above sets what soaks in; the storm's own rain amount is not used. The forecast cannot make new rain, and it fades in reliability within an hour. If the radar is missing, old or has gaps, it says so and does not run. Indicative only, not an official warning: check Bureau and council warnings, and never enter floodwater.</p>
+        </div>
         <div class="storm-row"><button type="button" class="btn small primary" id="flash2dRun">Run 2D for this storm</button><button type="button" class="btn small" id="flash2dCancel" disabled>Cancel</button></div>
         <progress id="flash2dProgress" max="1" value="0" aria-labelledby="flash2dStatus"></progress>
         <p class="hint" id="flash2dStatus" role="status" aria-live="polite"></p>
+        <div id="flash2dTimeline" hidden>
+          <label for="flash2dTime">Time through the run</label>
+          <input id="flash2dTime" type="range" min="0" max="0" value="0" step="1" aria-describedby="flash2dTimeLabel">
+          <button type="button" class="btn small" id="flash2dPeak">Show deepest water</button>
+          <p class="hint" id="flash2dTimeLabel" role="status" aria-live="polite"></p>
+        </div>
       </div>
       <p class="hint" id="stormSummary" aria-live="polite"></p>
       <p class="hint" id="ifdNote"></p>
@@ -540,6 +574,7 @@
       </div>
       <p class="hint">Files stay in your browser. Free LiDAR DEMs: <a href="https://elevation.fsdf.org.au/" target="_blank" rel="noopener">ELVIS</a>.</p>
     </fieldset>
+    <p class="about-text" id="licenceNote"><strong>Open source, no warranty, not for commercial use.</strong> The code is MIT-licensed and provided as is, without warranty of any kind. It uses data feeds (for example the Bureau of Meteorology's anonymous data and RainViewer's free radar) whose terms do not allow commercial use, so this site is for non-commercial use only. Indicative only: not for emergency, safety or property decisions. <a href="https://github.com/ghedwards/flood-explorer/blob/HEAD/NOTICE.md" target="_blank" rel="noopener">Licence, warranty and data terms</a></p>
     <p class="about-text">Source code and method: <a href="https://github.com/ghedwards/flood-explorer" target="_blank" rel="noopener">github.com/ghedwards/flood-explorer</a></p>
     <p class="about-text hint" id="versionInfo"></p>
   </div>
