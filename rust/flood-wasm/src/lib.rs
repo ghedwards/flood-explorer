@@ -260,6 +260,14 @@ fn with_wave<R>(h: f64, f: impl FnOnce(&Wave) -> R) -> Result<R, String> {
     })
 }
 
+/// The radar frames a request carries (the broker's grid, in tenths of mm/h end to end), as the live storm takes them.
+fn live_radar_of(b: &Bag) -> Result<live::LiveRadar, String> {
+    Ok(live::LiveRadar {
+        w: b.num("radarW") as usize, h: b.num("radarH") as usize, x0: b.num("radarX0"), y0_northing: b.num("radarY0"), dx: b.num("radarDx"), dy: b.num("radarDy"),
+        step_s: b.num("radarStepS"), frames_tenths: b.f64s("radarFrames").ok_or("missing radar frames")?,
+    })
+}
+
 fn grid_of(b: &Bag) -> Result<Grid, String> {
     let w = b.num("W");
     let h = b.num("H");
@@ -1073,15 +1081,12 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             if b.num("radarW").is_finite() {
                 let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
                 let loss = |k: &str| { let v = b.num(k); if v.is_finite() { v } else { 0.0 } };
-                let radar = live::LiveRadar {
-                    w: b.num("radarW") as usize, h: b.num("radarH") as usize, x0: b.num("radarX0"), y0_northing: b.num("radarY0"), dx: b.num("radarDx"), dy: b.num("radarDy"),
-                    step_s: b.num("radarStepS"), frames_tenths: b.f64s("radarFrames").ok_or("missing radar frames")?,
-                };
+                let radar = live_radar_of(b)?;
                 let area = live::LiveArea { w: solver.grid.w, h: solver.grid.h, west: b.num("geoWest"), east: b.num("geoEast"), north: b.num("geoNorth"), south: b.num("geoSouth"), zone: b.num("radarZone") as i32 };
                 let params = live::LiveParams {
                     horizon_s: b.num("radarHorizonS"), decay_tau_s: optional("radarDecayTauS", f64::INFINITY), scale: optional("radarScale", 1.0),
                     initial_loss_mm: loss("initialLoss"), continuing_mm_h: loss("contLoss"), after_hours: optional("afterHours", 1.0),
-                    max_speed_m_s: optional("radarMaxSpeed", 25.0), min_coverage: optional("radarMinCoverage", 0.9),
+                    max_speed_m_s: optional("radarMaxSpeed", 25.0), min_coverage: optional("radarMinCoverage", 0.9), bias: optional("radarBias", 1.0),
                 };
                 let s = live::live_storm(&radar, &area, &params)?;
                 let seconds = s.field.seconds();
@@ -1094,6 +1099,15 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 solver.set_rain_field(s.field)?;
             }
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
+        }
+        "radarBias" => {
+            // how far the radar is off at rain gauges (live.rs `bias_factor`): `gauges` is lat, lon, mm, hours for each gauge, end to end
+            let radar = live_radar_of(b)?;
+            let flat = b.f64s("gauges").unwrap_or_default();
+            if !flat.len().is_multiple_of(4) { return Err("gauges must be lat, lon, mm and hours for each gauge".into()); }
+            let gauges: Vec<live::Gauge> = flat.chunks(4).map(|g| live::Gauge { lat: g[0], lon: g[1], mm: g[2], hours: g[3] }).collect();
+            let r = live::bias_factor(&radar, b.num("radarZone") as i32, &gauges)?;
+            o.num("factor", r.factor).num("applied", if r.applied { 1.0 } else { 0.0 }).num("gaugesUsed", r.gauges_used as f64).num("gaugeMm", r.gauge_mm).num("radarMm", r.radar_mm).u8s("reason", r.reason.as_bytes());
         }
         "inertialStep" => {
             INERTIAL.with(|slot| -> Result<(), String> {

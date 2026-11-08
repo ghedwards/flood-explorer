@@ -142,3 +142,29 @@ test('the page client reads what the real broker serves, including a cropped win
   fs.writeFileSync(path.join(dir, 'radar.json'), JSON.stringify({ source: 'Contract radar', attribution: 'A', licence: 'L', crs: 'EPSG:28356', grid: { w: N, h: N, x0: 450000, y0: 7010000, dx: 1000, dy: 1000 }, frames: old }));
   await assert.rejects(fetchRadar({ broker, geo, toMga: F.toMga }), (e) => e.code === 'stale');
 });
+
+test('gauge totals rescale the radar through the model, and untrustworthy gauges are declined with a reason', async () => {
+  const { readRadar } = await api;
+  const steady = body({ frames: Array.from({ length: 7 }, () => blob(500000, 6960000)) });
+  const { radar } = readRadar(steady, ZONE);
+  // over the last hour the radar puts down (rate in mm/h) for 6 ten-minute steps: the same number of mm as the rate
+  const spots = [[500000, 6960000], [502000, 6960000], [498000, 6961000], [500000, 6962500], [501000, 6958000]];
+  const analytic = ([e, n]) => 40 * Math.exp(-((e - 500000) ** 2 + (n - 6960000) ** 2) / (2 * 3000 * 3000));
+  const gauges = (k) => spots.map((s) => { const [lat, lon] = F.fromMga(s[0], s[1], ZONE); return { lat, lon, mm: analytic(s) * k, hours: 1 }; });
+  const up = F.radarBias(radar, ZONE, gauges(1.5));
+  assert.ok(up.applied && Math.abs(up.factor - 1.5) < 0.1 && up.gaugesUsed === 5, JSON.stringify(up));
+  assert.match(up.reason, /radar scaled by 1\.\d\d/);
+  assert.ok(Math.abs(F.radarBias(radar, ZONE, gauges(1)).factor - 1) < 0.07);
+  const few = F.radarBias(radar, ZONE, gauges(1.5).slice(0, 2));
+  assert.ok(!few.applied && few.factor === 1 && /only 2 usable/.test(few.reason), JSON.stringify(few));
+  const odd = gauges(1); odd[0].mm *= 40;
+  assert.ok(!F.radarBias(radar, ZONE, odd).applied);
+  assert.throws(() => F.radarBias(radar, 5, gauges(1)), /zone/);
+  // the factor goes into the live storm and scales the radar's rain, observed and forecast
+  const geo = geoAround(500000, 6960000), n = 40 * 40;
+  const run = (radarBias) => F.inertialStart({ W: 40, H: 40, cell: 250, dem: new Float32Array(n), valid: new Uint8Array(n).fill(1) }, { seconds: 600, rainMmH: 0, roughness: 0.035, initialDepth: 0, inflow: 0, inflowCell: -1,
+    stages: new Float64Array(n).fill(NaN), ...radar, radarZone: ZONE, geoWest: geo.west, geoEast: geo.east, geoNorth: geo.north, geoSouth: geo.south, radarHorizonS: 3600, radarBias });
+  const plain = run(1), wetter = run(1.5);
+  assert.ok(Math.abs(wetter.radarObservedRainMm / plain.radarObservedRainMm - 1.5) < 0.01 && Math.abs(wetter.radarForecastRainMm / plain.radarForecastRainMm - 1.5) < 0.01);
+  assert.throws(() => run(0), /bias factor/);
+});

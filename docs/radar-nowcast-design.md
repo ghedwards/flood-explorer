@@ -368,6 +368,25 @@ synthetic archives (a translating storm scores high, a storm that jumps around c
 and dry origins are counted, time gaps split runs). **No real archive has been scored.** See
 [validation/nowcast-skill.md](validation/nowcast-skill.md).
 
+## Gauge bias correction status (8 November 2026)
+
+Built and tested: `live::bias_factor` (`rust/flood-core/src/live.rs`), a `bias` input to the live
+storm that scales all the radar's rain (observed and forecast), and a `radarBias` WebAssembly call
+(`F.radarBias(radar, zone, gauges)`). Given gauge totals over the last `hours` it compares them with the
+radar's accumulation at the same places and returns a factor, **or declines with a reason**: fewer than
+3 usable gauges, under 3 mm caught in all, fewer than 3 gauges with rain to compare, no radar rain
+where gauges saw some, or gauges that disagree with each other (the factor must be within a factor of
+2 of their median ratio, so one bad gauge cannot drive it). The factor is limited to 0.5 to 2 and says
+when it was. Tested on synthetic radar with gauges that are unbiased, wetter, drier, far off, few,
+wild, outside the radar or short of history.
+
+**Not wired into the page, deliberately.** The only gauge data the page has is the Bureau's rolling
+totals in `readings.rainObs`, refreshed about hourly with no observation time per station, so there is
+no way to know the totals end when the newest radar frame does. A misaligned total would scale the
+radar by the wrong amount and look authoritative. Wiring this needs a gauge feed with observation times
+(10 to 30 minute totals), or a deployer who supplies gauge totals with the radar. Until then the page
+runs the radar as measured and says so.
+
 ## Risks and open questions
 
 - **Licence and access** to Bureau radar, or the cost and terms of a commercial

@@ -48,6 +48,8 @@ pub struct LiveParams {
     pub max_speed_m_s: f64,
     /// The least share of the area the radar must cover (0 to 1).
     pub min_coverage: f64,
+    /// Multiplies all the radar's rain, observed and forecast (1 = as measured), usually from [`bias_factor`].
+    pub bias: f64,
 }
 
 pub struct LiveStorm {
@@ -93,11 +95,12 @@ pub fn live_storm(radar: &LiveRadar, area: &LiveArea, p: &LiveParams) -> Result<
     if !(radar.step_s.is_finite() && (60.0..=3600.0).contains(&radar.step_s)) { return Err("radar frames must be 1 to 60 minutes apart".into()); }
     if !(p.after_hours.is_finite() && (0.0..=6.0).contains(&p.after_hours)) { return Err("the run can continue for up to 6 hours after the forecast".into()); }
     let grid = RadarGrid { w: radar.w, h: radar.h, x0: radar.x0, y0: -radar.y0_northing, dx: radar.dx, dy: radar.dy };
+    if !(p.bias.is_finite() && (0.1..=10.0).contains(&p.bias)) { return Err("the radar bias factor must be from 0.1 to 10".into()); }
     let mut frames: Vec<Vec<f32>> = Vec::with_capacity(m);
     for (k, f) in radar.frames_tenths.chunks(cells).enumerate() {
         let missing = f.iter().filter(|v| !v.is_finite() || **v < 0.0).count();
         if missing > 0 { return Err(format!("radar frame {k} has {missing} cells with no measurement; a live storm needs complete frames")); }
-        frames.push(f.iter().map(|v| (*v / 10.0) as f32).collect());
+        frames.push(f.iter().map(|v| ((*v / 10.0) * p.bias).min(crate::flash::MAX_RATE) as f32).collect());
     }
     let points = area_points(area)?;
     let (w, h) = (area.w, area.h);
@@ -126,6 +129,81 @@ pub fn live_storm(radar: &LiveRadar, area: &LiveArea, p: &LiveParams) -> Result<
     })
 }
 
+/// A rain gauge's total over the `hours` that ended at the newest radar frame.
+pub struct Gauge { pub lat: f64, pub lon: f64, pub mm: f64, pub hours: f64 }
+
+/// What [`bias_factor`] found, and whether it should be used.
+#[derive(Debug, Clone)]
+pub struct Bias {
+    /// The factor to multiply the radar by: gauge rain over radar rain. 1 when it was not applied.
+    pub factor: f64,
+    pub applied: bool,
+    /// Why it was or was not applied, in words for the page.
+    pub reason: String,
+    pub gauges_used: usize,
+    pub gauge_mm: f64,
+    pub radar_mm: f64,
+}
+
+const MIN_GAUGES: usize = 3;
+const MIN_GAUGE_TOTAL_MM: f64 = 3.0;
+const MIN_WET_MM: f64 = 0.5;
+const CLAMP: (f64, f64) = (0.5, 2.0);
+
+/// Compare the radar's rain at rain gauges with what they caught, and say by what factor the radar is off.
+///
+/// Radar rain is an estimate from reflectivity and is often wrong by a factor of two or more, so
+/// gauges are the check. For each gauge the radar's accumulation over the same `hours` is taken from
+/// the observed intervals ending at the newest frame, at the gauge's place. The factor is the ratio of
+/// the sums over gauges, kept only when it is trustworthy:
+/// - at least 3 gauges inside the radar with the same window, and the gauges caught at least 3 mm in all;
+/// - at least 3 gauges where either side saw 0.5 mm, and the factor agrees with their median ratio to
+///   within a factor of 2 (one bad gauge cannot drive it);
+/// - the result is limited to 0.5 to 2, and says when it was.
+///
+/// The caller must give gauge totals that end within about 15 minutes of the newest frame; this function
+/// cannot tell. Anything else returns factor 1, not applied, with the reason.
+pub fn bias_factor(radar: &LiveRadar, zone: i32, gauges: &[Gauge]) -> Result<Bias, String> {
+    let cells = radar.w * radar.h;
+    if cells == 0 || radar.frames_tenths.is_empty() || !radar.frames_tenths.len().is_multiple_of(cells) { return Err("radar frames must be a whole number of grid-sized frames".into()); }
+    if !(49..=58).contains(&zone) { return Err("the radar's MGA zone must be 49 to 58".into()); }
+    let m = radar.frames_tenths.len() / cells;
+    let grid = RadarGrid { w: radar.w, h: radar.h, x0: radar.x0, y0: -radar.y0_northing, dx: radar.dx, dy: radar.dy };
+    let none = |reason: &str| Bias { factor: 1.0, applied: false, reason: reason.to_string(), gauges_used: 0, gauge_mm: 0.0, radar_mm: 0.0 };
+    let (mut pairs, mut skipped) = (Vec::new(), 0usize);
+    for g in gauges {
+        if !(g.lat.is_finite() && g.lon.is_finite() && g.mm.is_finite() && g.mm >= 0.0 && g.hours.is_finite() && g.hours > 0.0) { skipped += 1; continue; }
+        let n = (g.hours * 3600.0 / radar.step_s).round() as usize;
+        if n == 0 || n + 1 > m { skipped += 1; continue; }   // the radar has not been watching that long
+        let (e, nth) = to_mga(g.lat, g.lon, zone);
+        let mut mm = 0.0;
+        let mut ok = true;
+        for k in (m - 1 - n)..(m - 1) {
+            let frame: Vec<f32> = radar.frames_tenths[k * cells..(k + 1) * cells].iter().map(|v| if *v < 0.0 || !v.is_finite() { f32::NAN } else { (*v / 10.0) as f32 }).collect();
+            let v = grid.sample(&frame, e, -nth);
+            if !v.is_finite() { ok = false; break; }
+            mm += v as f64 * radar.step_s / 3600.0;
+        }
+        if ok { pairs.push((g.mm, mm)); } else { skipped += 1; }
+    }
+    if pairs.len() < MIN_GAUGES { return Ok(none(&format!("only {} usable rain gauges ({} skipped); at least {MIN_GAUGES} are needed to check the radar", pairs.len(), skipped))); }
+    let (gs, rs): (f64, f64) = (pairs.iter().map(|p| p.0).sum(), pairs.iter().map(|p| p.1).sum());
+    if gs < MIN_GAUGE_TOTAL_MM { return Ok(Bias { gauges_used: pairs.len(), gauge_mm: gs, radar_mm: rs, ..none(&format!("the gauges caught only {gs:.1} mm, too little to check the radar against")) }); }
+    if rs <= 0.0 { return Ok(Bias { gauges_used: pairs.len(), gauge_mm: gs, radar_mm: rs, ..none("the radar saw no rain where the gauges did, so it cannot be scaled") }); }
+    let mut ratios: Vec<f64> = pairs.iter().filter(|p| p.0.max(p.1) >= MIN_WET_MM).filter(|p| p.1 > 0.0).map(|p| p.0 / p.1).collect();
+    if ratios.len() < MIN_GAUGES { return Ok(Bias { gauges_used: pairs.len(), gauge_mm: gs, radar_mm: rs, ..none("fewer than 3 gauges had rain to compare") }); }
+    ratios.sort_by(|a, b| a.total_cmp(b));
+    let median = ratios[ratios.len() / 2];
+    let raw = gs / rs;
+    if raw > 2.0 * median || raw < 0.5 * median {
+        return Ok(Bias { gauges_used: pairs.len(), gauge_mm: gs, radar_mm: rs, ..none("the gauges disagree with each other about how wrong the radar is, so no single factor is trusted") });
+    }
+    let factor = raw.clamp(CLAMP.0, CLAMP.1);
+    let clamped = (factor - raw).abs() > 1e-12;
+    Ok(Bias { factor, applied: true, gauges_used: pairs.len(), gauge_mm: gs, radar_mm: rs,
+        reason: format!("{} gauges caught {gs:.1} mm where the radar estimated {rs:.1} mm: radar scaled by {factor:.2}{}", pairs.len(), if clamped { format!(" (limited from {raw:.2})") } else { String::new() }) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,7 +230,7 @@ mod tests {
         LiveArea { w: 40, h: 40, west: w, east: ea, north: no, south: s, zone: ZONE }
     }
     fn params() -> LiveParams {
-        LiveParams { horizon_s: 3600.0, decay_tau_s: f64::INFINITY, scale: 1.0, initial_loss_mm: 0.0, continuing_mm_h: 0.0, after_hours: 1.0, max_speed_m_s: 25.0, min_coverage: 0.9 }
+        LiveParams { horizon_s: 3600.0, decay_tau_s: f64::INFINITY, scale: 1.0, initial_loss_mm: 0.0, continuing_mm_h: 0.0, after_hours: 1.0, max_speed_m_s: 25.0, min_coverage: 0.9, bias: 1.0 }
     }
 
     #[test]
@@ -219,5 +297,67 @@ mod tests {
         let e = live_storm(&radar(ok.clone()), &far, &params()).err().unwrap();
         assert!(e.contains("covers only"), "{e}");
         assert!(live_storm(&radar(ok), &a, &LiveParams { after_hours: 9.0, ..params() }).is_err());
+    }
+
+    fn radar_mm_at(r: &LiveRadar, e: f64, n: f64, hours: f64) -> f64 {
+        let cells = r.w * r.h; let m = r.frames_tenths.len() / cells; let steps = (hours * 3600.0 / r.step_s).round() as usize;
+        let grid = RadarGrid { w: r.w, h: r.h, x0: r.x0, y0: -r.y0_northing, dx: r.dx, dy: r.dy };
+        (m - 1 - steps..m - 1).map(|k| { let f: Vec<f32> = r.frames_tenths[k * cells..(k + 1) * cells].iter().map(|v| (*v / 10.0) as f32).collect(); grid.sample(&f, e, -n) as f64 * r.step_s / 3600.0 }).sum()
+    }
+    fn steady() -> LiveRadar { radar((0..7).map(|_| blob(500_000.0, 6_960_000.0)).collect()) }
+    /// Gauges at the spots, each catching `k` times what the radar saw there over the last hour.
+    fn at(r: &LiveRadar, spots: &[(f64, f64)], factors: &[f64]) -> Vec<Gauge> {
+        spots.iter().zip(factors).map(|((e, n), k)| { let (lat, lon) = from_mga(*e, *n, ZONE); Gauge { lat, lon, mm: radar_mm_at(r, *e, *n, 1.0) * k, hours: 1.0 } }).collect()
+    }
+    const SPOTS: [(f64, f64); 5] = [(500_000.0, 6_960_000.0), (502_000.0, 6_960_000.0), (498_000.0, 6_961_000.0), (500_000.0, 6_962_500.0), (501_000.0, 6_958_000.0)];
+
+    #[test]
+    fn gauges_that_catch_more_or_less_rescale_the_radar() {
+        let r = steady();
+        let b = bias_factor(&r, ZONE, &at(&r, &SPOTS, &[1.5; 5])).unwrap();
+        assert!(b.applied && (b.factor - 1.5).abs() < 1e-6, "{b:?}");
+        let b = bias_factor(&r, ZONE, &at(&r, &SPOTS, &[1.0; 5])).unwrap();
+        assert!(b.applied && (b.factor - 1.0).abs() < 1e-6);
+        let b = bias_factor(&r, ZONE, &at(&r, &SPOTS, &[0.7; 5])).unwrap();
+        assert!((b.factor - 0.7).abs() < 1e-6 && b.reason.contains("scaled by 0.70"), "{}", b.reason);
+        // a radar that is out by more than 2 is corrected only part of the way, and says so
+        let b = bias_factor(&r, ZONE, &at(&r, &SPOTS, &[4.0; 5])).unwrap();
+        assert!(b.applied && b.factor == 2.0 && b.reason.contains("limited from 4.00"), "{b:?}");
+    }
+
+    #[test]
+    fn it_declines_when_it_cannot_trust_the_gauges() {
+        let r = steady();
+        let few = bias_factor(&r, ZONE, &at(&r, &SPOTS[..2], &[1.5, 1.5])).unwrap();
+        assert!(!few.applied && few.factor == 1.0 && few.reason.contains("only 2 usable"), "{few:?}");
+        // gauges that caught almost nothing
+        let dry = bias_factor(&r, ZONE, &at(&r, &SPOTS, &[0.01; 5])).unwrap();
+        assert!(!dry.applied && dry.reason.contains("too little"), "{dry:?}");
+        // one gauge wildly different drags the sum: the sum-ratio and the median disagree, so decline
+        let mut g = at(&r, &SPOTS, &[1.0; 5]);
+        g[0].mm *= 40.0;
+        let odd = bias_factor(&r, ZONE, &g).unwrap();
+        assert!(!odd.applied && odd.factor == 1.0 && odd.reason.contains("disagree"), "{odd:?}");
+        // gauges outside the radar, or asking for more history than the radar has, are skipped and counted
+        let mut g = at(&r, &SPOTS, &[1.5; 5]);
+        g[0].lat = -40.0; g[1].hours = 3.0; g[2].mm = f64::NAN;
+        let skipped = bias_factor(&r, ZONE, &g).unwrap();
+        assert!(!skipped.applied && skipped.reason.contains("2 usable") && skipped.reason.contains("3 skipped"), "{skipped:?}");
+        // a radar that saw nothing where the gauges did cannot be scaled
+        let blank = radar((0..7).map(|_| vec![0.0f32; N * N]).collect());
+        let b = bias_factor(&blank, ZONE, &at(&r, &SPOTS, &[1.0; 5])).unwrap();
+        assert!(!b.applied && b.reason.contains("no rain"), "{b:?}");
+        assert!(bias_factor(&r, 5, &[]).is_err());
+    }
+
+    #[test]
+    fn a_bias_factor_scales_the_whole_live_storm_and_is_checked() {
+        let frames: Vec<Vec<f32>> = (0..4).map(|_| blob(500_000.0, 6_960_000.0)).collect();
+        let a = area_at(500_000.0, 6_960_000.0);
+        let plain = live_storm(&radar(frames.clone()), &a, &params()).unwrap();
+        let wetter = live_storm(&radar(frames.clone()), &a, &LiveParams { bias: 1.5, ..params() }).unwrap();
+        assert!((wetter.observed_rain_mm / plain.observed_rain_mm - 1.5).abs() < 2e-3 && (wetter.forecast_rain_mm / plain.forecast_rain_mm - 1.5).abs() < 2e-3,
+            "{} {}", wetter.observed_rain_mm / plain.observed_rain_mm, wetter.forecast_rain_mm / plain.forecast_rain_mm);
+        for bad in [0.0, -1.0, 11.0, f64::NAN] { assert!(live_storm(&radar(frames.clone()), &a, &LiveParams { bias: bad, ..params() }).is_err(), "{bad}"); }
     }
 }
