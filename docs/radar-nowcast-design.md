@@ -223,6 +223,41 @@ Built: `rust/flood-core/src/rainfield.rs` and a hook in `inertial.rs`.
 Not done: interpolation between frames in time, radar,
 nowcast and everything from phase 2 on.
 
+## Phase 2 status and data-source findings (8 November 2026)
+
+**Built, source-independent:** `rust/flood-core/src/radar.rs`.
+- `resample`: a radar frame (mm/h on a north-up grid in the area's metric
+  coordinates) to the solver's cells, bilinear at each cell centre, returning the
+  share of cells the radar actually covered. Cells outside the radar are NaN.
+- `observed_field`: equally spaced observed frames to a `RainField` (before
+  losses). A frame that covers too little of the area, has the wrong size or no
+  frames at all is refused; partly covered edge cells take the nearest value and
+  are never silently zero, and rates are clamped to 0 to 1000 mm/h.
+- `decode_legend`: RGBA image to rates through a source-supplied colour legend;
+  transparent is no echo, unknown colours are an error, not a guess.
+- Not yet wired to the broker, the page or WebAssembly: there is no source to
+  feed it.
+
+**Source checks run from the build sandbox** (what a source allows from the
+broker's own host may differ):
+- **Bureau of Meteorology radar by FTP:** the sandbox cannot reach FTP at all
+  (connection refused on port 21), so the product directory, file format and
+  terms are **unverified**. The Bureau's radar web pages have moved to a new
+  address. Needs a check from the deployed broker host and a read of the
+  Bureau's terms for automated use.
+- **RainViewer free tier** (used today for the map overlay): reachable and
+  returning frames, but its own published terms say the free API is for
+  *personal and educational use*; it has past frames only (10-minute steps, about
+  2 hours, **nowcast discontinued**), a single colour scheme (Universal Blue), zoom 7 at
+  most and 100 requests per IP per minute. Tiles come back as coarse blocky
+  images. It is not suitable as a public model input from a hosted broker.
+- **Commercial nowcast API:** not checked; needs a key, price and terms.
+
+**Decision needed before the broker endpoint is built:** which source to use.
+The options, in the order I would look at them: the Bureau's radar (free, needs
+the access and licence confirmed), a commercial provider (works, costs money),
+or running the nowcast ourselves on the Bureau frames (phase 3).
+
 ## Risks and open questions
 
 - **Licence and access** to Bureau radar, or the cost and terms of a commercial
