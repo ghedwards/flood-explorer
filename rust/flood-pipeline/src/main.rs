@@ -7,6 +7,7 @@
 //!   flood floodinfo <out_dir>
 //!   flood events <config/events.json> <gauges.geojson> <out.json>
 //!   flood storms <config/events.json> <out.json>
+//!   flood extent-skill <model_depth.tif> <outline.geojson> [--thresholds 0.05,0.1,0.3] [--margin 500] [--out report.json]
 //!   flood nowcast-skill <radar_dir> [--history 4] [--max-lead 12] [--thresholds 1,5,10] [--max-speed 25] [--out report.json]
 //!   flood sealevels <events.json> <sea.json>
 //!   flood sealevels merge <events.json> <sea.json> <out.json>
@@ -48,6 +49,14 @@ fn run(args: &[String]) -> R<String> {
     match args.first().map(|s| s.as_str()) {
         Some("national") => national::run(a(1)?, &national::http_json),
         Some("floodinfo") => floodinfo::run(a(1)?, Some(&flood_feeds::flood_warnings), Some(&flood_feeds::flood_classes)),
+        Some("extent-skill") => {
+            let d = extent_skill::Options::default();
+            let o = extent_skill::Options {
+                thresholds: match opt(args, "--thresholds") { Some(v) => v.split(',').map(|t| t.trim().parse::<f64>().map_err(|_| format!("bad threshold {t}"))).collect::<Result<_, _>>()?, None => d.thresholds },
+                margin_m: match opt(args, "--margin") { Some(v) => v.parse().map_err(|_| format!("bad margin {v}"))?, None => d.margin_m },
+            };
+            extent_skill::run(a(1)?, a(2)?, &o, opt(args, "--out").as_deref())
+        }
         Some("nowcast-skill") => {
             let d = nowcast_skill::Options::default();
             let o = nowcast_skill::Options {
