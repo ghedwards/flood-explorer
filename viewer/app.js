@@ -4400,6 +4400,9 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const L = window.L;
     buildNationalLayers(L, m);
     const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures and events (official)', 'Emergency warnings (state)'];
+    // When the build could not reach the Bureau's gauge service it rebuilds the list from the flood class feed
+    // (meta.gaugeSource), whose gauges are all "information" gauges: show them, or the map would have none
+    if (nat.data && nat.data.meta && nat.data.meta.gaugeSource) defaultsOn.push('Flood information gauges (BoM)');
     for (const [name, layer] of Object.entries(nat.layers)) {
       registerOverlay(name, layer);
       if (nat.defaultsApplied) continue;   // respect what the viewer has switched since
