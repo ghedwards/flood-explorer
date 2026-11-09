@@ -44,7 +44,7 @@ pulls those feeds is not free to be run commercially.
 | Bureau of Meteorology website pages and radar images | Automated scraping is not allowed; radar images "may be subject to a data licence agreement"; commercial reuse needs written permission. This project's code does not scrape the Bureau's website or fetch its radar. | Bureau copyright page |
 | RainViewer radar overlay on the map | The free API is for **personal and educational use**; past frames only, rate limited | RainViewer API pages |
 | Esri World Imagery basemap | Licensed under the Esri Master License Agreement; the layer is not intended for exporting tiles for offline use. Read the agreement before any commercial use. | Esri item page |
-| CARTO basemap tiles (the Streets basemap) | Free for non-commercial use up to 5 million requests a month; commercial use needs a registered commercial plan | CARTO basemaps page |
+| Esri grey canvas basemaps (the Streets basemap: World Light and Dark Gray, base and reference) | Esri map service terms, the same family as World Imagery above. The service's own description sends readers to its Esri item page for its terms of use, which was not read in full here. Treat as for non-commercial use until you have read them, and check Esri's master agreement before any commercial use. | Esri item page (not read in full) |
 | Google Flood Hub / Flood Forecasting API (optional, needs an approved key) | Data offered at no charge under CC BY 4.0 (attribution), with access by approved key | Google developer page |
 | QLDTraffic road events (optional) | The site's content "may only be used for personal or non-commercial purposes" except content specifically licensed CC BY 3.0 Australia; the developer page did not state the API data's licence, so treat it as non-commercial until confirmed | QLDTraffic copyright page |
 | NSW Transport open data (optional, needs a key) | CC BY 4.0 unless otherwise stated, with attribution; an acceptable use policy and portal terms also apply | NSW Open Data data licence |
@@ -55,9 +55,13 @@ pulls those feeds is not free to be run commercially.
 | Water Data Online rainfall and river data (Bureau, custodians) | Each custodian's terms apply | Bureau and custodians |
 | Open government and research data under CC BY 4.0 or similar (Geoscience Australia DEM-H and DEA, Queensland Government, Brisbane City Council, ABS, Maritime Safety Queensland, AIMS and others listed in the [README](README.md#data-and-credits)) | Reuse, including commercial, **with attribution**, under each dataset's stated licence | README credits |
 
-Read on 8 November 2026: the Bureau, RainViewer, Esri item, CARTO, OpenStreetMap policies, QLDTraffic copyright,
+Read on 8 November 2026: the Bureau, RainViewer, Esri item, OpenStreetMap policies, QLDTraffic copyright,
 NSW data licence and Google's developer page. Not read in full: Esri's master agreement, Water Data Online's
 per-custodian terms, the NSW portal terms PDF and the Google API terms. Do not read a missing restriction as permission.
+
+Correction, 9 November 2026: an earlier version of this file, and the README, said the Streets basemap used CARTO. It
+uses Esri's grey canvas maps (the code comment says CARTO's now need a key), so the CARTO row has been replaced by an
+Esri one, and the credits for Streets and Satellite now match the text the Esri services give for themselves.
 
 ## If you host your own copy
 

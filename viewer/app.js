@@ -1950,7 +1950,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     darkLabels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
   };
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  const TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, TomTom, Garmin, ' + OSM_ATTR + ', and the GIS User Community';
+  // the credit the Esri grey canvas service itself gives: "Esri, HERE, Garmin, (c) OpenStreetMap contributors, and the GIS user community"
+  const TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, ' + OSM_ATTR + ', and the GIS User Community';
   const QLD_ATTR = '&copy; State of Queensland (Department of Natural Resources and Mines, Manufacturing and Regional and Rural Development), <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>';
   const QLD_GIS = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Basemaps/';
   // Digital Earth Australia (Geoscience Australia) map services, CC BY 4.0
@@ -1965,7 +1966,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // Basemaps offered in the layer switcher. The first is the default.
   const BASEMAPS = [
     { name: 'Satellite (Esri)', url: () => 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      opts: { attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics and the GIS User Community', maxZoom: 19, crossOrigin: true } },
+      opts: { attribution: 'Imagery &copy; Esri, Vantor, Earthstar Geographics, and the GIS User Community', maxZoom: 19, crossOrigin: true } },
     { name: 'Latest satellite, infrared (DEA)', wms: { layers: 's2_ls_combined', styles: 'false_colour' },
       opts: { attribution: DEA_ATTR, maxZoom: 19, maxNativeZoom: 16, minZoom: 7 } },
     { name: 'Latest satellite, true colour (DEA)', wms: { layers: 's2_ls_combined', styles: 'true_colour' },
