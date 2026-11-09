@@ -64,16 +64,34 @@ async function trim(name) {
   // and every tile the worker answered would go black until the storage is
   // cleared), so treat each cache call as optional
   try {
-    const c = await caches.open(name);
-    const keys = await c.keys();
+    const c = await openCache(name);
+    if (!c) return;
+    const keys = await within(c.keys(), CACHE_WAIT_MS);
     for (let i = 0; i < keys.length - max; i++) await c.delete(keys[i]);
   } catch (err) { /* no trim this time */ }
 }
 
-// open a cache, or null when the cache storage refuses (corrupt/full); the
-// callers then answer from the network only
+// Firefox with a corrupt or full cache database can make a cache call hang
+// instead of rejecting, and a tile waiting on it stays black until the storage
+// is cleared. So every cache call gets a short time to answer; one that does
+// not is treated as no cache, and after a few such failures the worker stops
+// using the cache storage at all until it is restarted.
+const CACHE_WAIT_MS = 1500, CACHE_FAILS_MAX = 3;
+let cacheFails = 0;
+function within(promise, ms) {
+  if (typeof setTimeout !== 'function') return promise;
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('the cache storage did not answer')), ms);
+    promise.then((v) => { if (typeof clearTimeout === 'function') clearTimeout(t); resolve(v); },
+      (e) => { if (typeof clearTimeout === 'function') clearTimeout(t); reject(e); });
+  });
+}
+
+// open a cache, or null when the cache storage refuses or hangs (corrupt/full);
+// the callers then answer from the network only
 async function openCache(name) {
-  try { return await caches.open(name); } catch (err) { return null; }
+  if (cacheFails >= CACHE_FAILS_MAX) return null;
+  try { return await within(caches.open(name), CACHE_WAIT_MS); } catch (err) { cacheFails++; return null; }
 }
 
 // a cache hit that can be served to this request mode: an opaque response
@@ -90,7 +108,7 @@ function usable(req, res) {
 
 // a match that survives a broken cache: nothing cached is then usable
 async function find(c, req, opts) {
-  try { return await c.match(req, Object.assign({ ignoreVary: true }, opts)); } catch (err) { return null; }
+  try { return await within(c.match(req, Object.assign({ ignoreVary: true }, opts)), CACHE_WAIT_MS); } catch (err) { cacheFails++; return null; }
 }
 
 // fresh when online (within a few seconds), the cached copy otherwise
@@ -135,48 +153,57 @@ async function cacheFirst(req, name) {
   return res;
 }
 
+// Whatever goes wrong inside the worker, the page gets what a plain request would:
+// a tile must never be black because the worker, not the network, failed.
+function respond(e, work) {
+  e.respondWith(work().catch((err) => {
+    if (err && err.name === 'AbortError') throw err;   // the network itself timed out
+    return fetch(e.request);
+  }));
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   let url;
   try { url = new URL(req.url); } catch (err) { return; }
   if (url.pathname === '/v1/elev') {
-    e.respondWith(cacheFirst(req, TERRAIN));
+    respond(e, () => cacheFirst(req, TERRAIN));
     return;
   }
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
-    e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));
+    respond(e, () => networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));
     return;
   }
   // live readings: fresh within 6 s (the app gives up at 8), else the last copy
   if (BROKER_PATH.test(url.pathname)) {
-    e.respondWith(networkFirst(req, LIVE, 6000));
+    respond(e, () => networkFirst(req, LIVE, 6000));
     return;
   }
   if (TERRAIN_TILES.test(url.hostname) && url.pathname.startsWith('/elevation-tiles-prod/')) {
-    e.respondWith(cacheFirst(req, ELEV));   // its own cache: ~100 KB each, kept apart from imagery
+    respond(e, () => cacheFirst(req, ELEV));   // its own cache: ~100 KB each, kept apart from imagery
     return;
   }
   if (TILE_HOSTS.test(url.hostname) || /\/tile\/\d+\/\d+\/\d+/.test(url.pathname)) {
-    e.respondWith(cacheFirst(req, TILES));
+    respond(e, () => cacheFirst(req, TILES));
     return;
   }
   // terrain for models: the same window always returns the same heights
   if (url.hostname === 'services.ga.gov.au' && /GetCoverage/i.test(url.search)) {
-    e.respondWith(cacheFirst(req, TERRAIN));
+    respond(e, () => cacheFirst(req, TERRAIN));
     return;
   }
   // map-service answers (feature queries, exported images, census areas)
   if (/\/(MapServer|FeatureServer|ImageServer|wms|wfs|ows|WCSServer)\b/i.test(url.pathname) || url.hostname === 'ows.dea.ga.gov.au') {
-    e.respondWith(networkFirst(req, API, 8000));
+    respond(e, () => networkFirst(req, API, 8000));
     return;
   }
   // impact data comes from Overpass (OpenStreetMap): it must ride the same
   // API cache or "is this property cut off?" breaks offline (the whole
   // reason offline mode exists).
   if (/overpass-api\.de$|overpass\.kumi\.systems$|maps\.mail\.ru$/.test(url.hostname)) {
-    e.respondWith(networkFirst(req, API, 8000));
+    respond(e, () => networkFirst(req, API, 8000));
     return;
   }
 });

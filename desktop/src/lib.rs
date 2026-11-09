@@ -58,6 +58,7 @@ pub fn run() {
                 origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
                 cache_ms: env("CACHE_MINUTES").and_then(|v| v.parse::<f64>().ok()).map_or(10 * 60_000, |m| (m * 60_000.0) as i64),
                 refresh_ms: env("READINGS_REFRESH_MINUTES").and_then(|v| v.parse::<i64>().ok()).filter(|m| *m > 0).unwrap_or(15) * 60_000,
+                radar_dir: None,
             };
             let data_dir = env("FLOOD_DATA_DIR").unwrap_or_else(|| {
                 let home = env("HOME").or_else(|| env("USERPROFILE")).unwrap_or_else(|| ".".into());
