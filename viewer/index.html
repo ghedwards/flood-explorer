@@ -25,13 +25,13 @@
   <form class="search" id="searchForm" role="search">
     <input type="search" id="searchInput" placeholder="Search an address or place" aria-label="Search an address or place" autocomplete="off">
     <button type="submit" class="icon-btn" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg></button>
+    <div class="search-results float" id="searchResults" aria-live="polite" hidden></div>
   </form>
   <button type="button" class="icon-btn" id="shareBtn" aria-label="Copy a link to this view" title="Copy a link to this view"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></button>
   <button type="button" class="icon-btn" id="settingsBtn" hidden aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.26.6.8 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   <button type="button" class="pill" id="noticePill" data-open="panel-about">Screening only</button>
   <span class="pill offline-pill" id="offlinePill" role="status" hidden>Offline: saved data</span>
   <button type="button" class="pill feed-pill" id="feedPill" data-open="panel-forecast" aria-live="polite" hidden>Data delayed</button>
-  <div class="search-results float" id="searchResults" aria-live="polite" hidden></div>
 </header>
 
 <nav class="rail float" aria-label="Map tools">

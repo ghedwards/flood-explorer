@@ -5773,7 +5773,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.
-  const WATCH_ICON = { warning: '⚠', flood: '▲', river: '↑', sea: '≈' };
+  const WATCH_ICON = { warning: '⚠', flood: '▲', river: '↑', sea: '≈', rainObs: '☂', road: '⛔' };
   function watchName(w) {
     if (w.kind === 'river') {
       const f = nat.data && nat.data.gauges.find((g) => g.properties.station === w.station);
