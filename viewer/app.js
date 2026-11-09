@@ -5916,10 +5916,36 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       }
       return;
     }
+    // heavy-rain gauges and closed roads are not river gauges: they carry their own position
+    if ((w.kind === 'rainObs' || w.kind === 'road') && Number.isFinite(w.lat) && Number.isFinite(w.lon)) {
+      if (state.lmap) {
+        state.lmap.setView([w.lat, w.lon], Math.max(state.lmap.getZoom(), 11));
+        const link = typeof w.link === 'string' && /^https?:\/\//i.test(w.link) ? `<br><a href="${escapeHtml(w.link)}" target="_blank" rel="noopener">More details</a>` : '';
+        window.L.popup().setLatLng([w.lat, w.lon]).setContent(`<strong>${escapeHtml(watchName(w))}</strong><br>${escapeHtml((w.why || []).join('; '))}${w.at ? `<br><small>${escapeHtml(fmtReadingTime(w.at))}</small>` : ''}${link}`).openOn(state.lmap);
+      }
+      status.watchOpen = { station: w.station, kind: w.kind, shown: !!state.lmap };
+      return;
+    }
     if (typeof ensureRiverGauges === 'function') { try { await ensureRiverGauges(); } catch (e) { /* the core gauges still work */ } }
     const gs = (nat.data && nat.data.gauges) || [];
     const f = w.kind === 'flood' ? gs.find((g) => String(g.properties.bom) === String(w.station)) : gs.find((g) => g.properties.station === w.station);
-    if (!f) { say(`That gauge (${w.station}) isn't on the map.`); return; }
+    if (!f) {
+      // The Bureau's flood-class feed gives its own position for a gauge, so a gauge the map's gauge layer
+      // lacks (or lists under another number) can still be shown where it is, with what the feed says
+      const c = w.kind === 'flood' && nat.floodclass && nat.floodclass[w.station];
+      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lon) && state.lmap) {
+        state.lmap.setView([c.lat, c.lon], Math.max(state.lmap.getZoom(), 11));
+        const name = escapeHtml(c.name || w.name || `Gauge ${w.station}`);
+        const now = [c.class && `${escapeHtml(c.class)} flooding`, c.tendency && escapeHtml(c.tendency)].filter(Boolean).join(', ');
+        window.L.popup().setLatLng([c.lat, c.lon]).setContent(`<strong>${name}</strong><br>${c.level != null ? `${Number(c.level).toFixed(2)} m on the gauge board` : ''}${now ? `, ${now}` : ''}${c.at ? `<br><small>${escapeHtml(fmtReadingTime(c.at))}</small>` : ''}`
+          + '<br><small>From the Bureau\'s river height pages. This gauge is not in the map\'s gauge layer, so there is no report or flood model to open from it.</small>').openOn(state.lmap);
+        status.watchOpen = { station: w.station, fallback: 'flood class position' };
+        return;
+      }
+      status.watchOpen = { station: w.station, notFound: true };
+      say(`${w.name ? `${w.name} (${w.station})` : `That gauge (${w.station})`} isn't in the map's gauge layer, and the Bureau's feed gave no position for it.`);
+      return;
+    }
     const [lo, la] = f.geometry.coordinates;
     if (state.lmap) state.lmap.setView([la, lo], Math.max(state.lmap.getZoom(), 11));
     openReport(f);
