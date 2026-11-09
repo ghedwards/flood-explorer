@@ -1,4 +1,5 @@
 import { createRecordedStormPicker, stormTime } from './recorded-storms.js';
+import { fetchRadar, RadarError } from './radar-client.js';
 import { PRESETS, presetGauge } from './presets.js';
 import { guardRasterLayer } from './safe-raster.js';
 import { desktopUpdates } from './desktop-updates.js';
@@ -383,9 +384,18 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   }
   const busyClick = (btn, label, fn) => btn && btn.addEventListener('click', (e) => withBusy(e.currentTarget, label, fn));
 
+  // The busy line says what is being waited for and, after ten seconds, how long it has been, so a slow
+  // service does not look like a hang. The count restarts with each new message.
+  let busyText = '', busySince = 0, busyTimer = 0;
   function setBusy(on, text) {
     $('busy').hidden = !on;
-    if (text) $('busy').textContent = text;
+    if (text) { busyText = text; busySince = Date.now(); $('busy').textContent = text; }
+    if (on && !busyTimer) {
+      busyTimer = setInterval(() => {
+        const s = Math.round((Date.now() - busySince) / 1000);
+        if (s >= 10) $('busy').textContent = `${busyText} (${s} s)`;
+      }, 1000);
+    } else if (!on && busyTimer) { clearInterval(busyTimer); busyTimer = 0; }
   }
 
   // One-tap places to model: a point on the river near the town's flood
@@ -782,8 +792,10 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     $('inertialRun').disabled = false; $('inertialCancel').disabled = true;
     $('flash2dRun').disabled = false; $('flash2dCancel').disabled = true;
   }
+  let flashTimeline = null;   // a finished storm run's depth snapshots, for the time slider
+  function hideTimeline() { flashTimeline = null; $('flash2dTimeline').hidden = true; }
   function resetInertial() {
-    stopInertial();
+    stopInertial(); hideTimeline();
     state.inertial = null; status.inertial = null;
     $('solver').value = 'fast'; solverControls();
     $('inertialStatus').textContent = 'Fast terrain model.';
@@ -1004,23 +1016,52 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (ctl.floodType.value !== 'flash') $('flashMethod').value = 'screen';
     $('flash2dControls').hidden = !flashMethod2d();
   }
-  function startFlash2d() {
+  async function startFlash2d() {
     if (!state.a) { flashStatus('Load a terrain model first.'); return; }
     if (!F.inertialStart) { flashStatus('The 2D model needs WebAssembly.'); return; }
     if (ctl.floodType.value !== 'flash') { flashStatus('Choose "Storm: flash flooding" as the flood type.'); return; }
     runScenario();   // restore the screening preview and drop any older 2D result
     const seq = inertialSequence, a = state.a, key = state.areaKey;
     try {
-      const s = storm(), rain = F.effectiveRainSeries(s, Number($('flash2dAfter').value));
-      if (!(rain.effectiveMm > 0)) { flashStatus('None of this storm\'s rain runs off: the ground soaks it all in. Try more rain, a shorter storm or sealed ground.'); return; }
+      const live = $('flash2dPattern').value === 'radar';
+      const s = storm();
+      let radarGot = null, rain;
+      if (live) {
+        // the radar, then a made-up "rain" record with the run's length, so the rest of the run reads as it does for a design storm
+        flashStatus('Fetching the radar…');
+        $('flash2dRun').disabled = true;
+        try { radarGot = await fetchRadar({ broker: radarBroker(), geo: state.geo, toMga: (lat, lon, zone) => F.toMga(lat, lon, zone) }); }
+        catch (e) { if (seq === inertialSequence) { $('flash2dRun').disabled = false; flashStatus(e instanceof RadarError ? `No live storm: ${e.message}` : `No live storm: ${e.message}`); } return; }
+        if (seq !== inertialSequence || a !== state.a || key !== state.areaKey) { $('flash2dRun').disabled = false; return; }
+        const horizon = Number($('flash2dRadarHorizon').value), step = radarGot.radar.radarStepS, after = Number($('flash2dAfter').value);
+        const frames = radarGot.info.frames - 1 + Math.ceil(horizon / step - 1e-9) + Math.max(1, Math.round(after * 3600 / step));
+        rain = { seconds: frames * step, stepSeconds: step, series: null, rainMm: null, effectiveMm: null, capped: false };
+      } else {
+        rain = F.effectiveRainSeries(s, Number($('flash2dAfter').value));
+        if (!(rain.effectiveMm > 0)) { flashStatus('None of this storm\'s rain runs off: the ground soaks it all in. Try more rain, a shorter storm or sealed ground.'); return; }
+      }
       const g = F.inertialPrepare(a, Number($('flash2dResolution').value));
       const stages = new Float64Array(g.W * g.H).fill(NaN), sea = g.ocean.some(Boolean);
       if (sea) for (let i = 0; i < stages.length; i++) if (g.ocean[i]) stages[i] = 0;   // the sea is held at its level, so water can drain into it
-      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: rain.series, seriesStepS: rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages };
+      const drift = $('flash2dPattern').value === 'drift';
+      if (drift && !(Number($('flash2dDriftRadius').value) >= 0.5 && Number($('flash2dDriftSpeed').value) >= 0)) { flashStatus('Give the storm cell a radius of at least 0.5 km and a speed of 0 or more.'); return; }
+      // a drifting cell is built in the worker (rust/flood-core/src/rainfield.rs) with the same hours, steps and losses as the even storm
+      const opts = { seconds: rain.seconds, rainMmH: 0, rainSeries: drift || live ? undefined : rain.series, seriesStepS: drift || live ? undefined : rain.stepSeconds, inflow: 0, inflowCell: -1, initialDepth: 0, roughness: 0.035, stages,
+        ...(drift && { stormRainMm: s.rainMm, stormHours: s.hours, afterHours: Number($('flash2dAfter').value), stepSeconds: rain.stepSeconds, initialLoss: s.initialLoss, contLoss: s.contLoss,
+          driftSigmaM: Number($('flash2dDriftRadius').value) * 1000, driftHeadingDeg: Number($('flash2dDriftHeading').value), driftSpeedKmh: Number($('flash2dDriftSpeed').value) }) };
+      if (live) {
+        // the radar frames travel to the worker, which builds the observed-then-forecast rain there (rust/flood-core/src/live.rs)
+        Object.assign(opts, radarGot.radar, { radarZone: radarGot.zone, geoWest: state.geo.west, geoEast: state.geo.east, geoNorth: state.geo.north, geoSouth: state.geo.south,
+          radarHorizonS: Number($('flash2dRadarHorizon').value), radarScale: Number($('flash2dRadarScale').value), afterHours: Number($('flash2dAfter').value),
+          initialLoss: s.initialLoss, contLoss: s.contLoss });
+      }
+      // depth snapshots for the time slider: about every 10 minutes, and never more than about 48
+      opts.snapshotEveryS = Math.max(600, Math.ceil(rain.seconds / 48 / 60) * 60);
+      let driftInfo = null;
       const w = new Worker(new URL('./inertial-worker.js', import.meta.url), { type: 'module' });
       inertialWorker = w;
       $('flash2dRun').disabled = true; $('flash2dCancel').disabled = false; $('flash2dProgress').value = 0;
-      flashStatus(`Running the storm in 2D on ${g.W} × ${g.H} cells (${Math.round(g.cell)} m) for ${fmt(rain.seconds / 3600, 0)} hours. The map shows the screening model until it finishes.`);
+      flashStatus(`Running ${live ? 'the live storm' : 'the storm'} in 2D on ${g.W} × ${g.H} cells (${Math.round(g.cell)} m) for ${fmt(rain.seconds / 3600, 1)} hours. The map shows the screening model until it finishes.`);
       status.inertial = { running: true, cell: g.cell, storm: true };
       const fail = (message) => {
         if (seq !== inertialSequence) return;
@@ -1031,27 +1072,87 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       w.onmessage = ({ data }) => {
         if (seq !== inertialSequence || a !== state.a || key !== state.areaKey) return;
         if (data.error) { fail(data.error); return; }
+        if (data.started) { driftInfo = data.started; return; }
         if (data.progress != null) { $('flash2dProgress').value = data.progress; return; }
         const r = data.result;
         if (!r) return;
         stopInertial();
-        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, ...metrics } = r;   // the arrays are in state.run; the summary stays small enough to save in a GeoJSON
-        const { stages: _stages, ...settings } = opts;
-        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
-          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours } };
+        const { depth: _depth, peak: _peak, vx: _vx, vy: _vy, snapDepth: _snapDepth, snapTimes: _snapTimes, ...metrics } = r;   // the arrays are in state.run (and the timeline); the summary stays small enough to save in a GeoJSON
+        const { stages: _stages, radarFrames: _frames, ...settings } = opts;   // the frames are large; the summary keeps where and when they came from
+        state.inertial = { ...metrics, cell: g.cell, W: g.W, H: g.H, settings: { ...settings, rainSeries: drift || live ? undefined : Array.from(rain.series) }, boundary: sea ? 'sea' : 'closed', peak: true,
+          storm: { rainMm: rain.rainMm, effectiveMm: rain.effectiveMm, hours: s.hours, ...(driftInfo && !live && { drifting: true, meanRainMm: driftInfo.driftMeanRainMm, meanRunoffMm: driftInfo.driftMeanRunoffMm }),
+            ...(live && driftInfo && { live: true, radar: { ...radarGot.info, times: undefined, newest: radarGot.info.times[radarGot.info.times.length - 1] }, motion: { u: driftInfo.radarMotionU, v: driftInfo.radarMotionV, reliable: driftInfo.radarMotionReliable === 1 },
+              minKnownShare: driftInfo.radarMinKnownShare, observedRainMm: driftInfo.radarObservedRainMm, forecastRainMm: driftInfo.radarForecastRainMm, runoffMm: driftInfo.radarRunoffMm }) } };
         status.inertial = { ...state.inertial, running: false };
         state.run = F.inertialExpand(a, g, r, { peak: true });
         state.base = null; state.riverRun = null; state.flash = null; state.timeView = false;
         clearTimeout(impactT);
         $('colorMode').value = 'depth'; solverControls();
         $('flash2dProgress').value = 1;
-        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 0)} hours on ${Math.round(g.cell)} m cells. ${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}. ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
+        setupTimeline(a, g, r, state.run, live && driftInfo ? { nowS: driftInfo.radarObservedSteps * radarGot.info.stepSeconds, endS: (driftInfo.radarObservedSteps + driftInfo.radarForecastSteps) * radarGot.info.stepSeconds } : null);
+        flashStatus(`Local-inertial 2D: the deepest water each cell held over ${fmt(r.time / 3600, 1)} hours on ${Math.round(g.cell)} m cells. ${live && driftInfo ? liveSummary(radarGot, driftInfo) : driftInfo ? `A storm cell drifting ${$('flash2dDriftHeading').selectedOptions[0].textContent} at ${fmt(Number($('flash2dDriftSpeed').value), 0)} km/h: ${Math.round(rain.rainMm)} mm in its core, ${fmt(driftInfo.driftMeanRainMm, 1)} mm on average over the area, ${fmt(driftInfo.driftMeanRunoffMm, 1)} mm of that running off (an even storm would run off ${Math.round(rain.effectiveMm)} mm).` : `${Math.round(rain.rainMm)} mm of rain, ${Math.round(rain.effectiveMm)} mm of it running off${rain.capped ? ' (the rain rate was capped at 1,000 mm/h)' : ''}.`} ${sea ? 'Water that reaches the sea is let out.' : 'This area has no sea cells, so water that reaches its edge stays there.'} Stormwater pipes are not counted.${(() => { const ff = firstFlooded(state.run, a); return ff == null ? '' : ` The first land cell flooded (10 cm) about ${fmt(ff / 60, 0)} minutes after the rain started.`; })()}`);
         showInertialRun(a);
       };
       w.postMessage({ grid: { W: g.W, H: g.H, cell: g.cell, dem: g.dem, valid: g.valid }, opts });
     } catch (e) { stopInertial(); flashStatus(`2D stopped: ${e.message}. The map shows the screening model.`); }
   }
+  // Live radar needs a broker that has a radar store (its /health says so); the test hook points the page at another broker.
+  const radarBroker = () => window.__floodRadarBroker || BROKER;
+  function syncRadarOption() {
+    const option = $('flash2dPattern').querySelector('option[value="radar"]');
+    const on = !!(window.__floodRadarBroker || (brokerInfo && brokerInfo.radar && brokerInfo.radar.configured));
+    option.hidden = option.disabled = !on;
+    if (!on && $('flash2dPattern').value === 'radar') { $('flash2dPattern').value = 'even'; syncPattern(); }
+  }
+  function syncPattern() {
+    $('flash2dDriftControls').hidden = $('flash2dPattern').value !== 'drift';
+    $('flash2dRadarControls').hidden = $('flash2dPattern').value !== 'radar';
+  }
+  window.__floodSyncRadar = syncRadarOption;
+  const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+  function liveSummary(got, i) {
+    const step = got.info.stepSeconds, newest = got.info.times[got.info.times.length - 1];
+    const speed = Math.hypot(i.radarMotionU, i.radarMotionV) * 3.6, heading = (Math.atan2(i.radarMotionU, -i.radarMotionV) * 180 / Math.PI + 360) % 360;
+    const motion = i.radarMotionReliable === 1 ? `the rain is moving ${COMPASS[Math.round(heading / 45) % 8]} at ${fmt(speed, 0)} km/h` : 'the rain\'s movement could not be told, so the forecast holds the latest picture still';
+    const edge = i.radarMinKnownShare < 1 ? ` Where the forecast would bring rain from beyond the radar's edge (${fmt((1 - i.radarMinKnownShare) * 100, 0)}% of the area by the end), the nearest known rain is used.` : '';
+    return `Live radar (${got.info.source}; ${got.info.attribution}), newest picture ${when(newest)}, ${Math.round(got.info.ageSeconds / 60)} min old: the last ${fmt(i.radarObservedSteps * step / 60, 0)} minutes as observed, then a ${fmt(i.radarForecastSteps * step / 60, 0)}-minute forecast; ${motion}. On average ${fmt(i.radarObservedRainMm, 1)} mm fell on the area and ${fmt(i.radarForecastRainMm, 1)} mm is forecast, ${fmt(i.radarRunoffMm, 1)} mm of it running off after what soaks in. A forecast cannot make new storms or end existing ones.${edge}`;
+  }
+  // The time slider: positions 0 to N-1 are the depth snapshots; position N is the deepest water over the whole run (the default view).
+  function setupTimeline(a, g, r, peakRun, live) {
+    if (!r.snapDepth || !r.snapTimes || r.snapTimes.length < 2) { hideTimeline(); return; }
+    flashTimeline = { a, g, n: g.W * g.H, depth: r.snapDepth, times: r.snapTimes, peakRun, live, truncated: !!r.snapTruncated };
+    const slider = $('flash2dTime');
+    slider.max = String(r.snapTimes.length); slider.value = String(r.snapTimes.length);
+    $('flash2dTimeline').hidden = false;
+    $('flash2dTimeLabel').textContent = 'Showing the deepest water each cell held over the whole run. Drag the slider to see the water at a moment.';
+  }
+  function timeLabel(t) {
+    const tl = flashTimeline, minutes = Math.round(t / 60);
+    if (!tl.live) return `${minutes} minutes into the run`;
+    const rel = Math.round((t - tl.live.nowS) / 60);
+    if (rel < 0) return `${-rel} min before now: rain as the radar saw it`;
+    if (rel === 0) return 'Now: the newest radar picture';
+    return t > tl.live.endS + 1 ? `${rel} min after now: the forecast has ended, so no more rain is assumed` : `${rel} min after now: forecast rain`;
+  }
+  function showTimelineAt(i) {
+    const tl = flashTimeline;
+    if (!tl || tl.a !== state.a) { hideTimeline(); return; }
+    if (i >= tl.times.length) {
+      state.run = tl.peakRun; showInertialRun(tl.a);
+      $('flash2dTimeLabel').textContent = 'Showing the deepest water each cell held over the whole run.';
+      return;
+    }
+    const d = Float64Array.from(tl.depth.subarray(i * tl.n, (i + 1) * tl.n));
+    const fr = F.inertialExpand(tl.a, tl.g, { depth: d }, { peak: false });
+    state.run = { ...fr, arrival: tl.peakRun.arrival, peakHazard: tl.peakRun.peakHazard };
+    $('colorMode').value = 'depth';
+    drawMap();
+    $('flash2dTimeLabel').textContent = `${timeLabel(tl.times[i])}. The map shows the water at this moment; the counts, buildings and roads still describe the deepest water.${tl.truncated ? ' Later moments were not kept (too much data).' : ''}`;
+  }
+  $('flash2dTime').addEventListener('input', () => showTimelineAt(Number($('flash2dTime').value)));
+  $('flash2dPeak').addEventListener('click', () => { if (!flashTimeline) return; $('flash2dTime').value = String(flashTimeline.times.length); showTimelineAt(flashTimeline.times.length); });
   $('flashMethod').addEventListener('change', () => { syncFlashMethod(); runScenario(); });
+  $('flash2dPattern').addEventListener('change', () => { syncPattern(); runScenario(); });
   $('flash2dRun').addEventListener('click', startFlash2d);
   $('flash2dCancel').addEventListener('click', () => { runScenario(); flashStatus('2D cancelled. The screening model is shown.'); });
   window.__floodFlash2d = (options) => { if (options && options.method) { $('flashMethod').value = options.method; syncFlashMethod(); } startFlash2d(); };
@@ -1849,7 +1950,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     darkLabels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
   };
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  const TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, TomTom, Garmin, ' + OSM_ATTR + ', and the GIS User Community';
+  // the credit the Esri grey canvas service itself gives: "Esri, HERE, Garmin, (c) OpenStreetMap contributors, and the GIS user community"
+  const TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, ' + OSM_ATTR + ', and the GIS User Community';
   const QLD_ATTR = '&copy; State of Queensland (Department of Natural Resources and Mines, Manufacturing and Regional and Rural Development), <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>';
   const QLD_GIS = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Basemaps/';
   // Digital Earth Australia (Geoscience Australia) map services, CC BY 4.0
@@ -1864,7 +1966,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // Basemaps offered in the layer switcher. The first is the default.
   const BASEMAPS = [
     { name: 'Satellite (Esri)', url: () => 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      opts: { attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics and the GIS User Community', maxZoom: 19, crossOrigin: true } },
+      opts: { attribution: 'Imagery &copy; Esri, Vantor, Earthstar Geographics, and the GIS User Community', maxZoom: 19, crossOrigin: true } },
     { name: 'Latest satellite, infrared (DEA)', wms: { layers: 's2_ls_combined', styles: 'false_colour' },
       opts: { attribution: DEA_ATTR, maxZoom: 19, maxNativeZoom: 16, minZoom: 7 } },
     { name: 'Latest satellite, true colour (DEA)', wms: { layers: 's2_ls_combined', styles: 'true_colour' },
@@ -4299,6 +4401,9 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const L = window.L;
     buildNationalLayers(L, m);
     const defaultsOn = ['Flood forecast gauges (BoM)', 'Tide gauges (BoM)', 'Dams and water storages (BoM)', 'Gauges under a current flood warning (BoM)', 'Flood warning areas (BoM)', 'Road closures and events (official)', 'Emergency warnings (state)'];
+    // When the build could not reach the Bureau's gauge service it rebuilds the list from the flood class feed
+    // (meta.gaugeSource), whose gauges are all "information" gauges: show them, or the map would have none
+    if (nat.data && nat.data.meta && nat.data.meta.gaugeSource) defaultsOn.push('Flood information gauges (BoM)');
     for (const [name, layer] of Object.entries(nat.layers)) {
       registerOverlay(name, layer);
       if (nat.defaultsApplied) continue;   // respect what the viewer has switched since
@@ -5672,7 +5777,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.
-  const WATCH_ICON = { warning: '⚠', flood: '▲', river: '↑', sea: '≈' };
+  const WATCH_ICON = { warning: '⚠', flood: '▲', river: '↑', sea: '≈', rainObs: '☂', road: '⛔' };
   function watchName(w) {
     if (w.kind === 'river') {
       const f = nat.data && nat.data.gauges.find((g) => g.properties.station === w.station);
@@ -5815,10 +5920,36 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       }
       return;
     }
+    // heavy-rain gauges and closed roads are not river gauges: they carry their own position
+    if ((w.kind === 'rainObs' || w.kind === 'road') && Number.isFinite(w.lat) && Number.isFinite(w.lon)) {
+      if (state.lmap) {
+        state.lmap.setView([w.lat, w.lon], Math.max(state.lmap.getZoom(), 11));
+        const link = typeof w.link === 'string' && /^https?:\/\//i.test(w.link) ? `<br><a href="${escapeHtml(w.link)}" target="_blank" rel="noopener">More details</a>` : '';
+        window.L.popup().setLatLng([w.lat, w.lon]).setContent(`<strong>${escapeHtml(watchName(w))}</strong><br>${escapeHtml((w.why || []).join('; '))}${w.at ? `<br><small>${escapeHtml(fmtReadingTime(w.at))}</small>` : ''}${link}`).openOn(state.lmap);
+      }
+      status.watchOpen = { station: w.station, kind: w.kind, shown: !!state.lmap };
+      return;
+    }
     if (typeof ensureRiverGauges === 'function') { try { await ensureRiverGauges(); } catch (e) { /* the core gauges still work */ } }
     const gs = (nat.data && nat.data.gauges) || [];
     const f = w.kind === 'flood' ? gs.find((g) => String(g.properties.bom) === String(w.station)) : gs.find((g) => g.properties.station === w.station);
-    if (!f) { say(`That gauge (${w.station}) isn't on the map.`); return; }
+    if (!f) {
+      // The Bureau's flood-class feed gives its own position for a gauge, so a gauge the map's gauge layer
+      // lacks (or lists under another number) can still be shown where it is, with what the feed says
+      const c = w.kind === 'flood' && nat.floodclass && nat.floodclass[w.station];
+      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lon) && state.lmap) {
+        state.lmap.setView([c.lat, c.lon], Math.max(state.lmap.getZoom(), 11));
+        const name = escapeHtml(c.name || w.name || `Gauge ${w.station}`);
+        const now = [c.class && `${escapeHtml(c.class)} flooding`, c.tendency && escapeHtml(c.tendency)].filter(Boolean).join(', ');
+        window.L.popup().setLatLng([c.lat, c.lon]).setContent(`<strong>${name}</strong><br>${c.level != null ? `${Number(c.level).toFixed(2)} m on the gauge board` : ''}${now ? `, ${now}` : ''}${c.at ? `<br><small>${escapeHtml(fmtReadingTime(c.at))}</small>` : ''}`
+          + '<br><small>From the Bureau\'s river height pages. This gauge is not in the map\'s gauge layer, so there is no report or flood model to open from it.</small>').openOn(state.lmap);
+        status.watchOpen = { station: w.station, fallback: 'flood class position' };
+        return;
+      }
+      status.watchOpen = { station: w.station, notFound: true };
+      say(`${w.name ? `${w.name} (${w.station})` : `That gauge (${w.station})`} isn't in the map's gauge layer, and the Bureau's feed gave no position for it.`);
+      return;
+    }
     const [lo, la] = f.geometry.coordinates;
     if (state.lmap) state.lmap.setView([la, lo], Math.max(state.lmap.getZoom(), 11));
     openReport(f);
@@ -6334,6 +6465,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // flood depth if a model covers it, with a button to add it as a place.
   $('searchForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    clearTimeout(suggestTimer); suggestSeq++; // a pending pick list must not replace these results
     const q = $('searchInput').value.trim();
     const box = $('searchResults');
     if (!q) { box.hidden = true; return; }
@@ -6359,6 +6491,50 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     }
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('#searchForm, #searchResults')) $('searchResults').hidden = true; });
+  // A pick list while typing, from the Queensland Government address service (it has
+  // suggest and find endpoints that need no key). Enter still runs the Nominatim search
+  // above, which covers the rest of Australia, because Nominatim's policy rules out
+  // search-as-you-type. Suggestions wait for a pause in typing, need three characters,
+  // and an older answer never replaces a newer one.
+  const QLD_LOCATOR = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Location/QldCompositeLocator/GeocodeServer';
+  let suggestTimer = 0, suggestSeq = 0;
+  $('searchInput').addEventListener('input', () => {
+    clearTimeout(suggestTimer);
+    const q = $('searchInput').value.trim();
+    const box = $('searchResults');
+    const seq = ++suggestSeq;
+    if (q.length < 3) { box.hidden = true; return; }
+    suggestTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`${QLD_LOCATOR}/suggest?${new URLSearchParams({ text: q, maxSuggestions: '6', f: 'json' })}`);
+        const list = r.ok ? ((await r.json()).suggestions || []).filter((x) => x.magicKey) : [];
+        if (seq !== suggestSeq) return;
+        status.suggest = { ok: r.ok, results: list.length };
+        if (!list.length) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = list.map((x, i) => {
+          const [first, ...rest] = String(x.text).split(', ');
+          return `<button type="button" data-s="${i}">${escapeHtml(first)}<small>${escapeHtml(rest.slice(0, 4).join(', '))}</small></button>`;
+        }).join('') + '<p class="hint">Suggestions from the Queensland Government address service. Press Enter to search all of Australia.</p>';
+        box.querySelectorAll('[data-s]').forEach((b) => b.addEventListener('click', async () => {
+          const x = list[+b.dataset.s];
+          box.hidden = true;
+          try {
+            const f = await fetch(`${QLD_LOCATOR}/findAddressCandidates?${new URLSearchParams({ magicKey: x.magicKey, SingleLine: x.text, outSR: '4326', maxLocations: '1', f: 'json' })}`);
+            const c = f.ok ? ((await f.json()).candidates || [])[0] : null;
+            if (!c || !c.location) throw new Error('no location');
+            $('searchInput').value = x.text;
+            goToSearchResult(c.location.y, c.location.x, String(x.text).split(', ').slice(0, 2).join(', '));
+          } catch (err) {
+            box.hidden = false;
+            box.innerHTML = '<p class="hint">Could not place that address. Press Enter to search instead.</p>';
+          }
+        }));
+      } catch (err) {
+        if (seq === suggestSeq) { box.hidden = true; status.suggest = { ok: false, error: String(err.message || err) }; }
+      }
+    }, 300);
+  });
   async function goToSearchResult(lat, lon, label) {
     if (!state.lmap || $('lmap').hidden) await loadArea('australia');
     const m = state.lmap;
@@ -6380,6 +6556,43 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (chk) chk.addEventListener('click', () => { state.lmap.closePopup(); checkProperty(lat, lon, label); });
   }
   window.__floodGoTo = goToSearchResult;
+
+  // A link can open straight onto a place: ?address=10+Concorde+Drive+Loganholme, or ?lat=-27.684&lon=153.182
+  // with an optional &name=. An address is looked up in the Queensland Government address service, then
+  // (one request, so within Nominatim's policy) in Nominatim for the rest of Australia.
+  async function lookupAddress(text) {
+    try {
+      const r = await fetch(`${QLD_LOCATOR}/findAddressCandidates?${new URLSearchParams({ SingleLine: text, outSR: '4326', maxLocations: '1', f: 'json' })}`);
+      const c = r.ok ? ((await r.json()).candidates || [])[0] : null;
+      if (c && c.location && c.score >= 80) return { lat: c.location.y, lon: c.location.x, label: String(c.address || text).split(', ').slice(0, 2).join(', ') };
+    } catch (e) { /* try the next service */ }
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=au&limit=1&q=${encodeURIComponent(text)}`, { headers: { 'Accept-Language': 'en-AU' } });
+      const x = r.ok ? (await r.json())[0] : null;
+      if (x) return { lat: parseFloat(x.lat), lon: parseFloat(x.lon), label: String(x.display_name).split(', ').slice(0, 2).join(', ') };
+    } catch (e) { /* no match */ }
+    return null;
+  }
+  async function openFromQuery() {
+    let q;
+    try { q = new URLSearchParams(location.search); } catch (e) { return; }
+    const address = (q.get('address') || '').trim().slice(0, 200);
+    const lat = parseFloat(q.get('lat')), lon = parseFloat(q.get('lon'));
+    const name = (q.get('name') || '').trim().slice(0, 80);
+    let target = null;
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      if (lat < -44 || lat > -9 || lon < 112 || lon > 154) { status.deepLink = { ok: false, why: 'outside Australia' }; say('That link\'s position is outside Australia.', { error: true }); return; }
+      target = { lat, lon, label: name || `${lat.toFixed(4)}, ${lon.toFixed(4)}` };
+    } else if (address) {
+      target = await lookupAddress(address);
+      if (!target) { status.deepLink = { ok: false, why: 'no match', address }; say(`No match for "${address}" in Australia.`, { error: true }); return; }
+    }
+    if (!target) return;
+    $('searchInput').value = address || target.label;
+    status.deepLink = { ok: true, lat: target.lat, lon: target.lon };
+    await goToSearchResult(target.lat, target.lon, target.label);
+  }
+  window.__floodOpenFromQuery = openFromQuery;
 
   /* ---------- downloads */
   function slug(t) { return String(t || 'flood').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'flood'; }
@@ -6532,6 +6745,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${sat ? `<h2>Satellite check</h2>${sat}` : ''}
       <h2>About this model</h2><p>${escapeHtml((state.areaMeta && state.areaMeta.source) || '')}</p>
       <p class="hint">Screening only: it shows land below the chosen water surface that connects to the river or sea. It misses levees, drains and the timing of a flood. Do not use for evacuation or property decisions; follow official warnings from the Bureau of Meteorology and your state emergency service.</p>
+      <p class="hint">Open source (MIT), provided as is with no warranty. Uses data feeds that do not allow commercial use, so for non-commercial use only. See NOTICE.md in the project's repository.</p>
       <p class="hint">Open this model: <a href="${escapeHtml(shareUrl())}">link</a></p></body></html>`);
     w.document.close();
     return true;
@@ -6903,15 +7117,18 @@ import { initTsunamiPanel } from './tsunami-panel.js';
 
   /* ---------- accuracy: compare with recorded floods */
   const QLD_FLOODLINES = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/InlandWaters/FloodLines/MapServer';
+  const QLD_FLOODCHECK = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/FloodCheck';
   const BCC_FS = 'https://services2.arcgis.com/dEKgZETqwmDAh1rP/ArcGIS/rest/services';
   const RECORDED = [
     { id: 'bcc2022', name: 'February 2022, Brisbane River and creeks (Brisbane City Council)', url: `${BCC_FS}/Flood_Awareness_Historic_Brisbane_River_and_Creek_Floods_Feb2022/FeatureServer/0` },
     { id: 'bcc2011', name: 'January 2011, Brisbane River (Brisbane City Council)', url: `${BCC_FS}/Flood_Awareness_Historic_Brisbane_River_Floods_Jan2011/FeatureServer/0` },
     { id: 'bcc1974', name: 'January 1974, Brisbane River (Brisbane City Council)', url: `${BCC_FS}/Flood_Awareness_Historic_Brisbane_River_Floods_Jan1974/FeatureServer/0` },
     { id: 'q1974', name: '1974 flood line, Brisbane and Bremer rivers (Qld)', url: `${QLD_FLOODLINES}/12` },
+    { id: 'q1893', name: '1893 flood line, Brisbane and Bremer rivers (Qld; historic, moderate confidence)', url: `${QLD_FLOODCHECK}/Floods_Brisbane_1893/MapServer/0` },
     { id: 'q2010b', name: '2010 flood line, Bundaberg (Qld)', url: `${QLD_FLOODLINES}/13` },
     { id: 'q2011j', name: 'January 2011 flood lines, Queensland towns', url: `${QLD_FLOODLINES}/14` },
     { id: 'q2011a', name: 'April 2011 flood lines, Queensland towns', url: `${QLD_FLOODLINES}/15` },
+    { id: 'q2011r', name: 'April 2011 flood lines, Roma (Qld; from aerial photographs near the peak)', url: `${QLD_FLOODCHECK}/Floods_Roma_2011/MapServer/0` },
     { id: 'q2012', name: '2012 flood lines, south-west Queensland towns', url: `${QLD_FLOODLINES}/16` },
     { id: 'q2013b', name: '2013 flood line, Bundaberg (Qld)', url: `${QLD_FLOODLINES}/17` },
     { id: 'q2017f', name: '2017 flood line, Fitzroy River (Qld)', url: `${QLD_FLOODLINES}/18` },
@@ -7665,6 +7882,10 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // one try at GA's elevation services gives up after this (a stalled
   // request otherwise leaves "Downloading elevation…" up for good)
   const RASTER_TIMEOUT_MS = 45000;
+  // An error from the elevation service itself (no answer, an error reply, no elevation in the reply), as
+  // opposed to a file the reader could not use: asking again for a slightly different window cannot help
+  // with the first kind, and used to multiply the wait (3 windows x 3 tries x 45 s).
+  function serviceError(message, cause) { return Object.assign(new Error(message, cause ? { cause } : undefined), { service: true }); }
   async function fetchRaster(base, box, W, H, url0) {
     const direct = url0 || wcsUrl(base, box, W, H);
     // Preserve the broker path for browsers whose direct GA request is blocked
@@ -7677,13 +7898,13 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     let r = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await new Promise((ok) => setTimeout(ok, 1500 * attempt));
-      try { r = await fetch(urls[attempt], { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw new Error(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', { cause: err }); continue; }
+      try { r = await fetch(urls[attempt], { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw serviceError(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', err); continue; }
       if (r.ok) break;
       if (r.status < 500 && !(BROKER && !isTauri())) break;
     }
-    if (!r.ok) throw new Error(`the elevation service returned ${r.status}`);
+    if (!r.ok) throw serviceError(`the elevation service returned ${r.status}`);
     const type = r.headers.get('content-type') || '';
-    if (!/tiff/i.test(type)) throw new Error('the elevation service did not return elevation data for this place');
+    if (!/tiff/i.test(type)) throw serviceError('the elevation service did not return elevation data for this place');
     const buf = await r.arrayBuffer();
     let iw, ih, data, nd, tiffBounds;
     try {
@@ -7810,7 +8031,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       for (const [half, cell] of [[H0, C0], [H0, Math.round(C0 * 1.07)], [H0 * 0.9, C0]]) {
         try { got = await fetchDemWindow(wlat, wlon, half, cell); break; } catch (err) {
           lastErr = err;
-          if (/no land/.test(String(err.message))) break;
+          if (err.service || /no land/.test(String(err.message))) break;
         }
       }
       if (!got) throw lastErr || new Error('no elevation data');
@@ -8339,6 +8560,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       brokerInfo = r.ok ? await r.json() : { error: `HTTP ${r.status}` };
     } catch (err) { brokerInfo = { error: err && err.name === 'TimeoutError' ? 'timed out' : String(err && err.message || err) }; }
     brokerInfo.checkedAt = new Date().toISOString();
+    if (typeof syncRadarOption === 'function') syncRadarOption();
     renderVersions();
     return brokerInfo;
   }
@@ -8554,5 +8776,6 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     await loadFloodHub();
     await loadArea(areas[0].id);
     await restoreOnStart();
+    await openFromQuery();
   })();
 })();

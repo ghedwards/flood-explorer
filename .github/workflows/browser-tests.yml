@@ -74,6 +74,9 @@ jobs:
         if: github.event_name == 'pull_request'
         timeout-minutes: 5
         run: node tests/impact-browser.js
+      - name: Check address search, place links and the Watch list in the built bundle
+        timeout-minutes: 5
+        run: node tests/ui-browser.js
       - name: Check the live interactive map
         timeout-minutes: 25
         env:

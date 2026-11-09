@@ -260,6 +260,14 @@ fn with_wave<R>(h: f64, f: impl FnOnce(&Wave) -> R) -> Result<R, String> {
     })
 }
 
+/// The radar frames a request carries (the broker's grid, in tenths of mm/h end to end), as the live storm takes them.
+fn live_radar_of(b: &Bag) -> Result<live::LiveRadar, String> {
+    Ok(live::LiveRadar {
+        w: b.num("radarW") as usize, h: b.num("radarH") as usize, x0: b.num("radarX0"), y0_northing: b.num("radarY0"), dx: b.num("radarDx"), dy: b.num("radarDy"),
+        step_s: b.num("radarStepS"), frames_tenths: b.f64s("radarFrames").ok_or("missing radar frames")?,
+    })
+}
+
 fn grid_of(b: &Bag) -> Result<Grid, String> {
     let w = b.num("W");
     let h = b.num("H");
@@ -1047,7 +1055,61 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 series_step_s: b.num("seriesStepS"), arrival_depth: b.num("arrivalDepth"),
                 stages,
             })?;
+            let mut solver = solver;
+            // Optional rain that differs by cell: `rainFieldFrames` holds the frames one after another (frames x cells), each `rainFieldStepS` long.
+            if let Some(flat) = b.f64s("rainFieldFrames") {
+                let cells = solver.depth.len();
+                if flat.is_empty() || flat.len() % cells != 0 { return Err("rain field frames must be a whole number of grid-sized frames".into()); }
+                let frames = flat.chunks(cells).map(|c| c.iter().map(|v| *v as f32).collect()).collect();
+                solver.set_rain_field(rainfield::RainField { step_s: b.num("rainFieldStepS"), frames })?;
+            }
+            // Or a design storm that falls as one drifting cell (see rainfield.rs): the rain, its hours, the losses and the run on after it are the
+            // even storm's, so the frame count and timing match `effectiveRainSeries`; `driftSigmaM` (the cell's width), `driftHeadingDeg` and `driftSpeedKmh` shape it.
+            if b.num("driftSigmaM").is_finite() {
+                let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
+                let loss = |k: &str| { let v = b.num(k); if v.is_finite() { v } else { 0.0 } };
+                let d = rainfield::drifting_design_storm(&rainfield::DriftingDesignStorm {
+                    w: solver.grid.w, h: solver.grid.h, cell: solver.grid.cell, rain_mm: b.num("stormRainMm"), hours: b.num("stormHours"),
+                    after_hours: optional("afterHours", 2.0), step_s: optional("stepSeconds", flash::STEP_SECONDS), sigma_m: b.num("driftSigmaM"),
+                    heading_deg: optional("driftHeadingDeg", 90.0), speed_km_h: optional("driftSpeedKmh", 0.0),
+                }, loss("initialLoss"), loss("contLoss"))?;
+                o.num("driftMeanRainMm", d.mean_rain_mm).num("driftMeanRunoffMm", d.mean_runoff_mm);
+                solver.set_rain_field(d.field)?;
+            }
+            // Or a live storm: the broker's radar frames (`radarFrames`, tenths of mm/h joined end to end, -1 where unmeasured) on a grid in an MGA zone, observed then
+            // forecast (see live.rs). The run is as long as that storm, whatever `seconds` said.
+            if b.num("radarW").is_finite() {
+                let optional = |k: &str, default: f64| { let v = b.num(k); if v.is_finite() { v } else { default } };
+                let loss = |k: &str| { let v = b.num(k); if v.is_finite() { v } else { 0.0 } };
+                let radar = live_radar_of(b)?;
+                let area = live::LiveArea { w: solver.grid.w, h: solver.grid.h, west: b.num("geoWest"), east: b.num("geoEast"), north: b.num("geoNorth"), south: b.num("geoSouth"), zone: b.num("radarZone") as i32 };
+                let params = live::LiveParams {
+                    horizon_s: b.num("radarHorizonS"), decay_tau_s: optional("radarDecayTauS", f64::INFINITY), scale: optional("radarScale", 1.0),
+                    initial_loss_mm: loss("initialLoss"), continuing_mm_h: loss("contLoss"), after_hours: optional("afterHours", 1.0),
+                    max_speed_m_s: optional("radarMaxSpeed", 25.0), min_coverage: optional("radarMinCoverage", 0.9), bias: optional("radarBias", 1.0),
+                };
+                let s = live::live_storm(&radar, &area, &params)?;
+                let seconds = s.field.seconds();
+                if seconds > 86400.0 { return Err("the live storm is longer than 24 hours; use fewer frames or a shorter forecast".into()); }
+                solver.opts.seconds = seconds;
+                o.num("radarSeconds", seconds).num("radarObservedSteps", s.observed_steps as f64).num("radarForecastSteps", s.forecast_steps as f64)
+                    .num("radarMotionU", s.motion.u_m_s).num("radarMotionV", s.motion.v_m_s).num("radarMotionCorrelation", s.motion.correlation)
+                    .num("radarMotionReliable", if s.motion.reliable { 1.0 } else { 0.0 }).num("radarMinKnownShare", s.min_known_share)
+                    .num("radarObservedRainMm", s.observed_rain_mm).num("radarForecastRainMm", s.forecast_rain_mm).num("radarRunoffMm", s.runoff_mm);
+                solver.set_rain_field(s.field)?;
+            }
+            // Depth snapshots to scrub through afterwards, every `snapshotEveryS` seconds (see Solver::snapshot_every); the run's final length is known by now.
+            if b.num("snapshotEveryS").is_finite() { solver.snapshot_every(b.num("snapshotEveryS"))?; }
             INERTIAL.with(|s| *s.borrow_mut() = Some(solver));
+        }
+        "radarBias" => {
+            // how far the radar is off at rain gauges (live.rs `bias_factor`): `gauges` is lat, lon, mm, hours for each gauge, end to end
+            let radar = live_radar_of(b)?;
+            let flat = b.f64s("gauges").unwrap_or_default();
+            if !flat.len().is_multiple_of(4) { return Err("gauges must be lat, lon, mm and hours for each gauge".into()); }
+            let gauges: Vec<live::Gauge> = flat.chunks(4).map(|g| live::Gauge { lat: g[0], lon: g[1], mm: g[2], hours: g[3] }).collect();
+            let r = live::bias_factor(&radar, b.num("radarZone") as i32, &gauges)?;
+            o.num("factor", r.factor).num("applied", if r.applied { 1.0 } else { 0.0 }).num("gaugesUsed", r.gauges_used as f64).num("gaugeMm", r.gauge_mm).num("radarMm", r.radar_mm).u8s("reason", r.reason.as_bytes());
         }
         "inertialStep" => {
             INERTIAL.with(|slot| -> Result<(), String> {
@@ -1067,6 +1129,11 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                     o.f64s("peakSpeed", &s.peak_speed);
                     o.f64s("peakClass", &s.peak_class.iter().map(|c| *c as f64).collect::<Vec<_>>());
                     o.f64s("arrival", &s.arrival);
+                    if !s.snapshots.is_empty() {
+                        let times: Vec<f64> = s.snapshots.iter().map(|x| x.0).collect();
+                        let flat: Vec<f32> = s.snapshots.iter().flat_map(|x| x.1.iter().copied()).collect();
+                        o.f64s("snapTimes", &times).f32s("snapDepth", &flat).num("snapTruncated", if s.snapshots_truncated { 1.0 } else { 0.0 });
+                    }
                     *slot = None;
                 }
                 Ok(())

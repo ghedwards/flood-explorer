@@ -6,14 +6,16 @@ self.onmessage = async ({ data }) => {
     await self.FloodCoreReady;
     const core = self.FloodCore;
     if (!core.inertialStart) throw new Error('The 2D model requires WebAssembly.');
-    core.inertialStart(data.grid, data.opts);
+    const started = core.inertialStart(data.grid, data.opts);
+    if (Number.isFinite(started.driftMeanRainMm) || Number.isFinite(started.radarSeconds)) self.postMessage({ started });
+    const total = Number.isFinite(started.radarSeconds) ? started.radarSeconds : data.opts.seconds;
     let result;
     do {
       result = core.inertialStep();
       if (result.done) {
-        self.postMessage({ result }, [result.depth.buffer, ...['peak', 'peakSpeed', 'peakClass', 'arrival'].filter((k) => result[k]).map((k) => result[k].buffer)]);
+        self.postMessage({ result }, [result.depth.buffer, ...['peak', 'peakSpeed', 'peakClass', 'arrival', 'snapDepth', 'snapTimes'].filter((k) => result[k]).map((k) => result[k].buffer)]);
       } else {
-        self.postMessage({ progress: result.time / data.opts.seconds });
+        self.postMessage({ progress: result.time / total });
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     } while (!result.done);

@@ -66,6 +66,7 @@ var KEY_WORDS = [
   "Downloads",
   "Rain radar",
   "Address search",
+  "Address suggestions",
   "Flood warnings",
   "Echuca",
   "Extended model",
@@ -81,8 +82,37 @@ function note(level, msg) {
   }
   console.log(`::${formatValue(level)}::${formatValue(msg)}`);
 }
+// The Bureau's servers sometimes refuse or time out requests from CI runners. When a
+// plain request from this machine cannot reach the gauge service, the checks that
+// need gauges cannot say anything about the app, so they are reported as warnings
+// (and only then). When the service is reachable they stay failures.
+const BOM_PROBE =
+  "https://hosting.wsapi.cloud.bom.gov.au/arcgis/rest/services/flood/National_Flood_Gauge_Network/FeatureServer/5/query?where=1%3D1&outFields=*&resultRecordCount=1&f=geojson";
+const NEEDS_BOM_GAUGES = [
+  /^the national view has no gauges/,
+  /^no Wivenhoe report card/,
+  /^area study failed:.*"gauges":0/,
+  /^site did not open offline:.*"gauges":0/,
+];
+async function bomReachable() {
+  try {
+    const r = await fetch(BOM_PROBE, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return false;
+    const j = await r.json();
+    return Array.isArray(j.features) && j.features.length > 0;
+  } catch {
+    return false;
+  }
+}
 async function main() {
   var failures = [];
+  const bomUp = await bomReachable();
+  if (!bomUp) {
+    note(
+      "warning",
+      "The Bureau gauge service is unreachable from this machine, so checks that need gauges are reported as warnings",
+    );
+  }
   const browser = await chromium.launch();
   try {
     var page = await browser.newPage({
@@ -334,7 +364,10 @@ async function main() {
       var nsw9 = await page.evaluate(
         "window.__floodStatus.overlays['NSW flood planning areas (state)'] || null",
       );
-      note("notice", `NSW layer at zoom 9: ${formatValue(JSON.stringify(nsw9))}`);
+      note(
+        "notice",
+        `NSW layer at zoom 9: ${formatValue(JSON.stringify(nsw9))}`,
+      );
       return truth(truth(nsw9) && get(nsw9, "features", 0) > before_nsw);
     }
     var nswOk = await checkNswZoomedOut();
@@ -1219,6 +1252,21 @@ async function main() {
     } else {
       failures.push("the rain radar overlay is missing");
     }
+    // ---- address pick list while typing (Queensland address service)
+    await page.fill("#searchInput", "");
+    await page.type("#searchInput", "10 concorde drive logan", { delay: 40 });
+    try {
+      await page.waitForSelector("#searchResults [data-s]", { timeout: 10000 });
+    } catch (error) {
+      // reported below
+    }
+    var sug = await page.evaluate(
+      "({ shown: !document.getElementById('searchResults').hidden, n: document.querySelectorAll('#searchResults [data-s]').length, status: window.__floodStatus.suggest || null })",
+    );
+    note(
+      sug.n > 0 ? "notice" : "warning",
+      `Address suggestions: ${formatValue(JSON.stringify(sug))}`,
+    );
     // ---- address search
     await page.fill("#searchInput", "Lismore NSW");
     await page.press("#searchInput", "Enter");
@@ -1917,6 +1965,14 @@ async function main() {
         `### Key results
 ` + KEY.map((k) => `- ${formatValue(k)}\n`).join(""),
       );
+    }
+    if (!bomUp) {
+      const skipped = failures.filter((f) =>
+        NEEDS_BOM_GAUGES.some((re) => re.test(f)),
+      );
+      failures = failures.filter((f) => !skipped.includes(f));
+      for (const f of skipped)
+        note("warning", `not checked, no Bureau gauges: ${f}`);
     }
     for (var f of failures) {
       note("error", f);
