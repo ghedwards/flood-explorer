@@ -9,6 +9,7 @@ pub mod storms;
 pub mod export;
 pub mod floodhub;
 pub mod floodinfo;
+pub mod gauge_fallback;
 pub mod geo;
 pub mod hydrology;
 pub mod compare;

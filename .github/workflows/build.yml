@@ -321,6 +321,21 @@ jobs:
             [ -f site/data/national/warnings.json ] && cp site/data/national/warnings.json cache/floodinfo.json
           fi
 
+      # The Bureau's gauge list service can refuse or time out connections from the build machine, which used
+      # to publish an empty gauge list (no gauges on the map). The flood class feed above comes from a different
+      # Bureau source that works from here and carries a name and position for every flood gauge: when the gauge
+      # service gave nothing, rebuild the gauge list from it (flood gauges only: no dams or river-only gauges).
+      - name: Rebuild the gauge list from the flood class feed if the gauge service gave none
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          flood gauges-fallback site/data/national | tee gauges-fallback.log
+          if grep -q 'gauges from the Bureau' gauges-fallback.log; then
+            echo "::warning::$(head -1 gauges-fallback.log)"
+          else
+            echo "::notice::$(head -1 gauges-fallback.log)"
+          fi
+
       # Dam water history builds up across runs: restore the latest copy,
       # spend at most ~5 minutes filling in or refreshing dams, save again.
       - name: Restore dam water history
