@@ -282,9 +282,9 @@ tests/                       model, app and live-site tests
 - Creek and overland flow likelihood and recorded flood extents: [Brisbane City Council Flood Awareness data](https://data.brisbane.qld.gov.au/), CC BY 4.0, read live from the council's ArcGIS services with [esri-leaflet](https://github.com/Esri/esri-leaflet).
 - GeoTIFF reading in the browser: [geotiff.js](https://github.com/geotiffjs/geotiff.js).
 - Street map: [Leaflet](https://leafletjs.com/). Basemaps, chosen with the layer button on the map:
-  - Streets: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors © [CARTO](https://carto.com/attributions)
+  - Streets: Esri World Light and Dark Gray Canvas (Esri, HERE, Garmin, © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, and the GIS User Community). Check [Esri's terms](https://www.esri.com/en-us/legal/terms/full-master-agreement) before any commercial use.
   - OpenStreetMap standard tiles, used under the [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
-  - Satellite: Esri World Imagery (Esri, Maxar, Earthstar Geographics). Check [Esri's terms](https://www.esri.com/en-us/legal/terms/full-master-agreement) before any commercial use.
+  - Satellite: Esri World Imagery (Esri, Vantor, Earthstar Geographics, and the GIS User Community). Check [Esri's terms](https://www.esri.com/en-us/legal/terms/full-master-agreement) before any commercial use.
   - Queensland aerial imagery and topographic basemaps: © State of Queensland (Department of Natural Resources and Mines, Manufacturing and Regional and Rural Development), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); imagery partly © Planet Labs Netherlands B.V. under licence from Planet and Geoplex
   - Topographic: © [OpenTopoMap](https://opentopomap.org) (CC BY-SA), map data © OpenStreetMap contributors, SRTM
   - Latest satellite (true colour and false-colour infrared) and the "water seen by satellite since 1987" layer: [Digital Earth Australia](https://www.dea.ga.gov.au/) (Geoscience Australia; Landsat and Copernicus Sentinel-2 data), CC BY 4.0, via DEA's public map service. The infrared view shows shortwave infrared as red, near infrared as green and green as blue, so water appears dark blue or black and vegetation green.
