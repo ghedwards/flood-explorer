@@ -7041,15 +7041,18 @@ import { initTsunamiPanel } from './tsunami-panel.js';
 
   /* ---------- accuracy: compare with recorded floods */
   const QLD_FLOODLINES = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/InlandWaters/FloodLines/MapServer';
+  const QLD_FLOODCHECK = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/FloodCheck';
   const BCC_FS = 'https://services2.arcgis.com/dEKgZETqwmDAh1rP/ArcGIS/rest/services';
   const RECORDED = [
     { id: 'bcc2022', name: 'February 2022, Brisbane River and creeks (Brisbane City Council)', url: `${BCC_FS}/Flood_Awareness_Historic_Brisbane_River_and_Creek_Floods_Feb2022/FeatureServer/0` },
     { id: 'bcc2011', name: 'January 2011, Brisbane River (Brisbane City Council)', url: `${BCC_FS}/Flood_Awareness_Historic_Brisbane_River_Floods_Jan2011/FeatureServer/0` },
     { id: 'bcc1974', name: 'January 1974, Brisbane River (Brisbane City Council)', url: `${BCC_FS}/Flood_Awareness_Historic_Brisbane_River_Floods_Jan1974/FeatureServer/0` },
     { id: 'q1974', name: '1974 flood line, Brisbane and Bremer rivers (Qld)', url: `${QLD_FLOODLINES}/12` },
+    { id: 'q1893', name: '1893 flood line, Brisbane and Bremer rivers (Qld; historic, moderate confidence)', url: `${QLD_FLOODCHECK}/Floods_Brisbane_1893/MapServer/0` },
     { id: 'q2010b', name: '2010 flood line, Bundaberg (Qld)', url: `${QLD_FLOODLINES}/13` },
     { id: 'q2011j', name: 'January 2011 flood lines, Queensland towns', url: `${QLD_FLOODLINES}/14` },
     { id: 'q2011a', name: 'April 2011 flood lines, Queensland towns', url: `${QLD_FLOODLINES}/15` },
+    { id: 'q2011r', name: 'April 2011 flood lines, Roma (Qld; from aerial photographs near the peak)', url: `${QLD_FLOODCHECK}/Floods_Roma_2011/MapServer/0` },
     { id: 'q2012', name: '2012 flood lines, south-west Queensland towns', url: `${QLD_FLOODLINES}/16` },
     { id: 'q2013b', name: '2013 flood line, Bundaberg (Qld)', url: `${QLD_FLOODLINES}/17` },
     { id: 'q2017f', name: '2017 flood line, Fitzroy River (Qld)', url: `${QLD_FLOODLINES}/18` },
