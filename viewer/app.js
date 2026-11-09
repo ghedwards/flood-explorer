@@ -5907,6 +5907,16 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       }
       return;
     }
+    // heavy-rain gauges and closed roads are not river gauges: they carry their own position
+    if ((w.kind === 'rainObs' || w.kind === 'road') && Number.isFinite(w.lat) && Number.isFinite(w.lon)) {
+      if (state.lmap) {
+        state.lmap.setView([w.lat, w.lon], Math.max(state.lmap.getZoom(), 11));
+        const link = typeof w.link === 'string' && /^https?:\/\//i.test(w.link) ? `<br><a href="${escapeHtml(w.link)}" target="_blank" rel="noopener">More details</a>` : '';
+        window.L.popup().setLatLng([w.lat, w.lon]).setContent(`<strong>${escapeHtml(watchName(w))}</strong><br>${escapeHtml((w.why || []).join('; '))}${w.at ? `<br><small>${escapeHtml(fmtReadingTime(w.at))}</small>` : ''}${link}`).openOn(state.lmap);
+      }
+      status.watchOpen = { station: w.station, kind: w.kind, shown: !!state.lmap };
+      return;
+    }
     if (typeof ensureRiverGauges === 'function') { try { await ensureRiverGauges(); } catch (e) { /* the core gauges still work */ } }
     const gs = (nat.data && nat.data.gauges) || [];
     const f = w.kind === 'flood' ? gs.find((g) => String(g.properties.bom) === String(w.station)) : gs.find((g) => g.properties.station === w.station);
