@@ -384,9 +384,18 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   }
   const busyClick = (btn, label, fn) => btn && btn.addEventListener('click', (e) => withBusy(e.currentTarget, label, fn));
 
+  // The busy line says what is being waited for and, after ten seconds, how long it has been, so a slow
+  // service does not look like a hang. The count restarts with each new message.
+  let busyText = '', busySince = 0, busyTimer = 0;
   function setBusy(on, text) {
     $('busy').hidden = !on;
-    if (text) $('busy').textContent = text;
+    if (text) { busyText = text; busySince = Date.now(); $('busy').textContent = text; }
+    if (on && !busyTimer) {
+      busyTimer = setInterval(() => {
+        const s = Math.round((Date.now() - busySince) / 1000);
+        if (s >= 10) $('busy').textContent = `${busyText} (${s} s)`;
+      }, 1000);
+    } else if (!on && busyTimer) { clearInterval(busyTimer); busyTimer = 0; }
   }
 
   // One-tap places to model: a point on the river near the town's flood
@@ -7843,6 +7852,10 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // one try at GA's elevation services gives up after this (a stalled
   // request otherwise leaves "Downloading elevation…" up for good)
   const RASTER_TIMEOUT_MS = 45000;
+  // An error from the elevation service itself (no answer, an error reply, no elevation in the reply), as
+  // opposed to a file the reader could not use: asking again for a slightly different window cannot help
+  // with the first kind, and used to multiply the wait (3 windows x 3 tries x 45 s).
+  function serviceError(message, cause) { return Object.assign(new Error(message, cause ? { cause } : undefined), { service: true }); }
   async function fetchRaster(base, box, W, H, url0) {
     const direct = url0 || wcsUrl(base, box, W, H);
     // Preserve the broker path for browsers whose direct GA request is blocked
@@ -7855,13 +7868,13 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     let r = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await new Promise((ok) => setTimeout(ok, 1500 * attempt));
-      try { r = await fetch(urls[attempt], { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw new Error(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', { cause: err }); continue; }
+      try { r = await fetch(urls[attempt], { signal: AbortSignal.timeout(RASTER_TIMEOUT_MS) }); } catch (err) { r = null; if (attempt === 2) throw serviceError(err && err.name === 'TimeoutError' ? 'the elevation service is not answering; try again shortly' : 'the elevation service could not be reached; try again shortly', err); continue; }
       if (r.ok) break;
       if (r.status < 500 && !(BROKER && !isTauri())) break;
     }
-    if (!r.ok) throw new Error(`the elevation service returned ${r.status}`);
+    if (!r.ok) throw serviceError(`the elevation service returned ${r.status}`);
     const type = r.headers.get('content-type') || '';
-    if (!/tiff/i.test(type)) throw new Error('the elevation service did not return elevation data for this place');
+    if (!/tiff/i.test(type)) throw serviceError('the elevation service did not return elevation data for this place');
     const buf = await r.arrayBuffer();
     let iw, ih, data, nd, tiffBounds;
     try {
@@ -7988,7 +8001,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       for (const [half, cell] of [[H0, C0], [H0, Math.round(C0 * 1.07)], [H0 * 0.9, C0]]) {
         try { got = await fetchDemWindow(wlat, wlon, half, cell); break; } catch (err) {
           lastErr = err;
-          if (/no land/.test(String(err.message))) break;
+          if (err.service || /no land/.test(String(err.message))) break;
         }
       }
       if (!got) throw lastErr || new Error('no elevation data');
