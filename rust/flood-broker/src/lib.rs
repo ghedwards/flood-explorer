@@ -7,6 +7,7 @@
 //! few minutes and replies with CORS headers for the map's own origins.
 //!
 //!   GET /v1/levels?sites=143001C,130005A   latest hourly levels (Queensland)
+//!   GET /v1/radar?bbox=..&frames=N         recent radar frames from a folder you supply (RADAR_DIR); see radar.rs
 //!   GET /health                            status for monitoring
 //!
 //! [`Broker::handle`] is the whole service minus the socket, so tests drive
@@ -15,6 +16,7 @@
 mod elevation;
 pub mod history;
 pub mod lambda;
+pub mod radar;
 pub mod readings;
 pub mod s3;
 pub mod settings;
@@ -43,11 +45,13 @@ pub struct Config {
     pub cache_ms: i64,
     /// how often the readings are refreshed (for browser cache lifetimes)
     pub refresh_ms: i64,
+    /// A folder of radar frames the deployer supplies (`radar.rs`); None leaves /v1/radar off.
+    pub radar_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { origins: ["https://ghedwards.github.io".to_string()].into(), cache_ms: 10 * 60_000, refresh_ms: 15 * 60_000 }
+        Config { origins: ["https://ghedwards.github.io".to_string()].into(), cache_ms: 10 * 60_000, refresh_ms: 15 * 60_000, radar_dir: None }
     }
 }
 
@@ -304,6 +308,17 @@ impl Broker {
         }
     }
 
+    /// /v1/radar: frames from the folder the deployer configured, or 404 when none is.
+    fn serve_radar(&self, req: &Request, query: &str) -> Response {
+        let Some(dir) = &self.cfg.radar_dir else { return self.reply(req, 404, &json!({"status": "unconfigured", "error": "this broker has no radar store configured"}), &[]) };
+        let a = radar::serve(dir, query, (self.now)());
+        let cc = if a.cacheable { "public, max-age=60" } else { "no-store" };
+        let retry: &[(&str, &str)] = if a.status == 503 { &[("Retry-After", "60")] } else { &[] };
+        let mut extra = vec![("Cache-Control", cc)];
+        extra.extend_from_slice(retry);
+        self.reply(req, a.status, &a.body, &extra)
+    }
+
     fn serve_readings(&self, req: &Request) -> Response {
         self.serve_doc(req, false)
     }
@@ -401,17 +416,20 @@ impl Broker {
             let body = json!({
                 "ok": true, "version": VERSION, "readings": readings, "uptimeS": ((self.now)() - self.started) / 1000, "cachedSites": st.cache.len(),
                 "openStations": st.open.as_ref().map(|(_, s)| s.len()),
-                "requests": st.requests, "upstreamCalls": st.upstream_calls, "upstreamErrors": st.upstream_errors,
+                "radar": radar::describe(&self.cfg.radar_dir), "requests": st.requests, "upstreamCalls": st.upstream_calls, "upstreamErrors": st.upstream_errors,
                 "lastError": st.last_error.as_ref().map(|(at, m)| json!({"at": wmip::iso_utc(*at), "message": m})),
             });
             drop(st);
             return self.reply(req, 200, &body, &[("Cache-Control", "no-store")]);
         }
-        if !matches!(path, "/v1/levels" | "/v1/readings" | "/v1/now" | "/v1/series" | "/v1/history" | "/v1/elev") {
+        if !matches!(path, "/v1/levels" | "/v1/readings" | "/v1/now" | "/v1/series" | "/v1/history" | "/v1/elev" | "/v1/radar") {
             return self.reply(req, 404, &json!({"error": "not found"}), &[]);
         }
         if !self.allowed(req.client) {
             return self.reply(req, 429, &json!({"error": "too many requests"}), &[("Retry-After", "30")]);
+        }
+        if path == "/v1/radar" {
+            return self.serve_radar(req, query);
         }
         if path == "/v1/readings" {
             return self.serve_readings(req);
@@ -874,6 +892,38 @@ mod tests {
         t.fetch_add(14 * 60_000, std::sync::atomic::Ordering::SeqCst);
         let later = get(false, None);
         assert!(h(&later, "cache-control").unwrap().starts_with("public, max-age=240"), "{:?}", h(&later, "cache-control"));
+    }
+
+    #[test]
+    fn radar_is_off_unless_a_folder_is_configured_and_never_answers_empty() {
+        let (_p, _t, b) = setup(0);
+        let (code, body, _) = get(&b, "/v1/radar", Some("https://ghedwards.github.io"));
+        assert_eq!(code, 404);
+        assert_eq!(body["status"], "unconfigured");
+        let (_, health, _) = get(&b, "/health", None);
+        assert_eq!(health["radar"]["configured"], false);
+        // configured, but the folder has nothing in it yet: an error with a retry hint, not "no rain"
+        let dir = std::env::temp_dir().join(format!("flood-radar-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Arc::new(AtomicI64::new(wmip::epoch_ms("2026-11-08T05:30:00Z").unwrap()));
+        let t2 = t.clone();
+        let cfg = Config { radar_dir: Some(dir.clone()), ..Config::default() };
+        let b = Broker::new(Box::new(|_| Err("no portal".into())), Box::new(move || t2.load(Ordering::SeqCst)), cfg);
+        let r = b.handle(&Request { method: "GET", target: "/v1/radar", origin: Some("https://ghedwards.github.io"), client: "1.2.3.4", gzip: false, if_none_match: None });
+        assert_eq!(r.status, 503);
+        assert!(r.headers.iter().any(|(k, v)| k == "Retry-After" && v == "60") && r.headers.iter().any(|(k, v)| k == "Cache-Control" && v == "no-store"));
+        // with a frame in place it serves it, with CORS and a short cache
+        std::fs::write(dir.join("a.f32"), [0u8; 16]).unwrap();
+        std::fs::write(dir.join("radar.json"), r#"{"source":"s","attribution":"a","licence":"l","crs":"c","grid":{"w":2,"h":2,"x0":0,"y0":0,"dx":1,"dy":1},"frames":[{"time":"2026-11-08T05:25:00Z","file":"a.f32"}]}"#).unwrap();
+        let r = b.handle(&Request { method: "GET", target: "/v1/radar?frames=1", origin: Some("https://ghedwards.github.io"), client: "1.2.3.4", gzip: false, if_none_match: None });
+        assert_eq!(r.status, 200);
+        let h = |name: &str| r.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+        assert_eq!(h("Access-Control-Allow-Origin").as_deref(), Some("https://ghedwards.github.io"));
+        assert_eq!(h("Cache-Control").as_deref(), Some("public, max-age=60"));
+        let body: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(body["frames"][0], json!([0, 0, 0, 0]));
+        assert_eq!(body["ageSeconds"], 300);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

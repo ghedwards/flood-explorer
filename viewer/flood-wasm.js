@@ -606,8 +606,22 @@
       damStart: (area, params) => { const o = call('damStart', { ...area, ...params }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
       damStep: (steps) => { const o = call('damStep', { steps }); return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, num(v)])); },
       damFinish: () => { const o = call('damFinish', {}); return { depth: o.depth, wet: o.wet, level: o.level, arrival: o.arrival, cls: o.cls, vel: o.vel, km2: Array.from(o.km2), covered: num(o.covered), edge: num(o.edge) === 1 }; },
-      inertialStart: (grid, opts) => call('inertialStart', { ...grid, ...opts }),
-      inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
+      // Starts the 2D solver. With `driftSigmaM` (and the storm's `stormRainMm`, `stormHours`, losses) the rain falls as a drifting cell (rust/flood-core/src/rainfield.rs)
+      // and the answer says how much rain the area got on average and how much of it ran off.
+      inertialStart: (grid, opts) => {
+        const o = call('inertialStart', { ...grid, ...opts });
+        const out = { driftMeanRainMm: num(o.driftMeanRainMm), driftMeanRunoffMm: num(o.driftMeanRunoffMm) };
+        // a live radar storm (opts.radarFrames ...; rust/flood-core/src/live.rs) also reports how it was built
+        for (const k of ['radarSeconds', 'radarObservedSteps', 'radarForecastSteps', 'radarMotionU', 'radarMotionV', 'radarMotionCorrelation', 'radarMotionReliable', 'radarMinKnownShare', 'radarObservedRainMm', 'radarForecastRainMm', 'radarRunoffMm']) out[k] = num(o[k]);
+        return out;
+      },
+      inertialStep: () => { const o = call('inertialStep', {}); return { depth: o.depth, vx: o.vx, vy: o.vy, peak: o.peak, peakSpeed: o.peakSpeed, peakClass: o.peakClass, arrival: o.arrival, snapTimes: o.snapTimes, snapDepth: o.snapDepth, snapTruncated: o.snapTruncated ? num(o.snapTruncated) === 1 : undefined, ...Object.fromEntries(Object.entries(o).filter(([k]) => !['depth', 'vx', 'vy', 'peak', 'peakSpeed', 'peakClass', 'arrival', 'snapTimes', 'snapDepth', 'snapTruncated'].includes(k)).map(([k, v]) => [k, num(v)])) }; },
+      // How far the radar is off at rain gauges, in Rust (rust/flood-core/src/live.rs): `radar` is the answer of radar-client's readRadar, `gauges` are { lat, lon, mm, hours }
+      // totals ending at the newest frame. { factor, applied, reason, gaugesUsed, gaugeMm, radarMm }; a factor of 1 and applied false when the gauges cannot be trusted.
+      radarBias: (radar, zone, gauges) => {
+        const o = call('radarBias', { ...radar, radarZone: zone, gauges: Float64Array.from(gauges.flatMap((g) => [g.lat, g.lon, g.mm, g.hours])) });
+        return { factor: num(o.factor), applied: num(o.applied) === 1, gaugesUsed: num(o.gaugesUsed), gaugeMm: num(o.gaugeMm), radarMm: num(o.radarMm), reason: dec.decode(o.reason) };
+      },
       inertialVelocities: () => { const o = call('inertialVelocities', {}); return { vx: o.vx, vy: o.vy }; },
       analyse, streamSurface, inundate, inundateAt, waterMesh, flashFlood, stats, hazard, compareRuns,
       waveSetup, waveSurface, floodTimeline, burnDefences, parseSimpleTiff,
