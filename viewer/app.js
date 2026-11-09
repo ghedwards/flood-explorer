@@ -6518,6 +6518,43 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   }
   window.__floodGoTo = goToSearchResult;
 
+  // A link can open straight onto a place: ?address=10+Concorde+Drive+Loganholme, or ?lat=-27.684&lon=153.182
+  // with an optional &name=. An address is looked up in the Queensland Government address service, then
+  // (one request, so within Nominatim's policy) in Nominatim for the rest of Australia.
+  async function lookupAddress(text) {
+    try {
+      const r = await fetch(`${QLD_LOCATOR}/findAddressCandidates?${new URLSearchParams({ SingleLine: text, outSR: '4326', maxLocations: '1', f: 'json' })}`);
+      const c = r.ok ? ((await r.json()).candidates || [])[0] : null;
+      if (c && c.location && c.score >= 80) return { lat: c.location.y, lon: c.location.x, label: String(c.address || text).split(', ').slice(0, 2).join(', ') };
+    } catch (e) { /* try the next service */ }
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=au&limit=1&q=${encodeURIComponent(text)}`, { headers: { 'Accept-Language': 'en-AU' } });
+      const x = r.ok ? (await r.json())[0] : null;
+      if (x) return { lat: parseFloat(x.lat), lon: parseFloat(x.lon), label: String(x.display_name).split(', ').slice(0, 2).join(', ') };
+    } catch (e) { /* no match */ }
+    return null;
+  }
+  async function openFromQuery() {
+    let q;
+    try { q = new URLSearchParams(location.search); } catch (e) { return; }
+    const address = (q.get('address') || '').trim().slice(0, 200);
+    const lat = parseFloat(q.get('lat')), lon = parseFloat(q.get('lon'));
+    const name = (q.get('name') || '').trim().slice(0, 80);
+    let target = null;
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      if (lat < -44 || lat > -9 || lon < 112 || lon > 154) { status.deepLink = { ok: false, why: 'outside Australia' }; say('That link\'s position is outside Australia.', { error: true }); return; }
+      target = { lat, lon, label: name || `${lat.toFixed(4)}, ${lon.toFixed(4)}` };
+    } else if (address) {
+      target = await lookupAddress(address);
+      if (!target) { status.deepLink = { ok: false, why: 'no match', address }; say(`No match for "${address}" in Australia.`, { error: true }); return; }
+    }
+    if (!target) return;
+    $('searchInput').value = address || target.label;
+    status.deepLink = { ok: true, lat: target.lat, lon: target.lon };
+    await goToSearchResult(target.lat, target.lon, target.label);
+  }
+  window.__floodOpenFromQuery = openFromQuery;
+
   /* ---------- downloads */
   function slug(t) { return String(t || 'flood').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'flood'; }
   function download(blob, name) {
@@ -8696,5 +8733,6 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     await loadFloodHub();
     await loadArea(areas[0].id);
     await restoreOnStart();
+    await openFromQuery();
   })();
 })();
