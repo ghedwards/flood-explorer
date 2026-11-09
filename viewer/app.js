@@ -6426,6 +6426,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // flood depth if a model covers it, with a button to add it as a place.
   $('searchForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    clearTimeout(suggestTimer); suggestSeq++; // a pending pick list must not replace these results
     const q = $('searchInput').value.trim();
     const box = $('searchResults');
     if (!q) { box.hidden = true; return; }
@@ -6451,6 +6452,50 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     }
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('#searchForm, #searchResults')) $('searchResults').hidden = true; });
+  // A pick list while typing, from the Queensland Government address service (it has
+  // suggest and find endpoints that need no key). Enter still runs the Nominatim search
+  // above, which covers the rest of Australia, because Nominatim's policy rules out
+  // search-as-you-type. Suggestions wait for a pause in typing, need three characters,
+  // and an older answer never replaces a newer one.
+  const QLD_LOCATOR = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Location/QldCompositeLocator/GeocodeServer';
+  let suggestTimer = 0, suggestSeq = 0;
+  $('searchInput').addEventListener('input', () => {
+    clearTimeout(suggestTimer);
+    const q = $('searchInput').value.trim();
+    const box = $('searchResults');
+    const seq = ++suggestSeq;
+    if (q.length < 3) { box.hidden = true; return; }
+    suggestTimer = setTimeout(async () => {
+      try {
+        const r = await fetch(`${QLD_LOCATOR}/suggest?${new URLSearchParams({ text: q, maxSuggestions: '6', f: 'json' })}`);
+        const list = r.ok ? ((await r.json()).suggestions || []).filter((x) => x.magicKey) : [];
+        if (seq !== suggestSeq) return;
+        status.suggest = { ok: r.ok, results: list.length };
+        if (!list.length) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = list.map((x, i) => {
+          const [first, ...rest] = String(x.text).split(', ');
+          return `<button type="button" data-s="${i}">${escapeHtml(first)}<small>${escapeHtml(rest.slice(0, 4).join(', '))}</small></button>`;
+        }).join('') + '<p class="hint">Suggestions from the Queensland Government address service. Press Enter to search all of Australia.</p>';
+        box.querySelectorAll('[data-s]').forEach((b) => b.addEventListener('click', async () => {
+          const x = list[+b.dataset.s];
+          box.hidden = true;
+          try {
+            const f = await fetch(`${QLD_LOCATOR}/findAddressCandidates?${new URLSearchParams({ magicKey: x.magicKey, SingleLine: x.text, outSR: '4326', maxLocations: '1', f: 'json' })}`);
+            const c = f.ok ? ((await f.json()).candidates || [])[0] : null;
+            if (!c || !c.location) throw new Error('no location');
+            $('searchInput').value = x.text;
+            goToSearchResult(c.location.y, c.location.x, String(x.text).split(', ').slice(0, 2).join(', '));
+          } catch (err) {
+            box.hidden = false;
+            box.innerHTML = '<p class="hint">Could not place that address. Press Enter to search instead.</p>';
+          }
+        }));
+      } catch (err) {
+        if (seq === suggestSeq) { box.hidden = true; status.suggest = { ok: false, error: String(err.message || err) }; }
+      }
+    }, 300);
+  });
   async function goToSearchResult(lat, lon, label) {
     if (!state.lmap || $('lmap').hidden) await loadArea('australia');
     const m = state.lmap;
