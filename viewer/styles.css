@@ -87,6 +87,10 @@ body {
 #floodType { width: 100%; font-weight: 600; }
 .search { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .search input { width: 210px; min-width: 0; font: 14px var(--font-body); padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+/* The top bar is a fixed, z-indexed box, so it is a stacking context and the results inside it cannot
+   rise above the side panels (z-index 1001) whatever their own z-index. While results are showing, the
+   whole bar goes above the panels. */
+.topbar:has(.search-results:not([hidden])) { z-index: 1004; }
 .search-results { position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: 50vh; overflow-y: auto; padding: 6px; display: grid; gap: 2px; z-index: 1003; }
 .search-results button { text-align: left; border: 0; background: transparent; color: var(--ink); padding: 8px 10px; border-radius: 8px; cursor: pointer; font: 13.5px/1.35 var(--font-body); }
 .search-results button:hover, .search-results button:focus { background: var(--surface-2); }
