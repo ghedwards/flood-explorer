@@ -4104,20 +4104,37 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       return j;
     } catch (e) { status.savedCheck = { error: String(e && e.message || e) }; return null; }
   }
+  // What the site build says about its own gauge and dam lists (meta.json), so that an outage of the Bureau's gauge
+  // service, which the build survives, is never silent: a list kept from an earlier build (`stale`), one rebuilt
+  // from the flood class feed (`gaugeSource`), or none at all.
+  function buildDataIssues() {
+    const m = nat.data && nat.data.meta;
+    if (!m || typeof m !== 'object') return [];
+    const gauges = (nat.data.gauges || []).length, dams = (nat.data.storages || []).length;
+    if (m.stale) return [{ name: 'Gauge and dam lists', reason: `Out of date: kept from the last good build (${m.stale.gaugesFrom ? when(m.stale.gaugesFrom) : 'date unknown'}) because the Bureau's gauge service could not be reached when this site was built.` }];
+    if (m.gaugeSource) return [{ name: 'Gauge list', reason: 'Partial: built from the Bureau\'s flood class feed because its gauge service could not be reached when this site was built. It has flood gauges only: no dams, river-only gauges or Water Data Online readings.' }];
+    if (!gauges) return [{ name: 'Gauge list', reason: 'Empty: no gauges could be loaded when this site was built.' }];
+    if (!dams) return [{ name: 'Dams and water storages', reason: 'None were loaded when this site was built.' }];
+    return [];
+  }
   function renderFeedHealth() {
     const health = nat.feedHealth;
     const box = $('feedStatus'), pill = $('feedPill');
     if (!box || !pill) return;
-    const issues = [...(health ? [...(health.error ? [{ name: 'Live readings', reason: health.error }] : []), ...health.issues] : []),
+    const buildIssues = buildDataIssues();
+    const feedIssues = [...(health ? [...(health.error ? [{ name: 'Live readings', reason: health.error }] : []), ...health.issues] : []),
       ...Object.entries(nat.layerIssues || {}).map(([name, reason]) => ({ name, reason }))];
+    const issues = [...buildIssues, ...feedIssues];
     box.hidden = pill.hidden = !issues.length;
     pill.textContent = issues.length === 1 ? '1 feed issue' : `${issues.length} feed issues`;
     if (!issues.length) return;
-    const copy = nat.readingsFetched ? `Keeping the last available readings (${when(nat.readingsFetched)}).` : 'The map remains usable; live readings may be unavailable.';
+    const onlyBuild = !feedIssues.length;
+    status.dataIssues = { build: buildIssues.map((i) => i.name), feeds: feedIssues.length };
+    const copy = onlyBuild ? 'The map remains usable with the data that was loaded.' : nat.readingsFetched ? `Keeping the last available readings (${when(nat.readingsFetched)}).` : 'The map remains usable; live readings may be unavailable.';
     const retry = health?.checking ? 'Checking again now…' : health?.nextRetry
       ? `Retrying automatically at ${new Date(health.nextRetry).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.`
       : 'Failed sources will be checked again by the live service; some providers impose longer rate limits.';
-    box.innerHTML = `<strong>Some data is delayed</strong><p>${escapeHtml(copy)} ${escapeHtml(retry)}</p><ul>${issues.map(issue => `<li><strong>${escapeHtml(issue.name)}</strong>: ${escapeHtml(issue.reason)}${issue.lastGood ? ` Last successful fetch: ${escapeHtml(when(issue.lastGood))}.` : ''}</li>`).join('')}</ul>`;
+    box.innerHTML = `<strong>${onlyBuild ? 'Some data is limited or out of date' : 'Some data is delayed'}</strong><p>${escapeHtml(copy)} ${onlyBuild ? '' : escapeHtml(retry)}</p><ul>${issues.map(issue => `<li><strong>${escapeHtml(issue.name)}</strong>: ${escapeHtml(issue.reason)}${issue.lastGood ? ` Last successful fetch: ${escapeHtml(when(issue.lastGood))}.` : ''}</li>`).join('')}</ul>`;
   }
   function runLiveUpdate(name, draw) {
     nat.layerIssues = nat.layerIssues || {};
