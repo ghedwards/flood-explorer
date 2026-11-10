@@ -139,6 +139,35 @@ jobs:
             cp site/data/national/readings.json cache/readings.json
           fi
 
+      # The Bureau's gauge service can refuse or time out connections from this machine; `flood national` then
+      # writes empty gauge and dam lists and the site loses them silently. Keep the last good copy between builds
+      # (an Actions cache) and use it when the service gives nothing, flagged as stale in meta.json so the map
+      # can say so. A gauge list rebuilt from the flood class feed is never saved as the good copy.
+      - name: Restore the last good gauge and dam lists
+        uses: actions/cache/restore@v6
+        with:
+          path: cache/national-good
+          key: national-good-${{ github.run_id }}
+          restore-keys: national-good-
+
+      - name: Save the gauge and dam lists if good, or use the last good copy if not
+        id: nationalkeep
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          flood national-keep site/data/national cache/national-good | tee national-keep.log
+          head -1 national-keep.log >> "$GITHUB_STEP_SUMMARY"
+          if grep -q '^National keep: saved' national-keep.log; then echo "saved=true" >> "$GITHUB_OUTPUT"; fi
+          if grep -q 'restored' national-keep.log; then echo "::warning::$(head -1 national-keep.log)"; fi
+          if grep -q 'no good copy' national-keep.log; then echo "::warning::$(head -1 national-keep.log)"; fi
+
+      - name: Save the last good gauge and dam lists
+        if: steps.nationalkeep.outputs.saved == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: cache/national-good
+          key: national-good-${{ github.run_id }}
+
       - name: Month for the monthly caches
         id: month
         run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"

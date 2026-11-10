@@ -52,7 +52,8 @@ async function main() {
   const browser = await chromium.launch();
   try {
     // a page whose address services answer as given; `calls` records what it asked
-    const open = async (query, { qld, nominatim }) => {
+    const open = async (query, { qld, nominatim, national }) => {
+      const nationalFiles = Object.assign({}, NATIONAL, national || {});
       const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 800 } });
       const page = await context.newPage();
       const calls = [], errors = [];
@@ -60,8 +61,8 @@ async function main() {
       await context.route('**/*', (route) => {
         const url = new URL(route.request().url());
         if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
-          const national = /\/data\/national\/([^/]+)$/.exec(url.pathname);
-          if (national) return NATIONAL[national[1]] ? route.fulfill(json(NATIONAL[national[1]])) : route.fulfill({ status: 404, body: '' });
+          const nationalMatch = /\/data\/national\/([^/]+)$/.exec(url.pathname);
+          if (nationalMatch) return nationalFiles[nationalMatch[1]] ? route.fulfill(json(nationalFiles[nationalMatch[1]])) : route.fulfill({ status: 404, body: '' });
           return route.continue();
         }
         if (/QldCompositeLocator/.test(url.pathname)) {
@@ -148,7 +149,26 @@ async function main() {
     assert.match(w.popup, /Bruce Highway \(Gympie\)/); assert.equal(w.link, 'https://qldtraffic.qld.gov.au/x', 'with the report link');
     assert.deepEqual(t.errors, [], 'no page errors');
     await t.close();
-    console.log('Address search, links and the Watch list: all checks passed');
+    // ---- the site says so when the build's gauge and dam lists are partial, stale or empty
+    const dam = { type: 'Feature', geometry: { type: 'Point', coordinates: [152.6, -27.4] }, properties: { storage_id: 1, wstorname: 'Test Dam', total_capacity_ml: 1000, accessible_capacity_ml: 1000, river_name: 'Test River', state_name: 'Queensland', data_owner: 'Test' } };
+    const issue = async (national) => {
+      const q = await open('', { qld: { find: found }, national });
+      const out = await q.page.evaluate(() => ({ pillHidden: document.getElementById('feedPill').hidden, pill: document.getElementById('feedPill').textContent, box: document.getElementById('feedStatus').hidden ? '' : document.getElementById('feedStatus').textContent, status: window.__floodStatus.dataIssues || null }));
+      const errors = q.errors.slice();
+      await q.close();
+      return { ...out, errors };
+    };
+    let d = await issue({ 'meta.json': { gauges: 1, storages: 1, gaugeSource: 'the flood class feed' }, 'storages.geojson': { type: 'FeatureCollection', features: [dam] } });
+    assert.ok(!d.pillHidden && /1 feed issue/.test(d.pill), `a gauge list rebuilt from the flood class feed shows the pill: ${JSON.stringify(d)}`);
+    assert.match(d.box, /Gauge list: Partial: built from the Bureau's flood class feed/); assert.match(d.box, /no dams, river-only gauges/); assert.match(d.box, /Some data is limited or out of date/);
+    d = await issue({ 'meta.json': { gauges: 1, storages: 1, stale: { gaugesFrom: '2026-11-03T22:21:37+00:00' } }, 'storages.geojson': { type: 'FeatureCollection', features: [dam] } });
+    assert.match(d.box, /Gauge and dam lists: Out of date: kept from the last good build/, `a list kept from an earlier build says so: ${JSON.stringify(d)}`);
+    d = await issue({ 'meta.json': { gauges: 0, storages: 0 }, 'gauges-core.min.json': { keys: [], dict: {}, rows: [] } });
+    assert.match(d.box, /Gauge list: Empty: no gauges could be loaded/, `an empty list says so: ${JSON.stringify(d)}`);
+    d = await issue({ 'meta.json': { gauges: 1, storages: 1 }, 'storages.geojson': { type: 'FeatureCollection', features: [dam] } });
+    assert.ok(d.pillHidden && d.box === '', `healthy lists show no pill: ${JSON.stringify(d)}`);
+    assert.deepEqual(d.errors, [], 'no page errors');
+    console.log('Address search, links, the Watch list and data notices: all checks passed');
   } finally {
     await browser.close();
     if (server) await new Promise((resolve) => server.close(resolve));
