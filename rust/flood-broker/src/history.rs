@@ -110,8 +110,12 @@ pub fn gzip(b: &[u8]) -> Vec<u8> {
 
 pub fn gunzip(b: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let mut out = Vec::with_capacity(b.len() * 6);
-    flate2::read::GzDecoder::new(b).read_to_end(&mut out).map_err(|e| e.to_string())?;
+    const MAX_HISTORY_BYTES: u64 = 32 << 20;
+    let mut out = Vec::with_capacity((b.len() * 6).min(MAX_HISTORY_BYTES as usize));
+    flate2::read::GzDecoder::new(b).take(MAX_HISTORY_BYTES + 1).read_to_end(&mut out).map_err(|e| e.to_string())?;
+    if out.len() as u64 > MAX_HISTORY_BYTES {
+        return Err("history archive exceeds size limit".into());
+    }
     Ok(out)
 }
 

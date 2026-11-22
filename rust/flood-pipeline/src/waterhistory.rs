@@ -138,7 +138,7 @@ fn one(g: Get, feature: &Value) -> Result<HistoryResult, String> {
         Ok(None) => return Ok((id, None, Some("no waterbody"))),
         Err(e) => return Err(e.unwrap_or_else(|| "waterbody service: not found".into())),
     };
-    let Some(url) = wb["properties"].get("timeseries").filter(|u| truthy(Some(u))).map(py_str) else {
+    let Some(url) = wb["properties"].get("timeseries").filter(|u| truthy(Some(u))).map(py_str).filter(|u| u.starts_with("https://") || u.starts_with("http://")) else {
         return Ok((id, None, Some("no time series")));
     };
     let text = match g(&url) {

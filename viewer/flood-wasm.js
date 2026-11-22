@@ -88,12 +88,15 @@
     return (op, obj) => {
       const prep = prepare(obj), ob = enc.encode(op);
       const po = ex.flood_alloc(ob.length) >>> 0, pi = ex.flood_alloc(prep.size) >>> 0;
-      new Uint8Array(ex.memory.buffer, po, ob.length).set(ob);
-      writeBag(prep, new Uint8Array(ex.memory.buffer, pi, prep.size));
-      const p = ex.flood_run(po, ob.length, pi, prep.size) >>> 0;
-      const out = readBag(new Uint8Array(ex.memory.buffer, p, ex.flood_out_len() >>> 0));
-      ex.flood_free(po, ob.length); ex.flood_free(pi, prep.size);
-      return out;
+      try {
+        new Uint8Array(ex.memory.buffer, po, ob.length).set(ob);
+        writeBag(prep, new Uint8Array(ex.memory.buffer, pi, prep.size));
+        const p = ex.flood_run(po, ob.length, pi, prep.size) >>> 0;
+        return readBag(new Uint8Array(ex.memory.buffer, p, ex.flood_out_len() >>> 0));
+      } finally {
+        ex.flood_free(po, ob.length);
+        ex.flood_free(pi, prep.size);
+      }
     };
   }
 
@@ -240,11 +243,11 @@
 
     function flashFlood(a, o) {
       o = o || {};
-      const out = call('flashFlood', {
+      const out = call('flashFlood', Object.assign({
         a: handleOf(a), rainMm: o.rainMm, hours: o.hours, initialLoss: o.initialLoss, contLoss: o.contLoss,
         nChannel: o.nChannel, nOverland: o.nOverland, maxRise: o.maxRise, maxPondDepth: o.maxPondDepth,
         pipeMmH: o.pipeMmH, urban: u8(o.urban),
-      }, Object.assign({ a: handleOf(a) }, o.slim ? { slim: 1 } : null));
+      }, o.slim ? { slim: 1 } : null));
       return {
         wet: out.wet, depth: out.depth, level: out.level, kind: out.kind, wse: out.wse ? Float32Array.from(out.wse) : undefined,
         summary: {

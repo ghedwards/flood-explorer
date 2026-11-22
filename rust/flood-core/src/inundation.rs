@@ -262,6 +262,17 @@ impl Solver {
         f.times.push(time);
         f.values.extend_from_slice(values);
         f.flows.extend_from_slice(flows);
+        // Prune past intervals no longer needed once the solver has moved past them.
+        if f.times.len() > 64 {
+            let keep_from = f.times.partition_point(|&t| t < self.time).saturating_sub(2);
+            if keep_from > 0 {
+                f.times.drain(..keep_from);
+                f.values.drain(..keep_from * f.points);
+                if !f.flows.is_empty() {
+                    f.flows.drain(..keep_from * f.points);
+                }
+            }
+        }
         Ok(())
     }
 

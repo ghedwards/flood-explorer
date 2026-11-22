@@ -1,7 +1,7 @@
 # From the repository root:
 #   docker build -f broker/Dockerfile -t flood-broker .
 #   docker run -d --restart unless-stopped -p 127.0.0.1:8787:8787 -e TRUST_PROXY=1 flood-broker
-FROM rust:1-bookworm AS build
+FROM rust:1.99.1-bookworm AS build
 WORKDIR /src
 COPY rust/ rust/
 RUN cd rust && cargo build --locked --release -p flood-broker

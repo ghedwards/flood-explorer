@@ -254,7 +254,7 @@ impl Solver {
 
     fn sample_recorder(&mut self) -> Result<(), String> {
         let Some(mut r) = self.recorder.take() else { return Ok(()) };
-        let result = if r.values.len() + 3 * r.points > MAX_RECORDED_VALUES { Err("boundary recording is too long; shorten the run".to_string()) } else {
+        let result = if r.values.len() + r.transport.len() + 3 * r.points > MAX_RECORDED_VALUES { Err("boundary recording is too long; shorten the run".to_string()) } else {
             let of = |i: usize| self.centre_transport(i);
             r.sample(self.time, &self.eta, if self.method == Method::Staggered { Some(&of) } else { None });
             Ok(())

@@ -67,7 +67,7 @@ Remaining priorities:
 
 ### On-demand Copernicus GLO-30 + hydrology (partially prototyped)
 
-The [tile-download prototype](viewer/glo30-proto.html) exists, and
+The [tile-download prototype](docs/prototypes/glo30-proto.html) exists, and
 `rust/flood-core/src/hydro.rs` contains standalone hydrology helpers. The
 on-demand viewer still uses GA DEM-H/LiDAR; a complete GLO-30 browser pipeline
 is not exposed through the WASM dispatcher or integrated into the model flow.
@@ -123,7 +123,7 @@ The [original progress note](docs/client-glo30-progress.md) and
   the terrain. The fast model now limits carried water with a weir-discharge
   budget using a fixed 24-hour duration. Event-dependent duration, segment
   budgets and validation of short overtopping remain outstanding.
-- **Recorded floods hour by hour.** `config/events.json` lists 17 floods;
+- **Recorded floods hour by hour.** `config/events.json` lists 22 floods;
   the build fetches hourly gauge readings from Water Data Online for those
   with a nearby station holding a level series for the dates. Lismore
   2022 and Rockhampton 2017 have no such station (their flood gauges

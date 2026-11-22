@@ -437,7 +437,7 @@ test('warning gauge rings open the underlying gauge popup and stop map clicks', 
     circleMarker(_point, options) { assert.equal(options.interactive, true); return marker; },
     DomEvent: { stop(event) { stopped = event; } },
   };
-  const ctx = viewer(['warningGaugeMarker'], { onDotClick: (...args) => { opened = args; } });
+  const ctx = viewer(['escapeHtml', 'warningGaugeMarker'], { onDotClick: (...args) => { opened = args; } });
   assert.equal(ctx.warningGaugeMarker(L, {}, feature), marker);
   const event = { latlng: { lat: -27, lng: 153 } };
   handler(event);
@@ -478,4 +478,36 @@ test('late live readings update warning and tide markers without resetting layer
   assert.equal(nat.layers['Gauges under a current flood warning (BoM)'], warningGroup);
   assert.equal(seaGroup.items.length, 1);
   assert.equal(warningGroup.items.length, 1);
+});
+
+test('restoreSession sanitizes untrusted share-link fields and safeHttpUrl blocks non-http schemes', async () => {
+  const { escapeHtml, safeHttpUrl, safeAreaId } = await import('../viewer/html-safe.js');
+  assert.equal(escapeHtml('<img src="x" onerror=\'1\'>'), '&lt;img src=&quot;x&quot; onerror=&#39;1&#39;&gt;');
+  assert.equal(safeHttpUrl('javascript:alert(1)'), '');
+  assert.equal(safeHttpUrl('data:text/html,<svg>'), '');
+  assert.equal(safeHttpUrl('https://www.bom.gov.au/test'), 'https://www.bom.gov.au/test');
+  assert.equal(safeAreaId('brisbane'), 'brisbane');
+  assert.equal(safeAreaId('../../etc/passwd'), '');
+  const f = modelFixture();
+  const drawnStudies = [], addedPins = [], loadedIds = [];
+  f.drawStudy = (s) => drawnStudies.push(s);
+  f.nextLetter = () => 'A';
+  f.addPin = (lat, lon, opts) => addedPins.push({ lat, lon, opts });
+  f.loadArea = async (id) => { loadedIds.push(id); };
+  f.applyDefences = async () => {};
+  const ctx = viewer(['escapeHtml', 'safeHttpUrl'], { URL, window: { location: { href: 'https://example.test/app/' } } });
+  assert.equal(ctx.safeHttpUrl('javascript:alert(1)'), '');
+  assert.equal(ctx.safeHttpUrl('data:text/html,<svg>'), '');
+  assert.equal(ctx.safeHttpUrl('https://www.bom.gov.au/test'), 'https://www.bom.gov.au/test');
+  await f.restoreSession({
+    v: 1,
+    studies: [{ l: '<img src=x onerror=alert(1)>', b: [-28, 152, -27, 153], name: 'Bad' }],
+    pins: [{ n: '<svg onload=alert(1)>', lat: -27.5, lon: 153.0, name: 'Pin' }],
+    areas: [{ n: 2, id: '../../etc/passwd' }],
+  }, 'link');
+  assert.equal(drawnStudies.length, 1);
+  assert.equal(drawnStudies[0].letter, 'A');
+  assert.equal(addedPins.length, 1);
+  assert.equal(addedPins[0].opts.n, undefined);
+  assert.deepEqual(loadedIds, []);
 });

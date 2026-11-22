@@ -193,6 +193,9 @@ impl MsqSource {
         }
         if let Some(r) = pick.into_iter().next() {
             let url = s_or_empty(r.get("url"));
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err(format!("invalid resource URL for {} {}", site, year));
+            }
             let (mut body, mut ctype) = (Vec::new(), String::new());
             for attempt in 0..3u64 {
                 // the portal sometimes answers empty: wait and retry

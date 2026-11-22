@@ -70,6 +70,7 @@ pub struct Doc {
     /// series by gauge: both made on first use
     pub now: std::sync::OnceLock<Part>,
     pub series: std::sync::OnceLock<std::collections::HashMap<String, Value>>,
+    pub sources: std::sync::OnceLock<Option<Value>>,
 }
 
 /// One served form of a document: as is, gzipped, and its ETag.
@@ -128,22 +129,32 @@ impl Doc {
 }
 
 impl Doc {
+    pub fn sources_summary(&self) -> Option<Value> {
+        self.sources
+            .get_or_init(|| serde_json::from_slice::<Value>(&self.body).ok().and_then(|v| v.get("sources").cloned()))
+            .clone()
+    }
+
     pub fn new(body: Vec<u8>, fetched_ms: i64, s3_etag: Option<String>) -> Doc {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 6), flate2::Compression::new(6));
         let gz = enc.write_all(&body).and_then(|_| enc.finish()).unwrap_or_default();
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
-        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "refresh", now: Default::default(), series: Default::default() }
+        Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "refresh", now: Default::default(), series: Default::default(), sources: Default::default() }
     }
 
     /// From the stored gzipped copy: unzip it, keep the zipped bytes to send.
     pub fn from_gz(gz: Vec<u8>, fetched_ms: Option<i64>, s3_etag: Option<String>) -> Result<Doc, String> {
         use std::io::Read;
-        let mut body = Vec::with_capacity(gz.len() * 10);
-        flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut body).map_err(|e| format!("readings.json.gz: {e}"))?;
+        const MAX_DOC_BYTES: u64 = 64 << 20;
+        let mut body = Vec::with_capacity((gz.len() * 10).min(MAX_DOC_BYTES as usize));
+        flate2::read::GzDecoder::new(&gz[..]).take(MAX_DOC_BYTES + 1).read_to_end(&mut body).map_err(|e| format!("readings.json.gz: {e}"))?;
+        if body.len() as u64 > MAX_DOC_BYTES {
+            return Err("readings.json.gz exceeds size limit".into());
+        }
         let fetched_ms = fetched_ms.or_else(|| doc_fetched(&body)).unwrap_or(0);
         let etag = format!("\"{}\"", &crate::s3::sha256_hex(&body)[..20]);
-        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "s3-gz", now: Default::default(), series: Default::default() })
+        Ok(Doc { body: Arc::new(body), gz: Arc::new(gz), etag, fetched_ms, s3_etag, source: "s3-gz", now: Default::default(), series: Default::default(), sources: Default::default() })
     }
 }
 
@@ -321,10 +332,11 @@ impl Readings {
         // refresh: ask it at most hourly and reuse its levels and dam
         // volumes in between; Queensland's live levels (and the Bureau's FTP
         // levels further down) still come every refresh
-        let prev0 = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
-        let reuse = prev0.as_ref().filter(|p| {
+        let prev = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
+        let reuse = prev.as_ref().filter(|p| {
             p["wdoFetched"].as_str().and_then(crate::wmip::epoch_ms).is_some_and(|t| started - t < WDO_EVERY_MS) && p["level"].is_object()
         });
+        let reused_wdo = reuse.is_some();
         let mut r = match reuse {
             Some(p) => {
                 let mut level = p["level"].as_object().cloned().unwrap_or_default();
@@ -341,7 +353,6 @@ impl Readings {
             }
         };
         let t_readings = (self.now)();
-        let prev = self.latest().ok().flatten().and_then(|d| serde_json::from_slice::<Value>(&d.body).ok());
         // Track per-source health across refreshes: lastGood, lastError, errorCount.
         let mut sources = prev.as_ref().and_then(|p| p["sources"].as_object().cloned()).unwrap_or_default();
         let mut mark_source = |name: &str, attempted: bool, ok: bool, slice: &[String], at_iso: &str| {
@@ -368,7 +379,7 @@ impl Readings {
         let now_readings_iso = crate::wmip::iso_utc(t_readings);
         mark_source(
             "wdo",
-            reuse.is_none(),
+            !reused_wdo,
             r["level"].as_object().is_some_and(|o| !o.is_empty()) || r["storage"].as_object().is_some_and(|o| !o.is_empty()),
             &wdo_errs,
             r["wdoFetched"].as_str().unwrap_or(&now_readings_iso),
@@ -754,13 +765,20 @@ impl Readings {
             }
         }
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = Some((fetched, Arc::new(doc)));
-        // persist to disk in local mode so the next start is instant
+        // persist to disk atomically in local mode so the next start is instant
         if let Store::Local(dir) = &self.store {
             let _ = std::fs::create_dir_all(dir);
             let cur = self.current.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let write_atomic = |name: &str, bytes: &[u8]| {
+                let target = dir.join(name);
+                let tmp = dir.join(format!("{}.tmp.{}", name, std::process::id()));
+                if std::fs::write(&tmp, bytes).is_ok() {
+                    let _ = std::fs::rename(&tmp, &target);
+                }
+            };
             if let Some((_, doc)) = cur {
-                let _ = std::fs::write(dir.join("readings.json"), doc.body.as_ref());
-                if !doc.gz.is_empty() { let _ = std::fs::write(dir.join("readings.json.gz"), doc.gz.as_ref()); }
+                write_atomic("readings.json", doc.body.as_ref());
+                if !doc.gz.is_empty() { write_atomic("readings.json.gz", doc.gz.as_ref()); }
             }
         }
         let hist = self.update_history(&r["level"], fetched);
@@ -990,7 +1008,25 @@ pub fn http_json(url: &str, params: &[(String, String)]) -> Result<Value, String
             std::thread::sleep(std::time::Duration::from_secs(5 * (attempt + 1)));
         }
     }
-    Err(format!("{}: {}", &full[..full.len().min(120)], last))
+    let preview: String = full.chars().take(120).collect();
+    Err(format!("{}: {}", scrub_secrets(&preview), scrub_secrets(&last)))
+}
+
+fn scrub_secrets(s: &str) -> String {
+    let mut out = s.to_string();
+    for pat in ["apikey=", "key="] {
+        let mut pos = 0;
+        while let Some(rel) = out[pos..].find(pat) {
+            let start = pos + rel + pat.len();
+            let end = out[start..]
+                .find(['&', ' ', '"', '\'', ')', '\r', '\n'])
+                .map(|o| start + o)
+                .unwrap_or(out.len());
+            out.replace_range(start..end, "REDACTED");
+            pos = start + "REDACTED".len();
+        }
+    }
+    out
 }
 
 /// Official traffic feeds using the standalone broker's settings file.
@@ -1054,8 +1090,9 @@ pub fn fetch_roads_with_settings(iso_now: &str, errors: &mut Vec<String>, path: 
                 sources.insert(state.to_string(), json!("ok"));
             }
             Err(e) => {
-                errors.push(format!("roads {}: {}", state, e));
-                sources.insert(state.to_string(), json!(format!("error: {}", e)));
+                let clean = scrub_secrets(&e);
+                errors.push(format!("roads {}: {}", state, clean));
+                sources.insert(state.to_string(), json!(format!("error: {}", clean)));
             }
         }
     }
@@ -1399,5 +1436,15 @@ mod tests {
         let s3 = r.refresh().unwrap();
         assert_eq!(s3["ftpDownloads"], 1, "only the changed river-height page is downloaded");
         assert_eq!(gets.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn scrub_secrets_redacts_api_keys_in_errors() {
+        let raw = "GET https://api.qldtraffic.qld.gov.au/v2/events?apikey=secret123&format=json failed (key=abc456)";
+        let scrubbed = scrub_secrets(raw);
+        assert!(!scrubbed.contains("secret123"));
+        assert!(!scrubbed.contains("abc456"));
+        assert!(scrubbed.contains("apikey=REDACTED"));
+        assert!(scrubbed.contains("key=REDACTED"));
     }
 }

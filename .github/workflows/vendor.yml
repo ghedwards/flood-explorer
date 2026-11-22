@@ -17,7 +17,7 @@ jobs:
   vendor:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Vendor
         working-directory: rust
         run: |
@@ -38,4 +38,5 @@ jobs:
           git init -q -b rust-vendor
           git add -A
           git -c user.name="github-actions" -c user.email="github-actions@users.noreply.github.com" commit -qm "Vendored crates for ${GITHUB_SHA::8}"
-          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" rust-vendor
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push -qf "https://github.com/${GITHUB_REPOSITORY}.git" rust-vendor

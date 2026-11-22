@@ -39,16 +39,25 @@ export default defineConfig({
   preview: {
     host: "127.0.0.1",
     port: 8000,
-    proxy: {
-      "/data": {
-        target: "https://ghedwards.github.io/flood-explorer",
-        changeOrigin: true,
-      },
-    },
+    proxy: fs.existsSync(path.join(root, "site/data"))
+      ? undefined
+      : {
+          "/data": {
+            target: "https://ghedwards.github.io/flood-explorer",
+            changeOrigin: true,
+          },
+        },
   },
   plugins: [
     {
       name: "flood-offline-shell",
+      buildStart() {
+        // emptyOutDir is false so site/data survives rebuilds; still clear
+        // emitted app assets so stale hashed chunks do not accumulate.
+        for (const rel of ["site/assets", "site/licenses", "site/sw.js"]) {
+          fs.rmSync(path.join(root, rel), { recursive: true, force: true });
+        }
+      },
       generateBundle(_options, bundle) {
         const files = Object.keys(bundle).sort();
         const hash = createHash("sha256");

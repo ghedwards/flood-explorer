@@ -7,6 +7,8 @@ import { placeBounds } from './tsunami-extents.js';
 import { TIDE_STATION, modelTide, tideLevels, loadScenarios, loadPlace, loadSeries, prepareRun, runInWorker } from './tsunami-session.js';
 import { makeLiveLayer, maxPixels, arrivalPixels, viewLegend, ARRIVAL_TEXT, arrivalClass } from './tsunami-live.js';
 
+import { escapeHtml as esc } from './html-safe.js';
+
 const clock = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 const ha = (value) => value < 0.05 ? 'none' : `${value.toFixed(value < 10 ? 1 : 0)} ha`;
 const minutesText = (seconds) => seconds < 90 ? 'under a minute' : `${Math.round(seconds / 60)} minutes`;
@@ -22,7 +24,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
   const live = makeLiveLayer(L, { canvasOverlay, F });
   const info = { state: 'idle', place: null, scenario: null, tide: 'MSL', error: null, frames: 0, summary: null, view: 'now', cached: false };
   const sel = { place: null, scenario: null, tide: 'MSL', minutes: 60 };
-  let scenarios = null, loading = null, run = null, active = null, playing = false, index = 0, clockSeconds = 0, last = 0, raf = 0, view = 'now', hinted = false;
+  let scenarios = null, loading = null, run = null, runGen = 0, active = null, playing = false, index = 0, clockSeconds = 0, last = 0, raf = 0, view = 'now', hinted = false;
   const planes = new Map(), terrain = new Map(), cache = new Map(), pins = new Map();
   try { const m = JSON.parse(localStorage.getItem(MEMORY_KEY) || 'null'); if (m && TIDE_STEPS.some(([, s]) => s === m.tide)) sel.tide = m.tide; if (m && typeof m.place === 'string') sel.place = m.place; } catch (error) { /* storage blocked */ }
 
@@ -41,7 +43,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
     loading = loadScenarios(baseUrl).then((all) => {
       scenarios = all;
       const have = [...new Set(all.map((s) => s.place))];
-      if ($('tsPlace')) $('tsPlace').innerHTML = have.map((p) => `<option value="${p}">${placeName(p)}</option>`).join('');
+      if ($('tsPlace')) $('tsPlace').innerHTML = have.map((p) => `<option value="${esc(p)}">${esc(placeName(p))}</option>`).join('');
       if (!have.includes(sel.place)) sel.place = have[0];
       pick({ place: sel.place });
       info.state = 'idle'; status('Pick a place on the map, then a scenario. A run takes a few seconds.');
@@ -66,7 +68,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
     const s = current();
     if ($('tsPlace')) {
       $('tsPlace').value = sel.place || '';
-      $('tsScenario').innerHTML = list.map((x) => `<option value="${x.id}">${x.label}</option>`).join('');
+      $('tsScenario').innerHTML = list.map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('');
       $('tsScenario').value = sel.scenario || '';
       $('tsScenarioNote').textContent = s ? `Magnitude ${s.mw} earthquake, ${s.zone.replace(/\d+$/, '')} source zone (PTHA18 scenario ${s.row}). Its wave is ${s.offshorePeakM.toFixed(2)} m high at a point ${s.depthM} m deep offshore. The earthquake itself has an annual rate of ${s.annualRate.toExponential(1)} (${rateText(s.annualRate)}): that is how rare the earthquake is, not how often this wave size happens.` : '';
       fillTide();
@@ -76,7 +78,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
   function fillTide() {
     const levels = planes.get(TIDE_STATION[sel.place]);
     if (!levels || !$('tsTide')) return;
-    $('tsTide').innerHTML = levels.map((l) => `<option value="${l.state}">${l.state} (${l.aboveMsl >= 0 ? '+' : ''}${l.aboveMsl.toFixed(2)} m${modelTide(l.aboveMsl) !== l.aboveMsl ? `, run at ${modelTide(l.aboveMsl).toFixed(2)} m` : ''})</option>`).join('');
+    $('tsTide').innerHTML = levels.map((l) => `<option value="${esc(l.state)}">${esc(l.state)} (${l.aboveMsl >= 0 ? '+' : ''}${l.aboveMsl.toFixed(2)} m${modelTide(l.aboveMsl) !== l.aboveMsl ? `, run at ${modelTide(l.aboveMsl).toFixed(2)} m` : ''})</option>`).join('');
     $('tsTide').value = sel.tide;
     $('tsTideNote').textContent = 'Height above mean sea level, held for the whole run. Mean sea level is taken as the terrain’s zero.';
   }
@@ -86,7 +88,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
   function buildCard(place) {
     const el = doc.createElement('div');
     el.className = 'ts-card'; el.dataset.place = place;
-    el.innerHTML = `<strong>${placeName(place)}</strong><p class="hint">Run a modelled earthquake wave here, in your browser. Experimental; not a forecast.</p>
+    el.innerHTML = `<strong>${esc(placeName(place))}</strong><p class="hint">Run a modelled earthquake wave here, in your browser. Experimental; not a forecast.</p>
       <div class="ts-chips" role="group" aria-label="Earthquake scenario"></div>
       <div class="ts-card-tide"><span class="label">Tide when it arrives</span><div class="ts-seg" role="group" aria-label="Tide"></div></div>
       <p class="hint ts-card-note" role="status"></p>`;
@@ -100,8 +102,8 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
   }
   function fillCard(el) {
     const place = el.dataset.place, list = scenariosOf(place), note = el.querySelector('.ts-card-note');
-    el.querySelector('.ts-chips').innerHTML = list.length ? list.map((s) => `<button type="button" class="ts-chip" data-scenario="${s.id}" aria-pressed="${sel.place === place && sel.scenario === s.id && active?.key.startsWith(place) ? 'true' : 'false'}" title="Magnitude ${s.mw}, wave ${s.offshorePeakM.toFixed(1)} m offshore">${s.label}</button>`).join('') : '<span class="hint">Loading…</span>';
-    el.querySelector('.ts-seg').innerHTML = TIDE_STEPS.map(([name, state]) => `<button type="button" data-tide="${state}" aria-pressed="${sel.tide === state}" title="${state}">${name}</button>`).join('');
+    el.querySelector('.ts-chips').innerHTML = list.length ? list.map((s) => `<button type="button" class="ts-chip" data-scenario="${esc(s.id)}" aria-pressed="${sel.place === place && sel.scenario === s.id && active?.key.startsWith(place) ? 'true' : 'false'}" title="Magnitude ${esc(s.mw)}, wave ${s.offshorePeakM.toFixed(1)} m offshore">${esc(s.label)}</button>`).join('') : '<span class="hint">Loading…</span>';
+    el.querySelector('.ts-seg').innerHTML = TIDE_STEPS.map(([name, state]) => `<button type="button" data-tide="${esc(state)}" aria-pressed="${sel.tide === state}" title="${esc(state)}">${esc(name)}</button>`).join('');
     note.textContent = list.length ? 'Tap a scenario to run it.' : '';
   }
   const refreshCards = () => { for (const el of [...cards]) { if (!el.isConnected && el.dataset.seen) { cards.delete(el); continue; } el.dataset.seen = '1'; fillCard(el); } };
@@ -112,7 +114,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
       if (!loc) continue;
       const [[s, w], [n, e]] = placeBounds(F, loc);
       const marker = L.marker([(s + n) / 2, (w + e) / 2], {
-        icon: L.divIcon({ className: 'ts-pin', html: `<span title="Tsunami scenarios: ${placeName(id)}">${WAVE}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
+        icon: L.divIcon({ className: 'ts-pin', html: `<span title="Tsunami scenarios: ${esc(placeName(id))}">${WAVE}</span>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
         keyboard: true, title: `Tsunami scenarios: ${placeName(id)}`, alt: `Tsunami scenarios: ${placeName(id)}`, riseOnHover: true,
       });
       marker.bindPopup(() => { ensureLoaded().then(() => refreshCards()); ensureTides(id).then(fillTide); pick({ place: id }); return buildCard(id); }, { maxWidth: 300, className: 'ts-popup', autoPanPaddingTopLeft: POPUP_PAD_TOP, autoPanPaddingBottomRight: POPUP_PAD_BOTTOM });
@@ -188,13 +190,16 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
     $('tsProgress').hidden = mode !== 'running'; $('tsControls').hidden = mode !== 'ready';
   }
 
-  async function compute(scenario, id) {
+  async function compute(scenario, id, gen) {
     if (!terrain.has(scenario.place)) terrain.set(scenario.place, await loadPlace(baseUrl, scenario.place));
+    if (gen !== runGen) throw new Error('cancelled');
     const bathymetry = terrain.get(scenario.place), series = await loadSeries(baseUrl, scenario);
+    if (gen !== runGen) throw new Error('cancelled');
     const prepared = prepareRun({ place: scenario.place, bathymetry, series, tide: tideAt(scenario.place, sel.tide), seconds: sel.minutes * 60, frames: 120 });
     status('Running the model in a Rust / WebAssembly worker…');
-    run = runInWorker(prepared, { onProgress: (p) => { if (p.stage === 'local' || p.fraction != null) { $('tsProgress').value = p.fraction || 0; status(`Running the model: ${Math.round((p.fraction || 0) * 100)}% (${clock(p.seconds || 0)} of ${clock(prepared.seconds)} simulated)`); } } });
+    run = runInWorker(prepared, { onProgress: (p) => { if (gen !== runGen) return; if (p.stage === 'local' || p.fraction != null) { $('tsProgress').value = p.fraction || 0; status(`Running the model: ${Math.round((p.fraction || 0) * 100)}% (${clock(p.seconds || 0)} of ${clock(prepared.seconds)} simulated)`); } } });
     const result = await run.promise; run = null;
+    if (gen !== runGen) throw new Error('cancelled');
     // what the run did, all worked out by the Rust solver: the extremes it kept every step, and what each frame had flooded so far
     const { peakValue, peakTime, peakClass, peakSpeed, arrival } = result.extremes;
     const derived = { peak: peakValue, peakAt: peakTime, peakClass, peakSpeed, arrival, summaries: result.frames.map((f) => f.summary) };
@@ -204,11 +209,14 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
   }
 
   async function start() {
+    const gen = ++runGen;
+    setPlaying(false); if (run) { run.cancel(); run = null; }
     await ensureLoaded();
+    if (gen !== runGen) return null;
     const scenario = current();
     if (!scenario) return null;
     await ensureTides(scenario.place);
-    setPlaying(false); if (run) run.cancel();
+    if (gen !== runGen) return null;
     const id = key(scenario);
     info.state = 'running'; info.place = scenario.place; info.scenario = scenario.id; info.tide = sel.tide; info.error = null; info.cached = cache.has(id);
     onRunStart();
@@ -218,18 +226,19 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
       let entry = cache.get(id);
       if (entry) { cache.delete(id); } else {
         barMode('running'); $('tsProgress').removeAttribute('value'); status('Loading the terrain and the wave…');
-        entry = await compute(scenario, id);
+        entry = await compute(scenario, id, gen);
       }
+      if (gen !== runGen) return null;
       cache.set(id, entry);
       while (cache.size > CACHE_RUNS) cache.delete(cache.keys().next().value);
       display(entry);
       info.final = entry.derived.summaries.at(-1);
       return info.final;
     } catch (error) {
-      if (error.message === 'cancelled') return null;
+      if (error.message === 'cancelled' || gen !== runGen) return null;
       info.state = 'error'; info.error = String(error.message || error); status(`The run failed (${info.error}).`); barMode('running'); $('tsProgress').hidden = true;
       return null;
-    } finally { busy(false); refreshCards(); }
+    } finally { if (gen === runGen) { busy(false); refreshCards(); } }
   }
   function scenarioBanner(scenario) {
     const step = TIDE_STEPS.find(([, s]) => s === sel.tide);
@@ -251,7 +260,9 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
     setPlaying(true); status('Playing the run over the map. Drag the time bar to look at any moment.');
   }
   function clear() {
-    setPlaying(false); if (run) run.cancel();
+    runGen++;
+    setPlaying(false); if (run) { run.cancel(); run = null; }
+    busy(false);
     live.clear(); if (map.hasLayer(live)) map.removeLayer(live);
     active = null; $('tsBar').hidden = true; $('tsClear').hidden = true; info.state = 'idle'; info.frames = 0; map.closePopup(); onLegend(); refreshCards();
     status('Pick a place on the map, then a scenario.');
@@ -269,7 +280,7 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
         ? (depth > 0.02 ? `Under water to about ${depth.toFixed(1)} m from the tide, but the wave adds little here in this run.` : 'Stays dry in this run.')
         : `Water arrives about ${minutesText(arrival)} after the wave reaches the model’s edge (${ARRIVAL_TEXT[arrivalClass(arrival)]}), and peaks at ${depth.toFixed(1)} m about ${minutesText(derived.peakAt[i])} into the run.`;
     } else text = derived.peak[i] > 0.03 ? `At sea: the highest wave is ${derived.peak[i].toFixed(1)} m above the tide here.` : 'At sea: little wave here.';
-    L.popup({ className: 'ts-popup', maxWidth: 260, autoPanPaddingTopLeft: POPUP_PAD_TOP, autoPanPaddingBottomRight: POPUP_PAD_BOTTOM }).setLatLng(latlng).setContent(`<div class="ts-tap">${text}<p class="hint">Modelled, experimental. ${active.scenario.label}, ${info.tide} tide.</p></div>`).openOn(map);
+    L.popup({ className: 'ts-popup', maxWidth: 260, autoPanPaddingTopLeft: POPUP_PAD_TOP, autoPanPaddingBottomRight: POPUP_PAD_BOTTOM }).setLatLng(latlng).setContent(`<div class="ts-tap">${esc(text)}<p class="hint">Modelled, experimental. ${esc(active.scenario.label)}, ${esc(info.tide)} tide.</p></div>`).openOn(map);
     return true;
   }
 
@@ -288,13 +299,13 @@ export function initTsunamiPanel({ L, F, map, canvasOverlay, baseUrl, layers = {
         if ($(id).checked) layer.addTo(map); else if (map.hasLayer(layer)) map.removeLayer(layer);
         onLayerChange();
       });
-      map.on('layeradd layerremove', () => { $(id).checked = map.hasLayer(layer); });
+      map.on('layeradd layerremove', (e) => { if (!e || e.layer === layer) $(id).checked = map.hasLayer(layer); });
     }
     if (layers.hazard && $('tsHazardPick')) $('tsHazardPick').appendChild(layers.hazard.periodPicker());
     if (layers.extents && $('tsExtentsPick')) $('tsExtentsPick').appendChild(layers.extents.depthPicker());
     const list = $('tsPlaces');
     if (list) {
-      list.innerHTML = places.map((p) => `<button type="button" class="btn" data-place="${p}">${shortName(p)}</button>`).join('');
+      list.innerHTML = places.map((p) => `<button type="button" class="btn" data-place="${esc(p)}">${esc(shortName(p))}</button>`).join('');
       list.addEventListener('click', (event) => {
         const b = event.target.closest('[data-place]');
         if (b) { ensureLoaded(); openCard(b.dataset.place); onRunStart(); }

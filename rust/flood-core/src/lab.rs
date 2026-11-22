@@ -3,6 +3,7 @@
 
 /// The grid cell `[x, y]` nearest `target` (straight-line distance in cells) whose ground is deeper than `min_depth` metres below zero, scanning in index order so ties keep the first.
 pub fn water_point(elevation: &[f64], width: usize, target: (f64, f64), min_depth: f64) -> Option<(usize, usize)> {
+    if width == 0 { return None; }
     let (mut best, mut distance) = (None, f64::INFINITY);
     for (i, z) in elevation.iter().enumerate() {
         if *z < -min_depth {

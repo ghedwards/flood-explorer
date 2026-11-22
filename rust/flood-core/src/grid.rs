@@ -347,6 +347,9 @@ pub fn parse_ascii_grid(text: &str) -> Result<Grid, String> {
 
 /// Block-average a grid so its longest side is at most max_side cells.
 pub fn downsample(g: &Grid, max_side: usize) -> Grid {
+    if max_side == 0 {
+        return g.clone();
+    }
     let f = ((g.w.max(g.h) as f64) / max_side as f64).ceil() as usize;
     if f <= 1 {
         return g.clone();
@@ -372,7 +375,7 @@ pub fn downsample(g: &Grid, max_side: usize) -> Grid {
             }
         }
     }
-    Grid { w, h, cell: g.cell * f as f64, dem, valid: Some(valid), inflow: g.inflow.clone(), d8: g.d8.clone() }
+    Grid { w, h, cell: g.cell * f as f64, dem, valid: Some(valid), inflow: None, d8: None }
 }
 
 /// Mark values outside a plausible elevation range (or equal to nodata) invalid.
@@ -401,13 +404,13 @@ pub struct Tiff {
 /// as Geoscience Australia's elevation service returns. Missing ("sparse")
 /// tiles are filled with the no-data value.
 pub fn parse_simple_tiff(buf: &[u8]) -> Result<Tiff, String> {
-    let rd16 = |o: usize, le: bool| -> u16 {
-        let b = [buf[o], buf[o + 1]];
-        if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) }
+    let rd16 = |o: usize, le: bool| -> Result<u16, String> {
+        let b: [u8; 2] = buf.get(o..o + 2).ok_or_else(|| "truncated TIFF".to_string())?.try_into().unwrap();
+        Ok(if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
     };
-    let rd32 = |o: usize, le: bool| -> u32 {
-        let b = [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]];
-        if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) }
+    let rd32 = |o: usize, le: bool| -> Result<u32, String> {
+        let b: [u8; 4] = buf.get(o..o + 4).ok_or_else(|| "truncated TIFF".to_string())?.try_into().unwrap();
+        Ok(if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
     };
     if buf.len() < 8 {
         return Err("not a TIFF file".into());
@@ -417,11 +420,11 @@ pub fn parse_simple_tiff(buf: &[u8]) -> Result<Tiff, String> {
         return Err("not a TIFF file".into());
     }
     let le = bo == 0x4949;
-    if rd16(2, le) != 42 {
+    if rd16(2, le)? != 42 {
         return Err("BigTIFF is not supported".into());
     }
-    let ifd = rd32(4, le) as usize;
-    let n = rd16(ifd, le) as usize;
+    let ifd = rd32(4, le)? as usize;
+    let n = rd16(ifd, le)? as usize;
     let size_of = |t: u16| -> usize {
         match t {
             1 | 2 => 1,
@@ -434,27 +437,43 @@ pub fn parse_simple_tiff(buf: &[u8]) -> Result<Tiff, String> {
     let mut nums: std::collections::HashMap<u16, Vec<f64>> = std::collections::HashMap::new();
     let mut strs: std::collections::HashMap<u16, String> = std::collections::HashMap::new();
     for i in 0..n {
-        let e = ifd + 2 + i * 12;
-        let tag = rd16(e, le);
-        let ty = rd16(e + 2, le);
-        let count = rd32(e + 4, le) as usize;
-        let bytes = size_of(ty) * count;
-        let at = if bytes <= 4 { e + 8 } else { rd32(e + 8, le) as usize };
+        let e = ifd.checked_add(2).and_then(|v| v.checked_add(i.checked_mul(12)?)).ok_or("TIFF IFD overflow")?;
+        if e.checked_add(12).is_none_or(|end| end > buf.len()) {
+            return Err("truncated TIFF IFD".into());
+        }
+        let tag = rd16(e, le)?;
+        let ty = rd16(e + 2, le)?;
+        let count = rd32(e + 4, le)? as usize;
+        let elem_sz = size_of(ty);
+        let bytes = elem_sz.checked_mul(count).ok_or("TIFF tag size overflow")?;
+        let at = if bytes <= 4 { e + 8 } else { rd32(e + 8, le)? as usize };
+        if at.checked_add(bytes).is_none_or(|end| end > buf.len()) {
+            return Err("truncated TIFF tag value".into());
+        }
         if ty == 2 {
-            let s: String = (0..count).map(|k| buf[at + k]).filter(|&c| c != 0).map(|c| c as char).collect();
+            let s: String = buf[at..at + count].iter().copied().filter(|&c| c != 0).map(|c| c as char).collect();
             strs.insert(tag, s);
             continue;
         }
         let mut vals = Vec::with_capacity(count);
         for k in 0..count {
-            let o = at + k * size_of(ty);
+            let o = at + k * elem_sz;
             let v = match ty {
-                3 => rd16(o, le) as f64,
-                4 | 16 => rd32(o, le) as f64,
-                11 => f32::from_bits(rd32(o, le)) as f64,
+                3 => rd16(o, le)? as f64,
+                4 => rd32(o, le)? as f64,
+                5 => {
+                    let num = rd32(o, le)? as f64;
+                    let den = rd32(o + 4, le)? as f64;
+                    if den == 0.0 { f64::NAN } else { num / den }
+                }
+                11 => f32::from_bits(rd32(o, le)?) as f64,
                 12 => {
                     let b: [u8; 8] = buf[o..o + 8].try_into().unwrap();
                     if le { f64::from_le_bytes(b) } else { f64::from_be_bytes(b) }
+                }
+                16 => {
+                    let b: [u8; 8] = buf[o..o + 8].try_into().unwrap();
+                    (if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) }) as f64
                 }
                 _ => buf[o] as f64,
             };
@@ -469,11 +488,16 @@ pub fn parse_simple_tiff(buf: &[u8]) -> Result<Tiff, String> {
     if comp != 1.0 || bits != 32.0 || fmt != 3.0 || spp != 1.0 {
         return Err("unsupported TIFF layout".into());
     }
+    let total = w.checked_mul(h).ok_or("TIFF dimensions overflow")?;
+    if total > 100_000_000 {
+        return Err("TIFF dimensions exceed limit".into());
+    }
     let nodata = strs.get(&42113).map(|s| parse_float(s)).unwrap_or(f64::NAN);
     let fill = if nodata.is_finite() { nodata as f32 } else { f32::NAN };
-    let mut data = vec![fill; w * h];
+    let mut data = vec![fill; total];
     let mut read = |off: usize, count: usize, bw: usize, bh: usize, x0: usize, y0: usize| {
-        if off == 0 || count == 0 || off + count > buf.len() {
+        let Some(end) = off.checked_add(count) else { return };
+        if off == 0 || count == 0 || end > buf.len() {
             return;
         }
         for r in 0..bh {
@@ -486,16 +510,21 @@ pub fn parse_simple_tiff(buf: &[u8]) -> Result<Tiff, String> {
                 if x >= w {
                     break;
                 }
-                let o = off + (r * bw + c) * 4;
-                if o + 4 > buf.len() {
+                let Some(o) = r.checked_mul(bw).and_then(|v| v.checked_add(c)).and_then(|v| v.checked_mul(4)).and_then(|v| off.checked_add(v)) else { return };
+                if o.checked_add(4).is_none_or(|e| e > end) {
                     return;
                 }
-                data[y * w + x] = f32::from_bits(rd32(o, le));
+                if let Ok(bits) = rd32(o, le) {
+                    data[y * w + x] = f32::from_bits(bits);
+                }
             }
         }
     };
-    if let Some(tw) = nums.get(&322).map(|v| v[0] as usize) {
+    if let Some(tw) = nums.get(&322).and_then(|v| v.first().copied()).map(|v| v as usize) {
         let th = first(323, 0.0) as usize;
+        if tw == 0 || th == 0 {
+            return Err("invalid TIFF tile dimensions".into());
+        }
         let offs = nums.get(&324).cloned().unwrap_or_default();
         let cnts = nums.get(&325).cloned().unwrap_or_default();
         let across = w.div_ceil(tw);
@@ -504,6 +533,9 @@ pub fn parse_simple_tiff(buf: &[u8]) -> Result<Tiff, String> {
         }
     } else {
         let rps = first(278, h as f64) as usize;
+        if rps == 0 && h > 0 {
+            return Err("invalid TIFF rows per strip".into());
+        }
         let offs = nums.get(&273).cloned().unwrap_or_default();
         let cnts = nums.get(&279).cloned().unwrap_or_default();
         for (k, &off) in offs.iter().enumerate() {
@@ -557,5 +589,17 @@ mod tests {
         assert_eq!(parse_float("12.5abc"), 12.5);
         assert_eq!(parse_float(" -3e2"), -300.0);
         assert!(parse_float("abc").is_nan());
+    }
+
+    #[test]
+    fn downsample_clears_original_resolution_d8_and_handles_zero_max_side() {
+        let mut g = Grid { w: 4, h: 4, cell: 10.0, dem: vec![1.0; 16], valid: Some(vec![1; 16]), inflow: Some(vec![2.0; 16]), d8: Some(vec![1; 16]) };
+        let ds = downsample(&g, 2);
+        assert_eq!((ds.w, ds.h), (2, 2));
+        assert!(ds.d8.is_none() && ds.inflow.is_none());
+        let unchanged = downsample(&g, 0);
+        assert_eq!((unchanged.w, unchanged.h), (4, 4));
+        g.d8 = None;
+        assert!(parse_simple_tiff(&[0x49, 0x49, 42, 0, 99, 0, 0, 0]).is_err());
     }
 }

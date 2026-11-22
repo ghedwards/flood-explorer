@@ -19,7 +19,13 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
-MemoryMax=128M
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryMax=256M
 
 [Install]
 WantedBy=multi-user.target

@@ -71,10 +71,14 @@ pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&
         let _ = r.body_mut().as_reader().take(4000).read_to_end(&mut b);
         return Err(NetErr::Status(code, String::from_utf8_lossy(&b).into_owned()));
     }
+    const MAX_HTTP_BYTES: u64 = 256 << 20;
     let url = r.get_uri().to_string();
     let content_type = r.headers().get("Content-Type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let mut body = Vec::new();
-    r.body_mut().as_reader().read_to_end(&mut body).map_err(|e| NetErr::Transport(e.to_string()))?;
+    r.body_mut().as_reader().take(MAX_HTTP_BYTES + 1).read_to_end(&mut body).map_err(|e| NetErr::Transport(e.to_string()))?;
+    if body.len() as u64 > MAX_HTTP_BYTES {
+        return Err(NetErr::Transport("HTTP response exceeds 256 MiB".into()));
+    }
     Ok(Resp { body, url, content_type })
 }
 
@@ -117,10 +121,14 @@ pub fn request_ext(method: &str, url: &str, headers: &[(&str, &str)], body: Opti
         let _ = resp.into_reader().take(4000).read_to_end(&mut b);
         return Err(NetErr::Status(code, String::from_utf8_lossy(&b).into_owned()));
     }
+    const MAX_HTTP_BYTES: u64 = 256 << 20;
     let url = resp.get_url().to_string();
     let content_type = resp.header("Content-Type").unwrap_or("").to_string();
     let mut body = Vec::new();
-    resp.into_reader().read_to_end(&mut body).map_err(|e| NetErr::Transport(e.to_string()))?;
+    resp.into_reader().take(MAX_HTTP_BYTES + 1).read_to_end(&mut body).map_err(|e| NetErr::Transport(e.to_string()))?;
+    if body.len() as u64 > MAX_HTTP_BYTES {
+        return Err(NetErr::Transport("HTTP response exceeds 256 MiB".into()));
+    }
     Ok(Resp { body, url, content_type })
 }
 
@@ -166,10 +174,12 @@ pub fn unquote(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
+            if let Some(hex) = s.get(i + 1..i + 3) {
+                if let Ok(v) = u8::from_str_radix(hex, 16) {
+                    out.push(v);
+                    i += 3;
+                    continue;
+                }
             }
         }
         out.push(b[i]);
@@ -221,13 +231,13 @@ pub fn ftp_get(url: &str, timeout_s: u64) -> R<Resp> {
         let code: u32 = line.get(..3).and_then(|c| c.parse().ok()).ok_or_else(|| format!("ftp: odd reply {:?}", line))?;
         let mut all = line.clone();
         if line.as_bytes().get(3) == Some(&b'-') {
-            loop {
+            for _ in 0..256 {
                 let mut l = String::new();
                 if rd.read_line(&mut l).map_err(err)? == 0 {
                     break;
                 }
                 all.push_str(&l);
-                if l.starts_with(&format!("{} ", code)) {
+                if l.starts_with(&format!("{} ", code)) || all.len() > 64 * 1024 {
                     break;
                 }
             }
@@ -258,17 +268,20 @@ pub fn ftp_get(url: &str, timeout_s: u64) -> R<Resp> {
     }
     let inner = m.split('(').nth(1).and_then(|x| x.split(')').next()).ok_or("ftp: odd PASV reply")?;
     let n: Vec<u16> = inner.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-    if n.len() != 6 {
+    if n.len() != 6 || n.iter().any(|&v| v > 255) {
         return Err(format!("ftp: odd PASV reply {}", m));
     }
-    let mut data = connect(&host, n[4] * 256 + n[5])?;
+    let data = connect(&host, n[4] * 256 + n[5])?;
     let (c, m) = cmd(&mut ctl, &mut rd, &format!("RETR {}", path))?;
     if c != 150 && c != 125 {
         return Err(format!("ftp: {}", m));
     }
+    const MAX_FTP_BYTES: u64 = 32 << 20;
     let mut body = Vec::new();
-    data.read_to_end(&mut body).map_err(err)?;
-    drop(data);
+    data.take(MAX_FTP_BYTES + 1).read_to_end(&mut body).map_err(err)?;
+    if body.len() as u64 > MAX_FTP_BYTES {
+        return Err("ftp: response exceeds 32 MiB".into());
+    }
     let _ = reply(&mut rd);
     let _ = cmd(&mut ctl, &mut rd, "QUIT");
     Ok(Resp { body, url: url.to_string(), content_type: String::new() })

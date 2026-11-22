@@ -409,7 +409,8 @@ pub fn wave_setup(a: &Analysis, s: &Scenario, o: &WaveOpts) -> Wave {
             let rt = o.rating.filter(|&(b, d)| b > 0.5 && d > 0.0);
             let zb = match rt {
                 Some((_, d)) => lo - jmax(0.1, d),
-                None => jmin(a.dem[g as usize] as f64 - 1.0, lo - 0.5),
+                None if g >= 0 && (g as usize) < a.n => jmin(a.dem[g as usize] as f64 - 1.0, lo - 0.5),
+                None => lo - 0.5,
             };
             let bx = match rt {
                 Some((b, _)) => jmin(4.0, jmax(0.8, b)),
@@ -794,12 +795,12 @@ fn route_down(a: &Analysis, w: &Wave, g: usize, speed_kmh: f64, rating: Option<(
             dsum += 0.3 * cms * depth(cell) / slope_at(kk);
         }
         let dd = jmin(dsum / jmax(1.0, (k1 - k0) as f64), 5e8);
-        // Floodplain storage: estimate floodplain area (cells within 2 m of the
-        // channel bed along this reach) and widen the storage coefficient K so
+        // Floodplain storage: estimate unique floodplain cells (within 2 m of each
+        // reach cell's local channel bed) and widen the storage coefficient K so
         // the peak is attenuated/delayed in proportion to the floodplain.
-        let mut fp_cells = 0usize;
-        let bed = a.dem[path[k0]] as f64;
+        let mut fp_seen = std::collections::HashSet::new();
         for &cc in path.iter().take(k1 + 1).skip(k0) {
+            let bed = a.dem[cc] as f64;
             let (cx, cy) = (cc % a.w, cc / a.w);
             for dy in -2..=2i64 {
                 for dx in -2..=2i64 {
@@ -807,13 +808,13 @@ fn route_down(a: &Analysis, w: &Wave, g: usize, speed_kmh: f64, rating: Option<(
                     if nx < 0 || ny < 0 || nx >= a.w as i64 || ny >= a.h as i64 { continue; }
                     let nn = ny as usize * a.w + nx as usize;
                     if a.valid[nn] == 0 { continue; }
-                    if (a.dem[nn] as f64 - bed).abs() <= 2.0 { fp_cells += 1; }
+                    if (a.dem[nn] as f64 - bed).abs() <= 2.0 { fp_seen.insert(nn); }
                 }
             }
         }
-        let fp_ratio = (fp_cells as f64) / jmax(1.0, (k1 - k0 + 1) as f64);
+        let fp_ratio = (fp_seen.len() as f64) / jmax(1.0, (k1 - k0 + 1) as f64);
         let kq = (l / cms) * (1.0 + 0.3 * fp_ratio);
-        let x = jmax(0.0, jmin(jmin(0.5 - dd / (cms * l), (cms * dt) / (2.0 * l)), 0.5));
+        let x = jmax(0.0, jmin(jmin(0.5 - dd / (cms * l), dt / (2.0 * kq)), 0.5));
         let den = kq * (1.0 - x) + dt / 2.0;
         let c0 = (dt / 2.0 - kq * x) / den;
         let c1 = (dt / 2.0 + kq * x) / den;
@@ -891,8 +892,8 @@ pub fn wave_surface(w: &Wave, t: f64, out: &mut [f64]) {
             let n = r.cell_a[c] as usize;
             let f = r.cell_f[c] as f64;
             let (fa, fb) = (&r.flows[n], &r.flows[n + 1]);
-            let qa = (fa.q[ti] + (fa.q[ti + 1] - fa.q[ti]) * tf) / fa.r#ref;
-            let qb = (fb.q[ti] + (fb.q[ti + 1] - fb.q[ti]) * tf) / fb.r#ref;
+            let qa = if fa.r#ref > 0.0 { (fa.q[ti] + (fa.q[ti + 1] - fa.q[ti]) * tf) / fa.r#ref } else { 0.0 };
+            let qb = if fb.r#ref > 0.0 { (fb.q[ti] + (fb.q[ti + 1] - fb.q[ti]) * tf) / fb.r#ref } else { 0.0 };
             r.h_of((qa + (qb - qa) * f) * r.q_pk)
         } else {
             w.at(w.band[c] as usize, t - w.arrive[c] as f64)

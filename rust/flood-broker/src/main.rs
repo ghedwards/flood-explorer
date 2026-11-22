@@ -70,7 +70,9 @@ fn main() {
     let rd = Arc::new(Readings::new(Box::new(readings::http_json), store, env("STATIONS_URL").unwrap_or_else(|| readings::STATIONS_URL.into()), Box::new(now_ms)).with_text(Box::new(readings::http_text)).with_rain_http(Box::new(readings::http_json_once)).with_ftp(Box::new(|| flood_feeds::ftp::Session::open(flood_feeds::BOM_FTP_HOST, 30).map(|s| Box::new(s) as Box<dyn flood_feeds::ftp::Dir>))).with_roads(Box::new(move |now, errors| readings::fetch_roads_with_settings(now, errors, &roads_settings))).with_emergency(Box::new(readings::fetch_emergency)));
     // on AWS Lambda (a function URL): the runtime API loop instead of a socket
     if let Some(api) = env("AWS_LAMBDA_RUNTIME_API") {
-        let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg).with_readings(rd);
+        let broker = Broker::new(Box::new(http_fetch), Box::new(now_ms), cfg)
+            .with_readings(rd)
+            .with_elev_max_bytes(flood_broker::elevation::LAMBDA_MAX_BYTES);
         flood_broker::lambda::run(&api, &broker);
     }
     // on a server: refresh in the background

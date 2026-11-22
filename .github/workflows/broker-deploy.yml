@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Cross-compile for Lambda (arm64, glibc 2.34)
         env:
           FLOOD_BROKER_VERSION: ${{ github.sha }}
@@ -43,19 +43,24 @@ jobs:
           file bootstrap; ls -l flood-broker.zip
       - name: Check AWS is set up
         id: aws
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
         run: |
-          if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ -n "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then echo "deploy=1" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ -n "$AWS_DEPLOY_ROLE_ARN" ]; then echo "deploy=1" >> "$GITHUB_OUTPUT"
           else echo "::notice title=Not deployed::Built only (deploys from main once AWS_DEPLOY_ROLE_ARN is set; see broker/aws/README.md)"; fi
       - name: Show what GitHub's sign-in token says (no secrets)
         if: steps.aws.outputs.deploy == '1'
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
         run: |
           tok=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
           claims=$(cut -d. -f2 <<< "$tok" | tr '_-' '/+' | base64 -d 2>/dev/null; true)
           echo "token: iss=$(jq -r .iss <<< "$claims" 2>/dev/null) aud=$(jq -r .aud <<< "$claims" 2>/dev/null) sub=$(jq -r .sub <<< "$claims" 2>/dev/null)"
-          role="${{ vars.AWS_DEPLOY_ROLE_ARN }}"
-          echo "role: $role (account $(cut -d: -f5 <<< "$role")), region ${{ vars.AWS_REGION || 'ap-southeast-2' }}"
+          role="$AWS_DEPLOY_ROLE_ARN"
+          echo "role: $role (account $(cut -d: -f5 <<< "$role")), region $AWS_REGION"
           echo "::notice title=Sign-in details::iss=$(jq -r .iss <<< "$claims" 2>/dev/null) aud=$(jq -r .aud <<< "$claims" 2>/dev/null) sub=$(jq -r .sub <<< "$claims" 2>/dev/null) role=$role"
-      - uses: aws-actions/configure-aws-credentials@v6
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         if: steps.aws.outputs.deploy == '1'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -145,7 +150,7 @@ jobs:
           python3 - <<'PY'
           import json
           for p in json.load(open('probe.json')).get('probe', []):
-              where = p['url'].split('bom.gov.au')[-1][:60]
-              res = f"HTTP {p['status']}, {p['bytes']} bytes: {p['start'][:80]}" if 'status' in p else f"error {p['error'][:120]}"
-              print(f"::notice title=Probe {p['ua']} {where}::{res}")
+              where = p.get('url', '').split('bom.gov.au')[-1][:60]
+              res = f"HTTP {p['status']}: {p.get('start', '')[:80]}" if 'status' in p else f"error {p.get('error', '')[:120]}"
+              print(f"::notice title=Probe {where}::{res}")
           PY

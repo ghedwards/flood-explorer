@@ -55,7 +55,8 @@ test('2D WASM worker, browser model switching, cancellation and input changes', 
     assert.doesNotMatch(await page.locator('#summaryLine').innerText(),/Local-inertial/);
     assert.equal(await page.locator('#gaugeLevel').isDisabled(),false);
     assert.deepEqual(errors,[]);
-    await page.screenshot({path:'/tmp/flood-inertial-ui.png'});
+    fs.mkdirSync(path.resolve(__dirname,'../../test-results'),{recursive:true});
+    await page.screenshot({path:path.resolve(__dirname,'../../test-results/flood-inertial-ui.png')});
     await context.close();
   }finally{if(browser)await browser.close();await new Promise(r=>server.close(r));}
 });

@@ -3,7 +3,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
-use tauri::{AppHandle, Manager, State};
+#[cfg(target_os = "linux")]
+use tauri::Manager;
+use tauri::{AppHandle, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 #[derive(Default)]
@@ -98,4 +100,19 @@ pub async fn install_update(
         .await
         .map_err(|e| e.to_string())?;
     app.restart();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updates_acquire_prevents_concurrent_runs_and_releases_on_drop() {
+        let u = Updates::default();
+        {
+            let _guard = u.acquire().expect("first acquire should succeed");
+            assert!(u.acquire().is_err(), "second concurrent acquire must fail");
+        }
+        assert!(u.acquire().is_ok(), "acquire should succeed again after drop");
+    }
 }

@@ -114,7 +114,7 @@ pub struct Plan {
 pub fn plan(area: &Area, p: &Params) -> Result<Plan, String> {
     let (cell, lake) = (area.cell, p.lake);
     let n_area = area.w * area.h;
-    if p.gauge >= n_area || p.below >= n_area || p.route.iter().chain(&p.downstream).any(|c| *c >= n_area) || p.volume.is_nan() || p.volume <= 0.0 || p.time_scale.is_nan() || p.time_scale <= 0.0 {
+    if !cell.is_finite() || cell <= 0.0 || !lake.is_finite() || p.gauge >= n_area || p.below >= n_area || !area.dem[p.below].is_finite() || p.route.iter().chain(&p.downstream).any(|c| *c >= n_area) || !p.volume.is_finite() || p.volume <= 0.0 || !p.time_scale.is_finite() || p.time_scale <= 0.0 {
         return Err("invalid dam description".into());
     }
     let (lake_mask, count) = reservoir_cells(area, p.gauge, lake, LAKE_TOLERANCE, 400_000);

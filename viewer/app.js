@@ -19,6 +19,7 @@ import { makeTsunamiExtentsLayer, placeBounds as tsunamiPlaceBounds } from './ts
 import { tsunamiRun } from './tsunami-impact.js';
 import { damText, floodRun as damFloodRun, BREACH_MODES } from './dam-break.js';
 import { initTsunamiPanel } from './tsunami-panel.js';
+import { b64, unb64 } from './share-session.js';
 /* Flood Explorer — viewer
  *
  * Loads a terrain (sample, a pipeline-processed area, or the user's own DEM),
@@ -87,7 +88,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (!d) {
       if (!area.impactLoading) {
         area.impactLoading = true;
-        countImpact().then(() => { area.impactLoading = false; if (ctl.floodType.value !== 'river') runScenario(); });
+        countImpact().then(() => { area.impactLoading = false; if (ctl.floodType.value !== 'river' && !damWorker && !inertialWorker && !state.inertial) runScenario(); });
       }
       return null;
     }
@@ -491,6 +492,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         state.areaMeta = { id: 'sample', name: 'Sample terrain', synthetic: true, streamAreaKm2: 4 };
         await useGrid(g, 'sample', { events: true });
       } else {
+        if (!/^[a-z0-9-]+$/i.test(String(id || ''))) throw new Error('Invalid area identifier.');
         const meta = await (await fetch(`data/${id}/meta.json`, { cache: 'no-cache' })).json();
         if (opts && opts.keepN != null) meta.keepN = opts.keepN;
         if (opts && Number.isFinite(opts.streamAreaKm2) && opts.streamAreaKm2 > 0) meta.streamAreaKm2 = opts.streamAreaKm2;
@@ -538,7 +540,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
             // stop using it (the main thread runs the same model) rather
             // than leaving jobs waiting for replies that never come
             status.worker = e.data.workerStatus;
-            if (e.data.workerStatus === 'error') { worker = false; logProblem('worker', `Model worker unavailable: ${e.data.error || 'unknown error'} (using the main thread)`); say(`Model worker unavailable (${e.data.error || 'unknown error'}) — using the main thread.`); }
+            if (e.data.workerStatus === 'error') { if (worker && worker.terminate) worker.terminate(); worker = false; logProblem('worker', `Model worker unavailable: ${e.data.error || 'unknown error'} (using the main thread)`); say(`Model worker unavailable (${e.data.error || 'unknown error'}) — using the main thread.`); }
             return;
           }
           const job = workerJobs.get(e.data.id);
@@ -552,9 +554,11 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         };
         worker.onerror = (e) => {
           if (e && e.preventDefault) e.preventDefault();
+          if (worker && worker.terminate) worker.terminate();
           worker = false;           // e.g. opened from a file: do the work here
-          workerJobs.forEach((job) => (job.fallback ? job.fallback() : job.reject(new Error('The model worker failed to start.'))));
+          const pending = Array.from(workerJobs.values());
           workerJobs.clear();
+          pending.forEach((job) => (job.fallback ? job.fallback() : job.reject(new Error('The model worker failed to start.'))));
         };
       } catch (err) { worker = false; return null; }    }
     return worker;
@@ -577,13 +581,21 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         say('The model worker is slow to answer — running the model on the main thread instead.');
         onMainThread().then(resolve, reject);
       }, 120000);
-      workerJobs.set(id, { resolve: (a) => done((x) => resolve(x), a), reject: (e) => done((x) => reject(x), e), fallback: onMainThread });
+      const runFallback = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        workerJobs.delete(id);
+        onMainThread().then(resolve, reject);
+      };
+      workerJobs.set(id, { resolve: (a) => done((x) => resolve(x), a), reject: (e) => done((x) => reject(x), e), fallback: runFallback });
       w.postMessage({ id, grid, opts });
     });
   }
 
   async function useGrid(grid, id, opts) {
     resetInertial();
+    if (typeof stopDam === 'function') stopDam();
     // keep the area we're leaving on the map as it is
     const meta = state.areaMeta;
     const prev = state.areaKey && areaReg.get(state.areaKey);
@@ -1160,6 +1172,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   let impactT = 0, timelineSeq = 0;
   function runScenario() {
     if (typeof resetInertial === 'function') resetInertial();
+    if (state.routeLayer) state.routeLayer.clearLayers();
     timelineSeq++; // discard timelines still computing for the previous scenario
     const a = state.a;
     if (!a) return;
@@ -2447,7 +2460,15 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       m.on('zoomend', syncSmooth); syncSmooth();
       m.on('moveend', () => scheduleFine());
       m.on('zoomend', declutterPins);
-      m.on('layeradd layerremove', syncLayerLists);
+      let layerSyncRaf = 0;
+      const scheduleLayerSync = (e) => {
+        // Only sync when a top-level registered overlay changes, debounced per frame
+        // so adding thousands of child markers does not thrash the DOM.
+        if (e && e.layer && !Object.values(layerRegistry.overlays).includes(e.layer) && !Object.values(layerRegistry.basemaps || {}).includes(e.layer)) return;
+        if (layerSyncRaf) return;
+        layerSyncRaf = requestAnimationFrame(() => { layerSyncRaf = 0; syncLayerLists(); });
+      };
+      m.on('layeradd layerremove', scheduleLayerSync);
       window.__floodTestZoom = (lat, lng, z) => { m.setView([lat, lng], z, { animate: false }); };   // returns nothing: a Leaflet map can't be serialised by the test driver
       // simulate a tap on the map (not on a marker) at a place, for tests
       window.__floodTapAt = (lat, lng) => m.fire('click', { latlng: L.latLng(lat, lng) });
@@ -2988,7 +3009,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       area.outline = L.rectangle(bounds, { color: '#c66f1d', weight: 1.5, dashArray: '5 5', fill: false, interactive: false }).addTo(m);
       area.edgeGroup = L.layerGroup().addTo(m);   // the sides the flood runs into (updateEdgeCue)
       area.marker = L.marker(bounds.getCenter(), { icon: numIcon(area.n, AREA_COLOR, true), keyboard: true, title: `${area.n}. ${area.name}: flood model`, alt: `${area.n}. ${area.name}`, zIndexOffset: 900 }).addTo(m);
-      area.marker.bindTooltip(`${area.n}. ${area.name}: flood model gauge`, { direction: 'top', offset: [0, -12] });
+      area.marker.bindTooltip(escapeHtml(`${area.n}. ${area.name}: flood model gauge`), { direction: 'top', offset: [0, -12] });
       area.marker.on('click', () => selectPlace(area.n));
       areaReg.set(key, area);
       selectedNum = area.n;
@@ -3026,7 +3047,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (!m) return;
     if (hidden) hiddenNums.add(n); else hiddenNums.delete(n);
     const area = areaByNumber(n);
-    if (area) [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && (hidden ? m.removeLayer(l) : l.addTo(m)));
+    if (area) [area.overlay, area.relief, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && (hidden ? m.removeLayer(l) : l.addTo(m)));
     reports.filter((r) => r.n === n && r.pin).forEach((r) => (hidden ? (r.pin && m.removeLayer(r.pin)) : (r.pin && r.pin.addTo(m))));
     pins.filter((p) => p.n === n && p.marker).forEach((p) => (hidden ? (p.marker && m.removeLayer(p.marker)) : (p.marker && p.marker.addTo(m))));
     if (hidden && area && area.key === state.areaKey) say(`${n}. ${area.name} is hidden. Its scenario is kept; show it again from Places.`);
@@ -3044,12 +3065,14 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (btn) btn.textContent = area ? 'Open its flood scenario' : (r.kind === 'tide' ? 'Model coastal flooding here' : 'Model flooding here');
     if (!area) { box.innerHTML = ''; return; }
     const hidden = hiddenNums.has(r.n);
-    box.innerHTML = `<div class="link-row"><span class="pin-num" style="background:${AREA_COLOR}">${r.n}</span>
+    box.innerHTML = `<div class="link-row"><span class="pin-num" style="background:${AREA_COLOR}">${escapeHtml(r.n)}</span>
       <span>Flood model ${hidden ? '(hidden)' : 'on the map'}</span></div>`;
   }
 
   function activateArea(key, opts) {
     resetInertial();
+    if (typeof stopDam === 'function') stopDam();
+    if (state.routeLayer) state.routeLayer.clearLayers();
     const area = areaReg.get(key);
     if (!area) return false;
     geoToken++;          // abandon any area still opening
@@ -3120,9 +3143,11 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const area = areaReg.get(key);
     if (!area) return;
     const m = state.lmap;
-    [area.overlay, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && m.removeLayer(l));
+    [area.overlay, area.relief, area.outline, area.edgeGroup, area.marker].forEach((l) => l && m && m.removeLayer(l));
     if (fine && fine.coarse === area.overlay) clearFine();   // its 5 m patch goes with it
     if (area.overlay && area.overlay._floodUrl) URL.revokeObjectURL(area.overlay._floodUrl);
+    if (area.relief && area.relief._floodUrl) URL.revokeObjectURL(area.relief._floodUrl);
+    if (state.areaKey === key && state.routeLayer) state.routeLayer.clearLayers();
     areaReg.delete(key);
     if (!reports.some((r) => r.n === area.n)) hiddenNums.delete(area.n);
     reports.forEach(refreshReportLink);
@@ -3235,14 +3260,15 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const tags = [r ? (r.kind === 'storage' ? 'dam report' : r.kind === 'tide' ? 'tide report' : 'gauge report') : null, pin ? 'pinned place' : null, a ? 'flood model' : null].filter(Boolean).join(' + ');
     const color = a ? (isActive ? AREA_COLOR : '#8a6a4a') : r ? (GAUGE_STYLE[r.kind] || GAUGE_STYLE.river).color : PIN_COLOR;
     const repLabel = r ? `Open the report for ${name}` : `Report on the gauge or dam nearest ${name}`;
+    const ne = escapeHtml(n);
     return `<li class="place${sel ? ' on' : ''}${hidden ? ' off' : ''}">
-        <button type="button" class="place-main" data-num="${n}" aria-pressed="${sel}" title="Select ${escapeHtml(name)}">
-          <span class="pin-num" style="background:${color}">${n}</span>
+        <button type="button" class="place-main" data-num="${ne}" aria-pressed="${sel}" title="Select ${escapeHtml(name)}">
+          <span class="pin-num" style="background:${color}">${ne}</span>
           <span class="place-text"><span class="place-name">${escapeHtml(name)}</span><span class="place-tags">${tags}</span></span>
         </button>
-        <button type="button" class="icon-btn" data-act="${r ? 'report' : 'nearest'}" data-n="${n}" aria-label="${escapeHtml(repLabel)}" title="${r ? 'Report' : 'Report on nearest gauge'}">${ICON_REPORT}</button>
-        <button type="button" class="icon-btn" data-act="zoom" data-n="${n}" aria-label="Zoom to ${escapeHtml(name)}" title="Zoom to">${ICON_ZOOM}</button>
-        <button type="button" class="icon-btn" data-drop="${n}" aria-label="Remove ${escapeHtml(name)}" title="Remove">×</button>
+        <button type="button" class="icon-btn" data-act="${r ? 'report' : 'nearest'}" data-n="${ne}" aria-label="${escapeHtml(repLabel)}" title="${r ? 'Report' : 'Report on nearest gauge'}">${ICON_REPORT}</button>
+        <button type="button" class="icon-btn" data-act="zoom" data-n="${ne}" aria-label="Zoom to ${escapeHtml(name)}" title="Zoom to">${ICON_ZOOM}</button>
+        <button type="button" class="icon-btn" data-drop="${ne}" aria-label="Remove ${escapeHtml(name)}" title="Remove">×</button>
       </li>`;
   }
   // remove a numbered place: its report, flood model and pin
@@ -3377,8 +3403,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const color = u.r ? (GAUGE_STYLE[u.r.kind] || GAUGE_STYLE.river).color : PIN_COLOR;
     const river = `<button type="button" class="btn${coastFirst ? '' : ' primary'}" data-model="model">Model river flooding</button>`;
     const coast = `<button type="button" class="btn${coastFirst ? ' primary' : ''}" data-model="modelcoast">Model coastal flooding</button>`;
-    box.innerHTML = `<div class="place-row"><span class="pin-num" style="background:${color}">${u.n}</span><span>${escapeHtml(u.name)}</span></div>
-      <p class="hint">Model flooding around this ${u.r ? (u.r.kind === 'storage' ? 'dam' : 'gauge') : 'place'} from Geoscience Australia's elevation data. It keeps number ${u.n}.</p>
+    box.innerHTML = `<div class="place-row"><span class="pin-num" style="background:${color}">${escapeHtml(u.n)}</span><span>${escapeHtml(u.name)}</span></div>
+      <p class="hint">Model flooding around this ${u.r ? (u.r.kind === 'storage' ? 'dam' : 'gauge') : 'place'} from Geoscience Australia's elevation data. It keeps number ${escapeHtml(u.n)}.</p>
       <div class="btns">${coastFirst ? coast + river : river + coast}</div>
       <label class="check"><input type="checkbox" id="lidarPref"${useLidar() ? ' checked' : ''}> Use 5 m LiDAR elevation where it exists (bare earth; slower)</label>`;
     $('lidarPref').addEventListener('change', (e) => { try { localStorage.setItem(LIDAR_PREF, e.target.checked ? 'on' : 'off'); } catch (err) { /* per visit only */ } });
@@ -3488,7 +3514,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (state.gauge >= 0) {
       state.gaugeMarker.setLatLng(cellLatLng(state.gauge));
       declutterPins();
-      state.gaugeMarker.setTooltipContent(state.eventsApply ? 'Brisbane City gauge' : `Gauge: ${(state.areaMeta && state.areaMeta.name) || 'modelled area'}`);
+      state.gaugeMarker.setTooltipContent(state.eventsApply ? 'Brisbane City gauge' : escapeHtml(`Gauge: ${(state.areaMeta && state.areaMeta.name) || 'modelled area'}`));
     }
   }
 
@@ -4001,6 +4027,13 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  function safeHttpUrl(u) {
+    if (!u) return '';
+    try {
+      const parsed = new URL(String(u), window.location.href);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : '';
+    } catch (e) { return ''; }
+  }
 
   function showError(msg) {
     $('notice').innerHTML = `<strong>Problem.</strong> ${escapeHtml(msg)}`;
@@ -4238,7 +4271,9 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function warningGaugeMarker(L, renderer, feature) {
     const [lon, lat] = feature.geometry.coordinates;
     const ring = L.circleMarker([lat, lon], { renderer, radius: 10, color: '#c62828', weight: 2.5, fill: false, interactive: true });
-    ring.bindTooltip(`${feature.properties.name || 'Gauge'}: current flood warning`, { direction: 'top', offset: [0, -4] });
+    const tip = `${feature.properties.name || 'Gauge'}: current flood warning`
+      .replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    ring.bindTooltip(tip, { direction: 'top', offset: [0, -4] });
     ring.on('click', (event) => { L.DomEvent.stop(event); onDotClick(feature, event.latlng); });
     return ring;
   }
@@ -4284,7 +4319,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
           renderer, radius: st.radius, color: '#ffffff', weight: 1.5, fillColor: st.color, fillOpacity: 0.95,
         }),
         onEachFeature: (f, layer) => {
-          layer.bindTooltip(f.properties.name || 'Gauge', { direction: 'top', offset: [0, -4] });
+          layer.bindTooltip(escapeHtml(f.properties.name || 'Gauge'), { direction: 'top', offset: [0, -4] });
           layer.on('click', (e) => { L.DomEvent.stop(e); onDotClick(f, e.latlng); });
         },
       });
@@ -4294,7 +4329,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     // 10-minute frames, played as a loop (pausing on the latest) so you can
     // see which way the rain is moving; to zoom 7, scaled up beyond that.
     const radar = L.layerGroup();
-    let radarFrames = [], radarShown = -1, radarT = 0, radarPlay = 0, radarPaused = true, radarCtl = null;
+    let radarFrames = [], radarShown = -1, radarT = 0, radarPlay = 0, radarPaused = true, radarCtl = null, radarGen = 0;
     status.radar = { ok: null };
     const radarTime = (t) => new Date(t * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
     const showRadarFrame = (i) => {
@@ -4323,10 +4358,12 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       if (!radarPaused) radarPlay = setTimeout(radarStep, Math.max(2000, Math.ceil(tileCount * 60000 / 80)));
     };
     const loadRadar = async () => {
+      const gen = ++radarGen;
       try {
         const response = await fetch('https://api.rainviewer.com/public/weather-maps.json', { cache: 'no-cache', signal: AbortSignal.timeout(15000) });
         if (!response.ok) throw new Error(`radar metadata HTTP ${response.status}`);
         const j = await response.json();
+        if (gen !== radarGen || !m.hasLayer(radar)) return;
         const past = (j.radar && j.radar.past) || [];
         if (!past.length) throw new Error('no radar frames');
         radar.clearLayers();
@@ -4352,7 +4389,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         showRadarFrame(radarFrames.length - 1);
         clearTimeout(radarPlay);
         if (!radarPaused) radarPlay = setTimeout(radarStep, 2000);
-      } catch (err) { status.radar = { ok: false, error: String(err.message || err) }; setLayerState('Rain radar, last 2 hours (RainViewer)', 'error', 'Radar could not be loaded. Try again later.'); }
+      } catch (err) { if (gen !== radarGen) return; status.radar = { ok: false, error: String(err.message || err) }; setLayerState('Rain radar, last 2 hours (RainViewer)', 'error', 'Radar could not be loaded. Try again later.'); }
     };
     const RadarControl = L.Control.extend({
       options: { position: 'bottomleft' },
@@ -4377,6 +4414,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       if (state.lmap && !radarCtl) { const c = new RadarControl(); c.addTo(state.lmap); radarCtl = c.getContainer(); radarCtl._ctl = c; }
     });
     radar.on('remove', () => {
+      radarGen++;
       clearInterval(radarT); clearTimeout(radarPlay);
       if (radarCtl) { radarCtl._ctl.remove(); radarCtl = null; }
     });
@@ -4406,7 +4444,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
           fillColor: storageColor(f.properties), fillOpacity: 0.95,
         }),
         onEachFeature: (f, layer) => {
-          layer.bindTooltip(f.properties.name || 'Storage', { direction: 'top', offset: [0, -4] });
+          layer.bindTooltip(escapeHtml(f.properties.name || 'Storage'), { direction: 'top', offset: [0, -4] });
           layer.on('click', (e) => { L.DomEvent.stop(e); onDotClick(f, e.latlng); });
         },
       });
@@ -4743,11 +4781,12 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function addPin(lat, lon, opts) {
     const o = opts || {};
     const near = nearestNamed(lat, lon, 25);
-    const name = o.name || (near ? `Near ${near.f.properties.name}` : `${lat.toFixed(3)}, ${lon.toFixed(3)}`);
-    const pin = { n: o.n != null && !numberUsed(o.n) ? o.n : nextNumber(), name, lat, lon, marker: null };
+    const name = o.name ? String(o.name) : (near ? `Near ${near.f.properties.name}` : `${lat.toFixed(3)}, ${lon.toFixed(3)}`);
+    const pinN = Number.isInteger(o.n) && o.n > 0 && !numberUsed(o.n) ? o.n : nextNumber();
+    const pin = { n: pinN, name, lat, lon, marker: null };
     if (state.lmap) {
       pin.marker = window.L.marker([lat, lon], { icon: numIcon(pin.n, PIN_COLOR), keyboard: true, title: `${pin.n}. ${name}`, alt: `${pin.n}. ${name}`, zIndexOffset: 800 }).addTo(state.lmap);
-      pin.marker.bindTooltip(`${pin.n}. ${name}`, { direction: 'top', offset: [0, -12] });
+      pin.marker.bindTooltip(escapeHtml(`${pin.n}. ${name}`), { direction: 'top', offset: [0, -12] });
       pin.marker.on('click', () => selectPlace(pin.n));
     }
     pins.push(pin);
@@ -4772,7 +4811,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function numIcon(n, color, active, off) {
     return window.L.divIcon({
       className: `report-pin${active ? ' active' : ''}`,
-      html: `<span style="background:${color}">${n}</span>`, iconSize: [24, 24], iconAnchor: off ? [-6, 32] : [12, 12],
+      html: `<span style="background:${color}">${escapeHtml(n)}</span>`, iconSize: [24, 24], iconAnchor: off ? [-6, 32] : [12, 12],
     });
   }
   // A report pin and its model's gauge marker are the same number at nearly
@@ -5036,7 +5075,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${stateLayerFor(p.state) ? `<button type="button" class="btn js-state">Show ${escapeHtml(stateLayerFor(p.state).state)} flood mapping</button>` : ''}
     </div>`;
     const links = [];
-    if (p.url) links.push(`<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">BoM water storage page</a>`);
+    const storageUrl = safeHttpUrl(p.url);
+    if (storageUrl) links.push(`<a href="${escapeHtml(storageUrl)}" target="_blank" rel="noopener">BoM water storage page</a>`);
     links.push('<a href="https://www.bom.gov.au/water/data/" target="_blank" rel="noopener">Water Data Online</a>');
     if (p.kind !== 'storage') links.push(`<a href="https://www.bom.gov.au/australia/flood/" target="_blank" rel="noopener">BoM flood warnings</a>`);
     html += `<p class="hint">${links.join(' · ')}</p>`;
@@ -5446,7 +5486,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${w.description ? `<div class="warn-body">${escapeHtml(w.description)}</div>` : ''}
       ${shape && shape.names && shape.names.length ? `<small>Area: ${escapeHtml(shape.names.join('; '))} (the Bureau's flood warning catchments)</small>` : ''}
       ${g.length ? `<small>Gauges on ${shape && shape.from === 'bureau' ? 'this warning' : 'the warned rivers (the area drawn around them)'}: ${names}${g.length > 8 ? ` and ${g.length - 8} more` : ''}</small>` : '<small>No gauges on the map match this warning, so it has no area here.</small>'}
-      <div class="warn-actions">${peakBtns(w)}<button type="button" class="btn small" data-warn-area="${escapeHtml(warnKey(w))}">Model this warning area</button>${w.link ? `<a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
+      <div class="warn-actions">${peakBtns(w)}<button type="button" class="btn small" data-warn-area="${escapeHtml(warnKey(w))}">Model this warning area</button>${safeHttpUrl(w.link) ? `<a class="btn small" href="${escapeHtml(safeHttpUrl(w.link))}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   }
   function drawWarningAreas() {
     const L = window.L, lyr = nat.warnLayer;
@@ -5460,7 +5500,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       if (!shape.rings.length) continue;
       const c = warnColor(w);
       const poly = L.polygon(shape.rings, { color: c, weight: 2, fillColor: c, fillOpacity: shape.from === 'bureau' ? 0.18 : 0.1, dashArray: shape.from === 'bureau' ? null : '6 5' });
-      poly.bindTooltip(w.title, { sticky: true });
+      poly.bindTooltip(escapeHtml(w.title || 'Flood warning'), { sticky: true });
       poly.bindPopup(() => warningPopupHtml(w, shape), { maxWidth: 360 });
       poly.on('popupopen', (e) => wirePopupButtons(e.popup.getElement()));
       poly.addTo(lyr);
@@ -5492,7 +5532,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${x.due ? `<br><span class="hint">Because of: ${escapeHtml(x.due)}</span>` : ''}
       ${x.impact ? `<br><span class="hint">${escapeHtml(x.impact)}</span>` : ''}
       <br><span class="hint">Source: ${escapeHtml(roadSource(x.state))}${x.major ? ' · major road' : ''}</span>
-      ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
+      ${safeHttpUrl(x.link) ? `<br><a class="btn small" href="${escapeHtml(safeHttpUrl(x.link))}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
   }
   function drawRoadClosures() {
     const L = window.L, lyr = nat.roadClosuresLayer;
@@ -5530,7 +5570,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       ${x.size && x.size !== '0 ha' ? `<span class="hint">Size: ${escapeHtml(x.size)}</span><br>` : ''}
       ${x.council ? `<span class="hint">Council: ${escapeHtml(x.council)}</span><br>` : ''}
       <span class="hint">Source: ${escapeHtml(x.source || 'state emergency service')}${x.updated ? ` · issued ${escapeHtml(x.updated)}` : ''}</span>
-      ${x.link ? `<br><a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
+      ${safeHttpUrl(x.link) ? `<br><a class="btn small" href="${escapeHtml(safeHttpUrl(x.link))}" target="_blank" rel="noopener">Official page ↗</a>` : ''}</div>`;
   }
   // The Tsunami panel's latest international bulletin (the broker's `tsunami` feed); opened when one is active, so it is not missed
   function renderTsunamiBulletin() {
@@ -5790,7 +5830,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // Leaflet keeps clicks inside a popup to itself: wire those directly
   const wirePopupButtons = (el) => el && el.querySelectorAll('[data-warn-model],[data-warn-area]').forEach((b) => b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (b.hasAttribute('data-warn-area')) onWarnArea(b); else onWarnModel(b); }));
   const warnItemHtml = (x, meta) => `<div class="warn-item${x.severity ? ` sev-${escapeHtml(x.severity.toLowerCase())}` : ''}"><strong>${escapeHtml(x.title)}</strong>${x.description ? `<span class="warn-text">${escapeHtml(x.description)}</span>` : ''}<small>${meta}</small>
-    <div class="warn-actions">${peakBtns(x)}<button type="button" class="btn small" data-warn-area="${escapeHtml(warnKey(x))}">Model this warning area</button><button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${x.link ? `<a class="btn small" href="${escapeHtml(x.link)}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
+    <div class="warn-actions">${peakBtns(x)}<button type="button" class="btn small" data-warn-area="${escapeHtml(warnKey(x))}">Model this warning area</button><button type="button" class="btn small" data-warn-key="${escapeHtml(warnKey(x))}">View on map</button>${safeHttpUrl(x.link) ? `<a class="btn small" href="${escapeHtml(safeHttpUrl(x.link))}" target="_blank" rel="noopener">Bureau page ↗</a>` : ''}</div></div>`;
   // What's worth a look now (the broker's watch list): Bureau warnings,
   // gauges in flood, fast or sustained rises, storm surges and heavy rain
   // forecast, each with the reason, most pressing first.
@@ -5869,7 +5909,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     box.innerHTML = `<h3 class="places-sub">Watch list${list.length ? ` (${list.length})` : ''}</h3>
       ${list.length ? `<ul class="watch-list">${shown.map((w, i) => `<li><button type="button" class="watch-item watch-${escapeHtml(w.kind)}" data-watch="${i}">
         <span class="watch-icon" aria-hidden="true">${WATCH_ICON[w.kind] || '•'}</span>
-        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && w.link ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(w.link)}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
+        <span class="watch-main"><strong>${escapeHtml(watchName(w))}</strong><small>${escapeHtml((w.why || []).join('; '))}</small>${w.near ? `<small class="watch-near">Near ${escapeHtml(w.near)}</small>` : ''}</span></button>${w.kind === 'warning' && safeHttpUrl(w.link) ? `<div class="warn-actions watch-actions"><button type="button" class="btn small" data-watch="${i}">View on map</button><a class="btn small" href="${escapeHtml(safeHttpUrl(w.link))}" target="_blank" rel="noopener">Bureau page ↗</a></div>` : ''}</li>`).join('')}</ul>`
         : '<p class="hint">Nothing on the watch list: no current warnings, gauges in flood, fast rises, storm surges or heavy rain forecast.</p>'}
       ${( () => {
         let pend;
@@ -5924,7 +5964,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (!w) return;
     if (w.kind === 'warning') {
       const x = allWarnings().find((y) => y.id === w.station || y.title === w.name);
-      if (x) showWarning(x); else if (w.link) window.open(w.link, '_blank', 'noopener');
+      const link = safeHttpUrl(w.link);
+      if (x) showWarning(x); else if (link) window.open(link, '_blank', 'noopener');
       return;
     }
     if (w.kind === 'sea') {
@@ -6347,15 +6388,6 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     out.studies = studies.map((x) => ({ l: x.letter, b: x.bounds.map(r5), name: x.name, m: x.nums || [] }));
     return out;
   }
-  const b64 = (str) => {
-    // chunked char codes: spreading every byte into fromCharCode throws
-    // RangeError past ~65 k bytes, which saved share links would hit
-    const bytes = new TextEncoder().encode(str);
-    let s = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  };
-  const unb64 = (txt) => new TextDecoder().decode(Uint8Array.from(atob(txt.replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0)));
   function shareUrl() {
     const st = sessionState(), run = tsunamiPanel && tsunamiPanel.shareState();
     if (run) st.tsunami = run;   // a tsunami run on show travels in the link (not in the saved session: it is only run when asked)
@@ -6376,65 +6408,98 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   }
   async function restoreSession(st, why) {
     if (!st || st.v !== 1 || !state.lmap) return false;
+    const validNum = (v) => Number.isInteger(v) && v > 0 && v < 10000;
+    const validLetter = (v) => typeof v === 'string' && /^[A-Z][0-9]*$/.test(v);
+    const validCoords = (b) => Array.isArray(b) && b.length === 4 && b.every((v) => Number.isFinite(v));
+    const cleanDefences = (def) => {
+      if (!def || typeof def !== 'object') return null;
+      const levees = (Array.isArray(def.levees) ? def.levees : []).filter((l) => l && typeof l === 'object' && Array.isArray(l.pts)).map((l) => ({
+        name: String(l.name || 'Levee').slice(0, 120),
+        src: l.src === 'drawn' ? 'drawn' : String(l.src || 'map').slice(0, 40),
+        pts: l.pts.filter((pt) => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1])).map((pt) => [pt[0], pt[1]]),
+        height: Number.isFinite(Number(l.height)) && l.height !== '' && l.height != null ? Number(l.height) : null,
+        failed: !!l.failed,
+        breaches: (Array.isArray(l.breaches) ? l.breaches : []).filter((pt) => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1])).map((pt) => [pt[0], pt[1]]),
+      }));
+      const gates = (Array.isArray(def.gates) ? def.gates : []).filter((g) => g && Number.isFinite(g.lat) && Number.isFinite(g.lon)).map((g) => ({
+        name: String(g.name || 'Flood gate').slice(0, 120), lat: g.lat, lon: g.lon, failed: !!g.failed,
+      }));
+      return { allFail: !!def.allFail, levees, gates };
+    };
     restoring = true;
     if (nat.data) await ensureRiverGauges();
     status.restore = { running: true, why };
     try {
       if (!nat.data) await loadNationalData();
-      for (const x of st.studies || []) {
+      for (const x of Array.isArray(st.studies) ? st.studies : []) {
+        if (!x || !validCoords(x.b)) continue;
         if (studies.some((y) => y.bounds.join() === x.b.join())) continue;
-        const sObj = { letter: studies.some((y) => y.letter === x.l) ? nextLetter() : x.l, bounds: x.b, name: x.name, created: new Date().toISOString(), summary: null, loaded: false, nums: Array.isArray(x.m) ? x.m : [] };
+        const letter = validLetter(x.l) && !studies.some((y) => y.letter === x.l) ? x.l : nextLetter();
+        const sObj = { letter, bounds: x.b.slice(), name: String(x.name || `Study area ${letter}`).slice(0, 120), created: new Date().toISOString(), summary: null, loaded: false, nums: Array.isArray(x.m) ? x.m.filter(validNum) : [] };
         studies.push(sObj); drawStudy(sObj);
       }
       saveStudies();
       const all = [...(nat.data.gauges || []), ...(nat.data.storages || [])];
-      for (const r of st.reports || []) {
+      for (const r of Array.isArray(st.reports) ? st.reports : []) {
+        if (!r || typeof r.id !== 'string') continue;
         const f = all.find((x) => `${x.properties.kind}:${x.properties.id}` === r.id);
-        if (f) openReport(f, { n: r.n, select: false });
+        if (f) openReport(f, { n: validNum(r.n) ? r.n : undefined, select: false });
       }
-      for (const p of st.pins || []) if (!pins.some((q) => q.n === p.n)) addPin(p.lat, p.lon, { n: p.n, name: p.name, select: false });
-      for (const c of st.checks || []) {
+      for (const p of Array.isArray(st.pins) ? st.pins : []) {
+        if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+        const n = validNum(p.n) ? p.n : undefined;
+        if (n != null && pins.some((q) => q.n === n)) continue;
+        addPin(p.lat, p.lon, { n, name: p.name ? String(p.name).slice(0, 120) : undefined, select: false });
+      }
+      for (const c of Array.isArray(st.checks) ? st.checks : []) {
+        if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
         if (propertyChecks.some((x) => x.id === c.id)) continue;
-        const rec = { id: c.id, key: `${Math.round(c.lat * 1e5)},${Math.round(c.lon * 1e5)}`, created: c.created, when: c.created ? new Date(c.created).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '', lat: c.lat, lon: c.lon, name: c.name, headline: c.headline || '', snapshot: c.snap || {} };
+        const rec = { id: String(c.id || `${Date.now()}-${Math.random()}`).slice(0, 80), key: `${Math.round(c.lat * 1e5)},${Math.round(c.lon * 1e5)}`, created: c.created, when: c.created ? new Date(c.created).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '', lat: c.lat, lon: c.lon, name: String(c.name || '').slice(0, 120), headline: String(c.headline || '').slice(0, 200), snapshot: c.snap && typeof c.snap === 'object' ? c.snap : {} };
         propertyChecks.push(rec);
       }
-      const areas = (st.areas || []).slice().sort((x, y) => x.n - y.n);
+      const areas = (Array.isArray(st.areas) ? st.areas : []).filter((a) => a && typeof a === 'object').slice().sort((x, y) => (Number(x.n) || 0) - (Number(y.n) || 0));
       for (const [k, a] of areas.entries()) {
-        if (numberUsed(a.n) && areaByNumber(a.n)) continue;
+        const keepN = validNum(a.n) ? a.n : undefined;
+        if (keepN != null && numberUsed(keepN) && areaByNumber(keepN)) continue;
         setBusy(true, `Rebuilding flood model ${k + 1} of ${areas.length}…`);
         const size = MODEL_SIZES.find(([h]) => h === a.h) || MODEL_SIZES[0];
         const rep = a.rid && reports.find((r) => r.id === a.rid);
         // Older links stored only the slider; restore its catchment threshold
         // before analysing terrain or snapping the saved level points.
         const sa = a.sa ?? (a.ctl && a.ctl.streamArea != null ? streamFromSlider(Number(a.ctl.streamArea)) : undefined);
-        let ok;
+        let ok = false;
         if (a.id) {
-          await loadArea(a.id, { keepN: a.n, streamAreaKm2: sa });
+          if (!/^[a-z0-9-]+$/i.test(String(a.id))) continue;
+          await loadArea(a.id, { keepN, streamAreaKm2: sa });
           ok = state.areaId === a.id;
-        } else ok = await modelHere(a.g[0], a.g[1], {
-          kind: a.kind, name: a.name, reportId: rep ? rep.id : null, pinN: a.pin, presetId: a.pre,
-          halfKm: size[0], cellM: size[1], center: a.c, keepN: a.n, quiet: true,
-          streamAreaKm2: Number.isFinite(sa) && sa > 0 ? sa : undefined,
-        });
+        } else if (Array.isArray(a.g) && Number.isFinite(a.g[0]) && Number.isFinite(a.g[1])) {
+          ok = await modelHere(a.g[0], a.g[1], {
+            kind: a.kind === 'coast' ? 'coast' : 'river', name: a.name ? String(a.name).slice(0, 120) : undefined, reportId: rep ? rep.id : null, pinN: validNum(a.pin) ? a.pin : undefined, presetId: typeof a.pre === 'string' ? a.pre : undefined,
+            halfKm: size[0], cellM: size[1], center: Array.isArray(a.c) && Number.isFinite(a.c[0]) && Number.isFinite(a.c[1]) ? [a.c[0], a.c[1]] : undefined, keepN, quiet: true,
+            streamAreaKm2: Number.isFinite(sa) && sa > 0 ? sa : undefined,
+          });
+        }
         if (!ok) continue;
+        const targetN = keepN != null ? keepN : (state.areaKey && areaReg.get(state.areaKey) && areaReg.get(state.areaKey).n);
         // wait until the model is registered on the map, so its settings are
         // saved with it rather than lost when it is next selected
-        for (let t = 0; t < 80 && !(state.areaKey && areaByNumber(a.n) && areaByNumber(a.n).key === state.areaKey); t++) await new Promise((r) => setTimeout(r, 100));
-        if (a.ctl) CTL_KEYS.forEach((key) => { if (key !== 'streamArea' && a.ctl[key] != null) ctl[key].value = a.ctl[key]; });
-        if (a.def) { const na = areaByNumber(a.n); if (na) { na.defences = a.def; await applyDefences(); } }
+        for (let t = 0; t < 80 && !(state.areaKey && targetN != null && areaByNumber(targetN) && areaByNumber(targetN).key === state.areaKey); t++) await new Promise((r) => setTimeout(r, 100));
+        if (a.ctl && typeof a.ctl === 'object') CTL_KEYS.forEach((key) => { if (key !== 'streamArea' && a.ctl[key] != null) ctl[key].value = a.ctl[key]; });
+        const cleanedDef = cleanDefences(a.def);
+        if (cleanedDef) { const na = targetN != null ? areaByNumber(targetN) : null; if (na) { na.defences = cleanedDef; await applyDefences(); } }
         restoreModelPoints(a);
         state.base = null;
         syncOutputs();
         runScenario();
         saveActive();
       }
-      if (st.active != null) {
+      if (validNum(st.active)) {
         const a = areaByNumber(st.active);
         if (a) activateArea(a.key); else if (numberUsed(st.active)) selectPlace(st.active);
       }
-      if (st.view) state.lmap.setView([st.view[0], st.view[1]], st.view[2]);
+      if (Array.isArray(st.view) && st.view.length >= 3 && st.view.slice(0, 3).every(Number.isFinite)) state.lmap.setView([st.view[0], st.view[1]], st.view[2]);
       if (st.tsunami && tsunamiPanel) tsunamiPanel.restore(st.tsunami).catch(() => {});   // the run in the link, played again
-      const n = (st.reports || []).length + (st.pins || []).length + areas.filter((a) => !(st.reports || []).some((r) => r.n === a.n) && !(st.pins || []).some((p) => p.n === a.n)).length;
+      const n = (Array.isArray(st.reports) ? st.reports.length : 0) + (Array.isArray(st.pins) ? st.pins.length : 0) + areas.filter((a) => !(st.reports || []).some((r) => r && r.n === a.n) && !(st.pins || []).some((p) => p && p.n === a.n)).length;
       status.restore = { ok: true, why, places: n, areas: areas.length };
       if (n) say(why === 'link' ? `Opened ${n} place${n === 1 ? '' : 's'} from the link.` : `Restored ${n} place${n === 1 ? '' : 's'} from your last visit.`);
       return true;
@@ -6466,6 +6531,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   function clearAllPlaces() {
     reports.slice().forEach(closeReport);
     Array.from(areaReg.keys()).forEach((k) => removeArea(k, { quiet: true }));
+    if (state.routeLayer) state.routeLayer.clearLayers();
     pins.splice(0).forEach((p) => p.marker && state.lmap && state.lmap.removeLayer(p.marker));
     propertyChecks.length = 0;
     hiddenNums.clear();
@@ -6480,17 +6546,27 @@ import { initTsunamiPanel } from './tsunami-panel.js';
   // Searches run only when you press Enter (Nominatim's usage policy rules
   // out search-as-you-type). Picking a result flies there and shows the
   // flood depth if a model covers it, with a button to add it as a place.
+  let searchSeq = 0, searchAbort = null;
   $('searchForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     clearTimeout(suggestTimer); suggestSeq++; // a pending pick list must not replace these results
     const q = $('searchInput').value.trim();
     const box = $('searchResults');
     if (!q) { box.hidden = true; return; }
+    const seq = ++searchSeq;
+    if (searchAbort) searchAbort.abort();
+    searchAbort = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeoutId = searchAbort ? setTimeout(() => searchAbort.abort(), 15000) : 0;
     box.hidden = false;
     box.innerHTML = '<p class="hint">Searching…</p>';
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=au&limit=6&q=${encodeURIComponent(q)}`, { headers: { 'Accept-Language': 'en-AU' } });
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=au&limit=6&q=${encodeURIComponent(q)}`, {
+        headers: { 'Accept-Language': 'en-AU' },
+        signal: searchAbort ? searchAbort.signal : undefined,
+      });
+      if (seq !== searchSeq) return;
       const list = r.ok ? await r.json() : [];
+      if (seq !== searchSeq) return;
       status.search = { ok: r.ok, results: list.length };
       if (!list.length) { box.innerHTML = '<p class="hint">No matches in Australia.</p>'; return; }
       box.innerHTML = list.map((x, i) => {
@@ -6503,8 +6579,11 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         goToSearchResult(parseFloat(x.lat), parseFloat(x.lon), String(x.display_name).split(', ').slice(0, 2).join(', '));
       }));
     } catch (err) {
+      if (seq !== searchSeq) return;
       box.innerHTML = '<p class="hint">Search is unavailable right now.</p>';
       status.search = { ok: false, error: String(err.message || err) };
+    } finally {
+      clearTimeout(timeoutId);
     }
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('#searchForm, #searchResults')) $('searchResults').hidden = true; });
@@ -6750,8 +6829,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       table{border-collapse:collapse}th,td{text-align:left;padding:3px 12px 3px 0;vertical-align:top}th{font-weight:600}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.stats>*{border:1px solid #ccd;border-radius:6px;padding:6px}
       .map{border:1px solid #ccd;background:#eef2f5;padding:8px}.map img{width:100%;image-rendering:pixelated}.hint,small{color:#5a6b78;font-size:12px}.warn-item{display:block;background:#fff4e2;padding:6px;margin:4px 0;color:#5a3b00}
       svg{max-width:100%}@media print{button{display:none}}</style></head><body>
-      <button onclick="print()">Print or save as PDF</button>
-      <h1>${area.n}. ${escapeHtml(area.name)}</h1><p class="hint">Flood Explorer screening model · ${escapeHtml(new Date().toLocaleString('en-AU'))}</p>
+      <button type="button" id="printReportBtn">Print or save as PDF</button>
+      <h1>${escapeHtml(area.n)}. ${escapeHtml(area.name)}</h1><p class="hint">Flood Explorer screening model · ${escapeHtml(new Date().toLocaleString('en-AU'))}</p>
       <h2>Result</h2><div class="stats">${$('stats').innerHTML}</div>
       <h2>Scenario</h2><table>${rows}${pts}</table>
       ${img ? `<h2>Flood extent</h2><div class="map"><img src="${img}" alt="Flood depth map"><p class="hint">Area ${g.south.toFixed(4)}° to ${g.north.toFixed(4)}° latitude, ${g.west.toFixed(4)}° to ${g.east.toFixed(4)}° longitude. Darker blue is deeper water.</p></div>` : ''}
@@ -6765,6 +6844,8 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       <p class="hint">Open source (MIT), provided as is with no warranty. Uses data feeds that do not allow commercial use, so for non-commercial use only. See NOTICE.md in the project's repository.</p>
       <p class="hint">Open this model: <a href="${escapeHtml(shareUrl())}">link</a></p></body></html>`);
     w.document.close();
+    const pbtn = w.document.getElementById('printReportBtn');
+    if (pbtn) pbtn.addEventListener('click', () => w.print());
     return true;
   }
   $('dlTiff').addEventListener('click', downloadDepthTiff);
@@ -7106,7 +7187,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
             .bindTooltip(`${escapeHtml(x.name)} (evacuation centre${hitE ? ', flooded' : ''})`).addTo(impactLayer);
         });
         r.sitesHit.forEach((s) => window.L.circleMarker([s.lat, s.lon], { radius: 7, color: '#c62828', weight: 2.5, fillColor: '#fff', fillOpacity: 0.9 })
-          .bindTooltip(`${s.name}: ${s.kind}, ${s.depth.toFixed(1)} m of water`).addTo(impactLayer));
+          .bindTooltip(`${escapeHtml(s.name)}: ${escapeHtml(s.kind)}, ${s.depth.toFixed(1)} m of water`).addTo(impactLayer));
         impactDrawn = { d, run: state.run, a: state.a, roadOn };
         status.impactTiming = Object.assign(status.impactTiming || {}, { drawMs: Math.round((performance.now() - td) * 10) / 10, cutSegs: r.cutEdges.length, islandSegs: r.islandEdges.length });
       }
@@ -7404,7 +7485,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const lidar = state.areaMeta && state.areaMeta.lidarShare >= 0.2;
     box.innerHTML = d.levees.map((l, i) => `<div class="def-row"><span><strong>${escapeHtml(l.name)}</strong> <small>${escapeHtml(l.src)} · ${lineKm(l.pts).toFixed(2)} km${l.breaches.length ? ` · ${l.breaches.length} breach${l.breaches.length > 1 ? 'es' : ''}` : ''}</small></span>
         ${l.src === 'drawn' ? `<button type="button" class="icon-btn" data-lev-drop="${i}" aria-label="Remove this levee" title="Remove">×</button>` : '<span></span>'}
-        <span class="def-ctl"><label>Crest <input type="number" step="0.1" min="0" data-lev-h="${i}" value="${l.height != null ? l.height : ''}" placeholder="${lidar ? 'terrain' : '1.5'}" aria-label="Crest height above ground in metres"> m above ground</label>
+        <span class="def-ctl"><label>Crest <input type="number" step="0.1" min="0" data-lev-h="${i}" value="${Number.isFinite(Number(l.height)) && l.height !== '' && l.height != null ? escapeHtml(l.height) : ''}" placeholder="${lidar ? 'terrain' : '1.5'}" aria-label="Crest height above ground in metres"> m above ground</label>
         <label class="check"><input type="checkbox" data-lev-fail="${i}"${l.failed ? ' checked' : ''}> Fails</label>
         <button type="button" class="btn small" data-lev-breach="${i}" aria-pressed="${breachFor === i}">${breachFor === i ? 'Tap the levee…' : 'Breach here'}</button>
         ${l.breaches.length ? `<button type="button" class="link-btn" data-lev-unbreach="${i}">clear breaches</button>` : ''}</span></div>`).join('')
@@ -8187,10 +8268,10 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const [S, W, N, E] = st.bounds;
     st.rect = L.rectangle([[S, W], [N, E]], { color: '#0d5f8c', weight: 1.5, dashArray: '8 6', fill: false, interactive: false }).addTo(m);
     st.label = L.marker([N, W], {
-      icon: L.divIcon({ className: 'study-label', html: `<span>${st.letter}</span>`, iconSize: [26, 26], iconAnchor: [0, 0] }),
+      icon: L.divIcon({ className: 'study-label', html: `<span>${escapeHtml(st.letter)}</span>`, iconSize: [26, 26], iconAnchor: [0, 0] }),
       keyboard: false, zIndexOffset: 700,
     }).addTo(m);
-    st.label.bindTooltip(`Study area ${st.letter}: ${st.name}`, { direction: 'top', offset: [13, 0] });
+    st.label.bindTooltip(escapeHtml(`Study area ${st.letter}: ${st.name}`), { direction: 'top', offset: [13, 0] });
     st.label.on('click', () => selectStudy(st.letter));
   }
   function loadStudies() {
@@ -8239,16 +8320,17 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       const models = members.filter((n) => areaByNumber(n)).length;
       const state0 = st.running ? 'building…' : members.length ? `${models} flood model${models === 1 ? '' : 's'}${sm && sm.stopped ? ' (stopped part-way)' : ''}` : st.loaded ? 'no places left' : 'saved: run to load it';
       const tags = [studySize(st), sm ? `${sm.gauges} gauge${sm.gauges === 1 ? '' : 's'}, ${sm.dams} dam${sm.dams === 1 ? '' : 's'}` : null, state0].filter(Boolean).join(' · ');
-      const toggle = members.length ? `<button type="button" class="link-btn study-toggle" data-study-open="${st.letter}" aria-expanded="${!!st.open}">${st.open ? 'Hide' : 'Show'} its ${members.length} place${members.length === 1 ? '' : 's'}</button>` : '';
+      const le = escapeHtml(st.letter);
+      const toggle = members.length ? `<button type="button" class="link-btn study-toggle" data-study-open="${le}" aria-expanded="${!!st.open}">${st.open ? 'Hide' : 'Show'} its ${members.length} place${members.length === 1 ? '' : 's'}</button>` : '';
       const list = st.open && members.length ? `<ul class="places study-members">${members.map(placeRowHtml).join('')}</ul>` : '';
       return `<li class="place study-row${selectedStudy === st.letter ? ' on' : ''}">
-        <button type="button" class="place-main" data-study="${st.letter}" title="Show study area ${st.letter}">
-          <span class="pin-num study-badge">${st.letter}</span>
+        <button type="button" class="place-main" data-study="${le}" title="Show study area ${le}">
+          <span class="pin-num study-badge">${le}</span>
           <span class="place-text"><span class="place-name">${escapeHtml(st.name)}</span><span class="place-tags">${tags}</span></span>
         </button>
-        <button type="button" class="icon-btn" data-study-run="${st.letter}" aria-label="${st.loaded ? 'Run again' : 'Run'}: load its gauges, dams and flood models" title="${st.loaded ? 'Run again' : 'Run study'}">${ICON_RUN}</button>
-        <button type="button" class="icon-btn" data-study-zoom="${st.letter}" aria-label="Zoom to study area ${st.letter}" title="Zoom to">${ICON_ZOOM}</button>
-        <button type="button" class="icon-btn" data-study-drop="${st.letter}" aria-label="Remove study area ${st.letter}" title="Remove">×</button>
+        <button type="button" class="icon-btn" data-study-run="${le}" aria-label="${st.loaded ? 'Run again' : 'Run'}: load its gauges, dams and flood models" title="${st.loaded ? 'Run again' : 'Run study'}">${ICON_RUN}</button>
+        <button type="button" class="icon-btn" data-study-zoom="${le}" aria-label="Zoom to study area ${le}" title="Zoom to">${ICON_ZOOM}</button>
+        <button type="button" class="icon-btn" data-study-drop="${le}" aria-label="Remove study area ${le}" title="Remove">×</button>
         ${toggle ? `<div class="study-more">${toggle}</div>` : ''}${list}
       </li>`;
     }).join('');
@@ -8431,7 +8513,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (state.routeLayer) state.routeLayer.clearLayers(); else if (state.lmap) state.routeLayer = L.layerGroup().addTo(state.lmap);
     if (!r || !state.routeLayer) return;
     if (r.toExit) L.polyline(r.toExit.pts, { color: '#1b7837', weight: 4, opacity: 0.9, dashArray: '8 6' }).bindTooltip('Dry route out of the model area').addTo(state.routeLayer);
-    if (r.toCentre) L.polyline(r.toCentre.pts, { color: '#1b7837', weight: 5, opacity: 0.95 }).bindTooltip(`Dry route to ${r.toCentre.name}`).addTo(state.routeLayer);
+    if (r.toCentre) L.polyline(r.toCentre.pts, { color: '#1b7837', weight: 5, opacity: 0.95 }).bindTooltip(escapeHtml(`Dry route to ${r.toCentre.name}`)).addTo(state.routeLayer);
   }
   // The gauge level at which this spot first gets wet (binary search)
   function floodsAtLevel(c) {
@@ -8468,7 +8550,9 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     }));
     return out;
   }
+  let propSeq = 0;
   async function checkProperty(lat, lon, label) {
+    const seq = ++propSeq;
     openPanel('panel-property');
     const box = $('propertyBox');
     const L = window.L, ll = L.latLng(lat, lon), hit = areaAt(ll);
@@ -8482,6 +8566,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     }
     if (hit.key !== state.areaKey) activateArea(hit.key);
     await state.ready;
+    if (seq !== propSeq) return null;
     const a = state.a, cc = latLngCell(ll), area = areaReg.get(state.areaKey);
     if (!a || !cc) return null;
     const c = cc.i, run = state.run;
@@ -8498,8 +8583,9 @@ import { initTsunamiPanel } from './tsunami-panel.js';
       rememberPropertyCheck(lat, lon, name);
       return status.property;
     }
-    box.innerHTML = `<p><strong>${escapeHtml(name)}</strong> · in ${hit.n}. ${escapeHtml(hit.name)}</p><p class="hint">Working it out…</p>`;
+    box.innerHTML = `<p><strong>${escapeHtml(name)}</strong> · in ${escapeHtml(hit.n)}. ${escapeHtml(hit.name)}</p><p class="hint">Working it out…</p>`;
     if (area.impact == null) { try { await countImpact(); } catch (err) { /* counted without roads */ } }
+    if (seq !== propSeq) return null;
     const d = area.impact && !area.impact.error ? area.impact : null;
     const wet = run.wet[c] && !(a.ocean && a.ocean[c]), depth = wet ? run.depth[c] : 0;
     const hz = wet ? hazardNow() : null, cls = hz ? hz.cls[c] : 0;
@@ -8542,7 +8628,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
         : `<strong>Evacuation centre:</strong> none of the ${route.centres} mapped here can be reached by dry roads.`);
       else lines.push('<span class="hint">No evacuation centres are mapped in OpenStreetMap in this area; check your council\'s disaster dashboard.</span>');
     }
-    box.innerHTML = `<p><strong>${escapeHtml(name)}</strong> · in ${hit.n}. ${escapeHtml(hit.name)}</p>${lines.map((x) => `<p>${x}</p>`).join('')}<p class="hint" id="propSlow">Checking recorded floods and council maps…</p>`;
+    box.innerHTML = `<p><strong>${escapeHtml(name)}</strong> · in ${escapeHtml(hit.n)}. ${escapeHtml(hit.name)}</p>${lines.map((x) => `<p>${x}</p>`).join('')}<p class="hint" id="propSlow">Checking recorded floods and council maps…</p>`;
     status.property = { inModel: true, depth: +depth.toFixed(2), hazard: cls, floodsAt: lvl && lvl.level ? +lvl.level.toFixed(2) : null,
       route: route && !route.none ? { exitKm: route.toExit ? +route.toExit.km.toFixed(2) : null, centre: route.toCentre ? route.toCentre.name : null, centres: route.centres } : null,
       arrival: arrivalText, offline: offlineText };
@@ -8550,12 +8636,18 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const extra = [];
     try {
       if (!area.recorded) await findRecorded();
+      if (seq !== propSeq) return null;
       for (const rec of area.recorded || []) {
-        try { const m = await recordedMask(rec); if (m.flood[c]) extra.push(`Inside the recorded ${escapeHtml(rec.name)}.`); } catch (err) { /* skip */ }
+        try {
+          const m = await recordedMask(rec);
+          if (seq !== propSeq) return null;
+          if (m.flood[c]) extra.push(`Inside the recorded ${escapeHtml(rec.name)}.`);
+        } catch (err) { /* skip */ }
       }
       if (area.recorded && area.recorded.length && !extra.length) extra.push(`Outside the ${area.recorded.length} recorded flood outline${area.recorded.length === 1 ? '' : 's'} found here.`);
     } catch (err) { /* no recorded floods */ }
     const council = await councilAt(lat, lon);
+    if (seq !== propSeq) return null;
     if (council.length) extra.push(`Council maps: ${council.map(escapeHtml).join('; ')}.`);
     const slow = $('propSlow');
     if (slow) slow.outerHTML = extra.length ? extra.map((x) => `<p>${x}</p>`).join('') : '<p class="hint">No recorded flood outlines or council flood maps cover this spot in the sources the app knows.</p>';
@@ -8654,7 +8746,7 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     const label = { ok: 'OK', cached: 'From an earlier build', problem: 'Problem', missing: 'Not available' };
     const when = (iso) => (iso ? new Date(iso).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
     const engine = 'Rust, compiled to WebAssembly';
-    box.innerHTML = `${liveSourcesHtml()}<p class="hint">Built ${escapeHtml(when(st.built))}. Flood model running in ${engine}.</p>${st.sources.map((s) => `<li class="st-${escapeHtml(s.state)}">
+    box.innerHTML = `${liveSourcesHtml()}<p class="hint">Built ${escapeHtml(when(st.built))}. Flood model running in ${engine}.</p><ul class="data-status">${st.sources.map((s) => `<li class="st-${escapeHtml(s.state)}">
       <strong>${escapeHtml(s.name)}</strong> <span class="st-badge">${escapeHtml(label[s.state] || s.state)}</span><br>
       <span class="hint">${escapeHtml(s.summary)}${s.fetched ? ` · data from ${escapeHtml(when(s.fetched))}` : ''} · for ${escapeHtml(s.feeds)}</span></li>`).join('')}</ul>`;
     status.dataStatus = st.sources.map((s) => `${s.name}: ${s.state}`);
@@ -8682,23 +8774,6 @@ import { initTsunamiPanel } from './tsunami-panel.js';
     if (id === 'panel-scenario' && !isPhone()) { setScenarioCollapsed(true); return; }
     $(id).hidden = true;
     syncPanels();
-  }
-  // keyboard: Escape closes the open (non-scenario) panel
-  window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    const open = Array.from(document.querySelectorAll('[data-panel]')).find((p) => !p.hidden && p.id !== 'panel-scenario');
-    if (open) { closePanel(open.id); e.preventDefault(); }
-  });
-  // timeline keyboard: space plays/pauses, arrows step
-  const tlSlider = $('tlSlider');
-  if (tlSlider) {
-    tlSlider.addEventListener('keydown', (e) => {
-      if (e.key === ' ') {
-        e.preventDefault();
-        const btn = $('playTimeline');
-        if (btn) btn.click();
-      }
-    });
   }
 
   function syncPanels() {

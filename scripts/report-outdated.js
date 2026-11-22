@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const result = spawnSync(
   process.platform === "win32" ? "npm.cmd" : "npm",
   ["outdated", "--json"],
-  { encoding: "utf8" },
+  { encoding: "utf8", shell: process.platform === "win32" },
 );
 if (result.error) throw result.error;
 if (result.stderr) process.stderr.write(result.stderr);

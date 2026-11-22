@@ -13,7 +13,12 @@ self.onmessage = async ({ data }) => {
     do {
       result = core.inertialStep();
       if (result.done) {
-        self.postMessage({ result }, [result.depth.buffer, ...['peak', 'peakSpeed', 'peakClass', 'arrival', 'snapDepth', 'snapTimes'].filter((k) => result[k]).map((k) => result[k].buffer)]);
+        const buffers = Array.from(new Set(
+          ['depth', 'peak', 'peakSpeed', 'peakClass', 'arrival', 'vx', 'vy', 'snapDepth', 'snapTimes']
+            .filter((k) => result[k] && result[k].buffer)
+            .map((k) => result[k].buffer),
+        ));
+        self.postMessage({ result }, buffers);
       } else {
         self.postMessage({ progress: result.time / total });
         await new Promise((resolve) => setTimeout(resolve, 0));

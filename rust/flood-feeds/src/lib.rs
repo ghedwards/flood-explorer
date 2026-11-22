@@ -189,12 +189,14 @@ pub fn ts_epoch(t: &str) -> Option<i64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
     let mut off = 0i64;
-    if let Some(p) = t[19..].find(['+', '-']) {
-        let z = &t[19 + p..];
-        let sign = if z.starts_with('-') { -1 } else { 1 };
-        let hh: i64 = z.get(1..3)?.parse().ok()?;
-        let mm: i64 = z.get(4..6).and_then(|x| x.parse().ok()).unwrap_or(0);
-        off = sign * (hh * 3600 + mm * 60);
+    if let Some(tail) = t.get(19..) {
+        if let Some(p) = tail.find(['+', '-']) {
+            let z = &tail[p..];
+            let sign = if z.starts_with('-') { -1 } else { 1 };
+            let hh: i64 = z.get(1..3)?.parse().ok()?;
+            let mm: i64 = z.get(4..6).and_then(|x| x.parse().ok()).unwrap_or(0);
+            off = sign * (hh * 3600 + mm * 60);
+        }
     }
     Some(days * 86400 + h * 3600 + mi * 60 + s - off)
 }
@@ -900,13 +902,13 @@ pub mod ftp {
             let code: u32 = line.get(..3).and_then(|c| c.parse().ok()).ok_or_else(|| format!("ftp: odd reply {:?}", line))?;
             let mut all = line.clone();
             if line.as_bytes().get(3) == Some(&b'-') {
-                loop {
+                for _ in 0..256 {
                     let mut l = String::new();
                     if self.rd.read_line(&mut l).map_err(|e| e.to_string())? == 0 {
                         break;
                     }
                     all.push_str(&l);
-                    if l.starts_with(&format!("{} ", code)) {
+                    if l.starts_with(&format!("{} ", code)) || all.len() > 64 * 1024 {
                         break;
                     }
                 }
@@ -926,18 +928,21 @@ pub mod ftp {
             }
             let inner = m.split('(').nth(1).and_then(|x| x.split(')').next()).ok_or("ftp: odd PASV reply")?;
             let n: Vec<u16> = inner.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-            if n.len() != 6 {
+            if n.len() != 6 || n.iter().any(|&v| v > 255) {
                 return Err(format!("ftp: odd PASV reply {}", m));
             }
             let host = self.host.clone();
-            let mut data = connect(&host, n[4] * 256 + n[5], self.timeout)?;
+            let data = connect(&host, n[4] * 256 + n[5], self.timeout)?;
             let (code, m) = self.cmd(c)?;
             if code != 150 && code != 125 {
                 return Err(format!("ftp: {}", m));
             }
+            const MAX_FTP_BYTES: u64 = 16 << 20;
             let mut body = Vec::new();
-            data.read_to_end(&mut body).map_err(|e| e.to_string())?;
-            drop(data);
+            data.take(MAX_FTP_BYTES + 1).read_to_end(&mut body).map_err(|e| e.to_string())?;
+            if body.len() as u64 > MAX_FTP_BYTES {
+                return Err("ftp: response exceeds 16 MiB".into());
+            }
             let (code, m) = self.reply()?;
             if code >= 400 {
                 return Err(format!("ftp: {}", m));
@@ -1306,7 +1311,7 @@ pub fn parse_river_popups(html: &str) -> Vec<Value> {
         // "21-10-2026 09:00:01" (local time at the gauge; no zone given)
         let at = {
             let t = args[7].trim();
-            if t.len() >= 16 { format!("{}-{}-{}T{}", &t[6..10], &t[3..5], &t[0..2], &t[11..]) } else { String::new() }
+            if t.is_ascii() && t.len() >= 16 { format!("{}-{}-{}T{}", &t[6..10], &t[3..5], &t[0..2], &t[11..]) } else { String::new() }
         };
         out.push(json!({
             "station": station, "name": args[0], "lat": num(&args[2]), "lon": num(&args[3]),
@@ -1438,7 +1443,7 @@ pub fn flood_classes_and_rain_from(
     cache: &mut HashMap<String, (String, Value)>,
     errors: &mut Vec<String>,
 ) -> (Value, Value, usize) {
-    let pages: Vec<&(String, String)> = files.iter().filter(|(n, _)| n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && &n[3..6] == "653").collect();
+    let pages: Vec<&(String, String)> = files.iter().filter(|(n, _)| n.is_ascii() && n.len() == 13 && n.starts_with("ID") && n.ends_with(".html") && n.get(3..6) == Some("653")).collect();
     let live: HashSet<&str> = pages.iter().map(|(n, _)| n.as_str()).collect();
     cache.retain(|k, _| !k.ends_with(".html") || live.contains(k.as_str()));
     let mut out = Map::new();
@@ -1638,7 +1643,7 @@ pub fn bureau_levels(level: &mut Value, classes: &Value, stations: &HashMap<Stri
     let (Some(lv), Some(fc)) = (level.as_object_mut(), classes.as_object()) else { return 0 };
     let mut n = 0;
     for (bom, g) in fc {
-        let (Some(st), Some(v), Some(at)) = (stations.get(bom), g["level"].as_f64(), g["at"].as_str().filter(|a| a.len() >= 16)) else { continue };
+        let (Some(st), Some(v), Some(at)) = (stations.get(bom), g["level"].as_f64(), g["at"].as_str().filter(|a| a.is_ascii() && a.len() >= 16)) else { continue };
         let (Ok(y), Ok(m), Ok(d)) = (at[0..4].parse::<i64>(), at[5..7].parse::<i64>(), at[8..10].parse::<i64>()) else { continue };
         let off = state_offset_s(states.get(st).map(String::as_str).unwrap_or("QLD"), y, m, d);
         let iso = format!("{}{}{:02}:{:02}", &at[..19.min(at.len())], if off < 0 { '-' } else { '+' }, off.abs() / 3600, off.abs() % 3600 / 60);
@@ -2072,13 +2077,14 @@ pub fn parse_tas_roads(gj: &Value) -> Vec<Value> {
         let level = if closed { "closed" } else if tm.to_lowercase().contains("lane") { "lanes affected" } else { "caution" };
         let major = road.contains("Highway") || road.ends_with(" Hwy") || road.contains("Motorway");
         let updated = p["START_TIME"].as_str().unwrap_or("").to_string();
+        let tas_link = p["WEB_LINK"].as_str().map(str::trim).filter(|u| u.starts_with("https://") || u.starts_with("http://")).unwrap_or("https://www.transport.tas.gov.au/roadworks");
         let mut item = json!({
             "id": id, "state": "TAS", "road": road, "where": where_,
             "desc": if where_.is_empty() { event_type.clone() } else { where_.clone() },
             "closed": closed, "level": level,
             "type": event_type, "due": tm, "impact": tm, "hazard": null,
             "major": major, "updated": updated, "lat": lat, "lon": lon,
-            "link": p["WEB_LINK"].as_str().unwrap_or("https://www.transport.tas.gov.au/roadworks"),
+            "link": tas_link,
         });
         if !line.is_empty() { item["line"] = json!(line); }
         out.push(item);
@@ -2157,7 +2163,7 @@ pub fn parse_nsw_rfs_emergency(gj: &Value) -> Vec<Value> {
         } else {
             "fire"
         };
-        let link = p["link"].as_str().unwrap_or("https://www.rfs.nsw.gov.au/fire-information/fires-near-me").to_string();
+        let link = p["link"].as_str().map(str::trim).filter(|u| u.starts_with("https://") || u.starts_with("http://")).unwrap_or("https://www.rfs.nsw.gov.au/fire-information/fires-near-me").to_string();
         let id = p["guid"].as_str().unwrap_or(&title).to_string();
         let updated = p["pubDate"].as_str().unwrap_or("").to_string();
         let status = fields.get("STATUS").cloned();
