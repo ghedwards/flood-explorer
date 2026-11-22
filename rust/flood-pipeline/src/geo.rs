@@ -318,7 +318,11 @@ impl Raster {
 pub fn read_geotiff(bytes: &[u8]) -> R<Raster> {
     use tiff::decoder::{Decoder, DecodingResult, Limits};
     use tiff::tags::Tag;
-    let mut d = Decoder::new(std::io::Cursor::new(bytes)).map_err(err)?.with_limits(Limits::unlimited());
+    let mut limits = Limits::default();
+    limits.decoding_buffer_size = 512 << 20;
+    limits.ifd_value_size = 64 << 20;
+    limits.intermediate_buffer_size = 512 << 20;
+    let mut d = Decoder::new(std::io::Cursor::new(bytes)).map_err(err)?.with_limits(limits);
     let (w, h) = d.dimensions().map_err(err)?;
     let scale = d.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
     let tie = d.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
@@ -346,8 +350,8 @@ pub fn read_geotiff(bytes: &[u8]) -> R<Raster> {
     // more than one sample per pixel: keep the first band
     let spp = data.len() / (w * h).max(1);
     let data = if spp > 1 { data.chunks(spp).map(|c| c[0]).collect() } else { data };
-    let (dx, dy) = scale.as_ref().map_or((1.0, 1.0), |s| (s[0], s[1]));
-    let (mut x0, mut y0) = tie.as_ref().map_or((0.0, 0.0), |t| (t[3] - t[0] * dx, t[4] + t[1] * dy));
+    let (dx, dy) = scale.as_ref().filter(|s| s.len() >= 2).map_or((1.0, 1.0), |s| (s[0], s[1]));
+    let (mut x0, mut y0) = tie.as_ref().filter(|t| t.len() >= 5).map_or((0.0, 0.0), |t| (t[3] - t[0] * dx, t[4] + t[1] * dy));
     if point {
         x0 -= dx / 2.0;
         y0 += dy / 2.0;
@@ -428,8 +432,11 @@ pub fn dbf_records(b: &[u8]) -> R<(Vec<String>, Vec<Vec<String>>)> {
         return Err("not a dbf".into());
     }
     let n = u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize;
-    let hlen = u16::from_le_bytes([b[8], b[9]]) as usize;
+    let hlen = (u16::from_le_bytes([b[8], b[9]]) as usize).min(b.len());
     let rlen = u16::from_le_bytes([b[10], b[11]]) as usize;
+    if rlen == 0 {
+        return Err("dbf: zero record length".into());
+    }
     let mut fields = Vec::new();
     let mut p = 32;
     while p + 32 <= hlen && b[p] != 0x0d {
@@ -439,15 +446,17 @@ pub fn dbf_records(b: &[u8]) -> R<(Vec<String>, Vec<Vec<String>>)> {
     }
     let mut recs = Vec::new();
     for r in 0..n {
-        let s = hlen + r * rlen;
-        if s + rlen > b.len() {
+        let Some(s) = r.checked_mul(rlen).and_then(|v| hlen.checked_add(v)) else { break };
+        if s.checked_add(rlen).is_none_or(|end| end > b.len()) {
             break;
         }
         let mut q = s + 1; // deletion flag
         let mut vals = Vec::new();
         for (_, l) in &fields {
-            vals.push(String::from_utf8_lossy(&b[q..(q + l).min(b.len())]).trim().to_string());
-            q += l;
+            let end = q.saturating_add(*l).min(b.len());
+            let start = q.min(end);
+            vals.push(String::from_utf8_lossy(&b[start..end]).trim().to_string());
+            q = end;
         }
         recs.push(vals);
     }

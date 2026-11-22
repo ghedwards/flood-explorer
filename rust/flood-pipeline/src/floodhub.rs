@@ -26,11 +26,14 @@ pub type Req<'a> = &'a dyn Fn(&str, &str, &[(String, String)], Option<&Value>) -
 #[expect(clippy::type_complexity, reason = "Returned closure matches the Req transport signature above")]
 pub fn real_req(key: String) -> impl Fn(&str, &str, &[(String, String)], Option<&Value>) -> R<Value> {
     move |method, path, params, body| {
-        let mut q: Vec<(String, String)> = params.to_vec();
-        q.push(("key".into(), key.clone()));
-        let url = format!("{}{}?{}", BASE, path, net::urlencode(&q));
+        let url = if params.is_empty() {
+            format!("{}{}", BASE, path)
+        } else {
+            format!("{}{}?{}", BASE, path, net::urlencode(params))
+        };
         let data = body.map(|b| b.to_string());
-        match net::request(method, &url, &[("Content-Type", "application/json")], data.as_deref().map(|s| s.as_bytes()), 60) {
+        let headers = [("Content-Type", "application/json"), ("X-Goog-Api-Key", key.as_str())];
+        match net::request(method, &url, &headers, data.as_deref().map(|s| s.as_bytes()), 60) {
             Ok(r) => {
                 if r.body.is_empty() {
                     return Ok(json!({}));
@@ -83,8 +86,10 @@ pub fn region_loop(bbox: &[f64]) -> Value {
 
 /// A Flood Hub KML polygon string as a GeoJSON geometry.
 pub fn kml_to_geometry(kml: &str) -> Option<Value> {
-    let poly = Regex::new(r"(?s)<(?:\w+:)?Polygon\b[^>]*>(.*?)</(?:\w+:)?Polygon>").unwrap();
-    let coords = Regex::new(r"(?s)<(?:\w+:)?coordinates\b[^>]*>(.*?)</(?:\w+:)?coordinates>").unwrap();
+    static POLY: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static COORDS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let poly = POLY.get_or_init(|| Regex::new(r"(?s)<(?:\w+:)?Polygon\b[^>]*>(.*?)</(?:\w+:)?Polygon>").unwrap());
+    let coords = COORDS.get_or_init(|| Regex::new(r"(?s)<(?:\w+:)?coordinates\b[^>]*>(.*?)</(?:\w+:)?coordinates>").unwrap());
     let mut polys = Vec::new();
     for p in poly.captures_iter(kml) {
         let mut rings = Vec::new();
@@ -138,7 +143,7 @@ fn overlaps(a: &[f64; 4], b: &[f64]) -> bool {
 fn polygon_feature(api: &Api, pid: Option<&Value>, props: Value, cache: &RefCell<HashMap<String, Option<Value>>>) -> R<Option<Value>> {
     let Some(pid) = pid.filter(|p| truthy(Some(p))).map(py_str) else { return Ok(None) };
     if !cache.borrow().contains_key(&pid) {
-        let res = api.get(&format!("serializedPolygons/{}", pid), &[])?;
+        let res = api.get(&format!("serializedPolygons/{}", net::quote(&pid, "")), &[])?;
         let g = if truthy(res.get("kml")) { kml_to_geometry(&s_or_empty(res.get("kml"))) } else { None };
         cache.borrow_mut().insert(pid.clone(), g);
     }

@@ -72,7 +72,11 @@ export function createFinePool({ makeWorker, size = 1, minRows = 200, minPixels 
           waiting.set(id, { resolve, reject });
           workers[i].postMessage({ id, p: bandParams(p, from, to) });
         }));
-        return Promise.all(jobs).then((parts) => ({ ...stitch(parts, p.W, p.H), worker: true })).catch(() => fallback(p));
+        return Promise.all(jobs).then((parts) => ({ ...stitch(parts, p.W, p.H), worker: true })).catch((err) => {
+          onProblem(`5 m flood worker failed: ${(err && err.message) || 'unknown error'} (drawing on the main thread instead)`);
+          failAll(String((err && err.message) || err));
+          return fallback(p);
+        });
       } catch (err) {
         failAll(String(err));
         return Promise.resolve(fallback(p));

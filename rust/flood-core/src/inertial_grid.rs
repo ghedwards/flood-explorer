@@ -58,7 +58,7 @@ pub struct Expanded {
 pub fn expand(a: &Area, g: &Prepared, r: &SolverResult, peak: bool) -> Expanded {
     let n = a.w * a.h;
     let depths = match (peak, r.peak) { (true, Some(p)) => p, _ => r.depth };
-    let track = peak && r.peak.is_some() && r.peak_class.is_some() && r.arrival.is_some();
+    let track = peak && r.peak.is_some() && r.peak_class.is_some() && r.peak_speed.is_some() && r.arrival.is_some();
     let mut out = Expanded { depth: vec![0.0; n], wet: vec![0; n], level: vec![f32::NAN; n], vx: vec![0.0; n], vy: vec![0.0; n], arrival: track.then(|| vec![f32::NAN; n]), hazard: track.then(|| Hazard { class: vec![0; n], speed: vec![0.0; n], km2: [0.0; 6] }) };
     for i in 0..n {
         let Some(j) = cell_of(g, a, i as i64) else { continue };
@@ -76,7 +76,7 @@ pub fn expand(a: &Area, g: &Prepared, r: &SolverResult, peak: bool) -> Expanded 
     }
     if let Some(hz) = out.hazard.as_mut() {
         let cell_km2 = a.cell * a.cell / 1e6;
-        for i in 0..n { if hz.class[i] > 0 && !(!a.ocean.is_empty() && a.ocean[i] != 0) { hz.km2[hz.class[i] as usize - 1] += cell_km2; } }
+        for i in 0..n { if (1..=6).contains(&hz.class[i]) && !(!a.ocean.is_empty() && a.ocean[i] != 0) { hz.km2[hz.class[i] as usize - 1] += cell_km2; } }
     }
     out
 }

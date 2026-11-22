@@ -22,11 +22,11 @@ pub fn open_service(service: &str) -> Result<(), String> {
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut command = std::process::Command::new("xdg-open");
-    command.arg(url).status()
-        .map_err(|_| "Could not open your browser. Open the setup link manually.".to_string())?
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Could not open your browser. Open the setup link manually.".to_string())
+    command
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Could not open your browser. Open the setup link manually.".to_string())
 }
 
 #[cfg(test)]

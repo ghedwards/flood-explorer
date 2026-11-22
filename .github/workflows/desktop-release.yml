@@ -4,7 +4,7 @@ on:
   push:
     tags: ['desktop-v*']
   pull_request:
-    paths: ['desktop/**', 'viewer/desktop-updates.js', 'scripts/desktop-release.js', '.github/workflows/desktop-release.yml']
+    paths: ['desktop/**', 'rust/flood-broker/**', 'rust/flood-feeds/**', 'viewer/desktop-updates.js', 'viewer/desktop-settings.js', 'scripts/desktop-release.js', 'scripts/build-desktop.js', '.github/workflows/desktop-release.yml']
   workflow_dispatch:
     inputs:
       verify_only:
@@ -28,13 +28,13 @@ jobs:
         os: [ubuntu-22.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -48,6 +48,7 @@ jobs:
           mkdir -p site
           printf '<!doctype html><title>Compile check</title>' > site/index.html
           cargo check --locked --manifest-path desktop/Cargo.toml
+          cargo test --locked --manifest-path desktop/Cargo.toml
 
   data:
     if: github.event_name != 'pull_request'
@@ -56,8 +57,8 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
@@ -81,7 +82,7 @@ jobs:
             throw new Error(`Release tag must be ${tag}`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
           JS
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -89,7 +90,7 @@ jobs:
             rust/target
           key: desktop-data-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock', 'rust/**/*.rs') }}
           restore-keys: desktop-data-${{ runner.os }}-
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Check frontend and flood model
         run: |
           npm run build:wasm
@@ -101,7 +102,7 @@ jobs:
           cargo build --locked --release --manifest-path rust/Cargo.toml -p flood-pipeline
           rust/target/release/flood national viewer/data/national
           rust/target/release/flood floodinfo viewer/data/national
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-data
           path: viewer/data/
@@ -129,8 +130,8 @@ jobs:
             bundles: deb,appimage
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
@@ -141,7 +142,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }} wasm32-unknown-unknown
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -150,8 +151,8 @@ jobs:
             rust/target
           key: desktop-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml', 'desktop/Cargo.lock', 'rust/Cargo.lock', 'desktop/**/*.rs', 'rust/**/*.rs') }}
           restore-keys: desktop-${{ matrix.target }}-
-      - run: npm ci
-      - uses: actions/download-artifact@v8
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: desktop-data
           path: viewer/data
@@ -192,7 +193,7 @@ jobs:
           FLOOD_UPDATER_PUBLIC_KEY: ${{ vars.FLOOD_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         with:
           projectPath: desktop
           tauriScript: npx --yes --package @tauri-apps/cli@2.12.4 tauri
@@ -200,7 +201,7 @@ jobs:
       - name: Collect signed update bundle
         if: ${{ !inputs.verify_only }}
         run: node scripts/desktop-release.js collect ${{ matrix.target }} desktop/target/${{ matrix.target }}/release/bundle update-assets
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-${{ matrix.target }}
           path: |
@@ -219,8 +220,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: desktop-*
           path: downloads

@@ -197,6 +197,7 @@ impl Variable {
             let tt = dot(&t, &t);
             if !tt.is_finite() || tt == 0.0 { outcome = Err("dispersive momentum solve broke down".into()); break; }
             omega = dot(&t, &s) / tt;
+            if !omega.is_finite() || omega == 0.0 { outcome = Err("dispersive momentum solve broke down".into()); break; }
             for i in 0..n { x[i] += alpha * ph[i] + omega * sh[i]; r[i] = s[i] - omega * t[i]; }
         }
         for (k, vec) in [r, r0, p, v, s, t, ph, sh].into_iter().enumerate() { self.work[k + 1] = vec; }

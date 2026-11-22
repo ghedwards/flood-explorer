@@ -36,7 +36,7 @@ impl Geo {
     pub fn cell_of(&self, lat: f64, lon: f64) -> i32 {
         let x = (((lon - self.west) / (self.east - self.west)) * self.w as f64).floor();
         let y = (((self.north - lat) / (self.north - self.south)) * self.h as f64).floor();
-        if x < 0.0 || y < 0.0 || x >= self.w as f64 || y >= self.h as f64 {
+        if !(x >= 0.0 && y >= 0.0 && x < self.w as f64 && y < self.h as f64) {
             -1
         } else {
             (y as usize * self.w + x as usize) as i32
@@ -59,7 +59,7 @@ pub fn prepare_run(sample: &[i32], node_cell: &[i32], centre_cell: &[i32], wet: 
     let deep = |c: i32| c >= 0 && wet[c as usize] != 0 && ocean.get(c as usize).copied().unwrap_or(0) == 0 && depth[c as usize] as f64 >= DEEP;
     let closed = sample.chunks(5).map(|s| s.iter().any(|&c| deep(c)) as u8).collect();
     let wet_nodes = node_cell.iter().map(|&c| deep(c) as u8).collect();
-    let flooded = centre_cell.iter().map(|&c| (c >= 0 && wet[c as usize] != 0 && depth[c as usize] as f64 >= CENTRE_DEEP) as u8).collect();
+    let flooded = centre_cell.iter().map(|&c| (c >= 0 && wet[c as usize] != 0 && ocean.get(c as usize).copied().unwrap_or(0) == 0 && depth[c as usize] as f64 >= CENTRE_DEEP) as u8).collect();
     RunRoads { closed, wet: wet_nodes, flooded }
 }
 
@@ -257,7 +257,8 @@ pub fn impact_sweep(a: &ImpactIn) -> ImpactOut {
             let dy = la1 - la0;
             let len = (dx * dx + dy * dy).sqrt() * 111.32;
             o.road_km += len;
-            let steps = ((len * 1000.0) / a.cell_m).ceil().max(1.0) as usize;
+            let step_m = if a.cell_m.is_finite() && a.cell_m > 0.0 { a.cell_m } else { 30.0 };
+            let steps = (((len * 1000.0) / step_m).ceil().clamp(1.0, 100_000.0)) as usize;
             let mut wet_steps = 0usize;
             for t in 0..steps {
                 let f = (t as f64 + 0.5) / steps as f64;
@@ -278,14 +279,49 @@ pub fn impact_sweep(a: &ImpactIn) -> ImpactOut {
 pub fn building_nodes(node_lat: &[f64], node_lon: &[f64], bx: &[f64], by: &[f64]) -> Vec<i32> {
     const HS: f64 = 0.002;
     let cell = |v: f64| (v / HS).floor() as i64;
-    let keys: Vec<(i64, i64)> = (0..node_lat.len()).map(|n| (cell(node_lat[n]), cell(node_lon[n]))).collect();
-    if keys.is_empty() {
+    let valid_nodes: Vec<(usize, i64, i64)> = (0..node_lat.len().min(node_lon.len()))
+        .filter(|&n| node_lat[n].is_finite() && node_lon[n].is_finite())
+        .map(|n| (n, cell(node_lat[n]), cell(node_lon[n])))
+        .collect();
+    if valid_nodes.is_empty() {
         return vec![-1; bx.len()];
     }
-    // the buckets as a dense grid over the nodes' extent (with a one-bucket margin for the 3x3 look), nodes in
-    // ascending order within each: a bucket's list is csr[start[b]..start[b + 1]]
-    let (ky0, ky1) = (keys.iter().map(|k| k.0).min().unwrap() - 1, keys.iter().map(|k| k.0).max().unwrap() + 1);
-    let (kx0, kx1) = (keys.iter().map(|k| k.1).min().unwrap() - 1, keys.iter().map(|k| k.1).max().unwrap() + 1);
+    let (ky0, ky1) = (valid_nodes.iter().map(|k| k.1).min().unwrap() - 1, valid_nodes.iter().map(|k| k.1).max().unwrap() + 1);
+    let (kx0, kx1) = (valid_nodes.iter().map(|k| k.2).min().unwrap() - 1, valid_nodes.iter().map(|k| k.2).max().unwrap() + 1);
+    let span = ky1.checked_sub(ky0).and_then(|r| r.checked_add(1)).and_then(|r| {
+        let c = kx1.checked_sub(kx0)?.checked_add(1)?;
+        usize::try_from(r).ok()?.checked_mul(usize::try_from(c).ok()?)
+    });
+    if span.is_none_or(|s| s > 4_000_000) {
+        let mut map: std::collections::HashMap<(i64, i64), Vec<u32>> = std::collections::HashMap::new();
+        for &(n, ky, kx) in &valid_nodes {
+            map.entry((ky, kx)).or_default().push(n as u32);
+        }
+        return (0..bx.len())
+            .map(|i| {
+                if !bx[i].is_finite() || !by[i].is_finite() {
+                    return -1;
+                }
+                let (ky, kx) = (cell(by[i]), cell(bx[i]));
+                let (mut best, mut bd) = (-1i32, f64::INFINITY);
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if let Some(list) = map.get(&(ky + dy, kx + dx)) {
+                            for &u in list {
+                                let n = u as usize;
+                                let d = (node_lat[n] - by[i]).powi(2) + ((node_lon[n] - bx[i]) * 0.9).powi(2);
+                                if d < bd {
+                                    bd = d;
+                                    best = n as i32;
+                                }
+                            }
+                        }
+                    }
+                }
+                best
+            })
+            .collect();
+    }
     let (rows, cols) = ((ky1 - ky0 + 1) as usize, (kx1 - kx0 + 1) as usize);
     let slot = |ky: i64, kx: i64| -> Option<usize> {
         if ky < ky0 || ky > ky1 || kx < kx0 || kx > kx1 {
@@ -295,21 +331,24 @@ pub fn building_nodes(node_lat: &[f64], node_lon: &[f64], bx: &[f64], by: &[f64]
         }
     };
     let mut start = vec![0u32; rows * cols + 1];
-    for &(ky, kx) in &keys {
+    for &(_, ky, kx) in &valid_nodes {
         start[slot(ky, kx).unwrap() + 1] += 1;
     }
     for i in 0..rows * cols {
         start[i + 1] += start[i];
     }
     let mut fill = start.clone();
-    let mut csr = vec![0u32; keys.len()];
-    for (n, &(ky, kx)) in keys.iter().enumerate() {
+    let mut csr = vec![0u32; valid_nodes.len()];
+    for &(n, ky, kx) in &valid_nodes {
         let b = slot(ky, kx).unwrap();
         csr[fill[b] as usize] = n as u32;
         fill[b] += 1;
     }
     (0..bx.len())
         .map(|i| {
+            if !bx[i].is_finite() || !by[i].is_finite() {
+                return -1;
+            }
             let (ky, kx) = (cell(by[i]), cell(bx[i]));
             let (mut best, mut bd) = (-1i32, f64::INFINITY);
             for dy in -1..=1 {

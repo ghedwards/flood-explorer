@@ -94,7 +94,7 @@ export function createRecordedStormPicker({ document, getLocation, fetcher = fet
     if (!pending) pending = Promise.resolve().then(() => fetcher('data/national/rain-storms.json', { cache: 'no-cache' }))
       .then(response => { if (!response.ok) throw new Error('Snapshot unavailable'); return response.json(); })
       .then(value => { if (value.schemaVersion !== 1) throw new Error('Unsupported snapshot'); snapshot = value; })
-      .catch(() => { snapshot = null; });
+      .catch(() => { snapshot = null; pending = null; });
     return pending.then(() => {
       const location = getLocation();
       if (!location) return;

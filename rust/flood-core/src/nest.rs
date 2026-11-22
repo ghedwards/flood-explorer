@@ -189,7 +189,7 @@ pub fn plan_with(parent: &dyn Coarse, child: &Child, open: &[Edge], per_edge: us
     let mut centre = vec![(0.0, 0.0); pw * ph];
     for y in 0..h { for x in 0..w {
         let (px, py) = map(x as f64 + 0.5, y as f64 + 0.5);
-        if px < 0.0 || py < 0.0 || px >= pw as f64 || py >= ph as f64 { continue; }
+        if !(px >= 0.0 && py >= 0.0 && px < pw as f64 && py < ph as f64) { continue; }
         let p = py.floor() as usize * pw + px.floor() as usize;
         covered[p] += 1;
         centre[p].0 += x as f64 + 0.5; centre[p].1 += y as f64 + 0.5;
@@ -295,6 +295,7 @@ impl<P: Coarse> Nest<P> {
         let read = |p: &P| -> Vec<f64> { taps.iter().zip(&plan.gains).map(|(tap, g)| tap.iter().map(|(i, w)| p.surface()[*i] * w).sum::<f64>() * g).collect() };
         let flows = |p: &P| edge_flows(p, &taps, &plan);
         if threshold > 0.0 {
+            if !max_seconds.is_finite() || max_seconds < 0.0 { return Err("invalid regional run limit".into()); }
             while read(&parent).iter().all(|v| v.abs() <= threshold) {
                 if parent.clock() > max_seconds { return Err("the offshore wave never reaches the local model within the regional run".into()); }
                 parent.step()?;
@@ -347,7 +348,7 @@ impl<P: Coarse> Nest<P> {
     /// each time the local model reaches its time.
     pub fn advance(&mut self, steps: usize) -> Result<(), String> {
         for _ in 0..steps {
-            if self.child.time >= self.parent.clock() - self.offset - 1e-9 {
+            while self.child.time >= self.parent.clock() - self.offset - 1e-9 {
                 self.feedback();
                 self.parent.step()?;
                 self.push()?;

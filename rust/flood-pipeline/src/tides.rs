@@ -50,12 +50,13 @@ pub fn base64(b: &[u8]) -> String {
 /// Files under a public share: [(path, size)], walking folders.
 fn webdav_list(auth: &str) -> R<Vec<(String, u64)>> {
     let (mut out, mut todo) = (Vec::new(), vec!["/".to_string()]);
+    let mut seen: std::collections::HashSet<String> = ["/".to_string()].into();
     let resp = Regex::new(r"(?is)<(?:\w+:)?response\b[^>]*>(.*?)</(?:\w+:)?response>").unwrap();
     let href = Regex::new(r"(?is)<(?:\w+:)?href\b[^>]*>(.*?)</(?:\w+:)?href>").unwrap();
     let coll = Regex::new(r"(?i)<(?:\w+:)?collection\b").unwrap();
     let size = Regex::new(r"(?is)<(?:\w+:)?getcontentlength\b[^>]*>\s*(\d+)\s*<").unwrap();
     while let Some(p) = todo.pop() {
-        if out.len() >= 2000 {
+        if out.len() >= 2000 || seen.len() >= 500 {
             break;
         }
         let r = net::request_ext("PROPFIND", &format!("{}{}", DAV, net::quote(&p, "/")), &[("Depth", "1"), ("Authorization", auth)], None, 60).map_err(|e| e.to_string())?;
@@ -65,11 +66,14 @@ fn webdav_list(auth: &str) -> R<Vec<(String, u64)>> {
             let Some(h) = href.captures(block) else { continue };
             let h = net::unquote(&html_unescape(&h[1]));
             let rel = h.splitn(2, "/public.php/webdav").last().unwrap_or("").to_string();
-            if rel.trim_end_matches('/') == p.trim_end_matches('/') {
+            let norm = rel.trim_end_matches('/').to_string();
+            if norm == p.trim_end_matches('/') {
                 continue;
             }
             if coll.is_match(block) {
-                todo.push(rel);
+                if seen.insert(norm) {
+                    todo.push(rel);
+                }
             } else {
                 out.push((rel, size.captures(block).and_then(|c| c[1].parse().ok()).unwrap_or(0)));
             }

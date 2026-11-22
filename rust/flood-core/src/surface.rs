@@ -42,7 +42,7 @@ pub struct Run {
 pub fn stream_surface(a: &Analysis, s: &Scenario) -> (Vec<f64>, Vec<u8>) {
     let n = a.n;
     let mut ctrl: Vec<(usize, f64)> = Vec::new();
-    if s.gauge >= 0 {
+    if s.gauge >= 0 && (s.gauge as usize) < n {
         ctrl.push((s.gauge as usize, s.gauge_level));
     }
     for &(c, l) in &s.controls {
@@ -58,27 +58,42 @@ pub fn stream_surface(a: &Analysis, s: &Scenario) -> (Vec<f64>, Vec<u8>) {
     // Backwater pre-pass: standard-step profile from bay to gauge, anchored
     // at both ends.
     let mut bw_stage: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
-    if s.backwater && s.gauge >= 0 {
+    if s.backwater && s.gauge >= 0 && (s.gauge as usize) < n {
         let g = s.gauge as usize;
         let mut path = Vec::new();
         let mut c = g as i64;
         while c >= 0 { path.push(c as usize); c = a.rec[c as usize] as i64; }
         if path.len() >= 2 {
             let n_m = 0.035f64;
+            let reach_len = (a.chain[path[0]] - a.chain[path[path.len() - 1]]).abs().max(a.cell);
+            let s0 = ((s.gauge_level - s.bay_level) / reach_len).max(1e-5);
+            let dg = (s.gauge_level - a.dem[path[0]] as f64).max(0.1);
+            // Unit discharge q = v * d from Manning's equation at the gauge.
+            let q_unit = ((1.0 / n_m) * dg.powf(2.0 / 3.0) * s0.sqrt()).min(6.0) * dg;
             let mut stages = vec![f64::NAN; path.len()];
-            stages[path.len()-1] = s.bay_level;
-            for i in (0..path.len()-1).rev() {
-                let (c0, c1) = (path[i], path[i+1]);
+            stages[path.len() - 1] = s.bay_level;
+            for i in (0..path.len() - 1).rev() {
+                let (c0, c1) = (path[i], path[i + 1]);
                 let dx = (a.chain[c0] - a.chain[c1]).abs().max(a.cell);
-                let h0 = stages[i+1];
+                let h0 = stages[i + 1];
                 let depth0 = (h0 - a.dem[c1] as f64).max(0.1);
-                let sf = (n_m*n_m) / depth0.powf(4.0/3.0);
+                let v0 = (q_unit / depth0).min(6.0);
+                let sf = (n_m * n_m * v0 * v0) / depth0.powf(4.0 / 3.0);
                 stages[i] = h0 + sf * dx;
             }
-            // anchor: shift so upstream end = gauge level
+            // anchor: shift so upstream end = gauge level, without inverting a rising profile
             let err = s.gauge_level - stages[0];
-            for (i, s) in stages.iter_mut().enumerate() {
-                if s.is_finite() { *s += err * (1.0 - i as f64 / (path.len()-1) as f64); }
+            for (i, st) in stages.iter_mut().enumerate() {
+                if st.is_finite() {
+                    *st += err * (1.0 - i as f64 / (path.len() - 1) as f64);
+                }
+            }
+            if s.gauge_level >= s.bay_level {
+                for i in (0..stages.len() - 1).rev() {
+                    if stages[i].is_finite() && stages[i + 1].is_finite() && stages[i] < stages[i + 1] {
+                        stages[i] = stages[i + 1];
+                    }
+                }
             }
             for (i, &cell) in path.iter().enumerate() {
                 if stages[i].is_finite() { bw_stage.insert(cell, stages[i]); }
@@ -244,15 +259,24 @@ fn inundate_until(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: Vec<u8>, s
         let mut b = 0.0f64;
         for c in 0..n {
             if lev[c] == 0 { continue; }
-            let stage = if level[c].is_finite() { level[c] as f64 } else { 0.0 };
+            let mut stage = if level[c].is_finite() { level[c] as f64 } else { f64::NEG_INFINITY };
+            let (cx, cy) = ((c % w) as i64, (c / w) as i64);
+            for k in 0..4 {
+                let (nx, ny) = (cx + DX[k], cy + DY[k]);
+                if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
+                let nn = ny as usize * w + nx as usize;
+                if a.valid[nn] != 0 && level[nn].is_finite() {
+                    stage = stage.max(level[nn] as f64);
+                }
+            }
             let crest = a.dem[c] as f64;
             let do_ = stage - crest;
-            if do_ > 0.0 {
-                let q = cd * (2.0/3.0) * (2.0*g).sqrt() * a.cell * do_.powf(1.5);
+            if do_ > 0.0 && do_.is_finite() {
+                let q = cd * (2.0 / 3.0) * (2.0 * g).sqrt() * a.cell * do_.powf(1.5);
                 b += q * t;
             }
         }
-        if b > 0.0 { budget = b; }
+        budget = b;
     }
     'fill: while qh < qt {
         if stop.is_some_and(|t| wet[t] != 0) {
@@ -273,8 +297,8 @@ fn inundate_until(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: Vec<u8>, s
             let mut l = level[nn];
             let mut carry = false;
             if let Some(lev) = lev {
-                if (lev[nn] != 0 || carried[c] != 0) && level[c] > l {
-                    let vol = (level[c] as f64 - l as f64) * cell_area;
+                if (lev[nn] != 0 || carried[c] != 0) && (!l.is_finite() || level[c] > l) {
+                    let vol = (level[c] as f64 - a.dem[nn] as f64).max(0.0) * cell_area;
                     if spent + vol <= budget {
                         l = level[c];
                         carry = true;
@@ -286,7 +310,7 @@ fn inundate_until(a: &Analysis, s: &Scenario, wse: Vec<f64>, on_path: Vec<u8>, s
                 if carry {
                     level[nn] = l;
                     carried[nn] = 1;
-                    spent += (l as f64 - a.dem[nn] as f64) * cell_area;
+                    spent += (l as f64 - a.dem[nn] as f64).max(0.0) * cell_area;
                 }
                 q[qt] = nn;
                 qt += 1;
@@ -407,6 +431,9 @@ pub fn merge_runs(r1: &Run, r2: &Run) -> Run {
 const HAZARD_LIMITS: [[f64; 3]; 5] = [[0.3, 2.0, 0.3], [0.5, 2.0, 0.6], [1.2, 2.0, 0.6], [2.0, 2.0, 1.0], [4.0, 4.0, 4.0]];
 
 pub fn hazard_class(d: f64, v: f64) -> u8 {
+    if !d.is_finite() || !v.is_finite() {
+        return 0;
+    }
     for (k, lim) in HAZARD_LIMITS.iter().enumerate() {
         if d <= lim[0] && v <= lim[1] && d * v <= lim[2] {
             return k as u8 + 1;
@@ -480,7 +507,9 @@ pub fn hazard_with_velocities(a: &Analysis, run: &Run, vx: Option<&[f64]>, vy: O
         };
         vel[c] = v as f32;
         cls[c] = hazard_class(d, v);
-        km2[cls[c] as usize - 1] += cell_km2;
+        if cls[c] > 0 {
+            km2[cls[c] as usize - 1] += cell_km2;
+        }
     }
     Hazard { cls, vel, km2 }
 }
@@ -573,5 +602,30 @@ mod probe_tests {
         }
         assert!(checked > 2000);
         assert_eq!(probe(&a, &Scenario::default(), a.n + 5), None);
+    }
+
+    #[test]
+    fn backwater_profile_is_monotonic_and_anchored_at_gauge_and_bay() {
+        let g = synthetic_terrain(120, 90, 50.0, 1974);
+        let a = analyse(&g, 4.0);
+        let s = Scenario {
+            gauge: a.default_gauge,
+            gauge_level: a.dem[a.default_gauge as usize] as f64 + 4.5,
+            bay_level: 1.0,
+            upstream_gradient: 0.3,
+            backwater: true,
+            ..Default::default()
+        };
+        let (wse, _) = stream_surface(&a, &s);
+        let mut c = a.default_gauge;
+        let mut prev = wse[c as usize];
+        assert!((prev - s.gauge_level).abs() < 1e-6);
+        while c >= 0 {
+            let cur = wse[c as usize];
+            assert!(cur.is_finite());
+            assert!(cur <= prev + 1e-9, "backwater profile inverted downstream");
+            prev = cur;
+            c = a.rec[c as usize];
+        }
     }
 }

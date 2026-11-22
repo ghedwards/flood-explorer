@@ -125,10 +125,13 @@ pub fn fine_raster(p: &Fine) -> Result<(Vec<u8>, usize), String> {
         let fy = ((north - lat) / gh) * a_h as f64 - 0.5;
         let cy = (a_h as f64 - 1.0).min(0f64.max((fy + 0.5).floor())) as i64;
         for (px, &(cx, fx)) in cols.iter().enumerate() {
+            // a pixel whose model cell lies outside the window is left clear
+            if cx < x0 || cx >= x0 + ww || cy < y0 {
+                continue;
+            }
             let ci = (cy - y0) * ww + (cx - x0);
             let o = ((py - row_from) * w + px) * 4;
             let lid = p.lidar[(py - row_from) * w + px] as f64;
-            // a pixel whose model cell lies outside the window is left clear
             if ci < 0 || ci as usize >= n {
                 continue;
             }
@@ -147,10 +150,16 @@ pub fn fine_raster(p: &Fine) -> Result<(Vec<u8>, usize), String> {
             let (ylo, yhi) = ((cy - 1).max(0), (cy + 1).min(a_h as i64 - 1));
             let (xlo, xhi) = ((cx - 1).max(0), (cx + 1).min(a_w as i64 - 1));
             for yy in ylo..=yhi {
+                if yy < y0 {
+                    continue;
+                }
                 let row = (yy - y0) * ww - x0;
                 let ey = yy as f64 - fy;
                 let ey2 = ey * ey;
                 for xx in xlo..=xhi {
+                    if xx < x0 || xx >= x0 + ww {
+                        continue;
+                    }
                     let k = row + xx;
                     if k < 0 || k as usize >= n {
                         continue;
@@ -189,7 +198,7 @@ pub fn fine_raster(p: &Fine) -> Result<(Vec<u8>, usize), String> {
                 out[o..o + 3].copy_from_slice(&p.water);
                 out[o + 3] = p.channel_alpha;
             } else if dep > 0.02 && hz {
-                let c = hazard_class(dep, if truthy(vsum) { vs / vsum } else { 0.0 }) - 1;
+                let c = hazard_class(dep, if truthy(vsum) { vs / vsum } else { 0.0 }).saturating_sub(1);
                 out[o..o + 3].copy_from_slice(&p.hazard_colors[c * 3..c * 3 + 3]);
                 out[o + 3] = 255;
             } else if dep > 0.02 {
