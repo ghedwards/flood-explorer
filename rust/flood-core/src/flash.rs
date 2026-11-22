@@ -280,6 +280,9 @@ pub fn flash_flood(a: &Analysis, o: &Storm) -> Run {
             for &c in list {
                 let d = jmin(l, filled[c]) - dem[c] as f64;
                 if d > 0.02 && d > depth[c] as f64 {
+                    if kind[c] == 2 {
+                        overland = overland.saturating_sub(1);
+                    }
                     depth[c] = d as f32;
                     kind[c] = 3;
                     wet[c] = 1;

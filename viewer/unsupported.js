@@ -2,7 +2,7 @@
  * to WebAssembly and everything the page shows comes from it, so there is nothing to fall back to: the app is not
  * started, and this explains why. */
 
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+import { escapeHtml as esc } from './html-safe.js';
 
 export function showUnsupported(detail) {
   const card = document.createElement('div');
@@ -23,6 +23,8 @@ export function showUnsupported(detail) {
     <li>WebAssembly switched off (Lockdown Mode, a hardened-browser setting or a managed-device policy), or an extension blocking it or the model download</li>
     <li>an interrupted download: a reload often fixes it</li></ul>
     <p class="hint">${esc(detail || '')}</p>
-    <button type="button" onclick="location.reload()">Reload</button></div>`;
+    <button type="button" id="wasmGateReload">Reload</button></div>`;
+  const btn = card.querySelector('#wasmGateReload');
+  if (btn) btn.addEventListener('click', () => location.reload());
   document.body.appendChild(card);
 }

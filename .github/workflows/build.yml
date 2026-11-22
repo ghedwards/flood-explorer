@@ -17,8 +17,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -32,18 +30,18 @@ jobs:
     if: github.event_name != 'schedule' || github.event.schedule != '17 */3 * * *' || vars.DATA_SOURCE != 'runtime'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
 
       - name: Install locked frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Cache Rust builds
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -72,14 +70,13 @@ jobs:
           FLOOD_WASM: work-flood.wasm
         run: |
           node --test tests/*.test.js
-          node tests/parity.js > work-parity-wasm.txt
-          (cd rust && cargo run -q --release -p flood-core --example parity) > work-parity-rust.txt
+          (cd rust && cargo run -q --locked --release -p flood-core --example parity) > work-parity-rust.txt
           FLOOD_IMPL=wasm node tests/parity.js work-parity-rust.txt
 
       # Terrain only needs rebuilding when the area or the pipeline changes.
       - name: Restore built terrain
         id: terrain
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             work/brisbane/*.tif
@@ -88,7 +85,7 @@ jobs:
 
       - name: Cache DEM tiles
         if: steps.terrain.outputs.cache-hit != 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: work/brisbane/tiles
           key: glo30-${{ hashFiles('config/brisbane.json') }}
@@ -121,6 +118,18 @@ jobs:
             rm -f work/brisbane/*.tif  # never cache a partial build
           fi
 
+      - name: Month for the monthly caches
+        id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the fallback readings copy (runtime mode)
+        id: readingscache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: cache/readings.json
+          key: readings-fallback-${{ steps.month.outputs.month || 'x' }}-${{ hashFiles('config/events.json') }}
+          restore-keys: readings-fallback-
+
       - name: Fetch national BoM gauges, dams and readings
         id: national
         continue-on-error: true
@@ -139,26 +148,14 @@ jobs:
             cp site/data/national/readings.json cache/readings.json
           fi
 
-      - name: Month for the monthly caches
-        id: month
-        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
-
       # Hour-by-hour readings for recorded floods: fetched once per change to
       # the event list (they don't change), then kept in the cache
       - name: Restore recorded flood readings
         id: events
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/events.json
           key: events-${{ hashFiles('config/events.json', 'rust/flood-pipeline/src/events.rs') }}
-
-      - name: Restore the fallback readings copy (runtime mode)
-        id: readingscache
-        uses: actions/cache@v6
-        with:
-          path: cache/readings.json
-          key: readings-fallback-${{ steps.month.outputs.month || 'x' }}-${{ hashFiles('config/events.json') }}
-          restore-keys: readings-fallback-
 
       - name: Fetch recorded flood readings (Water Data Online)
         if: steps.events.outputs.cache-hit != 'true' && steps.national.outcome == 'success'
@@ -170,7 +167,7 @@ jobs:
 
       - name: Restore recorded rainfall snapshots
         id: rainstorms
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/rain-storms.json
           key: rain-storms-${{ steps.month.outputs.month }}-${{ hashFiles('config/events.json', 'rust/flood-pipeline/src/storms.rs') }}
@@ -188,7 +185,7 @@ jobs:
       # so their own step, cache and time limit
       - name: Restore recorded sea levels
         id: sea
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/sea.json
           key: sea-${{ hashFiles('config/events.json', 'rust/flood-pipeline/src/events.rs', 'rust/flood-pipeline/src/sealevels.rs') }}
@@ -202,7 +199,7 @@ jobs:
 
       - name: Restore levee lines
         id: levees
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/levees.geojson
           key: levees-${{ steps.month.outputs.month }}-${{ hashFiles('rust/flood-pipeline/src/levees.rs') }}
@@ -223,7 +220,7 @@ jobs:
       # years of daily records (monthly)
       - name: Restore gauge ratings
         id: ratings
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/ratings.json
           key: ratings-${{ steps.month.outputs.month }}-${{ hashFiles('rust/flood-pipeline/src/ratings.rs') }}
@@ -239,7 +236,7 @@ jobs:
       # fetched once per change to the script
       - name: Restore worker counts
         id: workers
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/workers.json
           key: workers-${{ hashFiles('rust/flood-pipeline/src/workers.rs') }}
@@ -256,7 +253,7 @@ jobs:
       # they don't change, so fetched once per change to the script
       - name: Restore tide heights
         id: tides
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/tides.json
           key: tides-${{ hashFiles('rust/flood-pipeline/src/tides.rs') }}
@@ -270,7 +267,7 @@ jobs:
           grep -q '^Tides: [0-9]' tides.log || rm -f cache/tides.json
 
       - name: Restore OpenStreetMap copies
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/osm
           key: osm-${{ github.run_id }}
@@ -324,7 +321,7 @@ jobs:
       # Dam water history builds up across runs: restore the latest copy,
       # spend at most ~5 minutes filling in or refreshing dams, save again.
       - name: Restore dam water history
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/waterhistory.json
           key: waterhistory-${{ github.run_id }}
@@ -343,7 +340,7 @@ jobs:
 
       - name: Save dam water history
         if: always() && hashFiles('cache/waterhistory.json') != ''
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/waterhistory.json
           key: waterhistory-${{ github.run_id }}
@@ -354,7 +351,7 @@ jobs:
 
       - name: Restore council flood images
         id: council
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/council
           key: council-${{ steps.month.outputs.month }}-${{ hashFiles('rust/flood-pipeline/src/council.rs') }}
@@ -374,7 +371,7 @@ jobs:
 
       - name: Restore DEA national images
         id: dea
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: cache/dea
           key: dea-${{ steps.month.outputs.month }}-${{ hashFiles('rust/flood-pipeline/src/dea.rs') }}
@@ -419,21 +416,25 @@ jobs:
           grep '^warning:' wh.log 2>/dev/null | head -2 | sed 's/^warning:/::warning::Water history: /' || true
           grep '^warning:' national.log 2>/dev/null | head -3 | sed 's/^warning:/::warning::National data: /' || true
 
-      - uses: actions/configure-pages@v6
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: site
 
   deploy:
     needs: build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
 
   smoke-test:
     needs: deploy

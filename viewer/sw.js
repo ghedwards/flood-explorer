@@ -94,12 +94,16 @@ async function find(c, req, opts) {
 }
 
 // fresh when online (within a few seconds), the cached copy otherwise
-async function networkFirst(req, name, waitMs) {
+async function networkFirst(req, name, waitMs, e) {
   const c = await openCache(name);
   const net = fetchWithin(req, Math.max(NET_TIMEOUT_MS, waitMs * 4)).then((res) => {
     if (c && res && (res.ok || res.type === 'opaque')) try { c.put(req, res.clone()).then(() => trim(name)).catch(() => {}); } catch (err) { /* no copy kept */ }
     return res;
   });
+  // Keep background network completions from turning into unhandled rejections
+  // when a cached copy wins the race, and keep the SW alive until cache.put finishes.
+  const settledNet = net.catch(() => {});
+  if (e && typeof e.waitUntil === 'function') e.waitUntil(settledNet);
   const hit = c && (await find(c, req) || (name === APP ? await find(c, req, { ignoreSearch: true }) : null));
   try {
     const res = await Promise.race([net, new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), waitMs))]);
@@ -146,12 +150,12 @@ self.addEventListener('fetch', (e) => {
   }
   if (url.origin === self.location.origin) {
     if (url.pathname.endsWith('/sw.js')) return;
-    e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000));
+    e.respondWith(networkFirst(req, APP, url.pathname.includes('/data/') ? 6000 : 4000, e));
     return;
   }
   // live readings: fresh within 6 s (the app gives up at 8), else the last copy
   if (BROKER_PATH.test(url.pathname)) {
-    e.respondWith(networkFirst(req, LIVE, 6000));
+    e.respondWith(networkFirst(req, LIVE, 6000, e));
     return;
   }
   if (TERRAIN_TILES.test(url.hostname) && url.pathname.startsWith('/elevation-tiles-prod/')) {
@@ -169,14 +173,14 @@ self.addEventListener('fetch', (e) => {
   }
   // map-service answers (feature queries, exported images, census areas)
   if (/\/(MapServer|FeatureServer|ImageServer|wms|wfs|ows|WCSServer)\b/i.test(url.pathname) || url.hostname === 'ows.dea.ga.gov.au') {
-    e.respondWith(networkFirst(req, API, 8000));
+    e.respondWith(networkFirst(req, API, 8000, e));
     return;
   }
   // impact data comes from Overpass (OpenStreetMap): it must ride the same
   // API cache or "is this property cut off?" breaks offline (the whole
   // reason offline mode exists).
   if (/overpass-api\.de$|overpass\.kumi\.systems$|maps\.mail\.ru$/.test(url.hostname)) {
-    e.respondWith(networkFirst(req, API, 8000));
+    e.respondWith(networkFirst(req, API, 8000, e));
     return;
   }
 });

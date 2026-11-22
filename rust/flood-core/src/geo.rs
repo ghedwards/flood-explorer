@@ -49,7 +49,7 @@ pub fn from_mga(easting: f64, northing: f64, zone: i32) -> (f64, f64) {
         xi1 -= b * (j * xi).sin() * (j * eta).cosh();
         eta1 -= b * (j * xi).cos() * (j * eta).sinh();
     }
-    let chi = (xi1.sin() / eta1.cosh()).asin();
+    let chi = (xi1.sin() / eta1.cosh()).clamp(-1.0, 1.0).asin();
     let mut phi = chi;
     for (i, d) in s.delta.iter().enumerate() { phi += d * (2.0 * (i as f64 + 1.0) * chi).sin(); }
     (phi.to_degrees(), central_meridian(zone) + eta1.sinh().atan2(xi1.cos()).to_degrees())

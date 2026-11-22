@@ -27,14 +27,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
       - name: Install browser tooling
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npx playwright install --with-deps chromium firefox
       - name: Start the live data broker (real Queensland portal and Water Data Online)
         if: github.event_name == 'push' || inputs.target == 'build'
@@ -95,8 +95,9 @@ jobs:
         continue-on-error: true
         env:
           OUT: ${{ runner.temp }}/shots
+          LIVE_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: |
-          SITE_URL=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ TAG=dam-live node tests/dam-check.js || true
+          SITE_URL="$LIVE_SITE_URL" TAG=dam-live node tests/dam-check.js || true
           SITE_URL=http://127.0.0.1:8000/ TAG=dam-build node tests/dam-check.js
       - name: River below the gauge across preset towns
         if: github.event_name == 'push' || inputs.target == 'build'
@@ -141,13 +142,15 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           cd "$RUNNER_TEMP/shots" || exit 0
-          printf '%s\n' "From ${GITHUB_REF_NAME} at ${GITHUB_SHA::8} (${{ github.event_name }}), $(date -u +%FT%TZ)" > SOURCE.txt
+          printf '%s\n' "From ${GITHUB_REF_NAME} at ${GITHUB_SHA::8} (${EVENT_NAME}), $(date -u +%FT%TZ)" > SOURCE.txt
           git init -q -b shots-2d
           git add -A
           git -c user.name="github-actions" -c user.email="github-actions@users.noreply.github.com" commit -qm "2D screenshots for ${GITHUB_REF_NAME} ${GITHUB_SHA::8}"
-          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" shots-2d
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push -qf "https://github.com/${GITHUB_REPOSITORY}.git" shots-2d
           # and one per branch, so runs of two branches at once don't overwrite each other's results
           own="shots-2d--$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
-          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "shots-2d:${own}" || echo "::warning::couldn't push ${own}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push -qf "https://github.com/${GITHUB_REPOSITORY}.git" "shots-2d:${own}" || echo "::warning::couldn't push ${own}"

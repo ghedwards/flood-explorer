@@ -23,6 +23,7 @@ jobs:
           set +e
           if [ -z "$URL" ]; then echo "::warning title=No broker URL::set FLOOD_BROKER_URL or pass url"; exit 0; fi
           URL="${URL%/}"
+          failed=0
           for p in /health "/v1/readings" "/v1/levels?sites=143001C"; do
             code=$(curl -s -m 60 -o out.json -w '%{http_code}' -H "Origin: https://ghedwards.github.io" -D h.txt "$URL$p")
             size=$(wc -c < out.json)
@@ -45,8 +46,14 @@ jobs:
               print(json.dumps(d)[:400])
           PY
           )
-            echo "::notice title=$p HTTP $code ($size bytes${age:+, age ${age}s})::$summary"
+            if [ "$code" != "200" ]; then
+              echo "::error title=$p HTTP $code ($size bytes${age:+, age ${age}s})::$summary"
+              failed=1
+            else
+              echo "::notice title=$p HTTP $code ($size bytes${age:+, age ${age}s})::$summary"
+            fi
           done
+          exit "$failed"
       - name: Compression and revalidation
         env:
           URL: ${{ inputs.url || vars.FLOOD_BROKER_URL }}
@@ -60,11 +67,16 @@ jobs:
           again=$(curl -s -m 60 -o /dev/null -w '%{http_code} %{size_download}' -H "If-None-Match: $etag" -H "Accept-Encoding: gzip" "$URL/v1/readings")
           valid=$(python3 -c "import json;d=json.load(open('r.json'));print(len(d.get('level',{})),'levels')" 2>&1)
           echo "::notice title=Readings transfer::HTTP/bytes on the wire $code, encoding ${enc:-none}, $valid, cache-control '$cc', revalidation with ETag: $again"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: npm
       - name: The live site's readings source
         run: |
           set +e
-          npm init -y > /dev/null && npm i --silent playwright@1 > /dev/null 2>&1 && npx playwright install chromium > /dev/null 2>&1
-          cat > site.js <<'JS'
+          npm ci --ignore-scripts > /dev/null 2>&1 && npx playwright install chromium > /dev/null 2>&1
+          node - <<'JS'
           const { chromium } = require("playwright");
           (async () => {
             const b = await chromium.launch();
@@ -76,4 +88,3 @@ jobs:
             await b.close();
           })().catch((e) => { console.log(`::warning title=Live site check failed::${String(e).slice(0, 300)}`); });
           JS
-          node site.js

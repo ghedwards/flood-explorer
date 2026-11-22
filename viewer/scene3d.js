@@ -342,8 +342,12 @@ class Scene3d {
       if ((this.needSelect && now - this.lastSelect > 120) || now - this.lastSelect > 1000) { this.lastSelect = now; this.needSelect = false; this.updateTiles(); }
       // late water tiles (inactive places whose analysis was rebuilt)
       if (++this.pollCount >= 45) { this.pollCount = 0; this.pollAreas(); }
-      this.drawGlobe();
-      if (this.dirty) { this.renderer.render(this.scene, this.camera); this.dirty = false; this.frame++; }
+      if (this.dirty) {
+        this.drawGlobe();
+        this.renderer.render(this.scene, this.camera);
+        this.dirty = false;
+        this.frame++;
+      }
     };
     tick(0);
   }
@@ -1273,9 +1277,22 @@ class Scene3d {
     }
     this.areaTiles.clear();
     this.imgQueue.clear();
+    if (this.sky) { this.sky.geometry.dispose(); this.sky.material.dispose(); this.sky = null; }
+    if (this.globeScene) {
+      this.globeScene.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) obj.material.dispose();
+      });
+      this.globeScene = null;
+    }
     this.controls.dispose();
     this.renderer.dispose();
-    if (this.globeRenderer) this.globeRenderer.dispose();
+    if (typeof this.renderer.forceContextLoss === 'function') this.renderer.forceContextLoss();
+    if (this.globeRenderer) {
+      this.globeRenderer.dispose();
+      if (typeof this.globeRenderer.forceContextLoss === 'function') this.globeRenderer.forceContextLoss();
+      this.globeRenderer = null;
+    }
     this.controls = null;
     const overlay = document.getElementById('view3d');
     if (overlay) overlay.remove();

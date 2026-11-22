@@ -1,7 +1,7 @@
 # Client-side GLO-30 + Hydrology — Progress
 
 ## Phase A: Tile download prototype ✅
-- Created `viewer/glo30-proto.html` to fetch a Copernicus GLO-30 tile from S3.
+- Created `docs/prototypes/glo30-proto.html` to fetch a Copernicus GLO-30 tile from S3.
 - Validates CORS and tile availability.
 
 ## Phase B: D8 in browser — BLOCKED

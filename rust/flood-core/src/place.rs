@@ -20,9 +20,12 @@ pub fn bounds(p: &Place) -> [f64; 4] {
 }
 
 fn cell_at(p: &Place, e: f64, n: f64) -> Option<usize> {
+    if p.w == 0 || p.h == 0 { return None; }
     let [e0, n0, e1, n1] = p.extent;
-    if e < e0 || e >= e1 || n < n0 || n >= n1 { return None; }
-    Some((((n1 - n) / (n1 - n0) * p.h as f64).floor() as usize) * p.w + ((e - e0) / (e1 - e0) * p.w as f64).floor() as usize)
+    if !(e1 > e0 && n1 > n0 && e >= e0 && e < e1 && n >= n0 && n < n1) { return None; }
+    let row = (((n1 - n) / (n1 - n0) * p.h as f64).floor() as usize).min(p.h - 1);
+    let col = (((e - e0) / (e1 - e0) * p.w as f64).floor() as usize).min(p.w - 1);
+    Some(row * p.w + col)
 }
 
 /// The grid cell under a latitude and longitude, if it is inside the place.
@@ -75,12 +78,12 @@ pub fn run_on_area(area: &Area, over: [f64; 4], p: &Place, d: &Derived) -> AreaR
             run.wet[i] = u8::from(depth >= 0.01);
             run.level[i] = (area.dem[i] + depth) as f32;
             if d.arrival[c] >= 0.0 { run.arrival[i] = d.arrival[c] as f32; }
-            run.class[i] = if depth >= 0.01 { d.class[c].max(1) } else { 0 };
+            run.class[i] = if depth >= 0.01 { d.class[c].clamp(1, 6) } else { 0 };
             run.speed[i] = d.speed[c] as f32;
         }
     }
     let cell_km2 = area.cell * area.cell / 1e6;
-    for c in &run.class { if *c > 0 { run.km2[*c as usize - 1] += cell_km2; } }
+    for c in &run.class { if (1..=6).contains(c) { run.km2[*c as usize - 1] += cell_km2; } }
     run
 }
 
@@ -98,6 +101,9 @@ mod tests {
         let (lat, lon) = geo::from_mga(537500.0 + 7000.0, 6905500.0 + 1200.0, 56);
         assert_eq!(cell_index(&PLACE, lat, lon), Some(7));
         assert_eq!(cell_index(&PLACE, -10.0, 150.0), None);
+        assert_eq!(cell_at(&PLACE, 537500.0, 6905500.0), Some(4), "south edge stays inside bottom row");
+        assert_eq!(cell_at(&PLACE, f64::NAN, 6907000.0), None, "NaN coordinates are outside");
+        assert_eq!(cell_at(&PLACE, 538000.0, f64::NAN), None, "NaN coordinates are outside");
         let b = bounds(&PLACE);
         assert!(b[0] < b[2] && b[1] < b[3] && b[0] > -29.0 && b[0] < -27.0, "{b:?}");
     }

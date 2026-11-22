@@ -6,6 +6,7 @@ on:
     paths:
       - 'tests/**'
       - 'viewer/**'
+      - 'rust/**'
       - 'scripts/**'
       - 'vite.config.mjs'
       - 'rust-toolchain.toml'
@@ -31,14 +32,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
       - name: Install browser tooling
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npx playwright install --with-deps chromium
       - name: Check delayed map image cleanup
         run: node tests/raster-browser.js
@@ -80,7 +81,9 @@ jobs:
           SITE_URL: ${{ github.event_name == 'pull_request' && 'http://127.0.0.1:8000/' || inputs.site_url || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
           SMOKE_PRESETS: ${{ inputs.presets || 'quick' }}
         run: |
-          sleep 20  # allow a just-published Pages deployment to propagate
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            sleep 20  # allow a just-published Pages deployment to propagate
+          fi
           npm run test:smoke -- "$SITE_URL"
       - name: Probe national data sources from the browser
         if: always()
@@ -88,12 +91,12 @@ jobs:
         env:
           SITE_URL: ${{ github.event_name == 'pull_request' && 'http://127.0.0.1:8000/' || inputs.site_url || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
         run: npm run test:sources -- "$SITE_URL"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: smoke-screenshots
           path: smoke*.png
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: visual-comparisons

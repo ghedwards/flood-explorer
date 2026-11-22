@@ -9,6 +9,7 @@ import { ensemblePlan, summarise } from './tsunami-runner.js';
 import referencePlaces from './public/tsunami-data/places.json';
 import { terrainFor } from './tsunami-terrain.js';
 import { tsunamiGrid, connectedWaterDepth } from './tsunami-grid.js';
+import { safeHttpUrl } from './html-safe.js';
 
 const $ = id => document.getElementById(id);
 const map = $('waveMap'), ctx = map.getContext('2d');
@@ -138,13 +139,15 @@ function labels() {
   if (bathymetry?.licenseMetadataUrl) {
     $('terrainAcknowledgement').textContent = bathymetry.acknowledgement || `${bathymetry.license}. ${bathymetry.changes || ''}`;
     $('hydrographicNotice').textContent = bathymetry.hydrographicNotice || '';
-    $('terrainLicence').href = bathymetry.licenseMetadataUrl;
+    const licUrl = safeHttpUrl(bathymetry.licenseMetadataUrl);
+    if (licUrl) $('terrainLicence').href = licUrl; else $('terrainLicence').removeAttribute('href');
   }
   map.setAttribute('aria-label', 'Coastal water model. Click open water to move the source; arrow keys move one grid cell; Enter plays or pauses.');
   if (bathymetry) {
     if (bathymetry.missing) $('dataNote').textContent += ` ${bathymetry.missing} hatched cells have no elevation data and are excluded from flow.`;
     $('dataCredit').replaceChildren(document.createTextNode(`${bathymetry.source}. ${localScene() ? `${bathymetry.sampling || `${grid.cell} m bilinear resampling; mixed source resolutions`}. ${bathymetry.verticalDatum}` : 'Resampled to 1.5 km; wet cells shallower than 10 m are floored to 10 m.'} ${bathymetry.attribution}. `));
-    const link = document.createElement('a'); link.href = bathymetry.metadataUrl; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Dataset metadata ↗'; $('dataCredit').append(link);
+    const metaUrl = safeHttpUrl(bathymetry.metadataUrl);
+    if (metaUrl) { const link = document.createElement('a'); link.href = metaUrl; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Dataset metadata ↗'; $('dataCredit').append(link); }
   }
 }
 
@@ -213,7 +216,8 @@ function updatePlaceContext() {
   const places = scenePlaces();
   const outside = places.filter(p => p.u < 0 || p.u > 1 || p.v < 0 || p.v > 1);
   text.replaceChildren(document.createTextNode(`Reference places: ${places.map(p => p.name + (outside.includes(p) ? ' (outside grid)' : '')).join(' · ')}. `));
-  const link = document.createElement('a'); link.href = referencePlaces.sourceUrl; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Names: Composite Gazetteer of Australia / GA and state authorities ↗'; text.append(link);
+  const srcUrl = (() => { try { const u = new URL(String(referencePlaces.sourceUrl)); return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : ''; } catch { return ''; } })();
+  if (srcUrl) { const link = document.createElement('a'); link.href = srcUrl; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Names: Composite Gazetteer of Australia / GA and state authorities ↗'; text.append(link); }
 }
 function drawPlaces(screen) {
   if (!$('showPlaces').checked) return;
@@ -249,8 +253,12 @@ function paint() {
   const values = view === 'depth' ? frame.water : view === 'speed' ? frame.speed : peakView ? frame.peak : frame.eta;
   if (!values) return;
   const scale = view === 'depth' ? 5 : view === 'speed' ? 3 : +$('amplitude').value * 1.5;
-  pixels.width = grid.W; pixels.height = grid.H;
-  const image = pixelContext.createImageData(grid.W, grid.H);
+  if (pixels.width !== grid.W || pixels.height !== grid.H) {
+    pixels.width = grid.W;
+    pixels.height = grid.H;
+    pixels._image = pixelContext.createImageData(grid.W, grid.H);
+  }
+  const image = pixels._image || (pixels._image = pixelContext.createImageData(grid.W, grid.H));
   for (let i = 0; i < values.length; i++) {
     let rgb;
     if ((!nonlinear() && !grid.depth[i]) || (nonlinear() && frame.water[i] < .001 && !(peakView && frame.peak[i] > .01))) rgb = [77, 91, 79];
@@ -341,7 +349,8 @@ function paint() {
 function paintTraces() {
   const W = Math.max(1, traces.getBoundingClientRect().width), H = 180, pad = 50;
   const ratio = window.devicePixelRatio || 1;
-  traces.width = Math.round(W * ratio); traces.height = Math.round(H * ratio);
+  const tw = Math.round(W * ratio), th = Math.round(H * ratio);
+  if (traces.width !== tw || traces.height !== th) { traces.width = tw; traces.height = th; }
   chart.setTransform(ratio, 0, 0, ratio, 0, 0);
   const scale = Math.max(.1, ...history.flatMap(row => row.slice(1).filter(Number.isFinite).map(Math.abs))) * 1.2;
   chart.clearRect(0, 0, W, H);
@@ -383,9 +392,11 @@ async function fetchParent(id) {
   parents.set(id, await response.json());
 }
 async function loadParent(id, play) {
+  const version = sceneVersion;
   ready = running = false; controls();
   $('status').textContent = 'Loading the regional grid for the offshore wave…';
-  try { await fetchParent(id); } catch (error) { fail(`${error.message}.`); return; }
+  try { await fetchParent(id); } catch (error) { if (version === sceneVersion) fail(`${error.message}.`); return; }
+  if (version !== sceneVersion) return;
   reset(play);
 }
 
@@ -432,11 +443,12 @@ function reset(play = false) {
       $('scrub').max = frames.length - 1;
       ready = true; running = play; playClock = 0;
       seek(0);
+      if (running) startLoop();
       return;
     }
     frame = data.frame; busy = false;
     if (data.coupling) { couplingInfo = data.coupling; labels(); }
-    if (!ready) { ready = true; running = play; }
+    if (!ready) { ready = true; running = play; if (running) startLoop(); }
     if (!history.length || frame.time - history.at(-1)[0] >= 15)
       history.push([frame.time, ...probes.map(point => sample(frame.eta, point))]);
     if (frame.time >= totalSeconds()) running = false;
@@ -455,7 +467,18 @@ function advance(steps) {
   controls();
 }
 
+let animRaf = 0;
+function startLoop() {
+  if (!animRaf && ready && running) {
+    previousWall = performance.now();
+    animRaf = requestAnimationFrame(animate);
+  }
+}
+function stopLoop() {
+  if (animRaf) { cancelAnimationFrame(animRaf); animRaf = 0; }
+}
 function animate(now) {
+  animRaf = 0;
   const elapsed = Math.min(.1, Math.max(0, (now - previousWall) / 1000));
   previousWall = now;
   if (ready && running && frames) {
@@ -466,18 +489,23 @@ function animate(now) {
     budget += elapsed * +$('speed').value * 60;
     const steps = Math.min(grid.method === 3 ? 16 : 200, Math.floor(budget / frame.dt));
     if (steps > 0 && !busy) { budget -= steps * frame.dt; advance(steps); }
-  } else budget = 0;
-  requestAnimationFrame(animate);
+  } else {
+    budget = 0;
+    return;
+  }
+  if (ready && running) animRaf = requestAnimationFrame(animate);
 }
 
 $('play').addEventListener('click', () => {
   if (frames) {
-    if (finished()) { playClock = 0; running = true; seek(0); return; }
+    if (finished()) { playClock = 0; running = true; seek(0); startLoop(); return; }
     running = !running; playClock = frame.time; seek(frameIndex);
+    if (running) startLoop(); else stopLoop();
     return;
   }
   if (frame.time >= totalSeconds()) { reset(true); return; }
   running = !running;
+  if (running) startLoop(); else stopLoop();
   $('status').textContent = running ? 'Running in a Rust / WASM worker.' : 'Paused.';
   controls();
 });
@@ -683,4 +711,3 @@ const start = () => {
 };
 $('status').textContent = 'Loading the wave model…';
 window.FloodCoreReady.then(start, (error) => { $('status').textContent = `The wave model could not load (${error.message || error}).`; });
-requestAnimationFrame(animate);

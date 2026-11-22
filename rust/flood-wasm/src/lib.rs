@@ -51,13 +51,17 @@ impl Plain for u32 {}
 #[cfg(not(target_endian = "little"))]
 compile_error!("the bag format assumes a little-endian machine");
 
-fn read_vec<T: Plain>(b: &[u8], p: usize, n: usize) -> (usize, Vec<T>) {
+fn read_vec<T: Plain>(b: &[u8], p: usize, n: usize) -> Result<(usize, Vec<T>), String> {
     let sz = std::mem::size_of::<T>();
-    let bytes = &b[p..p + n * sz];
+    let byte_len = n.checked_mul(sz).ok_or_else(|| "bag array size overflow".to_string())?;
+    let end = p.checked_add(byte_len).ok_or_else(|| "bag offset overflow".to_string())?;
+    let bytes = b.get(p..end).ok_or_else(|| "truncated bag payload".to_string())?;
     let mut v: Vec<T> = vec![T::default(); n];
-    // SAFETY: T is a plain number type; the destination holds n * sz bytes.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), v.as_mut_ptr() as *mut u8, n * sz) };
-    (p + n * sz, v)
+    // SAFETY: T is a plain number type; the destination holds byte_len bytes.
+    if byte_len > 0 {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), v.as_mut_ptr() as *mut u8, byte_len) };
+    }
+    Ok((end, v))
 }
 
 fn bytes_of<T: Plain>(v: &[T]) -> &[u8] {
@@ -66,31 +70,45 @@ fn bytes_of<T: Plain>(v: &[T]) -> &[u8] {
 }
 
 impl Bag {
-    pub fn decode(b: &[u8]) -> Bag {
+    pub fn decode(b: &[u8]) -> Result<Bag, String> {
         let mut m = HashMap::new();
+        if b.is_empty() {
+            return Ok(Bag(m));
+        }
         if b.len() < 4 {
-            return Bag(m);
+            return Err("truncated bag header".into());
         }
         let count = u32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
-        let mut p = 4;
+        let mut p = 4usize;
         for _ in 0..count {
-            let nl = b[p] as usize;
-            let name = String::from_utf8_lossy(&b[p + 1..p + 1 + nl]).into_owned();
-            p += 1 + nl;
-            let ty = b[p];
-            let n = u32::from_le_bytes(b[p + 1..p + 5].try_into().unwrap()) as usize;
-            p += 5;
+            let nl = *b.get(p).ok_or_else(|| "truncated bag entry name length".to_string())? as usize;
+            let name_start = p.checked_add(1).ok_or_else(|| "bag offset overflow".to_string())?;
+            let name_end = name_start.checked_add(nl).ok_or_else(|| "bag offset overflow".to_string())?;
+            let name_bytes = b.get(name_start..name_end).ok_or_else(|| "truncated bag entry name".to_string())?;
+            let name = String::from_utf8_lossy(name_bytes).into_owned();
+            p = name_end;
+            let ty = *b.get(p).ok_or_else(|| "truncated bag entry type".to_string())?;
+            let len_end = p.checked_add(5).ok_or_else(|| "bag offset overflow".to_string())?;
+            let len_bytes = b.get(p + 1..len_end).ok_or_else(|| "truncated bag entry length".to_string())?;
+            let n = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+            p = len_end;
             let val = match ty {
-                0 => { let (q, v) = read_vec::<f64>(b, p, n); p = q; Val::F64(v) }
-                1 => { let (q, v) = read_vec::<f32>(b, p, n); p = q; Val::F32(v) }
-                2 => { let (q, v) = read_vec::<i32>(b, p, n); p = q; Val::I32(v) }
-                3 => { let v = b[p..p + n].to_vec(); p += n; Val::U8(v) }
-                4 => { let (q, v) = read_vec::<i16>(b, p, n); p = q; Val::I16(v) }
-                _ => { let (q, v) = read_vec::<u32>(b, p, n); p = q; Val::U32(v) }
+                0 => { let (q, v) = read_vec::<f64>(b, p, n)?; p = q; Val::F64(v) }
+                1 => { let (q, v) = read_vec::<f32>(b, p, n)?; p = q; Val::F32(v) }
+                2 => { let (q, v) = read_vec::<i32>(b, p, n)?; p = q; Val::I32(v) }
+                3 => {
+                    let end = p.checked_add(n).ok_or_else(|| "bag offset overflow".to_string())?;
+                    let v = b.get(p..end).ok_or_else(|| "truncated bag u8 payload".to_string())?.to_vec();
+                    p = end;
+                    Val::U8(v)
+                }
+                4 => { let (q, v) = read_vec::<i16>(b, p, n)?; p = q; Val::I16(v) }
+                5 => { let (q, v) = read_vec::<u32>(b, p, n)?; p = q; Val::U32(v) }
+                _ => return Err(format!("unknown bag value type {}", ty)),
             };
             m.insert(name, val);
         }
-        Bag(m)
+        Ok(Bag(m))
     }
     pub fn has(&self, k: &str) -> bool {
         self.0.contains_key(k)
@@ -312,7 +330,7 @@ fn put_analysis(o: &mut Out, a: &Analysis) {
 fn load_analysis(b: &Bag) -> Result<Analysis, String> {
     let w = b.num("W") as usize;
     let h = b.num("H") as usize;
-    let n = w * h;
+    let n = w.checked_mul(h).ok_or_else(|| "analysis dimensions overflow".to_string())?;
     let need = |k: &str| -> Result<(), String> { if b.has(k) { Ok(()) } else { Err(format!("analysis needs {}", k)) } };
     for k in ["dem", "valid", "ocean", "order", "rec", "acc", "chain", "stream", "recvStream"] {
         need(k)?;
@@ -322,26 +340,44 @@ fn load_analysis(b: &Bag) -> Result<Analysis, String> {
         h,
         cell: b.num("cell"),
         n,
-        dem: b.f32s("dem").unwrap(),
-        valid: b.u8s("valid").unwrap(),
-        ocean: b.u8s("ocean").unwrap(),
+        dem: b.f32s("dem").ok_or("analysis dem has wrong type")?,
+        valid: b.u8s("valid").ok_or("analysis valid has wrong type")?,
+        ocean: b.u8s("ocean").ok_or("analysis ocean has wrong type")?,
         filled: b.f64s("filled"),
-        order: b.i32s("order").unwrap(),
+        order: b.i32s("order").ok_or("analysis order has wrong type")?,
         n_order: b.num("nOrder") as usize,
-        rec: b.i32s("rec").unwrap(),
+        rec: b.i32s("rec").ok_or("analysis rec has wrong type")?,
         rec_dist: Vec::new(),
-        acc: b.f64s("acc").unwrap(),
-        chain: b.f64s("chain").unwrap(),
-        stream: b.u8s("stream").unwrap(),
-        recv_stream: b.i32s("recvStream").unwrap(),
+        acc: b.f64s("acc").ok_or("analysis acc has wrong type")?,
+        chain: b.f64s("chain").ok_or("analysis chain has wrong type")?,
+        stream: b.u8s("stream").ok_or("analysis stream has wrong type")?,
+        recv_stream: b.i32s("recvStream").ok_or("analysis recvStream has wrong type")?,
         main_outlet: b.num("mainOutlet") as i32,
         default_gauge: nan_to(b.num("defaultGauge"), -1.0) as i32,
         stream_area_km2: b.num("streamAreaKm2"),
         routed_by_pointers: b.num("byPointers") == 1.0,
     };
-    for (k, l) in [("dem", a.dem.len()), ("rec", a.rec.len()), ("acc", a.acc.len()), ("chain", a.chain.len()), ("stream", a.stream.len())] {
+    for (k, l) in [
+        ("dem", a.dem.len()),
+        ("valid", a.valid.len()),
+        ("ocean", a.ocean.len()),
+        ("order", a.order.len()),
+        ("rec", a.rec.len()),
+        ("acc", a.acc.len()),
+        ("chain", a.chain.len()),
+        ("stream", a.stream.len()),
+        ("recvStream", a.recv_stream.len()),
+    ] {
         if l != n {
             return Err(format!("analysis {} is the wrong size", k));
+        }
+    }
+    if a.n_order > a.order.len() {
+        return Err("analysis nOrder exceeds order length".into());
+    }
+    if let Some(ref f) = a.filled {
+        if f.len() != n {
+            return Err("analysis filled is the wrong size".into());
         }
     }
     Ok(a)
@@ -381,11 +417,15 @@ fn series(t: Option<Vec<f64>>, v: Option<Vec<f64>>) -> Option<Series> {
 fn wave_opts_of(b: &Bag) -> WaveOpts {
     let mut others = Vec::new();
     if let (Some(cells), Some(lens), Some(t), Some(v)) = (b.f64s("othersCell"), b.f64s("othersLen"), b.f64s("othersT"), b.f64s("othersV")) {
-        let mut p = 0;
+        let mut p = 0usize;
         for (k, &c) in cells.iter().enumerate() {
-            let l = lens[k] as usize;
-            others.push((c as i64, t[p..p + l].iter().copied().zip(v[p..p + l].iter().copied()).collect()));
-            p += l;
+            let Some(&lf) = lens.get(k) else { break };
+            if !(lf.is_finite() && lf >= 0.0) { break; }
+            let l = lf as usize;
+            let Some(end) = p.checked_add(l) else { break };
+            if end > t.len() || end > v.len() { break; }
+            others.push((c as i64, t[p..end].iter().copied().zip(v[p..end].iter().copied()).collect()));
+            p = end;
         }
     }
     WaveOpts {
@@ -512,16 +552,23 @@ fn levees_of(b: &Bag) -> Vec<Levee> {
     let (mut pc, mut pb) = (0usize, 0usize);
     let mut out = Vec::new();
     for k in 0..n as usize {
-        let (lc, lb) = (clen[k] as usize, blen[k] as usize);
+        let Some(&lc_f) = clen.get(k) else { break };
+        let Some(&lb_f) = blen.get(k) else { break };
+        if !(lc_f.is_finite() && lc_f >= 0.0 && lb_f.is_finite() && lb_f >= 0.0) { break; }
+        let (lc, lb) = (lc_f as usize, lb_f as usize);
+        let (Some(pc_end), Some(pb_end)) = (pc.checked_add(lc), pb.checked_add(lb)) else { break };
+        if pc_end > cells.len() || pb_end > br.len() { break; }
+        let h_val = height.get(k).copied().unwrap_or(f64::NAN);
+        let bw_val = bw.get(k).copied().unwrap_or(f64::NAN);
         out.push(Levee {
-            cells: cells[pc..pc + lc].iter().map(|&c| c as i64).collect(),
-            height: if height[k].is_nan() { None } else { Some(height[k]) },
-            failed: failed[k] == 1.0,
-            breaches: br[pb..pb + lb].iter().map(|&c| c as i64).collect(),
-            breach_width: if bw[k].is_nan() { None } else { Some(bw[k]) },
+            cells: cells[pc..pc_end].iter().map(|&c| c as i64).collect(),
+            height: if h_val.is_nan() { None } else { Some(h_val) },
+            failed: failed.get(k).copied().unwrap_or(0.0) == 1.0,
+            breaches: br[pb..pb_end].iter().map(|&c| c as i64).collect(),
+            breach_width: if bw_val.is_nan() { None } else { Some(bw_val) },
         });
-        pc += lc;
-        pb += lb;
+        pc = pc_end;
+        pb = pb_end;
     }
     out
 }
@@ -531,22 +578,25 @@ fn inundation_frame(o: &mut Out, s: &inundation::Solver, extremes: bool) {
     for (name, values) in [("eta", &s.eta), ("peak", &s.peak), ("water", &s.water), ("speed", &s.speed)] {
         o.f32s(name, &values.iter().map(|v| *v as f32).collect::<Vec<_>>());
     }
-    let (land, origin) = TSUNAMI_LAND.with(|l| l.borrow().clone());
-    if land.len() == s.water.len() {
-        let f = s.flood_summary(&land);
-        o.num("floodedHectares", f.flooded_hectares).num("maxLandDepth", f.max_land_depth).num("floodedNowHectares", f.flooded_now_hectares);
-    }
-    if !s.probe_arrival.is_empty() {
-        o.f64s("probeArrival", &s.probe_arrival);
-    }
-    if extremes {
-        o.num("maxSpeed", s.max_speed());
-        // deepest water on land, highest wave at sea; arrival in seconds from the time the wave reached the model's edge (-1 where it did not come)
-        let value: Vec<f32> = (0..s.water.len()).map(|i| if land.get(i).copied().unwrap_or(0) != 0 { s.peak_depth[i] } else { s.peak[i] } as f32).collect();
-        let arrival: Vec<f32> = s.arrival.iter().map(|a| if *a >= 0.0 { (*a - origin).max(0.0) as f32 } else { -1.0 }).collect();
-        o.f32s("peakValue", &value).f32s("peakTime", &s.peak_time.iter().map(|v| *v as f32).collect::<Vec<_>>())
-            .f32s("peakSpeed", &s.peak_speed.iter().map(|v| *v as f32).collect::<Vec<_>>()).f32s("arrival", &arrival).u8s("peakClass", &s.peak_class);
-    }
+    TSUNAMI_LAND.with(|l| {
+        let guard = l.borrow();
+        let (land, origin) = (&guard.0, guard.1);
+        if land.len() == s.water.len() {
+            let f = s.flood_summary(land);
+            o.num("floodedHectares", f.flooded_hectares).num("maxLandDepth", f.max_land_depth).num("floodedNowHectares", f.flooded_now_hectares);
+        }
+        if !s.probe_arrival.is_empty() {
+            o.f64s("probeArrival", &s.probe_arrival);
+        }
+        if extremes {
+            o.num("maxSpeed", s.max_speed());
+            // deepest water on land, highest wave at sea; arrival in seconds from the time the wave reached the model's edge (-1 where it did not come)
+            let value: Vec<f32> = (0..s.water.len()).map(|i| if land.get(i).copied().unwrap_or(0) != 0 { s.peak_depth[i] } else { s.peak[i] } as f32).collect();
+            let arrival: Vec<f32> = s.arrival.iter().map(|a| if *a >= 0.0 { (*a - origin).max(0.0) as f32 } else { -1.0 }).collect();
+            o.f32s("peakValue", &value).f32s("peakTime", &s.peak_time.iter().map(|v| *v as f32).collect::<Vec<_>>())
+                .f32s("peakSpeed", &s.peak_speed.iter().map(|v| *v as f32).collect::<Vec<_>>()).f32s("arrival", &arrival).u8s("peakClass", &s.peak_class);
+        }
+    });
 }
 
 // An area model's terrain from the bag (W, H, cell, dem and the optional valid and ocean masks), checked.
@@ -1094,19 +1144,23 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         }
         "drop" => {
             let h = b.num("a");
-            ANALYSES.with(|s| {
-                if let Some(x) = s.borrow_mut().get_mut(h as usize) {
-                    *x = None;
-                }
-            });
+            if h.is_finite() && h >= 0.0 {
+                ANALYSES.with(|s| {
+                    if let Some(x) = s.borrow_mut().get_mut(h as usize) {
+                        *x = None;
+                    }
+                });
+            }
         }
         "dropWave" => {
             let h = b.num("w");
-            WAVES.with(|s| {
-                if let Some(x) = s.borrow_mut().get_mut(h as usize) {
-                    *x = None;
-                }
-            });
+            if h.is_finite() && h >= 0.0 {
+                WAVES.with(|s| {
+                    if let Some(x) = s.borrow_mut().get_mut(h as usize) {
+                        *x = None;
+                    }
+                });
+            }
         }
         "streamSurface" => {
             let s = scenario_of(b);
@@ -1134,6 +1188,21 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
             let cmp_diff = b.i32s("cmpDiff").unwrap_or_default();
             let cmp_diff: Vec<i8> = cmp_diff.iter().map(|&x| x as i8).collect();
             let mask = b.u8s("mask");
+            let n = w.checked_mul(h).ok_or("composeWater dimensions overflow")?;
+            if valid.len() < n || ocean.len() < n || stream.len() < n || acc.len() < n || (!base_wet.is_empty() && base_wet.len() < n) || run_wet.len() < n || run_depth.len() < n {
+                return Err("composeWater input arrays are too short".into());
+            }
+            if (mode == 1 || mode == 3) && hz_cls.len() < n {
+                return Err("composeWater hazard classes are too short".into());
+            }
+            if mode == 2 && cmp_diff.len() < n {
+                return Err("composeWater comparison diff is too short".into());
+            }
+            if let Some(ref m) = mask {
+                if m.len() < n {
+                    return Err("composeWater mask is too short".into());
+                }
+            }
             let params = flood_core::render::ComposeParams {
                 w, h, relief, mode, flood_a, stream_a, cell_km2, stream_thr,
             };
@@ -1169,7 +1238,16 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         }
         "polygonMask" => {
             let (coords, off) = (b.f64s("pts").unwrap_or_default(), b.i32s("off").unwrap_or_default());
-            let rings: Vec<Vec<(f64, f64)>> = off.windows(2).map(|w| coords[2 * w[0] as usize..2 * w[1] as usize].chunks(2).map(|p| (p[0], p[1])).collect()).collect();
+            let mut rings = Vec::new();
+            for w in off.windows(2) {
+                if w[0] < 0 || w[1] < w[0] {
+                    return Err("polygonMask ring offsets are invalid".into());
+                }
+                let s = (w[0] as usize).checked_mul(2).ok_or("polygonMask offset overflow")?;
+                let e = (w[1] as usize).checked_mul(2).ok_or("polygonMask offset overflow")?;
+                let slice = coords.get(s..e).ok_or("polygonMask coordinates are out of range")?;
+                rings.push(slice.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect());
+            }
             let geo = impact::Geo { west: b.num("west"), east: b.num("east"), south: b.num("south"), north: b.num("north"), w: b.num("W") as usize, h: b.num("H") as usize };
             o.u8s("mask", &impact::polygon_mask(&geo, &rings));
         }
@@ -1181,7 +1259,9 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         }
         "netDrop" => {
             let h = b.num("net");
-            NETS.with(|s| { if let Some(x) = s.borrow_mut().get_mut(h as usize) { *x = None; } });
+            if h.is_finite() && h >= 0.0 {
+                NETS.with(|s| { if let Some(x) = s.borrow_mut().get_mut(h as usize) { *x = None; } });
+            }
         }
         "netGrid" => {
             let geo = impact::Geo { west: b.num("west"), east: b.num("east"), south: b.num("south"), north: b.num("north"), w: b.num("W") as usize, h: b.num("H") as usize };
@@ -1213,7 +1293,11 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
                 let (g, bl, run) = (n.grid.as_ref().ok_or("the grid is not set")?, n.buildings.as_ref().ok_or("the buildings are not set")?, n.run.as_ref().ok_or("no run is set")?);
                 // each census area's share inside the model (population and workers, scaled by how much of it is covered)
                 let share = |raw: Vec<f64>, km2: Vec<f64>, inside: &[f64]| -> Vec<f64> {
-                    (0..raw.len()).map(|s| raw[s] * if km2[s] > 0.0 { (inside[s] / km2[s]).min(1.0) } else { 0.0 }).collect()
+                    (0..raw.len()).map(|s| {
+                        let k = km2.get(s).copied().unwrap_or(0.0);
+                        let ins = inside.get(s).copied().unwrap_or(0.0);
+                        raw[s] * if k > 0.0 { (ins / k).min(1.0) } else { 0.0 }
+                    }).collect()
                 };
                 let sa1_pop = share(b.f64s("sa1Pop").unwrap_or_default(), b.f64s("sa1Km2").unwrap_or_default(), &n.census.sa1_inside);
                 let sa2_workers = share(b.f64s("sa2Workers").unwrap_or_default(), b.f64s("sa2Km2").unwrap_or_default(), &n.census.sa2_inside);
@@ -1263,7 +1347,7 @@ pub fn dispatch(op: &str, b: &Bag) -> Result<Vec<u8>, String> {
         }
         "lineCells" => {
             let flat = b.f64s("pts").unwrap_or_default();
-            let pts: Vec<(f64, f64)> = flat.chunks(2).map(|p| (p[0], p[1])).collect();
+            let pts: Vec<(f64, f64)> = flat.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
             o.i32s("cells", &line_cells(&pts, b.num("W") as usize, b.num("H") as usize));
         }
         "stormUplift" => {
@@ -1475,6 +1559,9 @@ pub extern "C" fn flood_alloc(n: usize) -> *mut u8 {
 /// `p` must come from `flood_alloc(n)` and not be used again.
 #[no_mangle]
 pub unsafe extern "C" fn flood_free(p: *mut u8, n: usize) {
+    if p.is_null() {
+        return;
+    }
     drop(Vec::from_raw_parts(p, 0, n.max(1)));
 }
 
@@ -1485,10 +1572,10 @@ pub unsafe extern "C" fn flood_free(p: *mut u8, n: usize) {
 /// The pointers must point at `op_len` and `in_len` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn flood_run(op: *const u8, op_len: usize, inp: *const u8, in_len: usize) -> *const u8 {
-    let op = String::from_utf8_lossy(std::slice::from_raw_parts(op, op_len)).into_owned();
-    let input = if in_len > 0 { std::slice::from_raw_parts(inp, in_len) } else { &[] };
-    let bag = Bag::decode(input);
-    let res = dispatch(&op, &bag).unwrap_or_else(|e| {
+    let op_bytes = if op_len > 0 && !op.is_null() { std::slice::from_raw_parts(op, op_len) } else { &[] };
+    let op = String::from_utf8_lossy(op_bytes).into_owned();
+    let input = if in_len > 0 && !inp.is_null() { std::slice::from_raw_parts(inp, in_len) } else { &[] };
+    let res = Bag::decode(input).and_then(|bag| dispatch(&op, &bag)).unwrap_or_else(|e| {
         let mut o = Out::default();
         o.u8s("error", e.as_bytes());
         o.finish()
@@ -1516,18 +1603,25 @@ mod tests {
         if let Some(v) = &g.inflow {
             o.f32s("inflow", v);
         }
-        let b = Bag::decode(&o.finish());
-        let out = Bag::decode(&dispatch("analyse", &b).unwrap());
+        let b = Bag::decode(&o.finish()).unwrap();
+        let out = Bag::decode(&dispatch("analyse", &b).unwrap()).unwrap();
         assert_eq!(out.num("N"), (g.w * g.h) as f64);
         let a = analyse(&g, 4.0);
         assert_eq!(out.f64s("acc").unwrap(), a.acc);
         assert_eq!(out.num("defaultGauge"), a.default_gauge as f64);
         let h = out.num("handle");
+        // dropping a missing/negative handle must not clear slot 0
+        dispatch("drop", &Bag::decode(&[]).unwrap()).unwrap();
+        let mut neg = Out::default();
+        neg.num("a", -1.0);
+        dispatch("drop", &Bag::decode(&neg.finish()).unwrap()).unwrap();
         let mut o = Out::default();
         o.num("a", h).num("gauge", a.default_gauge as f64).num("gaugeLevel", 4.46).num("bayLevel", 1.0).num("upstreamGradient", 0.3);
-        let r = Bag::decode(&dispatch("inundate", &Bag::decode(&o.finish())).unwrap());
+        let r = Bag::decode(&dispatch("inundate", &Bag::decode(&o.finish()).unwrap()).unwrap()).unwrap();
         let s = Scenario { gauge: a.default_gauge, gauge_level: 4.46, bay_level: 1.0, upstream_gradient: 0.3, ..Default::default() };
         assert_eq!(r.u8s("wet").unwrap(), inundate(&a, &s).wet);
         assert!(dispatch("nope", &b).is_err());
+        assert!(Bag::decode(&[1, 0, 0, 0, 5, b'a']).is_err());
+        assert!(Bag::decode(&[1, 0, 0, 0, 1, b'x', 99, 0, 0, 0, 0]).is_err());
     }
 }

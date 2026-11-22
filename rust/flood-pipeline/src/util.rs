@@ -271,7 +271,7 @@ pub fn parse_iso(s: &str, default_h: i64) -> Option<f64> {
                 let t = &tz[1..];
                 let (hh, mm) = match t.split_once(':') {
                     Some((a, b)) => (a.parse::<i64>().ok()?, b.parse::<i64>().ok()?),
-                    None if t.len() == 4 => (t[..2].parse().ok()?, t[2..].parse().ok()?),
+                    None if t.is_ascii() && t.len() == 4 => (t[..2].parse().ok()?, t[2..].parse().ok()?),
                     None => (t.parse().ok()?, 0),
                 };
                 sign * (hh * 3600 + mm * 60)
@@ -283,17 +283,16 @@ pub fn parse_iso(s: &str, default_h: i64) -> Option<f64> {
 
 /// The UTC offset (hours) written in an ISO string, or `default_h`.
 pub fn iso_offset_h(s: &str, default_h: i64) -> i64 {
-    if s.len() <= 10 {
+    let Some(rest) = s.get(11..) else {
         return default_h;
-    }
-    let rest = &s[11..];
+    };
     if rest.ends_with('Z') {
         return 0;
     }
     match rest.rfind(['+', '-']) {
         Some(i) => {
             let sign = if rest.as_bytes()[i] == b'-' { -1 } else { 1 };
-            rest[i + 1..i + 3].parse::<i64>().map(|h| sign * h).unwrap_or(default_h)
+            rest.get(i + 1..i + 3).and_then(|h| h.parse::<i64>().ok()).map(|h| sign * h).unwrap_or(default_h)
         }
         None => default_h,
     }
@@ -376,6 +375,9 @@ pub fn unzip(b: &[u8]) -> R<Vec<(String, Vec<u8>)>> {
     let eocd = (0..b.len().saturating_sub(21)).rev().find(|&i| &b[i..i + 4] == b"PK\x05\x06").ok_or("zip: no directory")?;
     let n = u16le(eocd + 10)?;
     let mut p = u32le(eocd + 16)?;
+    const MAX_ENTRY_BYTES: usize = 256 << 20;
+    const MAX_TOTAL_BYTES: usize = 512 << 20;
+    let mut total_bytes = 0usize;
     let mut out = Vec::new();
     for _ in 0..n {
         if b.get(p..p + 4) != Some(b"PK\x01\x02") {
@@ -386,21 +388,37 @@ pub fn unzip(b: &[u8]) -> R<Vec<(String, Vec<u8>)>> {
         let usize_ = u32le(p + 24)?;
         let (nl, xl, cl) = (u16le(p + 28)?, u16le(p + 30)?, u16le(p + 32)?);
         let local = u32le(p + 42)?;
-        let name = String::from_utf8_lossy(&b[p + 46..p + 46 + nl]).into_owned();
-        p += 46 + nl + xl + cl;
+        let name_end = p.checked_add(46).and_then(|v| v.checked_add(nl)).ok_or("zip: offset overflow")?;
+        let name = String::from_utf8_lossy(b.get(p + 46..name_end).ok_or("zip: truncated name")?).into_owned();
+        p = name_end.checked_add(xl).and_then(|v| v.checked_add(cl)).ok_or("zip: offset overflow")?;
         if name.ends_with('/') {
             continue;
         }
         if b.get(local..local + 4) != Some(b"PK\x03\x04") {
             return Err(format!("zip: bad local header for {}", name));
         }
-        let start = local + 30 + u16le(local + 26)? + u16le(local + 28)?;
-        let data = b.get(start..start + csize).ok_or_else(|| format!("zip: {} truncated", name))?;
+        let start = local
+            .checked_add(30)
+            .and_then(|v| v.checked_add(u16le(local + 26).ok()?))
+            .and_then(|v| v.checked_add(u16le(local + 28).ok()?))
+            .ok_or("zip: local offset overflow")?;
+        let data_end = start.checked_add(csize).ok_or("zip: data offset overflow")?;
+        let data = b.get(start..data_end).ok_or_else(|| format!("zip: {} truncated", name))?;
+        let limit = usize_.max(1).saturating_mul(2).saturating_add(1024).min(MAX_ENTRY_BYTES);
         let body = match method {
-            0 => data.to_vec(),
-            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, usize_.max(1) * 2 + 1024).map_err(|e| format!("zip: {}: {:?}", name, e))?,
+            0 => {
+                if data.len() > MAX_ENTRY_BYTES {
+                    return Err(format!("zip: {} exceeds size limit", name));
+                }
+                data.to_vec()
+            }
+            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, limit).map_err(|e| format!("zip: {}: {:?}", name, e))?,
             m => return Err(format!("zip: {} uses method {}", name, m)),
         };
+        total_bytes = total_bytes.saturating_add(body.len());
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err("zip: archive exceeds total size limit".into());
+        }
         out.push((name, body));
     }
     Ok(out)

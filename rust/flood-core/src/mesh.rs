@@ -136,14 +136,18 @@ impl Soft {
 /// None when no quad survives.
 pub fn water_mesh(m: &MeshIn) -> Option<Mesh> {
     let (w, h, skip) = (m.w, m.h, m.skip.max(1));
+    if w < 2 || h < 2 || !m.cell.is_finite() || m.cell <= 0.0 {
+        return None;
+    }
     let cols = (w - 1) / skip + 1;
     let rows = (h - 1) / skip + 1;
     let water = &m.water;
+    let soft_n = if m.soft { cols * rows } else { 0 };
     let mut soft = Soft {
-        state: vec![0u8; cols * rows],
-        level: vec![0.0f64; cols * rows],
-        alpha: vec![0.0f64; cols * rows],
-        colour: vec![[0u8; 3]; cols * rows],
+        state: vec![0u8; soft_n],
+        level: vec![0.0f64; soft_n],
+        alpha: vec![0.0f64; soft_n],
+        colour: vec![[0u8; 3]; soft_n],
     };
     let mut out = Mesh::default();
     let mut vertex = vec![-1i32; cols * rows];

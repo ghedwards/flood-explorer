@@ -53,7 +53,12 @@ pub fn run() {
             // rather than silently connecting the viewer to another process.
             let listener = std::net::TcpListener::bind("127.0.0.1:8787")?;
             let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-            let origins = env("ALLOWED_ORIGINS").unwrap_or_else(|| "http://localhost,tauri://localhost,http://127.0.0.1:1430,http://localhost:1430,http://tauri.localhost,https://tauri.localhost".into());
+            let default_origins = if cfg!(debug_assertions) {
+                "http://localhost,tauri://localhost,http://127.0.0.1:1430,http://localhost:1430,http://tauri.localhost,https://tauri.localhost"
+            } else {
+                "tauri://localhost,http://tauri.localhost,https://tauri.localhost"
+            };
+            let origins = env("ALLOWED_ORIGINS").unwrap_or_else(|| default_origins.into());
             let cfg = Config {
                 origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
                 cache_ms: env("CACHE_MINUTES").and_then(|v| v.parse::<f64>().ok()).map_or(10 * 60_000, |m| (m * 60_000.0) as i64),

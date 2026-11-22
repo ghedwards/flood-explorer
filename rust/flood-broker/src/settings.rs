@@ -76,6 +76,7 @@ pub fn save_keys(path: &Path, qld: &str, nsw: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
+    let tmp = path.with_extension(format!("ini.tmp.{}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -83,8 +84,16 @@ pub fn save_keys(path: &Path, qld: &str, nsw: &str) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path)?;
-    file.write_all(format!("{}\n", lines.join("\n")).as_bytes())
+    let mut file = options.open(&tmp)?;
+    file.write_all(format!("{}\n", lines.join("\n")).as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
@@ -112,6 +121,12 @@ mod tests {
         )
         .unwrap();
         save_keys(&path, "new", "nsw==").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "settings.ini must be owner-readable/writable only");
+        }
         let values = read(&path).unwrap();
         assert_eq!(values["PORT"], "8787");
         assert_eq!(values["QLD_TRAFFIC_API_KEY"], "new");

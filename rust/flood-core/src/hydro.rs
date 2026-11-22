@@ -672,7 +672,7 @@ pub fn fill_depressions_wbt(dem: &[f64], w: usize, h: usize, nodata: f64, cell_m
                 for ni in nbrs(cell.i) {
                     if visit_tag[ni] == active_tag || visit_tag[ni] == done_tag { continue; }
                     let zn = out[ni];
-                    if zn < z {
+                    if zn < z && zn != nodata {
                         is_outlet = true;
                     } else if zn == outlet_z {
                         heap.push(MinNode { elev: zn, i: ni });
@@ -938,25 +938,33 @@ pub fn hand_simple(dem: &[f32], d8: &[u8], streams: &[u8], w: usize, h: usize) -
         if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { return usize::MAX; }
         ny as usize * w + nx as usize
     };
-    let mut dest = vec![usize::MAX; n]; // stream cell each flow path reaches
+    const UNVISITED: usize = usize::MAX;
+    const NO_STREAM: usize = usize::MAX - 1;
+    let mut dest = vec![UNVISITED; n]; // stream cell each flow path reaches
     let mut stack: Vec<usize> = Vec::new();
     for start in 0..n {
-        if !dem[start].is_finite() || dest[start] != usize::MAX { continue; }
+        if !dem[start].is_finite() || dest[start] != UNVISITED { continue; }
         stack.clear();
         let mut i = start;
         loop {
-            if dem[i].is_finite() && (streams[i] != 0 || dest[i] != usize::MAX) { break; }
+            if dem[i].is_finite() && (streams[i] != 0 || dest[i] != UNVISITED) { break; }
             stack.push(i);
             let r = rec(i);
             if r == usize::MAX || stack.len() > n { break; } // off-grid, nodata or loop
             i = r;
         }
-        if streams[i] != 0 && dem[i].is_finite() { dest[i] = i; }
-        let d = dest[i];
+        let d = if streams[i] != 0 && dem[i].is_finite() {
+            dest[i] = i;
+            i
+        } else if dest[i] != UNVISITED {
+            dest[i]
+        } else {
+            NO_STREAM
+        };
         for &c in &stack { dest[c] = d; }
     }
     (0..n).map(|i| {
-        if dem[i].is_finite() && dest[i] != usize::MAX {
+        if dem[i].is_finite() && dest[i] < n {
             (dem[i] - dem[dest[i]]) as f64
         } else {
             f64::NAN

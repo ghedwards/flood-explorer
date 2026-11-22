@@ -304,8 +304,13 @@ impl Net {
             heap.push(0.0, start as i32);
         }
         let (mut exit_node, mut centre_node) = (-1i32, -1i32);
+        let mut visited = vec![0u8; self.n_nodes()];
         while heap.n > 0 {
             let u = heap.pop() as usize;
+            if visited[u] != 0 {
+                continue;
+            }
+            visited[u] = 1;
             if exit_node < 0 && g.exit[u] != 0 {
                 exit_node = u as i32;
             }

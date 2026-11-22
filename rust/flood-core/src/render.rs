@@ -297,7 +297,8 @@ pub fn terrain_rgba(w: usize, h: usize, cell: f64, dem: &[f32], valid: &[u8], oc
         for k in 1..stops.len() {
             if t <= stops[k][0] {
                 let (a, b) = (stops[k - 1], stops[k]);
-                let f = (t - a[0]) / (b[0] - a[0]);
+                let span = b[0] - a[0];
+                let f = if span > 0.0 { (t - a[0]) / span } else { 0.0 };
                 return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f];
             }
         }

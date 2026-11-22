@@ -12,7 +12,7 @@
 //! [`Broker::handle`] is the whole service minus the socket, so tests drive
 //! it with a stand-in portal and clock; `main.rs` puts it on a socket.
 
-mod elevation;
+pub mod elevation;
 pub mod history;
 pub mod lambda;
 pub mod readings;
@@ -100,6 +100,7 @@ pub struct Broker {
     slots: Condvar,
     open_lock: Mutex<()>,
     readings: Option<Arc<readings::Readings>>,
+    elev_max_bytes: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -109,12 +110,18 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Broker {
     pub fn new(fetch: Box<wmip::FetchJson>, now: Box<dyn Fn() -> i64 + Send + Sync>, cfg: Config) -> Self {
         let started = now();
-        Broker { fetch, now, cfg, started, st: Mutex::new(State::default()), slots: Condvar::new(), open_lock: Mutex::new(()), readings: None }
+        Broker { fetch, now, cfg, started, st: Mutex::new(State::default()), slots: Condvar::new(), open_lock: Mutex::new(()), readings: None, elev_max_bytes: elevation::DEFAULT_MAX_BYTES }
     }
 
     /// Serve /v1/readings from these readings.
     pub fn with_readings(mut self, r: Arc<readings::Readings>) -> Self {
         self.readings = Some(r);
+        self
+    }
+
+    /// Cap the upstream elevation response size (e.g. Lambda's 4.5 MiB envelope limit).
+    pub fn with_elev_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.elev_max_bytes = max_bytes;
         self
     }
 
@@ -136,6 +143,15 @@ impl Broker {
 
     /// One portal call, at most UPSTREAM_AT_ONCE at a time.
     fn upstream<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        struct SlotGuard<'a>(&'a Broker);
+        impl Drop for SlotGuard<'_> {
+            fn drop(&mut self) {
+                let mut st = lock(&self.0.st);
+                st.active = st.active.saturating_sub(1);
+                drop(st);
+                self.0.slots.notify_one();
+            }
+        }
         {
             let mut st = lock(&self.st);
             while st.active >= UPSTREAM_AT_ONCE {
@@ -144,15 +160,13 @@ impl Broker {
             st.active += 1;
             st.upstream_calls += 1;
         }
+        let _guard = SlotGuard(self);
         let r = f();
-        let mut st = lock(&self.st);
-        st.active -= 1;
         if let Err(e) = &r {
+            let mut st = lock(&self.st);
             st.upstream_errors += 1;
             st.last_error = Some(((self.now)(), e.clone()));
         }
-        drop(st);
-        self.slots.notify_one();
         r
     }
 
@@ -210,14 +224,31 @@ impl Broker {
                 batches.push((chunk.to_vec(), d));
             }
         }
+        struct BatchGuard<'a> {
+            broker: &'a Broker,
+            batch: Vec<String>,
+            done: Done,
+        }
+        impl Drop for BatchGuard<'_> {
+            fn drop(&mut self) {
+                let mut st = lock(&self.broker.st);
+                for s in &self.batch {
+                    st.pending.remove(s);
+                }
+                drop(st);
+                *lock(&self.done.0) = true;
+                self.done.1.notify_all();
+            }
+        }
         let mut failed = false;
         for (batch, done) in batches {
-            let got = self.upstream(|| wmip::levels(&*self.fetch, &batch, (self.now)(), HOURS));
+            let guard = BatchGuard { broker: self, batch, done };
+            let got = self.upstream(|| wmip::levels(&*self.fetch, &guard.batch, (self.now)(), HOURS));
             let at = (self.now)();
             let mut st = lock(&self.st);
             match got {
                 Ok(mut got) => {
-                    for s in &batch {
+                    for s in &guard.batch {
                         let pts = got.remove(s).map(|mut p| {
                             let n = p.len();
                             p.drain(..n.saturating_sub(KEEP_POINTS));
@@ -228,12 +259,8 @@ impl Broker {
                 }
                 Err(_) => failed = true,
             }
-            for s in &batch {
-                st.pending.remove(s);
-            }
             drop(st);
-            *lock(&done.0) = true;
-            done.1.notify_all();
+            drop(guard);
         }
         for d in waits {
             let mut ok = lock(&d.0);
@@ -266,7 +293,9 @@ impl Broker {
 
     fn reply(&self, req: &Request, status: u16, body: &Value, extra: &[(&str, &str)]) -> Response {
         let mut headers = vec![("Content-Type".to_string(), "application/json; charset=utf-8".to_string()), ("X-Content-Type-Options".to_string(), "nosniff".to_string())];
-        if let Some(o) = req.origin.filter(|o| self.cfg.origins.contains(*o) || self.cfg.origins.contains("*")) {
+        if self.cfg.origins.contains("*") {
+            headers.push(("Access-Control-Allow-Origin".into(), "*".into()));
+        } else if let Some(o) = req.origin.filter(|o| self.cfg.origins.contains(*o)) {
             headers.push(("Access-Control-Allow-Origin".into(), o.to_string()));
         }
         let vary_more = extra.iter().filter(|(k, _)| *k == "Vary").map(|(_, v)| *v).collect::<Vec<_>>();
@@ -364,16 +393,23 @@ impl Broker {
     }
 
     fn serve_elevation(&self, req: &Request, url: &str, fetch: impl FnOnce(&str) -> Result<(String, Vec<u8>), String>) -> Response {
-        if !url.starts_with("https://services.ga.gov.au/") {
+        if !url.starts_with("https://services.ga.gov.au/") || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
             return self.reply(req, 400, &json!({"error": "url must be a services.ga.gov.au WCS URL"}), &[]);
         }
-        match fetch(url) {
+        if req.method == "HEAD" {
+            let mut response = self.reply_raw(req, 200, Vec::new(), &[("Cache-Control", "public, max-age=86400")]);
+            response.headers.retain(|(key, _)| key != "Content-Type");
+            response.headers.push(("Content-Type".into(), "image/tiff".into()));
+            return response;
+        }
+        match self.upstream(|| fetch(url)) {
             Ok((content_type, bytes)) => {
                 let mut response = self.reply_raw(req, 200, bytes, &[("Cache-Control", "public, max-age=86400")]);
                 response.headers.retain(|(key, _)| key != "Content-Type");
                 response.headers.push(("Content-Type".into(), content_type));
                 response
             }
+            Err(error) if error.contains("exceeds") => self.reply(req, 413, &json!({"error": error}), &[("Cache-Control", "no-store")]),
             Err(error) => self.reply(req, 502, &json!({"error": error}), &[("Cache-Control", "no-store")]),
         }
     }
@@ -387,12 +423,14 @@ impl Broker {
             _ => return self.reply(req, 405, &json!({"error": "GET only"}), &[("Allow", "GET, HEAD, OPTIONS")]),
         }
         if path == "/health" {
+            if !self.allowed(req.client) {
+                return self.reply(req, 429, &json!({"error": "too many requests"}), &[("Retry-After", "30")]);
+            }
             // which readings this copy of the broker serves, and from where
             // (loads them if it hasn't yet: one S3 request)
             let readings = self.readings.as_ref().map(|r| match r.latest() {
                 Ok(Some(d)) => {
-                    let sources = serde_json::from_slice::<Value>(&d.body).ok().and_then(|v| v.get("sources").cloned());
-                    json!({"fetched": wmip::iso_utc(d.fetched_ms), "loadedFrom": d.source, "bytes": d.body.len(), "gzBytes": d.gz.len(), "sources": sources})
+                    json!({"fetched": wmip::iso_utc(d.fetched_ms), "loadedFrom": d.source, "bytes": d.body.len(), "gzBytes": d.gz.len(), "sources": d.sources_summary()})
                 }
                 Ok(None) => json!({"loadedFrom": null}),
                 Err(e) => json!({"error": e}),
@@ -421,7 +459,8 @@ impl Broker {
         }
         if path == "/v1/elev" {
             let url = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == "url").map(|(_, v)| wmip::decode(v)).unwrap_or_default();
-            return self.serve_elevation(req, &url, elevation::fetch);
+            let max_bytes = self.elev_max_bytes;
+            return self.serve_elevation(req, &url, |u| elevation::fetch_bounded(u, max_bytes));
         }
         if path == "/v1/now" {
             return self.serve_doc(req, true);
@@ -587,8 +626,8 @@ pub fn serve_listener(broker: Arc<Broker>, listener: std::net::TcpListener, work
         let _ = s.write_all(&r.body);
         let _ = s.flush();
     }
-    fn serve(broker: &Broker, mut s: TcpStream, trust_proxy: bool) {
-        let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    fn serve(broker: &Broker, mut s: TcpStream, trust_proxy: bool, loopback_port: Option<u16>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(10)));
         let mut buf = Vec::with_capacity(2048);
         let mut chunk = [0u8; 2048];
@@ -596,6 +635,10 @@ pub fn serve_listener(broker: Arc<Broker>, listener: std::net::TcpListener, work
             let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
             if head_end.unwrap_or(buf.len()) > MAX_HEAD { return write_response(&mut s, &plain(413, "request too large")); }
             if head_end.is_some() { break; }
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return write_response(&mut s, &plain(408, "request timeout"));
+            };
+            let _ = s.set_read_timeout(Some(remaining));
             match s.read(&mut chunk) {
                 Ok(0) | Err(_) => return,
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
@@ -608,8 +651,25 @@ pub fn serve_listener(broker: Arc<Broker>, listener: std::net::TcpListener, work
             _ => return write_response(&mut s, &plain(400, "bad request")),
         }
         let h = |name: &str| req.headers.iter().find(|x| x.name.eq_ignore_ascii_case(name)).and_then(|x| std::str::from_utf8(x.value).ok()).map(str::trim);
+        if let Some(port) = loopback_port {
+            let host_ok = h("host").is_some_and(|host| {
+                host.eq_ignore_ascii_case(&format!("127.0.0.1:{}", port))
+                    || host.eq_ignore_ascii_case(&format!("localhost:{}", port))
+                    || host.eq_ignore_ascii_case("127.0.0.1")
+                    || host.eq_ignore_ascii_case("localhost")
+            });
+            if !host_ok {
+                return write_response(&mut s, &plain(403, "invalid host"));
+            }
+        }
         let peer = s.peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|_| "?".into());
-        let client = if trust_proxy { h("x-forwarded-for").and_then(|v| v.split(',').next()).map(str::trim).filter(|v| !v.is_empty()).unwrap_or(&peer) } else { &peer };
+        // Take the rightmost non-empty X-Forwarded-For hop (added by the trusted proxy),
+        // not the leftmost client-controlled value.
+        let client = if trust_proxy {
+            h("x-forwarded-for").and_then(|v| v.split(',').rev().map(str::trim).find(|v| !v.is_empty())).unwrap_or(&peer)
+        } else {
+            &peer
+        };
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             broker.handle(&Request {
                 method: req.method.unwrap_or(""),
@@ -622,6 +682,11 @@ pub fn serve_listener(broker: Arc<Broker>, listener: std::net::TcpListener, work
         })).unwrap_or_else(|_| plain(500, "broker error"));
         write_response(&mut s, &r);
     }
+    let loopback_port = if !trust_proxy {
+        listener.local_addr().ok().filter(|a| a.ip().is_loopback()).map(|a| a.port())
+    } else {
+        None
+    };
     let workers = workers.clamp(1, 256);
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(workers * 16);
     let rx = Arc::new(Mutex::new(rx));
@@ -632,7 +697,7 @@ pub fn serve_listener(broker: Arc<Broker>, listener: std::net::TcpListener, work
                 Ok(s) => s,
                 Err(_) => return,
             };
-            serve(&broker, s, trust_proxy);
+            serve(&broker, s, trust_proxy, loopback_port);
         });
     }
     println!("flood-broker listening on {:?} ({} workers)", listener.local_addr(), workers);
@@ -882,5 +947,26 @@ mod tests {
         let codes: Vec<u16> = (0..40).map(|_| get(&b, "/v1/levels?sites=143001C", None).0).collect();
         assert!(codes[..30].iter().all(|c| *c == 200));
         assert!(codes[30..].iter().all(|c| *c == 429));
+    }
+
+    #[test]
+    fn wildcard_cors_returns_literal_star_and_health_is_rate_limited() {
+        let cfg = Config { origins: HashSet::from(["*".into()]), cache_ms: 600_000, refresh_ms: 900_000 };
+        let b = Broker::new(Box::new(|_| Ok(json!({}))), Box::new(|| 1_000_000), cfg);
+        let r = b.handle(&Request {
+            method: "GET",
+            target: "/health",
+            origin: Some("https://evil.example"),
+            client: "10.0.0.1",
+            gzip: false,
+            if_none_match: None,
+        });
+        assert_eq!(r.status, 200);
+        let acao = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("access-control-allow-origin")).map(|(_, v)| v.as_str());
+        assert_eq!(acao, Some("*"), "wildcard config must emit literal *, never reflect Origin");
+        let codes: Vec<u16> = (0..35).map(|_| {
+            b.handle(&Request { method: "GET", target: "/health", origin: None, client: "10.0.0.2", gzip: false, if_none_match: None }).status
+        }).collect();
+        assert!(codes.contains(&429), "/health must be rate-limited");
     }
 }

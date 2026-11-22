@@ -57,6 +57,7 @@ pub fn forcing_from_recording(plan: &Plan, rec: &Recording, lead: f64, threshold
             }
         }
     }
+    if times.is_empty() { return Err("the regional recording has no samples".into()); }
     if peak <= 1e-4 { return Err("the offshore wave never reaches the local model within the regional run; extend the length, move the source or raise its strength".into()); }
     let mut arrival = times.len() - 1;
     'search: for s in 0..times.len() { for p in 0..points { if scaled[s * points + p].abs() > threshold * peak { arrival = s; break 'search; } } }
@@ -117,7 +118,7 @@ pub fn open_edges(sea: &[Edge], w: usize, h: usize, depth: &[f64]) -> Result<Vec
 /// External sea level change at the open edges: a tide rising from the initial level as a sinusoid of the given period (default M2, 12.42 h), as (times, levels). Total level,
 /// not a wave: the solver passes it through with no external current. None when there is no tide.
 pub fn level_series(seconds: f64, amplitude: f64, period: f64, step: f64) -> Option<(Vec<f64>, Vec<f64>)> {
-    if amplitude.is_nan() || amplitude <= 0.0 { return None; }
+    if !amplitude.is_finite() || amplitude <= 0.0 || !seconds.is_finite() || seconds < 0.0 || !period.is_finite() || period == 0.0 || !step.is_finite() || step <= 0.0 { return None; }
     let rows = ((seconds / step).ceil() as usize + 2).max(2);
     let times: Vec<f64> = (0..rows).map(|i| i as f64 * step).collect();
     let level = times.iter().map(|t| amplitude * (2.0 * std::f64::consts::PI * t / period).sin()).collect();

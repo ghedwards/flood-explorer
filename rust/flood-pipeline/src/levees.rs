@@ -51,8 +51,8 @@ pub fn shapefile_lines(zbytes: &[u8], name: &str, source: &str) -> R<Vec<Value>>
     let files = unzip(zbytes)?;
     let mut feats = Vec::new();
     for (path, shp) in files.iter().filter(|(n, _)| n.to_lowercase().ends_with(".shp")) {
-        let stem = &path[..path.len() - 4];
-        let sibling = |ext: &str| files.iter().find(|(n, _)| n.len() == stem.len() + 4 && n[..stem.len()] == *stem && n[stem.len()..].eq_ignore_ascii_case(ext)).map(|f| &f.1);
+        let Some(stem) = path.get(..path.len().saturating_sub(4)) else { continue };
+        let sibling = |ext: &str| files.iter().find(|(n, _)| n.strip_prefix(stem).is_some_and(|rest| rest.eq_ignore_ascii_case(ext))).map(|f| &f.1);
         let proj = match sibling(".prj") {
             Some(p) => Proj::from_wkt(&String::from_utf8_lossy(p)).ok_or_else(|| format!("unknown projection in {}.prj", stem))?,
             None => Proj::Geographic, // GDA94
@@ -99,6 +99,9 @@ fn nsw_levees(g: Get, notes: &mut Vec<String>) -> R<Vec<Value>> {
         for res in arr(pkg.get("resources")) {
             let fmt = s_or_empty(res.get("format")).to_lowercase();
             let url = s_or_empty(res.get("url"));
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                continue;
+            }
             if !fmt.contains("shp") && !fmt.contains("zip") && !url.to_lowercase().ends_with(".zip") {
                 continue;
             }

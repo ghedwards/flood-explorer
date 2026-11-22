@@ -24,7 +24,11 @@ fn link_with(xml: &str, needle: &str) -> Option<String> {
         let element = &rest[i..end];
         if element.contains(needle) {
             let h = element.find("href=\"")? + 6;
-            return Some(element[h..h + element[h..].find('"')?].to_string());
+            let href = &element[h..h + element[h..].find('"')?];
+            if href.starts_with("https://") || href.starts_with("http://") {
+                return Some(href.to_string());
+            }
+            return None;
         }
         rest = &rest[end..];
     }
@@ -133,5 +137,6 @@ mod tests {
         for text in ["", "not xml", "<feed></feed>", "<entry>", "<entry></entry>", "<entry><summary><strong>Category:</strong> Warning</summary></entry>"] { assert!(parse_ptwc_atom(text).is_empty(), "{text}"); }
         assert_eq!(issue_time("2026.10.25 02:27:01 UTC").as_deref(), Some("2026-10-25T02:27:01Z"));
         assert_eq!(issue_time("yesterday"), None);
+        assert_eq!(link_with(r#"<link rel="alternate" href="javascript:alert(1)" />"#, "rel=\"alternate\""), None);
     }
 }
