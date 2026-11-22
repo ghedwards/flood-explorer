@@ -34,6 +34,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo build --locked --release --manifest-path rust/Cargo.toml -p flood-wasm --target wasm32-unknown-unknown
+      - name: Install the JavaScript dependencies the tests use
+        run: npm ci --ignore-scripts
       - name: Test the viewer against the wasm model
         run: |
           export FLOOD_WASM="$PWD/rust/target/wasm32-unknown-unknown/release/flood_wasm.wasm"

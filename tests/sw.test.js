@@ -133,3 +133,47 @@ test('proxied elevation uses the terrain cache when offline', async () => {
   assert.equal(await (await answer).text(), 'cached GeoTIFF');
   assert.deepEqual(names, ['terrain-v1']);
 });
+
+// a cache call that hangs rather than rejecting (a corrupt Firefox cache database): the tile must
+// still come from the network, and after a few hangs the worker stops asking the cache at all
+function realTimerWorker(caches, fetch) {
+  const handlers = {};
+  const context = vm.createContext({
+    self: { addEventListener(t, f) { handlers[t] = f; }, location: { origin: 'https://ghedwards.github.io' } },
+    fetch: fetch || (async () => new Response('net tile')), caches, setTimeout, clearTimeout, URL,
+  });
+  vm.runInContext(source, context);
+  return {
+    ask(url) {
+      let answer = null;
+      handlers.fetch({ request: new Request(url, { mode: 'cors' }), respondWith: (p) => { answer = p; } });
+      return answer;
+    },
+  };
+}
+const TILE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/4/3/5';
+
+test('tiles: a cache that never answers does not leave the tile waiting', { timeout: 20000 }, async () => {
+  let opens = 0;
+  const w = realTimerWorker({ open: () => { opens++; return new Promise(() => {}); } });
+  const started = Date.now();
+  assert.equal(await (await w.ask(TILE)).text(), 'net tile');
+  assert.ok(Date.now() - started < 4000, 'answered within a few seconds of the cache hanging');
+  assert.ok(opens >= 1);
+});
+
+test('tiles: after three failed cache calls the worker stops using the cache', { timeout: 20000 }, async () => {
+  let opens = 0;
+  const w = realTimerWorker({ open: async () => { opens++; throw new Error('Storage quota exceeded'); } });
+  for (let i = 0; i < 5; i++) assert.equal(await (await w.ask(TILE)).text(), 'net tile');
+  assert.equal(opens, 3, 'the cache is not tried again once it has failed three times');
+});
+
+test('tiles: if the worker itself throws, the page still gets a plain request', async () => {
+  let plain = 0;
+  const w = realTimerWorker(
+    { open: async () => { throw new TypeError('worker bug'); } },
+    async (req) => { plain++; if (plain === 1) throw new TypeError('worker bug'); return new Response('plain tile'); });
+  assert.equal(await (await w.ask(TILE)).text(), 'plain tile');
+  assert.equal(plain, 2, 'one try inside the worker, then one plain request');
+});

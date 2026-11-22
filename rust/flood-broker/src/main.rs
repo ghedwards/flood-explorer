@@ -12,6 +12,7 @@
 //!   READINGS_REFRESH_MINUTES  default 15 (0: don't serve /v1/readings fresh)
 //!   READINGS_BUCKET   S3 bucket for the shared readings file (Lambda)
 //!   STATIONS_URL      the site's stations.json (which gauges to fetch)
+//!   RADAR_DIR         a folder of radar frames you supply, served at /v1/radar (src/radar.rs)
 //!
 //! On AWS Lambda (AWS_LAMBDA_RUNTIME_API set) it serves a function URL
 //! through the runtime API instead (see lambda.rs); built as `bootstrap`
@@ -49,6 +50,7 @@ fn main() {
         origins: origins.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()).collect(),
         cache_ms: env("CACHE_MINUTES").and_then(|v| v.parse::<f64>().ok()).map_or(10 * 60_000, |m| (m * 60_000.0) as i64),
         refresh_ms: env("READINGS_REFRESH_MINUTES").and_then(|v| v.parse::<i64>().ok()).filter(|m| *m > 0).unwrap_or(15) * 60_000,
+        radar_dir: env("RADAR_DIR").map(std::path::PathBuf::from),
     };
     // readings for the whole map: in S3 when a bucket is given (Lambda),
     // in a local directory for the desktop build, otherwise in memory
