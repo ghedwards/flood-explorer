@@ -1,0 +1,19 @@
+This is a list of contributors to the exrs project, sorted by time of contribution.
+
+* [Johannes Vollmer](https://github.com/johannesvollmer)
+* [Mandeep Bhutani](https://github.com/mandeep)
+* [Daniel Santana](https://github.com/dgsantana)
+* [Karel Peeters](https://github.com/KarelPeeters)
+* [Dorian Fevrier](https://github.com/Narann)
+* [Andrey Fedotov](https://github.com/anfedotoff)
+* [Sergey "Shnatsel" Davidoff](https://github.com/Shnatsel)
+* [Jonathan Behrens](https://github.com/fintelia)
+* [Michael Ciraci](https://github.com/michaelciraci)
+* [Oscar](https://github.com/okey)
+* [Dongjia "toka" Zhang](https://github.com/tokatoka)
+* [Marijn Suijten](https://github.com/MarijnS95)
+* [Zinedin Polic](https://github.com/zinezockt)
+* [Alex Touchet](https://github.com/atouchet)
+* [s17sh70x2jfl031ag](https://github.com/s17sh70x2jfl031ag)
+
+Thank you for your time and efforts that you spent to improve the exrs project!

@@ -1,0 +1,1701 @@
+//! High-level GeoTIFF reader.
+
+#![allow(dead_code)]
+
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
+
+use super::compression;
+use super::error::{GeoTiffError, Result};
+use super::geo_keys::GeoKeyDirectory;
+use super::ifd::{ByteOrder, Ifd, IfdValue, TiffReader};
+use super::tags::{tag, Compression, PhotometricInterpretation, PlanarConfig, SampleFormat};
+use super::types::{BoundingBox, GeoTransform};
+
+// ── ImageLayout ───────────────────────────────────────────────────────────────
+
+/// Whether the image is organised as strips or tiles.
+#[derive(Debug, Clone)]
+enum ImageLayout {
+    Stripped {
+        rows_per_strip: u32,
+        offsets: Vec<u64>,
+        byte_counts: Vec<u64>,
+    },
+    Tiled {
+        tile_width: u32,
+        tile_height: u32,
+        offsets: Vec<u64>,
+        byte_counts: Vec<u64>,
+    },
+}
+
+// ── ImageInfo ─────────────────────────────────────────────────────────────────
+
+/// Decoded image metadata from the IFD.
+#[derive(Debug, Clone)]
+struct ImageInfo {
+    width: u32,
+    height: u32,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    sample_format: SampleFormat,
+    compression: Compression,
+    /// TIFF `Predictor` tag (317); 1 = none, 2 = horizontal, 3 = floating point.
+    predictor: u16,
+    photometric: PhotometricInterpretation,
+    planar_config: PlanarConfig,
+    no_data: Option<f64>,
+    layout: ImageLayout,
+}
+
+impl ImageInfo {
+    /// Number of bytes per sample.
+    fn bytes_per_sample(&self) -> usize {
+        (self.bits_per_sample as usize + 7) / 8
+    }
+
+    /// Bytes needed for one uncompressed row (all bands, interleaved).
+    fn row_bytes(&self) -> usize {
+        self.width as usize * self.samples_per_pixel as usize * self.bytes_per_sample()
+    }
+}
+
+// ── GeoTiff ───────────────────────────────────────────────────────────────────
+
+/// Lightweight header metadata produced by [`GeoTiff::peek_meta`] without
+/// loading any pixel data.
+#[derive(Debug, Clone)]
+pub struct GeoTiffMeta {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Samples per pixel (band count).
+    pub bands: u16,
+    /// EPSG code, if the GeoTIFF keys identify one.
+    pub epsg: Option<u16>,
+    /// No-data sentinel value, if declared.
+    pub no_data: Option<f64>,
+    /// Bits per sample.
+    pub bits_per_sample: u16,
+    /// Sample format (unsigned / signed / float).
+    pub sample_format: SampleFormat,
+    /// Compression codec.
+    pub compression: Compression,
+    /// True for BigTIFF (64-bit offsets).
+    pub is_bigtiff: bool,
+    /// True if the image is tiled (vs stripped).
+    pub tiled: bool,
+    /// Affine geo-transform, if the file is georeferenced.
+    pub geo_transform: Option<GeoTransform>,
+    /// PROJ string for a user-defined projected CRS (no EPSG code), if any.
+    pub proj_string: Option<String>,
+}
+
+/// A decoded GeoTIFF file, ready for data access.
+///
+/// # Example
+/// ```rust,ignore
+/// use wbraster::formats::geotiff_core::GeoTiff;
+///
+/// let tiff = GeoTiff::open("dem.tif").unwrap();
+/// println!("{}x{} pixels, {} bands", tiff.width(), tiff.height(), tiff.band_count());
+///
+/// let elevation: Vec<f32> = tiff.read_band_f32(0).unwrap();
+/// ```
+pub struct GeoTiff {
+    info: ImageInfo,
+    geo_transform: Option<GeoTransform>,
+    geo_keys: Option<GeoKeyDirectory>,
+    value_transform: Option<ValueTransform>,
+    /// True if the source file was BigTIFF (64-bit offsets).
+    pub is_bigtiff: bool,
+    /// The file's declared byte order ("II" or "MM"). Sample bytes are stored
+    /// in it just as the IFD values are, so every read that turns bytes into
+    /// numbers has to honor it.
+    byte_order: ByteOrder,
+    /// The raw bytes of the file, loaded fully into memory for random access.
+    data: Vec<u8>,
+}
+
+/// Optional linear value transform associated with raster samples.
+///
+/// This is intended for metadata-defined conversions such as
+/// `physical_value = raw_value * scale + offset`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueTransform {
+    /// Multiplicative scale term.
+    pub scale: f64,
+    /// Additive offset term.
+    pub offset: f64,
+}
+
+impl GeoTiff {
+    // ── Constructors ─────────────────────────────────────────────────────────
+
+    /// Open a GeoTIFF file from disk.
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file = File::open(path).map_err(GeoTiffError::Io)?;
+        Self::from_reader(BufReader::new(file))
+    }
+
+    /// Parse a GeoTIFF from an in-memory byte slice.
+    ///
+    /// Metadata is parsed from a borrowed cursor (no copy); the bytes are then
+    /// retained once for random-access tile/strip reads. This holds at most two
+    /// copies in memory (the caller's slice plus one owned copy) rather than the
+    /// three that routing through `from_reader` would require.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut tiff = TiffReader::new(std::io::Cursor::new(bytes))?;
+        let is_bigtiff = tiff.variant.is_bigtiff();
+        let byte_order = tiff.byte_order;
+        let ifd = tiff.read_ifd(tiff.first_ifd_offset)?;
+        let info = Self::parse_image_info(&ifd)?;
+        let geo_transform = Self::parse_geo_transform(&ifd);
+        let geo_keys = Self::parse_geo_keys(&ifd)?;
+        let value_transform = Self::parse_value_transform(&ifd);
+        Ok(Self {
+            info,
+            geo_transform,
+            geo_keys,
+            value_transform,
+            is_bigtiff,
+            byte_order,
+            data: bytes.to_vec(),
+        })
+    }
+
+    /// Parse only the header metadata of a GeoTIFF without retaining any pixel
+    /// data. Memory use is O(header), so this works on multi-gigabyte rasters
+    /// that whole-image reads cannot fit in a 32-bit (4 GiB) address space.
+    pub fn peek_meta(bytes: &[u8]) -> Result<GeoTiffMeta> {
+        let mut tiff = TiffReader::new(std::io::Cursor::new(bytes))?;
+        let is_bigtiff = tiff.variant.is_bigtiff();
+        let ifd = tiff.read_ifd(tiff.first_ifd_offset)?;
+        let info = Self::parse_image_info(&ifd)?;
+        let geo_keys = Self::parse_geo_keys(&ifd)?;
+        let tiled = matches!(info.layout, ImageLayout::Tiled { .. });
+        Ok(GeoTiffMeta {
+            width: info.width,
+            height: info.height,
+            bands: info.samples_per_pixel,
+            epsg: geo_keys.as_ref().and_then(|gk| gk.epsg()),
+            no_data: info.no_data,
+            bits_per_sample: info.bits_per_sample,
+            sample_format: info.sample_format,
+            compression: info.compression,
+            is_bigtiff,
+            tiled,
+            geo_transform: Self::parse_geo_transform(&ifd),
+            proj_string: geo_keys.as_ref().and_then(|gk| gk.to_proj_string()),
+        })
+    }
+
+    /// Parse a GeoTIFF from any `Read + Seek` reader.
+    pub fn from_reader<R: Read + Seek>(reader: R) -> Result<Self> {
+        let mut tiff = TiffReader::new(reader)?;
+        let is_bigtiff = tiff.variant.is_bigtiff();
+        let byte_order = tiff.byte_order;
+
+        // Load entire file into memory for fast random access during tile/strip reads
+        tiff.inner_mut().seek(std::io::SeekFrom::Start(0)).map_err(GeoTiffError::Io)?;
+        let mut data = Vec::new();
+        tiff.inner_mut().read_to_end(&mut data).map_err(GeoTiffError::Io)?;
+
+        // Parse the first IFD (GeoTIFFs typically only have one)
+        let ifd = tiff.read_ifd(tiff.first_ifd_offset)?;
+
+        let info = Self::parse_image_info(&ifd)?;
+        let geo_transform = Self::parse_geo_transform(&ifd);
+        let geo_keys = Self::parse_geo_keys(&ifd)?;
+        let value_transform = Self::parse_value_transform(&ifd);
+
+        Ok(Self { info, geo_transform, geo_keys, value_transform, is_bigtiff, byte_order, data })
+    }
+
+    // ── IFD parsing helpers ───────────────────────────────────────────────────
+
+    fn parse_image_info(ifd: &Ifd) -> Result<ImageInfo> {
+        let width = ifd.require_u64(tag::ImageWidth, "ImageWidth")? as u32;
+        let height = ifd.require_u64(tag::ImageLength, "ImageLength")? as u32;
+
+        let samples_per_pixel = ifd
+            .get(tag::SamplesPerPixel)
+            .and_then(|e| e.value.as_u64())
+            .unwrap_or(1) as u16;
+
+        let bits_per_sample = ifd
+            .get(tag::BitsPerSample)
+            .and_then(|e| e.value.as_u64())
+            .unwrap_or(8) as u16;
+
+        let sample_format = ifd
+            .get(tag::SampleFormat)
+            .and_then(|e| e.value.as_u64())
+            .map(|v| SampleFormat::from_tag(v as u16))
+            .unwrap_or_default();
+
+        let compression = ifd
+            .get(tag::Compression)
+            .and_then(|e| e.value.as_u64())
+            .map(|v| Compression::from_tag(v as u16))
+            .unwrap_or(Compression::None);
+
+        // Predictor (317): 1 = none (default), 2 = horizontal differencing,
+        // 3 = floating point. Reversed after decompression before samples are read.
+        let predictor = ifd
+            .get(tag::Predictor)
+            .and_then(|e| e.value.as_u64())
+            .unwrap_or(1) as u16;
+
+        let photometric = ifd
+            .get(tag::PhotometricInterpretation)
+            .and_then(|e| e.value.as_u64())
+            .map(|v| PhotometricInterpretation::from_tag(v as u16))
+            .unwrap_or_default();
+
+        let planar_config = ifd
+            .get(tag::PlanarConfiguration)
+            .and_then(|e| e.value.as_u64())
+            .map(|v| PlanarConfig::from_tag(v as u16))
+            .unwrap_or_default();
+
+        let no_data = Self::parse_no_data(ifd);
+
+        // Determine layout: tiled or stripped
+        let layout = if let (Some(tw_entry), Some(th_entry)) = (
+            ifd.get(tag::TileWidth),
+            ifd.get(tag::TileLength),
+        ) {
+            let tile_width = tw_entry.value.as_u64().unwrap_or(256) as u32;
+            let tile_height = th_entry.value.as_u64().unwrap_or(256) as u32;
+            let offsets = ifd.require_u64_vec(tag::TileOffsets, "TileOffsets")?;
+            let byte_counts = ifd.require_u64_vec(tag::TileByteCounts, "TileByteCounts")?;
+            ImageLayout::Tiled { tile_width, tile_height, offsets, byte_counts }
+        } else {
+            let rows_per_strip = ifd
+                .get(tag::RowsPerStrip)
+                .and_then(|e| e.value.as_u64())
+                .unwrap_or(height as u64) as u32;
+            let offsets = ifd.require_u64_vec(tag::StripOffsets, "StripOffsets")?;
+            let byte_counts = ifd.require_u64_vec(tag::StripByteCounts, "StripByteCounts")?;
+            ImageLayout::Stripped { rows_per_strip, offsets, byte_counts }
+        };
+
+        if width == 0 || height == 0 || samples_per_pixel == 0 {
+            return Err(GeoTiffError::InvalidDimensions {
+                width,
+                height,
+                bands: samples_per_pixel,
+            });
+        }
+
+        Ok(ImageInfo {
+            width,
+            height,
+            samples_per_pixel,
+            bits_per_sample,
+            sample_format,
+            compression,
+            predictor,
+            photometric,
+            planar_config,
+            no_data,
+            layout,
+        })
+    }
+
+    fn parse_geo_transform(ifd: &Ifd) -> Option<GeoTransform> {
+        let scale = ifd.get(tag::ModelPixelScaleTag)?.value.as_f64_vec()?;
+        let tiepoint = ifd.get(tag::ModelTiepointTag)?.value.as_f64_vec()?;
+        GeoTransform::from_scale_tiepoint(&scale, &tiepoint)
+    }
+
+    fn parse_geo_keys(ifd: &Ifd) -> Result<Option<GeoKeyDirectory>> {
+        let Some(dir_entry) = ifd.get(tag::GeoKeyDirectoryTag) else {
+            return Ok(None);
+        };
+        let dir_words = match &dir_entry.value {
+            IfdValue::Shorts(v) => v.clone(),
+            _ => return Ok(None),
+        };
+
+        let doubles = ifd
+            .get(tag::GeoDoubleParamsTag)
+            .and_then(|e| e.value.as_f64_vec())
+            .unwrap_or_default();
+
+        let ascii = ifd
+            .get(tag::GeoAsciiParamsTag)
+            .and_then(|e| e.value.as_str().map(|s| s.to_owned()))
+            .unwrap_or_default();
+
+        Ok(Some(GeoKeyDirectory::parse(&dir_words, &doubles, &ascii)?))
+    }
+
+    fn parse_no_data(ifd: &Ifd) -> Option<f64> {
+        if let Some(entry) = ifd.get(tag::GdalNodata) {
+            if let Some(text) = entry.value.as_str() {
+                if let Some(v) = Self::parse_no_data_text(text) {
+                    return Some(v);
+                }
+            }
+            if let Some(bytes) = entry.value.as_bytes() {
+                let text = String::from_utf8_lossy(bytes);
+                if let Some(v) = Self::parse_no_data_text(&text) {
+                    return Some(v);
+                }
+            }
+        }
+
+        if let Some(meta) = ifd.get(tag::GdalMetadata).and_then(|e| e.value.as_str()) {
+            if let Some(v) = Self::parse_no_data_text(meta) {
+                return Some(v);
+            }
+        }
+
+        None
+    }
+
+    fn parse_value_transform(ifd: &Ifd) -> Option<ValueTransform> {
+        let metadata = ifd
+            .get(tag::GdalMetadata)
+            .and_then(|e| e.value.as_str().map(|s| s.to_owned()).or_else(|| {
+                e.value
+                    .as_bytes()
+                    .map(|b| String::from_utf8_lossy(b).to_string())
+            }));
+
+        let metadata = metadata?;
+
+        let scale = Self::parse_named_numeric(&metadata, &[
+            "scale",
+            "scalefactor",
+            "scale_factor",
+            "multiplicative_factor",
+        ])
+        .unwrap_or(1.0);
+        let offset = Self::parse_named_numeric(&metadata, &[
+            "offset",
+            "add_offset",
+            "data_offset",
+        ])
+        .unwrap_or(0.0);
+
+        if !scale.is_finite() || !offset.is_finite() {
+            return None;
+        }
+
+        if (scale - 1.0).abs() <= f64::EPSILON && offset.abs() <= f64::EPSILON {
+            return None;
+        }
+
+        Some(ValueTransform { scale, offset })
+    }
+
+    fn parse_named_numeric(text: &str, names: &[&str]) -> Option<f64> {
+        for name in names {
+            if let Some(v) = Self::parse_xml_item_value(text, name) {
+                return Some(v);
+            }
+            if let Some(v) = Self::parse_token_value(text, name) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    fn parse_xml_item_value(text: &str, name: &str) -> Option<f64> {
+        let lower = text.to_ascii_lowercase();
+        let name_attr_double = format!("name=\"{}\"", name);
+        let name_attr_single = format!("name='{}'", name);
+
+        let mut cursor = 0usize;
+        while let Some(rel_start) = lower[cursor..].find("<item") {
+            let start = cursor + rel_start;
+            let rel_tag_end = lower[start..].find('>')?;
+            let tag_end = start + rel_tag_end;
+            let rel_close = lower[tag_end + 1..].find("</item>")?;
+            let close = tag_end + 1 + rel_close;
+
+            let header = &lower[start..=tag_end];
+            if header.contains(&name_attr_double) || header.contains(&name_attr_single) {
+                let value_text = text[tag_end + 1..close].trim();
+                if let Ok(v) = value_text.parse::<f64>() {
+                    return Some(v);
+                }
+            }
+
+            cursor = close + "</item>".len();
+        }
+        None
+    }
+
+    fn parse_token_value(text: &str, name: &str) -> Option<f64> {
+        let lower_name = name.to_ascii_lowercase();
+        for token in text.split(|c: char| c.is_whitespace() || c == ';' || c == ',' || c == '|') {
+            if token.is_empty() {
+                continue;
+            }
+
+            let token_lower = token.to_ascii_lowercase();
+            if let Some(value) = token_lower.strip_prefix(&(lower_name.clone() + "=")) {
+                if let Ok(v) = value.trim_matches(|c| c == '"' || c == '\'' || c == '\0').parse::<f64>() {
+                    return Some(v);
+                }
+            }
+            if let Some(value) = token_lower.strip_prefix(&(lower_name.clone() + ":")) {
+                if let Ok(v) = value.trim_matches(|c| c == '"' || c == '\'' || c == '\0').parse::<f64>() {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_no_data_text(text: &str) -> Option<f64> {
+        let cleaned = text.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+        if cleaned.is_empty() {
+            return None;
+        }
+
+        if let Ok(v) = cleaned.parse::<f64>() {
+            return Some(v);
+        }
+
+        for token in cleaned.split(|c: char| c == '|' || c == ',' || c == ';' || c.is_whitespace()) {
+            let token = token.trim_matches('\0');
+            if token.is_empty() {
+                continue;
+            }
+            if let Ok(v) = token.parse::<f64>() {
+                return Some(v);
+            }
+        }
+
+        if let Some(pos) = cleaned.find("NODATA") {
+            let tail = &cleaned[pos..];
+            for token in tail.split(|c: char| c == '<' || c == '>' || c == '"' || c == '=' || c == '|' || c == ',' || c == ';' || c.is_whitespace()) {
+                if let Ok(v) = token.parse::<f64>() {
+                    return Some(v);
+                }
+            }
+        }
+
+        None
+    }
+
+    // ── Public metadata accessors ─────────────────────────────────────────────
+
+    /// Image width in pixels.
+    pub fn width(&self) -> u32 { self.info.width }
+
+    /// Image height in pixels.
+    pub fn height(&self) -> u32 { self.info.height }
+
+    /// Number of bands (samples per pixel).
+    pub fn band_count(&self) -> usize { self.info.samples_per_pixel as usize }
+
+    /// Bits per sample.
+    pub fn bits_per_sample(&self) -> u16 { self.info.bits_per_sample }
+
+    /// Sample format.
+    pub fn sample_format(&self) -> SampleFormat { self.info.sample_format }
+
+    /// Compression codec used.
+    pub fn compression(&self) -> Compression { self.info.compression }
+
+    /// Photometric interpretation.
+    pub fn photometric(&self) -> PhotometricInterpretation { self.info.photometric }
+
+    /// No-data value (if set via GDAL NODATA tag).
+    pub fn no_data(&self) -> Option<f64> { self.info.no_data }
+
+    /// The byte order declared by the file header (`II` or `MM`).
+    pub fn byte_order(&self) -> ByteOrder { self.byte_order }
+
+    /// The affine geo-transform, if present.
+    pub fn geo_transform(&self) -> Option<&GeoTransform> { self.geo_transform.as_ref() }
+
+    /// The decoded GeoKey directory, if present.
+    pub fn geo_keys(&self) -> Option<&GeoKeyDirectory> { self.geo_keys.as_ref() }
+
+    /// EPSG code derived from the GeoKey directory.
+    pub fn epsg(&self) -> Option<u16> {
+        self.geo_keys.as_ref()?.epsg()
+    }
+
+    /// PROJ string for a user-defined projected CRS (no EPSG code), if any.
+    pub fn proj_string(&self) -> Option<String> {
+        self.geo_keys.as_ref()?.to_proj_string()
+    }
+
+    /// Optional linear value transform parsed from GDAL metadata.
+    ///
+    /// When present, data consumers may apply:
+    /// `physical_value = raw_value * scale + offset`.
+    pub fn value_transform(&self) -> Option<ValueTransform> {
+        self.value_transform
+    }
+
+    /// Bounding box in geographic / projected coordinates.
+    ///
+    /// Returns `None` if no geo-transform is available.
+    pub fn bounding_box(&self) -> Option<BoundingBox> {
+        let t = self.geo_transform.as_ref()?;
+        let (x0, y0) = t.pixel_to_geo(0.0, 0.0);
+        let (x1, y1) = t.pixel_to_geo(self.info.width as f64, self.info.height as f64);
+        Some(BoundingBox::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)))
+    }
+
+    // ── Data access ───────────────────────────────────────────────────────────
+
+    /// Read all pixel data for a single band as raw bytes.
+    ///
+    /// Bands are zero-indexed.  For multi-band chunky images the band samples
+    /// are de-interleaved automatically.
+    pub fn read_band_bytes(&self, band: usize) -> Result<Vec<u8>> {
+        if band >= self.band_count() {
+            return Err(GeoTiffError::BandOutOfRange {
+                index: band,
+                bands: self.band_count(),
+            });
+        }
+
+        let raw = self.decode_all_pixels()?;
+        // Fast path for the common DEM case: one-band chunky storage means
+        // decode_all_pixels already returned the requested band bytes directly.
+        if self.info.samples_per_pixel == 1 && self.info.planar_config == PlanarConfig::Chunky {
+            return Ok(raw);
+        }
+        self.extract_band_bytes(&raw, band)
+    }
+
+    /// Read a band as `u8` values.
+    pub fn read_band_u8(&self, band: usize) -> Result<Vec<u8>> {
+        self.validate_sample_type(SampleFormat::Uint, 8)?;
+        self.read_band_bytes(band)
+    }
+
+    /// Read a band as `u16` values.
+    pub fn read_band_u16(&self, band: usize) -> Result<Vec<u16>> {
+        self.validate_sample_type(SampleFormat::Uint, 16)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(2)
+            .map(|c| bo.read_u16(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `u32` values.
+    pub fn read_band_u32(&self, band: usize) -> Result<Vec<u32>> {
+        self.validate_sample_type(SampleFormat::Uint, 32)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(4)
+            .map(|c| bo.read_u32(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `u64` values.
+    pub fn read_band_u64(&self, band: usize) -> Result<Vec<u64>> {
+        self.validate_sample_type(SampleFormat::Uint, 64)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(8)
+            .map(|c| bo.read_u64(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `i8` values.
+    pub fn read_band_i8(&self, band: usize) -> Result<Vec<i8>> {
+        self.validate_sample_type(SampleFormat::Int, 8)?;
+        let bytes = self.read_band_bytes(band)?;
+        Ok(bytes.into_iter().map(|v| v as i8).collect())
+    }
+
+    /// Read a band as `i16` values.
+    pub fn read_band_i16(&self, band: usize) -> Result<Vec<i16>> {
+        self.validate_sample_type(SampleFormat::Int, 16)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(2)
+            .map(|c| bo.read_i16(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `i32` values.
+    pub fn read_band_i32(&self, band: usize) -> Result<Vec<i32>> {
+        self.validate_sample_type(SampleFormat::Int, 32)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(4)
+            .map(|c| bo.read_i32(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `i64` values.
+    pub fn read_band_i64(&self, band: usize) -> Result<Vec<i64>> {
+        self.validate_sample_type(SampleFormat::Int, 64)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(8)
+            .map(|c| bo.read_i64(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `f32` values.
+    pub fn read_band_f32(&self, band: usize) -> Result<Vec<f32>> {
+        self.validate_sample_type(SampleFormat::IeeeFloat, 32)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(4)
+            .map(|c| bo.read_f32(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read a band as `f64` values.
+    pub fn read_band_f64(&self, band: usize) -> Result<Vec<f64>> {
+        self.validate_sample_type(SampleFormat::IeeeFloat, 64)?;
+        let bytes = self.read_band_bytes(band)?;
+        let bo = self.byte_order;
+        Ok(bytes.chunks_exact(8)
+            .map(|c| bo.read_f64(c.try_into().unwrap()))
+            .collect())
+    }
+
+    /// Read all bands, returned as a flat `[band0_px0, band1_px0, …, band0_px1, …]`
+    /// (chunky/RGBRGB… order) vector of `f64`.
+    pub fn read_all_f64(&self) -> Result<Vec<f64>> {
+        let raw = self.decode_all_pixels()?;
+        let bps = self.info.bytes_per_sample();
+        let sf = self.info.sample_format;
+
+        let bo = self.byte_order;
+        raw.chunks_exact(bps)
+            .map(|c| sample_to_f64(c, sf, bo))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| GeoTiffError::UnsupportedSampleFormat {
+                bits_per_sample: self.info.bits_per_sample,
+                sample_format: sf.tag_value(),
+            })
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
+
+    fn validate_sample_type(&self, expected_fmt: SampleFormat, expected_bits: u16) -> Result<()> {
+        if self.info.sample_format != expected_fmt || self.info.bits_per_sample != expected_bits {
+            Err(GeoTiffError::UnsupportedSampleFormat {
+                bits_per_sample: self.info.bits_per_sample,
+                sample_format: self.info.sample_format.tag_value(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Decode all strips or tiles into one contiguous byte buffer
+    /// (full-image, row-major, all bands interleaved).
+    fn decode_all_pixels(&self) -> Result<Vec<u8>> {
+        let expected_total = self.info.row_bytes() * self.info.height as usize;
+
+        // Predictor stride: chunky rows interleave all bands (stride = spp),
+        // while each planar strip/tile holds a single band (stride = 1).
+        let pred_spp = match self.info.planar_config {
+            PlanarConfig::Chunky => self.info.samples_per_pixel as usize,
+            PlanarConfig::Planar => 1,
+        };
+
+        match &self.info.layout {
+            ImageLayout::Stripped { rows_per_strip, offsets, byte_counts } => {
+                let mut out = Vec::with_capacity(expected_total);
+                let rps = *rows_per_strip as usize;
+                let row_bytes = self.info.row_bytes();
+
+                for (i, (&off, &bc)) in offsets.iter().zip(byte_counts.iter()).enumerate() {
+                    let start = off as usize;
+                    let end = start + bc as usize;
+                    if end > self.data.len() {
+                        return Err(GeoTiffError::CorruptData {
+                            location: format!("strip {}", i),
+                            message: format!("offset {} + count {} > file size {}", off, bc, self.data.len()),
+                        });
+                    }
+                    let compressed = &self.data[start..end];
+                    let strip_rows = rps.min(self.info.height as usize - i * rps);
+                    let expected_strip = strip_rows * row_bytes;
+                    let mut decompressed =
+                        compression::decompress(self.info.compression, compressed, expected_strip)?;
+                    compression::undo_predictor(
+                        &mut decompressed,
+                        self.info.predictor,
+                        self.info.width as usize,
+                        strip_rows,
+                        pred_spp,
+                        self.info.bytes_per_sample(),
+                        self.byte_order,
+                    )?;
+                    out.extend_from_slice(&decompressed[..decompressed.len().min(expected_strip)]);
+                }
+                Ok(out)
+            }
+
+            ImageLayout::Tiled { tile_width, tile_height, offsets, byte_counts } => {
+                let tw = *tile_width as usize;
+                let th = *tile_height as usize;
+                let w = self.info.width as usize;
+                let h = self.info.height as usize;
+                let spp = self.info.samples_per_pixel as usize;
+                let bps = self.info.bytes_per_sample();
+
+                let tiles_x = (w + tw - 1) / tw;
+                let tiles_y = (h + th - 1) / th;
+
+                let mut out = vec![0u8; expected_total];
+                let tile_bytes_raw = tw * th * spp * bps;
+
+                for ty in 0..tiles_y {
+                    for tx in 0..tiles_x {
+                        let idx = ty * tiles_x + tx;
+                        let off = offsets[idx] as usize;
+                        let bc = byte_counts[idx] as usize;
+                        if off + bc > self.data.len() {
+                            return Err(GeoTiffError::CorruptData {
+                                location: format!("tile ({}, {})", tx, ty),
+                                message: "tile data out of range".into(),
+                            });
+                        }
+                        let compressed = &self.data[off..off + bc];
+                        let mut decompressed =
+                            compression::decompress(self.info.compression, compressed, tile_bytes_raw)?;
+                        compression::undo_predictor(
+                            &mut decompressed,
+                            self.info.predictor,
+                            tw,
+                            th,
+                            pred_spp,
+                            bps,
+                            self.byte_order,
+                        )?;
+
+                        // Copy tile into the output buffer, clipping at image edges
+                        let img_x0 = tx * tw;
+                        let img_y0 = ty * th;
+                        let copy_w = tw.min(w - img_x0);
+                        let copy_h = th.min(h - img_y0);
+
+                        for row in 0..copy_h {
+                            let src_off = row * tw * spp * bps;
+                            let dst_off = ((img_y0 + row) * w + img_x0) * spp * bps;
+                            let len = copy_w * spp * bps;
+                            if src_off + len <= decompressed.len() {
+                                out[dst_off..dst_off + len]
+                                    .copy_from_slice(&decompressed[src_off..src_off + len]);
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// Extract a single band from a chunky (interleaved) or planar byte buffer.
+    fn extract_band_bytes(&self, all_bytes: &[u8], band: usize) -> Result<Vec<u8>> {
+        let npix = (self.info.width * self.info.height) as usize;
+        let bps = self.info.bytes_per_sample();
+        let spp = self.info.samples_per_pixel as usize;
+        let mut out = Vec::with_capacity(npix * bps);
+
+        match self.info.planar_config {
+            PlanarConfig::Chunky => {
+                for p in 0..npix {
+                    let off = (p * spp + band) * bps;
+                    out.extend_from_slice(&all_bytes[off..off + bps]);
+                }
+            }
+            PlanarConfig::Planar => {
+                let plane_bytes = npix * bps;
+                let start = band * plane_bytes;
+                out.extend_from_slice(&all_bytes[start..start + plane_bytes]);
+            }
+        }
+        Ok(out)
+    }
+}
+
+// ── COG range-request streaming layout ────────────────────────────────────────
+
+/// One resolution level (IFD) of a tiled GeoTIFF / COG: its dimensions, tile
+/// grid, and the byte range of every tile within the file. Enough to issue HTTP
+/// range requests for individual tiles without downloading the whole file.
+#[derive(Debug, Clone)]
+pub struct CogLevel {
+    /// Level image width in pixels.
+    pub width: u32,
+    /// Level image height in pixels.
+    pub height: u32,
+    /// Tile width in pixels.
+    pub tile_width: u32,
+    /// Tile height in pixels.
+    pub tile_height: u32,
+    /// Number of tile columns.
+    pub tiles_x: u32,
+    /// Number of tile rows.
+    pub tiles_y: u32,
+    /// Byte offset of each tile (row-major: `row * tiles_x + col`).
+    pub tile_offsets: Vec<u64>,
+    /// Compressed byte length of each tile.
+    pub tile_byte_counts: Vec<u64>,
+    /// Samples per pixel (bands).
+    pub samples_per_pixel: u16,
+    /// Bits per sample.
+    pub bits_per_sample: u16,
+    /// Sample format.
+    pub sample_format: SampleFormat,
+    /// Compression codec.
+    pub compression: Compression,
+    /// TIFF `Predictor` tag (317); 1 = none, 2 = horizontal, 3 = floating point.
+    /// Private and read only by the decoder so adding it stays a non-breaking
+    /// change for downstream code that constructs or destructures `CogLevel`.
+    predictor: u16,
+    /// The file's declared byte order, which its tile samples are stored in.
+    /// Private for the same reason as `predictor`.
+    byte_order: ByteOrder,
+}
+
+impl CogLevel {
+    /// Flat tile index for a `(col, row)`, or `None` if out of range.
+    pub fn tile_index(&self, col: u32, row: u32) -> Option<usize> {
+        if col >= self.tiles_x || row >= self.tiles_y { return None; }
+        Some((row as usize) * (self.tiles_x as usize) + col as usize)
+    }
+
+    /// `(byte_offset, byte_length)` of the tile at `(col, row)`.
+    pub fn tile_range(&self, col: u32, row: u32) -> Option<(u64, u64)> {
+        let i = self.tile_index(col, row)?;
+        Some((self.tile_offsets[i], self.tile_byte_counts[i]))
+    }
+
+    /// Decode one tile's compressed bytes into `f64` samples, pixel-interleaved,
+    /// length `tile_width * tile_height * samples_per_pixel`. Edge tiles are
+    /// returned at full tile size; the caller clips to the image/window.
+    pub fn decode_tile_f64(&self, tile_bytes: &[u8]) -> Result<Vec<f64>> {
+        let bps = (self.bits_per_sample as usize + 7) / 8;
+        let spp = self.samples_per_pixel as usize;
+        let raw = self.tile_width as usize * self.tile_height as usize * spp * bps;
+        let mut decompressed = compression::decompress(self.compression, tile_bytes, raw)?;
+        // Undo any TIFF predictor across each full tile row before reading samples.
+        compression::undo_predictor(
+            &mut decompressed,
+            self.predictor,
+            self.tile_width as usize,
+            self.tile_height as usize,
+            spp,
+            bps,
+            self.byte_order,
+        )?;
+        let mut out = Vec::with_capacity(raw / bps.max(1));
+        for chunk in decompressed.chunks_exact(bps.max(1)) {
+            out.push(sample_to_f64(chunk, self.sample_format, self.byte_order).unwrap_or(f64::NAN));
+        }
+        Ok(out)
+    }
+}
+
+// ── HeaderWindows ─────────────────────────────────────────────────────────────
+
+/// A `Read + Seek` view over two disjoint byte windows of a file: a
+/// front-of-file `prefix` and an optional `tail` starting at an arbitrary
+/// offset. Everything between them reads as an error naming the offset that is
+/// missing, so a caller streaming over the network knows what to fetch next.
+///
+/// A Cloud Optimized GeoTIFF keeps every IFD at the front, so the prefix alone
+/// covers the header. A plain GeoTIFF written by GDAL or libtiff keeps its
+/// directory at the *end* of the file, out of reach of any front-only prefix.
+struct HeaderWindows<'a> {
+    prefix: &'a [u8],
+    tail_offset: u64,
+    tail: &'a [u8],
+    pos: u64,
+}
+
+impl<'a> HeaderWindows<'a> {
+    fn new(prefix: &'a [u8], tail_offset: u64, tail: &'a [u8]) -> Self {
+        Self { prefix, tail_offset, tail, pos: 0 }
+    }
+
+    /// The bytes available from `pos` onwards, or `None` if `pos` sits in the gap.
+    fn available_at(&self, pos: u64) -> Option<&'a [u8]> {
+        if pos < self.prefix.len() as u64 {
+            return Some(&self.prefix[pos as usize..]);
+        }
+        if pos >= self.tail_offset {
+            let rel = pos - self.tail_offset;
+            if rel < self.tail.len() as u64 {
+                return Some(&self.tail[rel as usize..]);
+            }
+        }
+        None
+    }
+
+    /// One past the highest readable offset, used to resolve `SeekFrom::End`.
+    fn end(&self) -> u64 {
+        let tail_end = self.tail_offset.saturating_add(self.tail.len() as u64);
+        tail_end.max(self.prefix.len() as u64)
+    }
+}
+
+impl Read for HeaderWindows<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        // Erroring out (rather than reporting 0 bytes) keeps the offset in the
+        // message: `read_exact` would otherwise turn this into the opaque
+        // "failed to fill whole buffer".
+        let Some(avail) = self.available_at(self.pos) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("need more header bytes at offset {}", self.pos),
+            ));
+        };
+        let n = avail.len().min(buf.len());
+        buf[..n].copy_from_slice(&avail[..n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for HeaderWindows<'_> {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let target = match from {
+            SeekFrom::Start(n) => Some(n as i128),
+            SeekFrom::End(d) => Some(self.end() as i128 + d as i128),
+            SeekFrom::Current(d) => Some(self.pos as i128 + d as i128),
+        }
+        .filter(|p| *p >= 0 && *p <= u64::MAX as i128);
+        match target {
+            Some(p) => {
+                self.pos = p as u64;
+                Ok(self.pos)
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek to a negative offset",
+            )),
+        }
+    }
+}
+
+/// Multi-resolution tile layout of a COG, parsed from front-of-file bytes only.
+#[derive(Debug, Clone)]
+pub struct CogLayout {
+    /// Resolution levels: index 0 is full resolution, the rest are overviews.
+    pub levels: Vec<CogLevel>,
+    /// EPSG code of level 0, if any.
+    pub epsg: Option<u16>,
+    /// No-data sentinel, if declared.
+    pub no_data: Option<f64>,
+    /// Affine geo-transform of level 0, if present.
+    pub geo_transform: Option<GeoTransform>,
+    /// PROJ string for a user-defined projected CRS (no EPSG code), if any.
+    pub proj_string: Option<String>,
+}
+
+impl GeoTiff {
+    /// Parse the IFD chain and tile layout of a tiled GeoTIFF / COG from the
+    /// front-of-file bytes, without the pixel data.
+    ///
+    /// Returns an error if `header_bytes` is too short to contain the IFDs and
+    /// their tile-offset arrays (fetch more bytes and retry), or if any level is
+    /// striped rather than tiled (tile-by-tile range streaming needs a tiled COG).
+    ///
+    /// A plain (non-COG) GeoTIFF keeps its directory at the *end* of the file,
+    /// which no front-of-file prefix can reach; use
+    /// [`parse_cog_layout_windowed`](Self::parse_cog_layout_windowed) for those.
+    pub fn parse_cog_layout(header_bytes: &[u8]) -> Result<CogLayout> {
+        Self::parse_cog_layout_windowed(header_bytes, 0, &[])
+    }
+
+    /// Offset of the first IFD, read from a file's first 8 (classic TIFF) or 16
+    /// (BigTIFF) bytes. A caller streaming over range requests uses this to find
+    /// the directory of a plain GeoTIFF, which sits at the end of the file.
+    pub fn first_ifd_offset(header_bytes: &[u8]) -> Result<u64> {
+        Ok(TiffReader::new(std::io::Cursor::new(header_bytes))?.first_ifd_offset)
+    }
+
+    /// Like [`parse_cog_layout`](Self::parse_cog_layout), but reading from two
+    /// disjoint windows of the file: a front-of-file `prefix` and a `tail`
+    /// beginning at absolute offset `tail_offset`.
+    ///
+    /// This is what a plain GDAL- or libtiff-written GeoTIFF needs: its IFD and
+    /// tag arrays live at the end of the file, so a front-only prefix would have
+    /// to span the whole file to reach them. Pass the last few hundred kilobytes
+    /// as `tail` instead. Bytes in the gap between the windows are never touched
+    /// by header parsing; a read that lands there fails with the offset it wanted,
+    /// so the caller can widen the tail and retry.
+    pub fn parse_cog_layout_windowed(
+        prefix: &[u8],
+        tail_offset: u64,
+        tail: &[u8],
+    ) -> Result<CogLayout> {
+        let mut tiff = TiffReader::new(HeaderWindows::new(prefix, tail_offset, tail))?;
+        let ifds = tiff.read_all_ifds()?;
+        if ifds.is_empty() {
+            return Err(GeoTiffError::CorruptData {
+                location: "ifd".into(), message: "no IFDs in header".into(),
+            });
+        }
+        let mut levels = Vec::with_capacity(ifds.len());
+        let mut no_data = None;
+        for (i, ifd) in ifds.iter().enumerate() {
+            let info = Self::parse_image_info(ifd)?;
+            if i == 0 { no_data = info.no_data; }
+            match &info.layout {
+                ImageLayout::Tiled { tile_width, tile_height, offsets, byte_counts } => {
+                    let tiles_x = (info.width + tile_width - 1) / tile_width;
+                    let tiles_y = (info.height + tile_height - 1) / tile_height;
+                    levels.push(CogLevel {
+                        width: info.width, height: info.height,
+                        tile_width: *tile_width, tile_height: *tile_height,
+                        tiles_x, tiles_y,
+                        tile_offsets: offsets.clone(),
+                        tile_byte_counts: byte_counts.clone(),
+                        samples_per_pixel: info.samples_per_pixel,
+                        bits_per_sample: info.bits_per_sample,
+                        sample_format: info.sample_format,
+                        compression: info.compression,
+                        predictor: info.predictor,
+                        byte_order: tiff.byte_order,
+                    });
+                }
+                ImageLayout::Stripped { .. } => {
+                    return Err(GeoTiffError::CorruptData {
+                        location: "layout".into(),
+                        message: "image is striped, not tiled; tile range streaming requires a tiled COG".into(),
+                    });
+                }
+            }
+        }
+        let gk0 = Self::parse_geo_keys(&ifds[0])?;
+        let epsg = gk0.as_ref().and_then(|gk| gk.epsg());
+        let proj_string = gk0.as_ref().and_then(|gk| gk.to_proj_string());
+        let geo_transform = Self::parse_geo_transform(&ifds[0]);
+        Ok(CogLayout { levels, epsg, no_data, geo_transform, proj_string })
+    }
+}
+
+// ── Helper: sample byte → f64 ─────────────────────────────────────────────────
+
+fn sample_to_f64(bytes: &[u8], fmt: SampleFormat, bo: ByteOrder) -> Option<f64> {
+    Some(match (fmt, bytes.len()) {
+        (SampleFormat::Uint, 1) => bytes[0] as f64,
+        (SampleFormat::Uint, 2) => bo.read_u16(bytes.try_into().ok()?) as f64,
+        (SampleFormat::Uint, 4) => bo.read_u32(bytes.try_into().ok()?) as f64,
+        (SampleFormat::Uint, 8) => bo.read_u64(bytes.try_into().ok()?) as f64,
+        (SampleFormat::Int, 1) => bytes[0] as i8 as f64,
+        (SampleFormat::Int, 2) => bo.read_i16(bytes.try_into().ok()?) as f64,
+        (SampleFormat::Int, 4) => bo.read_i32(bytes.try_into().ok()?) as f64,
+        (SampleFormat::Int, 8) => bo.read_i64(bytes.try_into().ok()?) as f64,
+        (SampleFormat::IeeeFloat, 4) => bo.read_f32(bytes.try_into().ok()?) as f64,
+        (SampleFormat::IeeeFloat, 8) => bo.read_f64(bytes.try_into().ok()?),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::writer::GeoTiffWriter;
+    use super::super::types::GeoTransform;
+    use super::super::tags::{Compression, DataType};
+    use tempfile::NamedTempFile;
+
+    fn make_tiff(compression: Compression) -> Vec<u8> {
+        let data: Vec<f32> = (0..16u32).map(|i| i as f32 * 0.5).collect();
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+        GeoTiffWriter::new(4, 4, 1)
+            .compression(compression)
+            .sample_format(SampleFormat::IeeeFloat)
+            .geo_transform(GeoTransform::north_up(0.0, 1.0, 4.0, -1.0))
+            .epsg(4326)
+            .write_f32_to_writer(&mut cursor, &data)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn roundtrip_none() {
+        let buf = make_tiff(Compression::None);
+        let tiff = GeoTiff::from_bytes(&buf).unwrap();
+        assert_eq!(tiff.width(), 4);
+        assert_eq!(tiff.height(), 4);
+        let vals = tiff.read_band_f32(0).unwrap();
+        assert!((vals[3] - 1.5f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn roundtrip_deflate() {
+        let buf = make_tiff(Compression::Deflate);
+        let tiff = GeoTiff::from_bytes(&buf).unwrap();
+        let vals = tiff.read_band_f32(0).unwrap();
+        assert_eq!(vals.len(), 16);
+        assert!((vals[0] - 0.0f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn roundtrip_packbits() {
+        let buf = make_tiff(Compression::PackBits);
+        let tiff = GeoTiff::from_bytes(&buf).unwrap();
+        let vals = tiff.read_band_f32(0).unwrap();
+        assert_eq!(vals.len(), 16);
+    }
+
+    #[test]
+    fn roundtrip_lzw() {
+        let buf = make_tiff(Compression::Lzw);
+        let tiff = GeoTiff::from_bytes(&buf).unwrap();
+        let vals = tiff.read_band_f32(0).unwrap();
+        assert_eq!(vals.len(), 16);
+        assert!((vals[15] - 7.5f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn geo_transform_roundtrip() {
+        let buf = make_tiff(Compression::None);
+        let tiff = GeoTiff::from_bytes(&buf).unwrap();
+        let gt = tiff.geo_transform().unwrap();
+        assert!((gt.x_origin - 0.0).abs() < 1e-9);
+        assert!((gt.y_origin - 4.0).abs() < 1e-9);
+        assert!((gt.pixel_width - 1.0).abs() < 1e-9);
+        assert!((gt.pixel_height - (-1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn epsg_roundtrip() {
+        let buf = make_tiff(Compression::None);
+        let tiff = GeoTiff::from_bytes(&buf).unwrap();
+        assert_eq!(tiff.epsg(), Some(4326));
+    }
+
+    #[test]
+    fn parse_scale_offset_from_gdal_xml_metadata() {
+        let xml = "<GDALMetadata><Item name=\"scale\" sample=\"0\">0.1</Item><Item name=\"offset\" sample=\"0\">5</Item></GDALMetadata>";
+        let scale = GeoTiff::parse_named_numeric(xml, &["scale"]).unwrap();
+        let offset = GeoTiff::parse_named_numeric(xml, &["offset"]).unwrap();
+        assert!((scale - 0.1).abs() < 1e-12);
+        assert!((offset - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parse_scale_offset_from_key_value_tokens() {
+        let text = "SCALE=0.25 OFFSET=-12";
+        let scale = GeoTiff::parse_named_numeric(text, &["scale"]).unwrap();
+        let offset = GeoTiff::parse_named_numeric(text, &["offset"]).unwrap();
+        assert!((scale - 0.25).abs() < 1e-12);
+        assert!((offset + 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn jpeg_u8_roundtrip() {
+        let w = 64u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h)).map(|i| (i % 251) as u8).collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 1)
+            .compression(Compression::Jpeg)
+            .jpeg_quality(72)
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert_eq!(tiff.compression(), Compression::Jpeg);
+        let read_back = tiff.read_band_u8(0).unwrap();
+        assert_eq!(read_back.len(), data.len());
+
+        let max_abs_err = data.iter()
+            .zip(read_back.iter())
+            .map(|(a, b)| (*a as i16 - *b as i16).abs() as u8)
+            .max()
+            .unwrap_or(0);
+        assert!(max_abs_err <= 40, "JPEG error too large: {}", max_abs_err);
+    }
+
+    #[test]
+    fn jpeg_u8_bigtiff_roundtrip() {
+        let w = 128u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h)).map(|i| ((i * 3) % 256) as u8).collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 1)
+            .bigtiff(true)
+            .compression(Compression::Jpeg)
+            .jpeg_quality(90)
+            .layout(super::super::writer::WriteLayout::Tiled { tile_width: 32, tile_height: 32 })
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert!(tiff.is_bigtiff);
+        assert_eq!(tiff.compression(), Compression::Jpeg);
+        let read_back = tiff.read_band_u8(0).unwrap();
+        assert_eq!(read_back.len(), data.len());
+    }
+
+    #[test]
+    fn webp_u8_roundtrip() {
+        let w = 64u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h))
+            .flat_map(|i| {
+                let v = (i % 251) as u8;
+                [v, v.wrapping_add(23), v.wrapping_add(47)]
+            })
+            .collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 3)
+            .compression(Compression::WebP)
+            .jpeg_quality(72)
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert_eq!(tiff.compression(), Compression::WebP);
+        assert_eq!(tiff.band_count(), 3);
+        let read_r = tiff.read_band_u8(0).unwrap();
+        let read_g = tiff.read_band_u8(1).unwrap();
+        let read_b = tiff.read_band_u8(2).unwrap();
+        assert_eq!(read_r.len(), (w * h) as usize);
+        assert_eq!(read_g.len(), (w * h) as usize);
+        assert_eq!(read_b.len(), (w * h) as usize);
+    }
+
+    #[test]
+    fn webp_u8_bigtiff_roundtrip() {
+        let w = 128u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h))
+            .flat_map(|i| {
+                let v = ((i * 5) % 256) as u8;
+                [v, v.wrapping_add(31), v.wrapping_add(63)]
+            })
+            .collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 3)
+            .bigtiff(true)
+            .compression(Compression::WebP)
+            .jpeg_quality(85)
+            .layout(super::super::writer::WriteLayout::Tiled { tile_width: 32, tile_height: 32 })
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert!(tiff.is_bigtiff);
+        assert_eq!(tiff.compression(), Compression::WebP);
+        assert_eq!(tiff.band_count(), 3);
+        let read_back = tiff.read_band_u8(0).unwrap();
+        assert_eq!(read_back.len(), (w * h) as usize);
+    }
+
+    #[test]
+    fn webp_u8_rgba_roundtrip() {
+        let w = 64u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h))
+            .flat_map(|i| {
+                let v = ((i * 7) % 256) as u8;
+                [v, v.wrapping_add(29), v.wrapping_add(61), 200]
+            })
+            .collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 4)
+            .compression(Compression::WebP)
+            .jpeg_quality(80)
+            .layout(super::super::writer::WriteLayout::Tiled { tile_width: 32, tile_height: 32 })
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert_eq!(tiff.compression(), Compression::WebP);
+        assert_eq!(tiff.band_count(), 4);
+
+        let read_r = tiff.read_band_u8(0).unwrap();
+        let read_a = tiff.read_band_u8(3).unwrap();
+        assert_eq!(read_r.len(), (w * h) as usize);
+        assert_eq!(read_a.len(), (w * h) as usize);
+    }
+
+    #[test]
+    fn jpegxl_u8_roundtrip() {
+        let w = 64u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h))
+            .flat_map(|i| {
+                let v = (i % 251) as u8;
+                [v, v.wrapping_add(13), v.wrapping_add(27)]
+            })
+            .collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 3)
+            .compression(Compression::JpegXl)
+            .jpeg_quality(84)
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert_eq!(tiff.compression(), Compression::JpegXl);
+        assert_eq!(tiff.band_count(), 3);
+        let read_r = tiff.read_band_u8(0).unwrap();
+        let read_g = tiff.read_band_u8(1).unwrap();
+        let read_b = tiff.read_band_u8(2).unwrap();
+        assert_eq!(read_r.len(), (w * h) as usize);
+        assert_eq!(read_g.len(), (w * h) as usize);
+        assert_eq!(read_b.len(), (w * h) as usize);
+    }
+
+    #[test]
+    fn jpegxl_u8_bigtiff_roundtrip() {
+        let w = 128u32;
+        let h = 64u32;
+        let data: Vec<u8> = (0..(w * h))
+            .flat_map(|i| {
+                let v = ((i * 9) % 256) as u8;
+                [v, v.wrapping_add(33), v.wrapping_add(67), 220]
+            })
+            .collect();
+
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path();
+
+        GeoTiffWriter::new(w, h, 4)
+            .bigtiff(true)
+            .compression(Compression::JpegXl)
+            .jpeg_quality(90)
+            .layout(super::super::writer::WriteLayout::Tiled { tile_width: 32, tile_height: 32 })
+            .write_u8(path, &data)
+            .unwrap();
+
+        let tiff = GeoTiff::open(path).unwrap();
+        assert!(tiff.is_bigtiff);
+        assert_eq!(tiff.compression(), Compression::JpegXl);
+        assert_eq!(tiff.band_count(), 4);
+        let read_back = tiff.read_band_u8(3).unwrap();
+        assert_eq!(read_back.len(), (w * h) as usize);
+    }
+
+    #[test]
+    fn integer_roundtrip_i8_u32_i32() {
+        let file_i8 = NamedTempFile::new().unwrap();
+        let path_i8 = file_i8.path();
+        let data_i8: Vec<i8> = vec![-128, -5, -1, 0, 1, 5, 12, 127];
+        GeoTiffWriter::new(4, 2, 1)
+            .write_i8(path_i8, &data_i8)
+            .unwrap();
+        let tiff_i8 = GeoTiff::open(path_i8).unwrap();
+        assert_eq!(tiff_i8.read_band_i8(0).unwrap(), data_i8);
+
+        let file_u32 = NamedTempFile::new().unwrap();
+        let path_u32 = file_u32.path();
+        let data_u32: Vec<u32> = vec![0, 1, 255, 65_535, 100_000, 1_000_000, u32::MAX - 1, u32::MAX];
+        GeoTiffWriter::new(4, 2, 1)
+            .write_u32(path_u32, &data_u32)
+            .unwrap();
+        let tiff_u32 = GeoTiff::open(path_u32).unwrap();
+        assert_eq!(tiff_u32.read_band_u32(0).unwrap(), data_u32);
+
+        let file_i32 = NamedTempFile::new().unwrap();
+        let path_i32 = file_i32.path();
+        let data_i32: Vec<i32> = vec![i32::MIN, -1_000_000, -32_768, -1, 0, 1, 32_767, i32::MAX];
+        GeoTiffWriter::new(4, 2, 1)
+            .write_i32(path_i32, &data_i32)
+            .unwrap();
+        let tiff_i32 = GeoTiff::open(path_i32).unwrap();
+        assert_eq!(tiff_i32.read_band_i32(0).unwrap(), data_i32);
+
+        let file_u64 = NamedTempFile::new().unwrap();
+        let path_u64 = file_u64.path();
+        let data_u64: Vec<u64> = vec![0, 1, 255, 65_535, 1_000_000, 9_007_199_254_740_991, u64::MAX - 1, u64::MAX];
+        GeoTiffWriter::new(4, 2, 1)
+            .write_u64(path_u64, &data_u64)
+            .unwrap();
+        let tiff_u64 = GeoTiff::open(path_u64).unwrap();
+        assert_eq!(tiff_u64.read_band_u64(0).unwrap(), data_u64);
+
+        let file_i64 = NamedTempFile::new().unwrap();
+        let path_i64 = file_i64.path();
+        let data_i64: Vec<i64> = vec![i64::MIN, -9_007_199_254_740_991, -1_000_000, -1, 0, 1, 9_007_199_254_740_991, i64::MAX];
+        GeoTiffWriter::new(4, 2, 1)
+            .write_i64(path_i64, &data_i64)
+            .unwrap();
+        let tiff_i64 = GeoTiff::open(path_i64).unwrap();
+        assert_eq!(tiff_i64.read_band_i64(0).unwrap(), data_i64);
+    }
+
+    // ── Header parsing from a directory that sits past the pixel data ─────────
+
+    /// A 512x512 tiled f32 GeoTIFF, the layout `parse_cog_layout` accepts.
+    fn make_tiled_tiff() -> Vec<u8> {
+        use super::super::writer::WriteLayout;
+        let data: Vec<f32> = (0..512 * 512).map(|i| i as f32).collect();
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+        GeoTiffWriter::new(512, 512, 1)
+            .layout(WriteLayout::Tiled { tile_width: 256, tile_height: 256 })
+            .compression(Compression::Deflate)
+            .sample_format(SampleFormat::IeeeFloat)
+            .geo_transform(GeoTransform::north_up(0.0, 1.0, 512.0, -1.0))
+            .epsg(4326)
+            .write_f32_to_writer(&mut cursor, &data)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    /// Rebuild `orig` (a single-IFD classic little-endian TIFF) with everything
+    /// after the 8-byte header pushed `pad` bytes further into the file, so the
+    /// directory ends up past a front-of-file prefix. That is the layout GDAL and
+    /// libtiff write by default, and the one the reporter's file in GeoLibre#1743
+    /// has. Every absolute offset moves by the same `pad`, so the IFD, its value
+    /// arrays and the tile offsets all stay consistent.
+    fn push_directory_back(orig: &[u8], pad: usize) -> Vec<u8> {
+        fn rd(b: &[u8], o: usize) -> u32 { u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) }
+        /// Add `pad` to the 32-bit offset stored at `o`.
+        fn bump(b: &mut [u8], o: usize, pad: u32) {
+            let v = rd(b, o) + pad;
+            b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+
+        let pad32 = pad as u32;
+        let mut out = Vec::with_capacity(orig.len() + pad);
+        out.extend_from_slice(&orig[..4]);
+        out.extend_from_slice(&(rd(orig, 4) + pad32).to_le_bytes());
+        out.resize(8 + pad, 0); // the gap: pixel data in a real file, never read as header
+        out.extend_from_slice(&orig[8..]);
+
+        let ifd = rd(&out, 4) as usize;
+        let n = u16::from_le_bytes(out[ifd..ifd + 2].try_into().unwrap()) as usize;
+        for i in 0..n {
+            let e = ifd + 2 + i * 12;
+            let tag_code = u16::from_le_bytes(out[e..e + 2].try_into().unwrap());
+            let type_code = u16::from_le_bytes(out[e + 2..e + 4].try_into().unwrap());
+            let count = rd(&out, e + 4) as usize;
+            let type_size = DataType::from_u16(type_code).map(|t| t.byte_size()).unwrap_or(0);
+            let inline = type_size * count <= 4;
+            // Where the tag's values live: in the entry itself, or out of line.
+            let values = if inline { e + 8 } else { rd(&out, e + 8) as usize + pad };
+            if !inline {
+                bump(&mut out, e + 8, pad32);
+            }
+            // Tile offsets point at the pixel data, which moved by `pad` as well.
+            if tag_code == tag::TileOffsets {
+                for k in 0..count {
+                    bump(&mut out, values + k * 4, pad32);
+                }
+            }
+        }
+        let next = ifd + 2 + n * 12;
+        if rd(&out, next) != 0 {
+            bump(&mut out, next, pad32);
+        }
+        out
+    }
+
+    #[test]
+    fn front_prefix_cannot_reach_a_trailing_directory() {
+        let buf = push_directory_back(&make_tiled_tiff(), 4 << 20);
+        // The prefix holds the file header but not the directory 4 MB later, which
+        // is exactly how GeoLibre#1743 failed: an opaque short-read, not a hint.
+        assert!(GeoTiff::parse_cog_layout(&buf[..64 << 10]).is_err());
+        assert_eq!(GeoTiff::first_ifd_offset(&buf).unwrap(), 8 + (4 << 20));
+    }
+
+    #[test]
+    fn windowed_parse_reads_a_trailing_directory() {
+        let buf = push_directory_back(&make_tiled_tiff(), 4 << 20);
+        let ifd = GeoTiff::first_ifd_offset(&buf).unwrap() as usize;
+        let windowed =
+            GeoTiff::parse_cog_layout_windowed(&buf[..1024], ifd as u64, &buf[ifd..]).unwrap();
+        // Same layout as parsing the whole file, from ~1 KB + the tail.
+        let whole = GeoTiff::parse_cog_layout(&buf).unwrap();
+        assert_eq!(windowed.levels.len(), whole.levels.len());
+        assert_eq!(windowed.epsg, Some(4326));
+        let lv = &windowed.levels[0];
+        assert_eq!((lv.width, lv.height), (512, 512));
+        assert_eq!((lv.tile_width, lv.tile_height), (256, 256));
+        assert_eq!(lv.tile_offsets, whole.levels[0].tile_offsets);
+        assert_eq!(lv.tile_byte_counts, whole.levels[0].tile_byte_counts);
+    }
+
+    #[test]
+    fn windowed_parse_names_the_offset_it_still_needs() {
+        let buf = push_directory_back(&make_tiled_tiff(), 4 << 20);
+        let ifd = GeoTiff::first_ifd_offset(&buf).unwrap() as usize;
+        // A tail that starts after the directory leaves a hole the parser walks into.
+        let short = ifd + 64;
+        let err = GeoTiff::parse_cog_layout_windowed(&buf[..1024], short as u64, &buf[short..])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("need more header bytes at offset"),
+            "expected an actionable offset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_front_loaded_directory_still_parses_from_the_prefix_alone() {
+        // A COG keeps its IFD at the front; the windowed path must not regress it.
+        let buf = make_tiled_tiff();
+        assert_eq!(GeoTiff::first_ifd_offset(&buf).unwrap(), 8);
+        let layout = GeoTiff::parse_cog_layout(&buf).unwrap();
+        assert_eq!(layout.levels.len(), 1);
+        assert_eq!(layout.levels[0].width, 512);
+    }
+
+    /// Build a minimal classic big-endian ("MM") TIFF: one uncompressed strip
+    /// holding `sample_bytes` (already in big-endian order), a
+    /// `GDAL_NODATA` tag, and nothing else.
+    ///
+    /// Motorola TIFFs are rare from GDAL (which only writes `II`) but geotiff.js
+    /// emits them for every file it writes, and `GeoTiffWriter` only writes
+    /// little-endian, so the fixture has to be assembled by hand.
+    fn make_big_endian_tiff(
+        width: u32,
+        height: u32,
+        bits_per_sample: u16,
+        sample_format: SampleFormat,
+        sample_bytes: &[u8],
+        nodata: &str,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"MM");
+        out.extend_from_slice(&42u16.to_be_bytes());
+        let ifd_offset_at = out.len();
+        out.extend_from_slice(&0u32.to_be_bytes()); // patched once the IFD is placed
+
+        let strip_offset = out.len() as u32;
+        out.extend_from_slice(sample_bytes);
+
+        let nodata_offset = out.len() as u32;
+        out.extend_from_slice(nodata.as_bytes());
+        out.push(0); // TIFF ASCII fields are NUL-terminated
+        if out.len() % 2 == 1 {
+            out.push(0);
+        }
+
+        let ifd_offset = out.len() as u32;
+        out[ifd_offset_at..ifd_offset_at + 4].copy_from_slice(&ifd_offset.to_be_bytes());
+
+        // A SHORT that fits inline sits in the FIRST two bytes of the 4-byte
+        // value field in a big-endian file, not the last.
+        let short = |code: u16, value: u16| -> Vec<u8> {
+            let mut e = Vec::with_capacity(12);
+            e.extend_from_slice(&code.to_be_bytes());
+            e.extend_from_slice(&3u16.to_be_bytes()); // SHORT
+            e.extend_from_slice(&1u32.to_be_bytes());
+            e.extend_from_slice(&value.to_be_bytes());
+            e.extend_from_slice(&[0, 0]);
+            e
+        };
+        let long = |code: u16, value: u32| -> Vec<u8> {
+            let mut e = Vec::with_capacity(12);
+            e.extend_from_slice(&code.to_be_bytes());
+            e.extend_from_slice(&4u16.to_be_bytes()); // LONG
+            e.extend_from_slice(&1u32.to_be_bytes());
+            e.extend_from_slice(&value.to_be_bytes());
+            e
+        };
+        let ascii = |code: u16, count: u32, offset: u32| -> Vec<u8> {
+            let mut e = Vec::with_capacity(12);
+            e.extend_from_slice(&code.to_be_bytes());
+            e.extend_from_slice(&2u16.to_be_bytes()); // ASCII
+            e.extend_from_slice(&count.to_be_bytes());
+            e.extend_from_slice(&offset.to_be_bytes());
+            e
+        };
+
+        // Entries must be written in ascending tag order.
+        let entries = vec![
+            long(tag::ImageWidth, width),
+            long(tag::ImageLength, height),
+            short(tag::BitsPerSample, bits_per_sample),
+            short(tag::Compression, 1), // none
+            short(tag::PhotometricInterpretation, 1), // min-is-black
+            long(tag::StripOffsets, strip_offset),
+            short(tag::SamplesPerPixel, 1),
+            long(tag::RowsPerStrip, height),
+            long(tag::StripByteCounts, sample_bytes.len() as u32),
+            short(tag::PlanarConfiguration, 1), // chunky
+            short(tag::SampleFormat, sample_format.tag_value()),
+            ascii(tag::GdalNodata, nodata.len() as u32 + 1, nodata_offset),
+        ];
+        out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+        for entry in entries {
+            out.extend_from_slice(&entry);
+        }
+        out.extend_from_slice(&0u32.to_be_bytes()); // no next IFD
+        out
+    }
+
+    #[test]
+    fn big_endian_float32_samples_are_not_byte_swapped() {
+        // The reporting case (opengeos/GeoLibre#2410): a Float32 raster whose
+        // padding is the -9999 GDAL_NODATA sentinel. Read as little-endian the
+        // sentinel decodes as ~5.5e-39 and no pixel matches `no_data()` any
+        // more, so nothing downstream can mask it.
+        let values: Vec<f32> = vec![-9999.0, 0.5, 1.5, 2.5, 3.5, -9999.0, 5.5, 6.5,
+                                    7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5];
+        let mut bytes = Vec::new();
+        for v in &values {
+            bytes.extend_from_slice(&v.to_be_bytes());
+        }
+        let tiff = make_big_endian_tiff(4, 4, 32, SampleFormat::IeeeFloat, &bytes, "-9999");
+
+        let reader = GeoTiff::from_bytes(&tiff).unwrap();
+        assert_eq!(reader.byte_order(), ByteOrder::BigEndian);
+        assert_eq!(reader.no_data(), Some(-9999.0));
+        assert_eq!(reader.read_band_f32(0).unwrap(), values);
+        assert_eq!(
+            reader.read_all_f64().unwrap(),
+            values.iter().map(|v| *v as f64).collect::<Vec<f64>>()
+        );
+        // The sentinel survives as itself, which is what keeps nodata maskable.
+        assert_eq!(reader.read_all_f64().unwrap()[0], reader.no_data().unwrap());
+    }
+
+    #[test]
+    fn big_endian_uint16_samples_are_not_byte_swapped() {
+        // Integer samples go through the same per-type readers, so cover one.
+        let values: Vec<u16> = vec![0, 1, 256, 4095, 65535, 32768, 7, 300, 12];
+        let mut bytes = Vec::new();
+        for v in &values {
+            bytes.extend_from_slice(&v.to_be_bytes());
+        }
+        let tiff = make_big_endian_tiff(3, 3, 16, SampleFormat::Uint, &bytes, "0");
+
+        let reader = GeoTiff::from_bytes(&tiff).unwrap();
+        assert_eq!(reader.read_band_u16(0).unwrap(), values);
+        assert_eq!(
+            reader.read_all_f64().unwrap(),
+            values.iter().map(|v| *v as f64).collect::<Vec<f64>>()
+        );
+    }
+}
