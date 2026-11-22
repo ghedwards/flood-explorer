@@ -88,7 +88,7 @@ import { b64, unb64 } from './share-session.js';
     if (!d) {
       if (!area.impactLoading) {
         area.impactLoading = true;
-        countImpact().then(() => { area.impactLoading = false; if (ctl.floodType.value !== 'river') runScenario(); });
+        countImpact().then(() => { area.impactLoading = false; if (ctl.floodType.value !== 'river' && !damWorker && !inertialWorker && !state.inertial) runScenario(); });
       }
       return null;
     }
@@ -595,6 +595,7 @@ import { b64, unb64 } from './share-session.js';
 
   async function useGrid(grid, id, opts) {
     resetInertial();
+    if (typeof stopDam === 'function') stopDam();
     // keep the area we're leaving on the map as it is
     const meta = state.areaMeta;
     const prev = state.areaKey && areaReg.get(state.areaKey);
@@ -807,7 +808,6 @@ import { b64, unb64 } from './share-session.js';
   function hideTimeline() { flashTimeline = null; $('flash2dTimeline').hidden = true; }
   function resetInertial() {
     stopInertial(); hideTimeline();
-    if (typeof stopDam === 'function') stopDam();
     state.inertial = null; status.inertial = null;
     $('solver').value = 'fast'; solverControls();
     $('inertialStatus').textContent = 'Fast terrain model.';
@@ -3071,6 +3071,7 @@ import { b64, unb64 } from './share-session.js';
 
   function activateArea(key, opts) {
     resetInertial();
+    if (typeof stopDam === 'function') stopDam();
     if (state.routeLayer) state.routeLayer.clearLayers();
     const area = areaReg.get(key);
     if (!area) return false;
