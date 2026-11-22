@@ -83,7 +83,16 @@ jobs:
       - name: Install pinned auditor
         run: cargo install cargo-audit --version 0.22.2 --locked
       - run: cargo audit --file rust/Cargo.lock
-      - run: cargo audit --file desktop/Cargo.lock
+      # tauri-plugin-updater 2.14 (latest) still depends on zip 4.6.1 for extracting
+      # Ed25519-signed update bundles; ignore its zip<9 advisories until upstream bumps zip.
+      - run: >-
+          cargo audit --file desktop/Cargo.lock
+          --ignore RUSTSEC-2026-0367
+          --ignore RUSTSEC-2026-0368
+          --ignore RUSTSEC-2026-0369
+          --ignore RUSTSEC-2026-0429
+          --ignore RUSTSEC-2026-0545
+          --ignore RUSTSEC-2026-0548
 
   outdated:
     name: Outdated dependency report
